@@ -17,7 +17,7 @@ import { boundedRecord } from './shared.js';
 export const conditionSchema = z.object({
   id: z.string().describe('Condition ACE id (kebab-case, e.g., "on-start-of-layout", "on-collision-with-another-object")'),
   objectClass: z.string().describe('Object name or "System"'),
-  'behavior-type': z.string().optional().describe('Behavior type (e.g., "Platform", "8Direction")'),
+  behaviorType: z.string().optional().describe('Behavior type (e.g., "Platform", "8Direction")'),
   parameters: boundedRecord()
     .refine(obj => JSON.stringify(obj).length <= 50_000, 'Parameters payload too large (max 50KB)')
     .optional().describe('Condition parameters as key-value pairs (max 100 keys, depth 6)'),
@@ -29,7 +29,7 @@ export const conditionSchema = z.object({
 export const standardActionSchema = z.object({
   id: z.string().describe('Action ACE id (kebab-case, e.g., "set-instvar-value", "destroy")'),
   objectClass: z.string().describe('Object name or "System"'),
-  'behavior-type': z.string().optional().describe('Behavior type'),
+  behaviorType: z.string().optional().describe('Behavior type'),
   parameters: boundedRecord()
     .refine(obj => JSON.stringify(obj).length <= 50_000, 'Parameters payload too large (max 50KB)')
     .optional().describe('Action parameters as key-value pairs (max 100 keys, depth 6)'),
@@ -249,7 +249,7 @@ export function findGroupByPath(
 /** Validate objectClass references against project objects, families, and "System". */
 export async function validateObjectClasses(
   reader: Construct3ProjectReader,
-  refs: Array<{ objectClass: string; 'behavior-type'?: string }>,
+  refs: Array<{ objectClass: string; behaviorType?: string }>,
 ): Promise<{ errors: string[]; warnings: string[] }> {
   const objects = await reader.listObjectTypes();
   // listFamilies() reads from an in-memory Map and never throws — no try/catch needed.
@@ -267,9 +267,9 @@ export async function validateObjectClasses(
         : '';
       errors.push(`Unknown objectClass "${ref.objectClass}".${hint}`);
     }
-    if (ref['behavior-type']) {
+    if (ref.behaviorType) {
       // Soft validate: warn but allow (behavior may come from families or third-party plugins)
-      warnings.push(`Behavior-type "${ref['behavior-type']}" on "${ref.objectClass}" was not validated — ensure it exists on the object or its families.`);
+      warnings.push(`BehaviorType "${ref.behaviorType}" on "${ref.objectClass}" was not validated — ensure it exists on the object or its families.`);
     }
   }
 
@@ -281,21 +281,21 @@ export async function validateObjectClasses(
 /** Collect all objectClass references from a block and all its descendants.
  *  Depth-limited to match buildBlockEvent's MAX_NESTING_DEPTH guard. */
 export function collectObjectRefs(
-  conditions: Array<{ objectClass: string; 'behavior-type'?: string }>,
+  conditions: Array<{ objectClass: string; behaviorType?: string }>,
   actions: Array<Record<string, unknown>>,
   children: ChildEventInput[],
-  refs: Array<{ objectClass: string; 'behavior-type'?: string }>,
+  refs: Array<{ objectClass: string; behaviorType?: string }>,
   depth = 0,
 ): void {
   if (depth > MAX_NESTING_DEPTH) {
     throw new Error(`collectObjectRefs nesting exceeds maximum depth of ${MAX_NESTING_DEPTH}`);
   }
   for (const c of conditions) {
-    refs.push({ objectClass: c.objectClass, 'behavior-type': c['behavior-type'] });
+    refs.push({ objectClass: c.objectClass, behaviorType: c.behaviorType });
   }
   for (const a of actions) {
     if ('objectClass' in a && typeof a.objectClass === 'string') {
-      refs.push({ objectClass: a.objectClass, 'behavior-type': a['behavior-type'] as string | undefined });
+      refs.push({ objectClass: a.objectClass, behaviorType: a['behaviorType'] as string | undefined });
     }
   }
   for (const child of children) {
@@ -368,7 +368,7 @@ export async function buildBlockEvent(
       objectClass: c.objectClass,
       sid: condSid,
     };
-    if (c['behavior-type']) cond['behavior-type'] = c['behavior-type'];
+    if (c.behaviorType) cond.behaviorType = c.behaviorType;
     if (c.parameters) cond.parameters = c.parameters;
     if (c.isInverted) cond.isInverted = true;
     if (c.isOr) cond.isOr = true;
@@ -393,7 +393,7 @@ export async function buildBlockEvent(
         objectClass: a.objectClass,
         sid: actSid,
       };
-      if (a['behavior-type']) act['behavior-type'] = a['behavior-type'];
+      if (a.behaviorType) act.behaviorType = a.behaviorType;
       if (a.parameters) act.parameters = a.parameters;
       if (a.callFunction) act.callFunction = a.callFunction;
       if (a.disabled) act.disabled = true;

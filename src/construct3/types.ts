@@ -2,7 +2,7 @@
  * TypeScript type definitions for Construct 3 project structures.
  *
  * Field names match the real C3 JSON format (camelCase for most fields,
- * kebab-case for legacy keys like 'plugin-id' and 'behavior-type').
+ * kebab-case for legacy keys like 'plugin-id').
  *
  * All entity interfaces keep `[key: string]: unknown` index signatures
  * for backwards compatibility — real C3 files may contain fields not
@@ -236,7 +236,7 @@ export interface Condition {
   id: string;
   objectClass: string;
   sid: number;
-  'behavior-type'?: string;
+  behaviorType?: string;
   parameters?: Record<string, unknown>;
   isInverted?: boolean;
   isOr?: boolean;
@@ -248,7 +248,7 @@ export interface StandardAction {
   id: string;
   objectClass: string;
   sid: number;
-  'behavior-type'?: string;
+  behaviorType?: string;
   parameters?: Record<string, unknown>;
   disabled?: boolean;
   [key: string]: unknown;

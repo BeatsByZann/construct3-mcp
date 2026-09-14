@@ -84,25 +84,25 @@ describe('validateObjectClasses', () => {
     expect(errors[0]).toContain('Unknown objectClass "NonExistent"');
   });
 
-  it('warns about behavior-type usage', async () => {
+  it('warns about behaviorType usage', async () => {
     const reader = new MockReader({
       objects: new Map([['Player', { name: 'Player', 'plugin-id': 'Sprite', sid: 1 }]]),
     });
     const { errors, warnings } = await validateObjectClasses(
       reader as any,
-      [{ objectClass: 'Player', 'behavior-type': 'Platform' }],
+      [{ objectClass: 'Player', behaviorType: 'Platform' }],
     );
     expect(errors).toHaveLength(0);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('Behavior-type "Platform"');
+    expect(warnings[0]).toContain('BehaviorType "Platform"');
   });
 });
 
 describe('collectObjectRefs', () => {
   it('collects refs from conditions and actions', () => {
-    const refs: Array<{ objectClass: string; 'behavior-type'?: string }> = [];
+    const refs: Array<{ objectClass: string; behaviorType?: string }> = [];
     collectObjectRefs(
-      [{ objectClass: 'Player', 'behavior-type': 'Platform' }],
+      [{ objectClass: 'Player', behaviorType: 'Platform' }],
       [{ objectClass: 'Enemy', id: 'destroy', sid: 1 }],
       [],
       refs,
@@ -113,7 +113,7 @@ describe('collectObjectRefs', () => {
   });
 
   it('collects refs from nested children', () => {
-    const refs: Array<{ objectClass: string; 'behavior-type'?: string }> = [];
+    const refs: Array<{ objectClass: string; behaviorType?: string }> = [];
     collectObjectRefs(
       [],
       [],
@@ -411,6 +411,33 @@ describe('buildBlockEvent', () => {
     );
 
     expect((block.actions[0] as any).disabled).toBe(true);
+  });
+
+  it('emits behaviorType on built behavior conditions and actions', async () => {
+    const reader = new MockReader({
+      objects: new Map([['Player', { name: 'Player', 'plugin-id': 'Sprite', sid: 1 }]]),
+    });
+    const idGen = new MockIdGenerator();
+    const counter = { count: 0, warnings: [] };
+
+    const block = await buildBlockEvent(
+      reader as any,
+      idGen as any,
+      {
+        conditions: [{ id: 'on-collision-with-another-object', objectClass: 'Player', behaviorType: 'Platform' }],
+        actions: [{ id: 'destroy', objectClass: 'Player', behaviorType: 'Platform' }],
+        children: [],
+      },
+      1,
+      counter,
+    );
+
+    const builtCondition = block.conditions[0] as any;
+    const builtAction = block.actions[0] as any;
+    expect(builtCondition.behaviorType).toBe('Platform');
+    expect(builtAction.behaviorType).toBe('Platform');
+    expect(builtCondition).not.toHaveProperty('behavior-type');
+    expect(builtAction).not.toHaveProperty('behavior-type');
   });
 });
 

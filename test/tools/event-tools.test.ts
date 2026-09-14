@@ -283,6 +283,29 @@ describe('add_event_block', () => {
     expect(parseResult(result).success).toBe(true);
   });
 
+  it('emits behaviorType on new behavior ACEs in added block events', async () => {
+    const { server, writer } = setup({
+      objects: new Map([['Player', { name: 'Player', 'plugin-id': 'Sprite', sid: 1 }]]),
+      eventSheets: new Map([['MainSheet', { name: 'MainSheet', events: [], sid: 10 }]]),
+    });
+    const result = await server.callTool('add_event_block', {
+      sheetName: 'MainSheet',
+      conditions: [{ id: 'on-collision-with-another-object', objectClass: 'Player', behaviorType: 'Platform' }],
+      actions: [{ id: 'destroy', objectClass: 'Player', behaviorType: 'Platform' }],
+    });
+    expect(parseResult(result).success).toBe(true);
+
+    const writtenData = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
+    const events = writtenData.events as Array<Record<string, unknown>>;
+    const block = events[events.length - 1] as Record<string, unknown>;
+    const blockConditions = block.conditions as Array<Record<string, unknown>>;
+    const blockActions = block.actions as Array<Record<string, unknown>>;
+    expect(blockConditions[0].behaviorType).toBe('Platform');
+    expect(blockActions[0].behaviorType).toBe('Platform');
+    expect(blockConditions[0]).not.toHaveProperty('behavior-type');
+    expect(blockActions[0]).not.toHaveProperty('behavior-type');
+  });
+
   it('errors on missing groupPath', async () => {
     const { server } = setup({
       eventSheets: new Map([['MainSheet', {
@@ -622,7 +645,7 @@ describe('update_event_block', () => {
     const result = await server.callTool('update_event_block', {
       sheetName: 'MainSheet',
       sid: 100,
-      addActions: [{ id: 'destroy', objectClass: 'Player' }],
+      addActions: [{ id: 'destroy', objectClass: 'Player', behaviorType: 'Platform' }],
     });
     expect(parseResult(result).success).toBe(true);
 
@@ -631,6 +654,8 @@ describe('update_event_block', () => {
     const actions = events[0].actions as Record<string, unknown>[];
     expect(actions).toHaveLength(1);
     expect(actions[0].id).toBe('destroy');
+    expect(actions[0].behaviorType).toBe('Platform');
+    expect(actions[0]).not.toHaveProperty('behavior-type');
     expect(actions[0].sid).toBeDefined();
   });
 
@@ -751,7 +776,7 @@ describe('update_event_block', () => {
     const result = await server.callTool('update_event_block', {
       sheetName: 'MainSheet',
       sid: 100,
-      addConditions: [{ id: 'every-tick', objectClass: 'System' }],
+      addConditions: [{ id: 'every-tick', objectClass: 'System', behaviorType: 'Platform' }],
     });
     expect(parseResult(result).success).toBe(true);
 
@@ -760,7 +785,43 @@ describe('update_event_block', () => {
     const conditions = events[0].conditions as Record<string, unknown>[];
     expect(conditions).toHaveLength(2);
     expect(conditions[1].id).toBe('every-tick');
+    expect(conditions[1].behaviorType).toBe('Platform');
+    expect(conditions[1]).not.toHaveProperty('behavior-type');
     expect(conditions[1].sid).toBeDefined();
+  });
+
+  it('preserves behaviorType on existing behavior ACEs during update', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          {
+            eventType: 'block', sid: 100,
+            conditions: [{ id: 'on-collision-with-another-object', objectClass: 'Player', behaviorType: 'Platform', sid: 10 }],
+            actions: [{ id: 'destroy', objectClass: 'Player', behaviorType: 'Platform', sid: 20 }],
+          },
+        ],
+      }]]),
+    });
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet',
+      sid: 100,
+      updateConditions: [{ index: 0, isInverted: true }],
+      updateActions: [{ index: 0, disabled: false }],
+    });
+    expect(parseResult(result).success).toBe(true);
+
+    const writtenData = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
+    const events = writtenData.events as Array<Record<string, unknown>>;
+    const block = events[0];
+    const conditions = block.conditions as Array<Record<string, unknown>>;
+    const actions = block.actions as Array<Record<string, unknown>>;
+    expect(conditions[0].behaviorType).toBe('Platform');
+    expect(actions[0].behaviorType).toBe('Platform');
+    expect(conditions[0]).not.toHaveProperty('behavior-type');
+    expect(actions[0]).not.toHaveProperty('behavior-type');
+    expect(conditions[0].isInverted).toBe(true);
+    expect(actions[0].disabled).toBeUndefined();
   });
 
   it('removes conditions by index', async () => {

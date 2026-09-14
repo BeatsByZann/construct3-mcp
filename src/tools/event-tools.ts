@@ -231,7 +231,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
 
         // Collect all objectClass references from entire tree (parent + descendants)
-        const allRefs: Array<{ objectClass: string; 'behavior-type'?: string }> = [];
+        const allRefs: Array<{ objectClass: string; behaviorType?: string }> = [];
         collectObjectRefs(
           args.conditions,
           args.actions as Array<Record<string, unknown>>,
@@ -954,7 +954,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           // Validate objectClasses
           const refs = args.addConditions.map(c => ({
             objectClass: c.objectClass,
-            'behavior-type': c['behavior-type'],
+            behaviorType: c.behaviorType,
           }));
           const { errors, warnings: valWarnings } = await validateObjectClasses(reader, refs);
           if (errors.length > 0) {
@@ -969,7 +969,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
               objectClass: c.objectClass,
               sid: condSid,
             };
-            if (c['behavior-type']) built['behavior-type'] = c['behavior-type'];
+            if (c.behaviorType) built.behaviorType = c.behaviorType;
             if (c.parameters) built.parameters = c.parameters;
             if (c.isInverted) built.isInverted = true;
             if (c.isOr) built.isOr = true;
@@ -980,10 +980,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // ── Add new actions ──
         if (args.addActions && args.addActions.length > 0) {
           // Validate objectClasses for standard actions
-          const refs: Array<{ objectClass: string; 'behavior-type'?: string }> = [];
+          const refs: Array<{ objectClass: string; behaviorType?: string }> = [];
           for (const a of args.addActions) {
             if ('objectClass' in a && typeof a.objectClass === 'string') {
-              refs.push({ objectClass: a.objectClass, 'behavior-type': a['behavior-type'] });
+              refs.push({ objectClass: a.objectClass, behaviorType: a['behaviorType'] });
             }
           }
           if (refs.length > 0) {
@@ -1010,7 +1010,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
                 objectClass: a.objectClass,
                 sid: actSid,
               };
-              if (a['behavior-type']) built['behavior-type'] = a['behavior-type'];
+              if (a.behaviorType) built.behaviorType = a.behaviorType;
               if (a.parameters) built.parameters = a.parameters;
               if (a.callFunction) built.callFunction = a.callFunction;
               if (a.disabled) built.disabled = true;
