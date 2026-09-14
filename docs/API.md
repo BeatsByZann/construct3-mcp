@@ -513,6 +513,58 @@ Update properties of an existing animation on a Sprite object.
 
 At least one property must be provided.
 
+### `register_script_file`
+
+Register a script file in `rootFileFolders.script`. The registration uses C3's
+`script-info` metadata and an SID allocated by the project-wide ID generator.
+The tool changes `project.c3proj` only; it does not copy or delete the script
+file under `scripts/`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Script file name, without a folder path |
+| `type` | string | No | MIME type (default: `application/javascript`) |
+| `purpose` | string | No | `script-info.purpose` (default: `none`) |
+| `subfolder` | string | No | Slash-separated folder path under `scripts/` |
+
+### `deregister_script_file`
+
+Remove a script registration from `rootFileFolders.script`; the script file
+itself is preserved.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Script file name |
+| `subfolder` | string | No | Slash-separated folder path under `scripts/` |
+
+### `register_project_file`
+
+Copy a source file into `files/` and register it under one of the Project File
+families (`general`, `sound`, `music`, `video`, or `font`). The registration
+uses `file-info` metadata and a collision-safe SID. Nested subfolders are
+created below `files/` and mirrored in `rootFileFolders`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sourcePath` | string | Yes* | Source file to copy (`filePath` and `source` are aliases) |
+| `name` | string | No | Destination name; defaults to source basename |
+| `folder` | enum | No | `general`, `sound`, `music`, `video`, or `font` (default: `general`) |
+| `type` | string | No | MIME type (`mimeType` is an alias; inferred when omitted) |
+| `purpose` | string | No | `file-info.purpose` (default: `none`) |
+| `subfolder` | string | No | Slash-separated folder path under `files/` |
+
+*Required unless the exact Project File registration already exists.
+
+### `deregister_project_file`
+
+Remove a Project File registration and its corresponding file under `files/`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Project File name |
+| `folder` | enum | No | Project File family (default: `general`) |
+| `subfolder` | string | No | Slash-separated folder path under `files/` |
+
 ---
 
 ## Prompts

@@ -9,6 +9,8 @@ import { resolveProjectPath } from './path-utils.js';
 import type { Construct3ProjectReader } from './project-reader.js';
 import type { IdGenerator } from './id-generator.js';
 import type { Addon, Subfolder, ProjectProperties } from './types.js';
+import type { FileInfoKey, RegisteredFileFolder } from './file-registration.js';
+import { addFileEntry, findFileEntry, removeFileEntry } from './file-registration.js';
 import { resetProjectIndex } from './analyzers/index-builder.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from './templates.js';
 import { generatePlaceholderPng, getImageFileName } from './png-generator.js';
@@ -269,6 +271,79 @@ export class Construct3ProjectWriter {
       // handler fails after deregistering: deleteEntityFile (which normally
       // invalidates) never runs, and nothing else must keep listing the name.
       this.invalidateAll();
+    });
+  }
+
+  /**
+   * Register a script or imported Project File in rootFileFolders.
+   * The SID is allocated through the shared collision-checking generator.
+   */
+  async registerFileEntry(
+    folder: RegisteredFileFolder,
+    name: string,
+    type: string,
+    infoKey: FileInfoKey,
+    purpose = 'none',
+    subfolder?: string,
+  ): Promise<{ registered: boolean; sid?: number }> {
+    return this.withProjectLock(async () => {
+      const projectPath = this.reader.getProjectPath();
+      await this.createBackup(projectPath);
+      const content = await readFile(projectPath, 'utf-8');
+      const project = JSON.parse(content);
+      const existing = findFileEntry(project, folder, name, subfolder);
+      if (existing) {
+        const item = existing.entry as unknown as Record<string, unknown>;
+        const alternateInfoKey = infoKey === 'script-info' ? 'file-info' : 'script-info';
+        const expectedInfo = { purpose };
+        const duplicateCount = existing.folder.items.filter(candidate => candidate.name === name).length;
+        const infoChanged = JSON.stringify(item[infoKey]) !== JSON.stringify(expectedInfo) || alternateInfoKey in item;
+        if (infoChanged || duplicateCount > 1) {
+          item[infoKey] = expectedInfo;
+          delete item[alternateInfoKey];
+          if (duplicateCount > 1) {
+            existing.folder.items = existing.folder.items.filter((candidate, index) => candidate.name !== name || index === existing.index);
+          }
+          const json = this.validateJsonData(project, 'project.c3proj');
+          await this.atomicWrite(projectPath, json);
+          await this.verifyWrittenFile(projectPath, 'project.c3proj');
+          await this.reader.reloadProject();
+          this.invalidateAll();
+        }
+        return { registered: false, sid: existing.entry.sid };
+      }
+
+      const sid = await this.idGen.generateSid(this.reader);
+      addFileEntry(project, folder, { name, type, sid, purpose }, infoKey, subfolder);
+      const json = this.validateJsonData(project, 'project.c3proj');
+      await this.atomicWrite(projectPath, json);
+      await this.verifyWrittenFile(projectPath, 'project.c3proj');
+      await this.reader.reloadProject();
+      this.invalidateAll();
+      return { registered: true, sid };
+    });
+  }
+
+  /** Remove a script or imported Project File registration from rootFileFolders. */
+  async deregisterFileEntry(
+    folder: RegisteredFileFolder,
+    name: string,
+    subfolder?: string,
+  ): Promise<boolean> {
+    return this.withProjectLock(async () => {
+      const projectPath = this.reader.getProjectPath();
+      await this.createBackup(projectPath);
+      const content = await readFile(projectPath, 'utf-8');
+      const project = JSON.parse(content);
+      if (!removeFileEntry(project, folder, name, subfolder)) {
+        return false;
+      }
+      const json = this.validateJsonData(project, 'project.c3proj');
+      await this.atomicWrite(projectPath, json);
+      await this.verifyWrittenFile(projectPath, 'project.c3proj');
+      await this.reader.reloadProject();
+      this.invalidateAll();
+      return true;
     });
   }
 

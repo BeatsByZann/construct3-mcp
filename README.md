@@ -120,6 +120,10 @@ node dist/index.js /path/to/your/project.c3proj
 | `update_project_metadata` | Update project name, version, author, or description |
 | `add_animation_to_sprite` | Add a new animation to a Sprite object |
 | `update_animation_properties` | Update animation speed, looping, ping-pong on a Sprite |
+| `register_script_file` | Register a script in `rootFileFolders.script` with `script-info` metadata and a collision-safe SID |
+| `deregister_script_file` | Remove a script registration while preserving the script file |
+| `register_project_file` | Copy a file into `files/` and register it in the general, sound, music, video, or font family |
+| `deregister_project_file` | Deregister a Project File and remove its file under `files/` |
 
 ### Runtime Tools (Live Game Control)
 

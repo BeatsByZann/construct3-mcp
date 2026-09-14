@@ -48,6 +48,15 @@ export function validateSubfolder(subfolder: string): void {
   }
 }
 
+/** Validate a file item name (the folder path is supplied separately). */
+export function validateFileName(name: string): void {
+  if (!name || name.length === 0) throw new Error('File name cannot be empty');
+  if (name.length > 255) throw new Error('File name too long (max 255 characters)');
+  if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+    throw new Error('File name must be a single path segment');
+  }
+}
+
 /** Format a successful tool result as MCP content. */
 export function toolResult(data: unknown) {
   return {

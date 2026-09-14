@@ -106,6 +106,9 @@ export interface FileItem {
   name: string;
   type: string;
   sid: number;
+  'script-info'?: {
+    purpose: string;
+  };
   'file-info'?: {
     purpose: string;
   };
