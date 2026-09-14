@@ -109,10 +109,11 @@ node dist/index.js /path/to/your/project.c3proj
 | `delete_object` | Delete an object (with reference checking and optional force) |
 | `create_event_sheet` | Create a new event sheet with optional includes |
 | `add_event_to_sheet` | Add a group, function, variable, include, or comment to a sheet |
-| `add_event_block` | Add a block event with conditions + actions (gameplay logic) |
+| `add_event_block` | Add a block event at the sheet root, under a parent SID, or beside a sibling SID |
 | `delete_event_sheet` | Delete an event sheet (with reference checking and optional force) |
 | `delete_event_from_sheet` | Delete an event from a sheet by SID or include name (dry-run, force) |
-| `update_event_block` | Update an existing block: modify/add/remove actions and conditions |
+| `move_event_block_items` | Reorder or move actions/conditions within or between blocks while preserving SIDs |
+| `update_event_block` | Update an existing block: modify, insert, replace, add, or remove actions and conditions |
 | `create_layout` | Create a new layout with configurable layers |
 | `add_instance_to_layout` | Place an object instance on a layout layer with full property control |
 | `delete_layout` | Delete a layout (blocks startup layout, checks references) |

@@ -66,4 +66,40 @@ describe('update_event_block script actions (real project on disk)', () => {
     const reread = await reader.readEventSheet('MainSheet');
     expect((reread.events[0] as any).actions[1].script).toEqual(['const a = 1;', 'console.log(a);']);
   });
+
+  it('writes a replaced condition in place with a fresh SID', async () => {
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet',
+      sid: BLOCK_SID,
+      replaceConditions: [{ index: 0, condition: { id: 'every-tick', objectClass: 'System' } }],
+    });
+    expect(result.isError).toBeFalsy();
+
+    const onDisk = JSON.parse(await readFile(join(tmpDir, 'eventSheets', 'MainSheet.json'), 'utf-8'));
+    const condition = onDisk.events[0].conditions[0];
+    expect(condition.id).toBe('every-tick');
+    expect(condition.sid).toEqual(expect.any(Number));
+    expect(condition.sid).not.toBe(400000000000001);
+    await expect(stat(join(tmpDir, 'eventSheets', 'MainSheet.json.bak'))).resolves.toBeDefined();
+  });
+
+  it('writes a nested block under a parent SID and rereads its generated SIDs', async () => {
+    const result = await server.callTool('add_event_block', {
+      sheetName: 'MainSheet',
+      parentSid: BLOCK_SID,
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+    });
+    expect(result.isError).toBeFalsy();
+
+    const onDisk = JSON.parse(await readFile(join(tmpDir, 'eventSheets', 'MainSheet.json'), 'utf-8'));
+    const child = onDisk.events[0].children[0];
+    expect(child.eventType).toBe('block');
+    expect(child.sid).toEqual(expect.any(Number));
+    expect(child.conditions[0].sid).toEqual(expect.any(Number));
+    expect(child.sid).not.toBe(BLOCK_SID);
+    await expect(stat(join(tmpDir, 'eventSheets', 'MainSheet.json.bak'))).resolves.toBeDefined();
+
+    const reread = await reader.readEventSheet('MainSheet');
+    expect((reread.events[0] as any).children[0].conditions[0].id).toBe('every-tick');
+  });
 });

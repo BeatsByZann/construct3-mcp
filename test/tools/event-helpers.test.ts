@@ -473,6 +473,7 @@ describe('findEventBySid', () => {
     expect(result).not.toBeNull();
     expect(result!.event).toBe(nestedBlock);
     expect(result!.index).toBe(0);
+    expect(result!.parentEvent?.sid).toBe(200);
   });
 
   it('returns null for nonexistent SID', () => {

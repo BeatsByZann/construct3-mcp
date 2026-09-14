@@ -14,10 +14,13 @@ import {
   validateObjectClasses,
   collectObjectRefs,
   buildBlockEvent,
+  buildCondition,
+  buildAction,
   findEventBySid,
   countDescendants,
   summarizeEvents,
   toScriptLines,
+  MAX_ITEMS_PER_BLOCK,
 } from './event-helpers.js';
 import { getProjectIndex, resetProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
@@ -28,6 +31,30 @@ import {
   createIncludeEvent,
   createCommentEvent,
 } from '../construct3/templates.js';
+
+/** Resolve a group path without creating missing children arrays. */
+function resolveGroupContainer(
+  events: Record<string, unknown>[],
+  groupPath: string,
+): { owner: Record<string, unknown>; children: Record<string, unknown>[] } | null {
+  const segments = groupPath.split('>').map(segment => segment.trim());
+  let current = events;
+  let owner: Record<string, unknown> | undefined;
+  for (const segment of segments) {
+    const group = current.find(event => event.eventType === 'group' && event.title === segment);
+    if (!group) return null;
+    owner = group;
+    if (!Array.isArray(group.children)) {
+      current = [];
+    } else {
+      current = group.children as Record<string, unknown>[];
+    }
+  }
+  return owner ? {
+    owner,
+    children: Array.isArray(owner.children) ? owner.children as Record<string, unknown>[] : [],
+  } : null;
+}
 
 export function registerEventTools({ server, reader, writer, idGen }: MutationToolDeps) {
   // ─── create_event_sheet ───────────────────────────────────
@@ -210,13 +237,29 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
       conditions: z.array(conditionSchema).optional().default([]).describe('Conditions array (at least one required, unless isElse is true)'),
       actions: z.array(actionSchema).optional().default([]).describe('Actions array (standard actions or script actions)'),
       groupPath: z.string().max(500).optional().describe('Insert inside group by title path (e.g., "Movement > Collision")'),
-      position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert the event block'),
+      parentSid: z.number().int().positive().optional().describe('Insert as a sub-event under this block, function-block, or group SID'),
+      siblingSid: z.number().int().positive().optional().describe('Insert beside this event SID; use position before or after'),
+      position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('Where to insert the event block'),
       disabled: z.boolean().optional().default(false).describe('Create the event block disabled'),
       isElse: z.boolean().optional().default(false).describe('Mark as an else block (conditions become optional)'),
       children: z.array(childEventSchema).optional().default([]).describe('Sub-events nested inside this block (recursive, max depth 5, max 50 total events)'),
     },
     async (args) => {
       try {
+        const locatorCount = [args.groupPath, args.parentSid, args.siblingSid]
+          .filter(value => value !== undefined).length;
+        if (locatorCount > 1) {
+          return toolError('Specify at most one of: groupPath, parentSid, siblingSid.');
+        }
+        if (args.siblingSid === undefined && (args.position === 'before' || args.position === 'after')) {
+          return toolError('position before/after requires siblingSid.');
+        }
+        if (args.siblingSid !== undefined && args.position !== 'before' && args.position !== 'after') {
+          return toolError('siblingSid requires position before or after.');
+        }
+        if (args.parentSid !== undefined && (args.position === 'before' || args.position === 'after')) {
+          return toolError('parentSid requires position start or end.');
+        }
         // Validate: non-else blocks must have at least one condition
         if (!args.isElse && args.conditions.length === 0) {
           return toolError('At least one condition is required (unless isElse is true).');
@@ -228,6 +271,45 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
           return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+
+        // Resolve the destination before minting any SIDs. This keeps invalid
+        // locators side-effect free and supports root, group, parent-SID, and
+        // sibling-SID insertion with one consistent target array.
+        const events = sheet.events as Record<string, unknown>[];
+        let targetEvents: Record<string, unknown>[];
+        let siblingIndex: number | undefined;
+        let targetOwner: Record<string, unknown> | undefined;
+        if (args.groupPath) {
+          const resolved = resolveGroupContainer(events, args.groupPath);
+          if (!resolved) {
+            const topGroups = events
+              .filter(e => e.eventType === 'group')
+              .map(e => e.title as string);
+            const hint = topGroups.length > 0
+              ? `\nAvailable top-level groups: ${topGroups.join(', ')}`
+              : '\nNo groups found in this event sheet.';
+            return toolError(`Group path "${args.groupPath}" not found in "${args.sheetName}".${hint}`);
+          }
+          targetEvents = resolved.children;
+          targetOwner = resolved.owner;
+        } else if (args.parentSid !== undefined) {
+          const parent = findEventBySid(events, args.parentSid);
+          if (!parent) return toolError(`Parent event with SID ${args.parentSid} not found in sheet "${args.sheetName}".`);
+          if (parent.event.eventType !== 'group' && parent.event.eventType !== 'block' && parent.event.eventType !== 'function-block') {
+            return toolError(`Event with SID ${args.parentSid} is a "${parent.event.eventType}" and cannot contain sub-events.`);
+          }
+          targetOwner = parent.event;
+          targetEvents = Array.isArray(parent.event.children)
+            ? parent.event.children as Record<string, unknown>[]
+            : [];
+        } else if (args.siblingSid !== undefined) {
+          const sibling = findEventBySid(events, args.siblingSid);
+          if (!sibling) return toolError(`Sibling event with SID ${args.siblingSid} not found in sheet "${args.sheetName}".`);
+          targetEvents = sibling.parentArray;
+          siblingIndex = sibling.index;
+        } else {
+          targetEvents = events;
         }
 
         // Collect all objectClass references from entire tree (parent + descendants)
@@ -262,28 +344,18 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         warnings.push(...counter.warnings);
         const blockSid = blockEvent.sid as number;
 
-        // Determine target events array
-        let targetEvents: Record<string, unknown>[];
-        const events = sheet.events as Record<string, unknown>[];
-
-        if (args.groupPath) {
-          const resolved = findGroupByPath(events, args.groupPath);
-          if (!resolved) {
-            const topGroups = events
-              .filter(e => e.eventType === 'group')
-              .map(e => e.title as string);
-            const hint = topGroups.length > 0
-              ? `\nAvailable top-level groups: ${topGroups.join(', ')}`
-              : '\nNo groups found in this event sheet.';
-            return toolError(`Group path "${args.groupPath}" not found in "${args.sheetName}".${hint}`);
-          }
-          targetEvents = resolved;
-        } else {
-          targetEvents = events;
+        // Commit deferred children-array creation only after all validation and
+        // block construction have succeeded.
+        if (targetOwner && !Array.isArray(targetOwner.children)) {
+          targetOwner.children = targetEvents;
         }
 
         // Insert at position
-        if (args.position === 'start') {
+        if (args.position === 'before' && siblingIndex !== undefined) {
+          targetEvents.splice(siblingIndex, 0, blockEvent);
+        } else if (args.position === 'after' && siblingIndex !== undefined) {
+          targetEvents.splice(siblingIndex + 1, 0, blockEvent);
+        } else if (args.position === 'start') {
           targetEvents.unshift(blockEvent);
         } else {
           targetEvents.push(blockEvent);
@@ -803,6 +875,109 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
     }
   );
 
+  // ─── move_event_block_items ────────────────────────────────
+
+  server.tool(
+    'move_event_block_items',
+    'Move or reorder actions or conditions within and between block events. Existing item SIDs are preserved.',
+    {
+      sheetName: z.string().max(200).describe('Target event sheet'),
+      sourceBlockSid: z.number().int().positive().describe('SID of the source block or function-block'),
+      targetBlockSid: z.number().int().positive().describe('SID of the target block or function-block'),
+      itemType: z.enum(['actions', 'conditions']).describe('Array to move: actions or conditions'),
+      indices: z.array(z.number().int().min(0)).min(1).describe('Source indexes to move, in their existing order'),
+      targetIndex: z.number().int().min(0).describe('Destination index; for same-block moves, measured after removal'),
+    },
+    async (args) => {
+      try {
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+
+        const events = sheet.events as Record<string, unknown>[];
+        const sourceFound = findEventBySid(events, args.sourceBlockSid);
+        const targetFound = findEventBySid(events, args.targetBlockSid);
+        if (!sourceFound) return toolError(`Source block with SID ${args.sourceBlockSid} not found in sheet "${args.sheetName}".`);
+        if (!targetFound) return toolError(`Target block with SID ${args.targetBlockSid} not found in sheet "${args.sheetName}".`);
+        const sourceType = sourceFound.event.eventType as string;
+        const targetType = targetFound.event.eventType as string;
+        if (sourceType !== 'block' && sourceType !== 'function-block') {
+          return toolError(`Source event with SID ${args.sourceBlockSid} is a "${sourceType}", not a block or function-block.`);
+        }
+        if (targetType !== 'block' && targetType !== 'function-block') {
+          return toolError(`Target event with SID ${args.targetBlockSid} is a "${targetType}", not a block or function-block.`);
+        }
+        if (args.itemType === 'conditions' && targetFound.event.isElse) {
+          return toolError('Cannot move conditions into an else block because C3 ignores conditions on else blocks.');
+        }
+
+        const sourceItems = sourceFound.event[args.itemType];
+        const targetItems = targetFound.event[args.itemType];
+        if (!Array.isArray(sourceItems) || !Array.isArray(targetItems)) {
+          return toolError(`Source or target block has no ${args.itemType} array.`);
+        }
+        const uniqueIndices = [...new Set(args.indices)];
+        if (uniqueIndices.length !== args.indices.length) {
+          return toolError('Move indexes must be unique.');
+        }
+        if (uniqueIndices.some(index => index >= sourceItems.length)) {
+          return toolError(`Move index is out of range (source has ${sourceItems.length} ${args.itemType}).`);
+        }
+        const orderedIndices = [...uniqueIndices].sort((a, b) => a - b);
+        const selected = orderedIndices.map(index => sourceItems[index]);
+        const remainingLength = sourceFound.event === targetFound.event
+          ? sourceItems.length - selected.length
+          : targetItems.length;
+        if (args.targetIndex > remainingLength) {
+          return toolError(`targetIndex ${args.targetIndex} is out of range (valid range 0-${remainingLength}).`);
+        }
+        if (sourceFound.event !== targetFound.event && targetItems.length + selected.length > MAX_ITEMS_PER_BLOCK) {
+          return toolError(`Target block would exceed the maximum of ${MAX_ITEMS_PER_BLOCK} ${args.itemType}.`);
+        }
+
+        const warnings: string[] = [];
+
+        if (sourceFound.event === targetFound.event) {
+          const selectedSet = new Set(orderedIndices);
+          const remaining = sourceItems.filter((_item, index) => !selectedSet.has(index));
+          remaining.splice(args.targetIndex, 0, ...selected);
+          sourceFound.event[args.itemType] = remaining;
+        } else {
+          for (let i = orderedIndices.length - 1; i >= 0; i--) {
+            sourceItems.splice(orderedIndices[i], 1);
+          }
+          targetItems.splice(args.targetIndex, 0, ...selected);
+          if (args.itemType === 'conditions' && sourceItems.length === 0 && !sourceFound.event.isElse) {
+            warnings.push('All conditions were removed — block will match unconditionally (always true).');
+          }
+        }
+
+        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
+        resetProjectIndex();
+        return toolResult({
+          success: true,
+          entity: args.sheetName,
+          category: 'eventsheet',
+          action: 'updated',
+          sourceBlockSid: args.sourceBlockSid,
+          targetBlockSid: args.targetBlockSid,
+          itemType: args.itemType,
+          movedSids: selected.map(item => item.sid).filter((sid): sid is number => typeof sid === 'number'),
+          targetIndex: args.targetIndex,
+          warnings: warnings.length > 0 ? warnings : undefined,
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[move_event_block_items] failed:', error);
+        return toolError(`Error moving event block items: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
   // ─── update_event_block ─────────────────────────────────────
 
   server.tool(
@@ -822,6 +997,18 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         parameters: boundedRecord().optional().describe('New parameter values — merged with existing (max 100 keys, depth 6)'),
         isInverted: z.boolean().optional().describe('Toggle inversion'),
       })).optional().describe('Conditions to update by index'),
+      insertActions: z.array(z.object({
+        index: z.number().int().min(0).describe('Insertion index (0-based, after removals)'),
+        action: actionSchema.describe('Action to insert'),
+      })).optional().describe('Insert actions at indexes; duplicate indexes are rejected'),
+      insertConditions: z.array(z.object({
+        index: z.number().int().min(0).describe('Insertion index (0-based, after removals)'),
+        condition: conditionSchema.describe('Condition to insert'),
+      })).optional().describe('Insert conditions at indexes; duplicate indexes are rejected'),
+      replaceConditions: z.array(z.object({
+        index: z.number().int().min(0).describe('Condition index (0-based)'),
+        condition: conditionSchema.describe('Replacement condition; a fresh SID is minted'),
+      })).optional().describe('Replace condition ACEs in place'),
       addActions: z.array(actionSchema).optional().describe('Append new actions to the block'),
       addConditions: z.array(conditionSchema).optional().describe('Append new conditions to the block'),
       removeActionIndices: z.array(z.number().int().min(0)).optional().describe('Remove actions by index (0-based, applied before adds)'),
@@ -833,13 +1020,16 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const hasUpdate = args.disabled !== undefined
           || (args.updateActions && args.updateActions.length > 0)
           || (args.updateConditions && args.updateConditions.length > 0)
+          || (args.insertActions && args.insertActions.length > 0)
+          || (args.insertConditions && args.insertConditions.length > 0)
+          || (args.replaceConditions && args.replaceConditions.length > 0)
           || (args.addActions && args.addActions.length > 0)
           || (args.addConditions && args.addConditions.length > 0)
           || (args.removeActionIndices && args.removeActionIndices.length > 0)
           || (args.removeConditionIndices && args.removeConditionIndices.length > 0);
 
         if (!hasUpdate) {
-          return toolError('No updates provided. Specify at least one of: disabled, updateActions, updateConditions, addActions, addConditions, removeActionIndices, removeConditionIndices.');
+          return toolError('No updates provided. Specify at least one of: disabled, updateActions, updateConditions, insertActions, insertConditions, replaceConditions, addActions, addConditions, removeActionIndices, removeConditionIndices.');
         }
 
         // Read the event sheet
@@ -870,9 +1060,115 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block or function-block. Only block events can be updated with this tool.`);
         }
 
+        if (!Array.isArray(event.conditions) || !Array.isArray(event.actions)) {
+          return toolError(`Event with SID ${args.sid} has malformed conditions/actions arrays and cannot be updated.`);
+        }
         const conditions = event.conditions as Record<string, unknown>[];
         const actions = event.actions as Record<string, unknown>[];
         const warnings: string[] = [];
+        if (event.isElse && (
+          (args.addConditions?.length ?? 0) > 0
+          || (args.insertConditions?.length ?? 0) > 0
+          || (args.replaceConditions?.length ?? 0) > 0
+        )) {
+          return toolError('Cannot add or replace conditions on an else block because C3 ignores conditions on else blocks.');
+        }
+
+        // Preflight every index and structural conflict before mutating the
+        // event. Existing update/remove indexes remain relative to the
+        // original arrays; insertion indexes are relative to post-removal
+        // arrays and are applied in descending order below.
+        for (const upd of args.updateConditions ?? []) {
+          if (upd.index >= conditions.length) {
+            return toolError(`Condition index ${upd.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
+          }
+        }
+        for (const upd of args.updateActions ?? []) {
+          if (upd.index >= actions.length) {
+            return toolError(`Action index ${upd.index} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
+          }
+        }
+        const removedConditionSet = new Set(args.removeConditionIndices ?? []);
+        const removedActionSet = new Set(args.removeActionIndices ?? []);
+        const updatedConditionSet = new Set((args.updateConditions ?? []).map(update => update.index));
+        const updatedActionSet = new Set((args.updateActions ?? []).map(update => update.index));
+        if (updatedConditionSet.size !== (args.updateConditions ?? []).length || updatedActionSet.size !== (args.updateActions ?? []).length) {
+          return toolError('Update indexes must be unique.');
+        }
+        if ([...updatedConditionSet].some(index => removedConditionSet.has(index)) || [...updatedActionSet].some(index => removedActionSet.has(index))) {
+          return toolError('An item cannot be updated and removed in the same update.');
+        }
+        for (const index of removedConditionSet) {
+          if (index >= conditions.length) {
+            return toolError(`Condition index ${index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
+          }
+        }
+        for (const index of removedActionSet) {
+          if (index >= actions.length) {
+            return toolError(`Action index ${index} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
+          }
+        }
+        const replacementConditionSet = new Set((args.replaceConditions ?? []).map(replacement => replacement.index));
+        if (replacementConditionSet.size !== (args.replaceConditions ?? []).length) {
+          return toolError('Replacement condition indexes must be unique.');
+        }
+        for (const replacement of args.replaceConditions ?? []) {
+          if (replacement.index >= conditions.length) {
+            return toolError(`Condition index ${replacement.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
+          }
+          if (removedConditionSet.has(replacement.index)) {
+            return toolError(`Condition index ${replacement.index} cannot be replaced and removed in the same update.`);
+          }
+          if (updatedConditionSet.has(replacement.index)) {
+            return toolError(`Condition index ${replacement.index} cannot be updated and replaced in the same update.`);
+          }
+        }
+        const checkInsertionIndexes = (
+          items: Array<{ index: number }> | undefined,
+          length: number,
+          removed: Set<number>,
+          label: string,
+        ): ReturnType<typeof toolError> | undefined => {
+          if (!items || items.length === 0) return undefined;
+          const indexes = items.map(item => item.index);
+          if (new Set(indexes).size !== indexes.length) {
+            return toolError(`${label} insertion indexes must be unique.`);
+          }
+          const postRemovalLength = length - removed.size;
+          if (indexes.some(index => index > postRemovalLength)) {
+            return toolError(`${label} insertion index is out of range after removals (valid range 0-${postRemovalLength}).`);
+          }
+          return undefined;
+        };
+        const conditionInsertError = checkInsertionIndexes(args.insertConditions, conditions.length, removedConditionSet, 'Condition');
+        if (conditionInsertError) return conditionInsertError;
+        const actionInsertError = checkInsertionIndexes(args.insertActions, actions.length, removedActionSet, 'Action');
+        if (actionInsertError) return actionInsertError;
+        const resultingConditionCount = conditions.length - removedConditionSet.size
+          + (args.insertConditions?.length ?? 0) + (args.addConditions?.length ?? 0);
+        const resultingActionCount = actions.length - removedActionSet.size
+          + (args.insertActions?.length ?? 0) + (args.addActions?.length ?? 0);
+        if (resultingConditionCount > MAX_ITEMS_PER_BLOCK || resultingActionCount > MAX_ITEMS_PER_BLOCK) {
+          return toolError(`Updated block exceeds the maximum of ${MAX_ITEMS_PER_BLOCK} conditions and actions per block.`);
+        }
+
+        // Validate all newly introduced object references before changing the
+        // event. Behavior types remain soft warnings; W67's behaviorType key
+        // is the only serialized spelling used here.
+        const newRefs: Array<{ objectClass: string; behaviorType?: string }> = [];
+        for (const c of [...(args.insertConditions ?? []).map(item => item.condition), ...(args.replaceConditions ?? []).map(item => item.condition), ...(args.addConditions ?? [])]) {
+          newRefs.push({ objectClass: c.objectClass, behaviorType: c.behaviorType });
+        }
+        for (const a of [...(args.insertActions ?? []).map(item => item.action), ...(args.addActions ?? [])]) {
+          if ('objectClass' in a && typeof a.objectClass === 'string') {
+            newRefs.push({ objectClass: a.objectClass, behaviorType: a.behaviorType });
+          }
+        }
+        if (newRefs.length > 0) {
+          const { errors, warnings: validationWarnings } = await validateObjectClasses(reader, newRefs);
+          if (errors.length > 0) return toolError(`Object class validation failed:\n${errors.join('\n')}`);
+          warnings.push(...validationWarnings);
+        }
 
         // ── Apply block-level disabled toggle ──
         if (args.disabled !== undefined) {
@@ -927,6 +1223,13 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           }
         }
 
+        // ── Replace condition ACEs in place (fresh SID, same array index) ──
+        if (args.replaceConditions) {
+          for (const replacement of args.replaceConditions) {
+            conditions[replacement.index] = await buildCondition(reader, idGen, replacement.condition) as unknown as Record<string, unknown>;
+          }
+        }
+
         // ── Remove conditions by index (descending order to avoid index shifting) ──
         if (args.removeConditionIndices && args.removeConditionIndices.length > 0) {
           const sorted = [...new Set(args.removeConditionIndices)].sort((a, b) => b - a);
@@ -946,6 +1249,22 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
               return toolError(`Action index ${idx} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
             }
             actions.splice(idx, 1);
+          }
+        }
+
+        // ── Insert new conditions/actions at post-removal indexes ──
+        if (args.insertConditions && args.insertConditions.length > 0) {
+          const sorted = [...args.insertConditions].sort((a, b) => b.index - a.index);
+          for (const insertion of sorted) {
+            const built = await buildCondition(reader, idGen, insertion.condition);
+            conditions.splice(insertion.index, 0, built as unknown as Record<string, unknown>);
+          }
+        }
+        if (args.insertActions && args.insertActions.length > 0) {
+          const sorted = [...args.insertActions].sort((a, b) => b.index - a.index);
+          for (const insertion of sorted) {
+            const built = await buildAction(reader, idGen, insertion.action);
+            actions.splice(insertion.index, 0, built as unknown as Record<string, unknown>);
           }
         }
 
@@ -1017,6 +1336,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
               actions.push(built);
             }
           }
+        }
+
+        if (conditions.length > MAX_ITEMS_PER_BLOCK || actions.length > MAX_ITEMS_PER_BLOCK) {
+          return toolError(`Updated block exceeds the maximum of ${MAX_ITEMS_PER_BLOCK} conditions and actions per block.`);
         }
 
         // Warn if all conditions were removed (checked after adds, not just removals)

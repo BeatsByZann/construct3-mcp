@@ -283,6 +283,92 @@ describe('add_event_block', () => {
     expect(parseResult(result).success).toBe(true);
   });
 
+  it('inserts a sub-event under a parent SID and mints child SIDs', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet',
+        events: [{ eventType: 'block', sid: 50, conditions: [], actions: [], children: [] }],
+        sid: 10,
+      }]]),
+    });
+    const result = await server.callTool('add_event_block', {
+      sheetName: 'MainSheet',
+      parentSid: 50,
+      position: 'end',
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    const child = written.events[0].children[0];
+    expect(child.eventType).toBe('block');
+    expect(child.sid).toBe(100_000_000_000_001);
+    expect(child.conditions[0].sid).toBe(100_000_000_000_002);
+  });
+
+  it('inserts beside a nested sibling SID and rejects conflicting locators', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet',
+        events: [{ eventType: 'group', sid: 50, title: 'G', children: [
+          { eventType: 'block', sid: 60, conditions: [], actions: [] },
+        ] }],
+        sid: 10,
+      }]]),
+    });
+    const result = await server.callTool('add_event_block', {
+      sheetName: 'MainSheet',
+      siblingSid: 60,
+      position: 'before',
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0].children.map((event: any) => event.sid)).toEqual([
+      100_000_000_000_001,
+      60,
+    ]);
+
+    const conflict = await server.callTool('add_event_block', {
+      sheetName: 'MainSheet',
+      parentSid: 50,
+      siblingSid: 60,
+      position: 'before',
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+    });
+    expect(conflict.isError).toBe(true);
+    expect(conflict.content[0].text).toContain('at most one');
+  });
+
+  it('does not create a missing parent children array when validation fails', async () => {
+    const parent = { eventType: 'block', sid: 50, conditions: [], actions: [] };
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', { name: 'MainSheet', events: [parent], sid: 10 }]]),
+    });
+    const result = await server.callTool('add_event_block', {
+      sheetName: 'MainSheet',
+      parentSid: 50,
+      conditions: [{ id: 'bad', objectClass: 'MissingObject' }],
+    });
+    expect(result.isError).toBe(true);
+    expect(parent).not.toHaveProperty('children');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('does not create a missing group children array when validation fails', async () => {
+    const group = { eventType: 'group', sid: 50, title: 'Movement' };
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', { name: 'MainSheet', events: [group], sid: 10 }]]),
+    });
+    const result = await server.callTool('add_event_block', {
+      sheetName: 'MainSheet',
+      groupPath: 'Movement',
+      conditions: [{ id: 'bad', objectClass: 'MissingObject' }],
+    });
+    expect(result.isError).toBe(true);
+    expect(group).not.toHaveProperty('children');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
   it('emits behaviorType on new behavior ACEs in added block events', async () => {
     const { server, writer } = setup({
       objects: new Map([['Player', { name: 'Player', 'plugin-id': 'Sprite', sid: 1 }]]),
@@ -1033,6 +1119,97 @@ describe('update_event_block', () => {
     expect(hasUnconditionalWarning).toBe(false);
   });
 
+  it('inserts actions and conditions at indexes with fresh SIDs', async () => {
+    const { server, writer } = setup({
+      objects: new Map([['Player', { name: 'Player', 'plugin-id': 'Sprite', sid: 1 }]]),
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [{
+          eventType: 'block', sid: 100,
+          conditions: [{ id: 'first', objectClass: 'System', sid: 10 }],
+          actions: [{ id: 'first-action', objectClass: 'Player', sid: 20 }],
+        }],
+      }]]),
+    });
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet',
+      sid: 100,
+      insertConditions: [{ index: 0, condition: { id: 'inserted', objectClass: 'System' } }],
+      insertActions: [{ index: 0, action: { id: 'inserted-action', objectClass: 'Player' } }],
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0].conditions.map((item: any) => item.id)).toEqual(['inserted', 'first']);
+    expect(written.events[0].actions.map((item: any) => item.id)).toEqual(['inserted-action', 'first-action']);
+    expect(written.events[0].conditions[0].sid).toBe(100_000_000_000_001);
+    expect(written.events[0].actions[0].sid).toBe(100_000_000_000_000 + 2);
+  });
+
+  it('replaces a condition in place with a fresh SID', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [{
+          eventType: 'block', sid: 100,
+          conditions: [
+            { id: 'old', objectClass: 'System', sid: 10 },
+            { id: 'keep', objectClass: 'System', sid: 11 },
+          ],
+          actions: [],
+        }],
+      }]]),
+    });
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet',
+      sid: 100,
+      replaceConditions: [{ index: 0, condition: { id: 'new-ace', objectClass: 'System' } }],
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0].conditions[0].id).toBe('new-ace');
+    expect(written.events[0].conditions[0].sid).toBe(100_000_000_000_001);
+    expect(written.events[0].conditions[1]).toEqual({ id: 'keep', objectClass: 'System', sid: 11 });
+  });
+
+  it('rejects duplicate insertion indexes before writing', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [{ eventType: 'block', sid: 100, conditions: [{ id: 'x', objectClass: 'System', sid: 10 }], actions: [] }],
+      }]]),
+    });
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet',
+      sid: 100,
+      insertConditions: [
+        { index: 0, condition: { id: 'a', objectClass: 'System' } },
+        { index: 0, condition: { id: 'b', objectClass: 'System' } },
+      ],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('unique');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects condition additions, insertions, and replacements on else blocks', async () => {
+    for (const update of [
+      { addConditions: [{ id: 'add', objectClass: 'System' }] },
+      { insertConditions: [{ index: 0, condition: { id: 'insert', objectClass: 'System' } }] },
+      { replaceConditions: [{ index: 0, condition: { id: 'replace', objectClass: 'System' } }] },
+    ]) {
+      const { server, writer } = setup({
+        eventSheets: new Map([['MainSheet', {
+          name: 'MainSheet', sid: 1,
+          events: [{ eventType: 'block', sid: 100, isElse: true, conditions: [{ id: 'old', objectClass: 'System', sid: 10 }], actions: [] }],
+        }]]),
+      });
+      const result = await server.callTool('update_event_block', { sheetName: 'MainSheet', sid: 100, ...update });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('else block');
+      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    }
+  });
+
   // ─── Script actions ──────────────────────────────────────
 
   function sheetWithEmptyBlock() {
@@ -1455,6 +1632,117 @@ describe('move_events_between_sheets', () => {
     const targetEvents = writtenTarget.events as Array<Record<string, unknown>>;
     expect(targetEvents[0].sid).toBe(100);
     expect(targetEvents[1].sid).toBe(999);
+  });
+});
+
+describe('move_event_block_items', () => {
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('move_event_block_items')).toBe(true);
+  });
+
+  it('reorders actions within one block using post-removal targetIndex', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [{
+          eventType: 'block', sid: 100,
+          conditions: [{ id: 'x', objectClass: 'System', sid: 10 }],
+          actions: [
+            { id: 'a', objectClass: 'System', sid: 20 },
+            { id: 'b', objectClass: 'System', sid: 21 },
+            { id: 'c', objectClass: 'System', sid: 22 },
+          ],
+        }],
+      }]]),
+    });
+    const result = await server.callTool('move_event_block_items', {
+      sheetName: 'MainSheet', sourceBlockSid: 100, targetBlockSid: 100,
+      itemType: 'actions', indices: [0], targetIndex: 2,
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0].actions.map((item: any) => item.id)).toEqual(['b', 'c', 'a']);
+    expect(written.events[0].actions.map((item: any) => item.sid)).toEqual([21, 22, 20]);
+  });
+
+  it('moves conditions between blocks and preserves SIDs', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          { eventType: 'block', sid: 100, conditions: [{ id: 'move', objectClass: 'System', sid: 10 }], actions: [] },
+          { eventType: 'block', sid: 200, conditions: [{ id: 'keep', objectClass: 'System', sid: 11 }], actions: [] },
+        ],
+      }]]),
+    });
+    const result = await server.callTool('move_event_block_items', {
+      sheetName: 'MainSheet', sourceBlockSid: 100, targetBlockSid: 200,
+      itemType: 'conditions', indices: [0], targetIndex: 0,
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0].conditions).toHaveLength(0);
+    expect(written.events[1].conditions.map((item: any) => item.sid)).toEqual([10, 11]);
+  });
+
+  it('rejects moving conditions into an else block', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          { eventType: 'block', sid: 100, conditions: [{ id: 'move', objectClass: 'System', sid: 10 }], actions: [] },
+          { eventType: 'block', sid: 200, isElse: true, conditions: [], actions: [] },
+        ],
+      }]]),
+    });
+    const result = await server.callTool('move_event_block_items', {
+      sheetName: 'MainSheet', sourceBlockSid: 100, targetBlockSid: 200,
+      itemType: 'conditions', indices: [0], targetIndex: 0,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('else block');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('preflights the destination item limit before a cross-block move', async () => {
+    const targetActions = Array.from({ length: 100 }, (_, index) => ({ id: `action-${index}`, objectClass: 'System', sid: index + 1000 }));
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          { eventType: 'block', sid: 100, conditions: [{ id: 'source', objectClass: 'System', sid: 10 }], actions: [{ id: 'move', objectClass: 'System', sid: 20 }] },
+          { eventType: 'block', sid: 200, conditions: [{ id: 'target', objectClass: 'System', sid: 11 }], actions: targetActions },
+        ],
+      }]]),
+    });
+    const result = await server.callTool('move_event_block_items', {
+      sheetName: 'MainSheet', sourceBlockSid: 100, targetBlockSid: 200,
+      itemType: 'actions', indices: [0], targetIndex: 0,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('maximum');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('warns when the last condition is moved out of a non-else source block', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          { eventType: 'block', sid: 100, conditions: [{ id: 'move', objectClass: 'System', sid: 10 }], actions: [] },
+          { eventType: 'block', sid: 200, conditions: [{ id: 'target', objectClass: 'System', sid: 11 }], actions: [] },
+        ],
+      }]]),
+    });
+    const result = await server.callTool('move_event_block_items', {
+      sheetName: 'MainSheet', sourceBlockSid: 100, targetBlockSid: 200,
+      itemType: 'conditions', indices: [0], targetIndex: 0,
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    expect(data.warnings).toContain('All conditions were removed — block will match unconditionally (always true).');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(1);
   });
 });
 

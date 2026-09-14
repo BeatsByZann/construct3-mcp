@@ -288,13 +288,17 @@ Add a block event (conditions + actions) to an event sheet — the core of gamep
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet |
-| `conditions` | array | No* | Conditions. Each: `{ id, objectClass, "behavior-type"?, parameters?, isInverted?, isOr? }`. *Required (min 1) unless `isElse` is true. |
-| `actions` | array | No | Actions (default: `[]`). Standard: `{ id, objectClass, "behavior-type"?, parameters?, callFunction?, disabled? }`. Script: `{ type: "script", script, disabled? }` where `script` is a string (split on newlines) or an array of lines; serialized as `{ type, language: "javascript", script: [lines] }`, the shape the C3 editor renders |
+| `conditions` | array | No* | Conditions. Each: `{ id, objectClass, behaviorType?, parameters?, isInverted?, isOr? }`. *Required (min 1) unless `isElse` is true. |
+| `actions` | array | No | Actions (default: `[]`). Standard: `{ id, objectClass, behaviorType?, parameters?, callFunction?, disabled? }`. Script: `{ type: "script", script, disabled? }` where `script` is a string (split on newlines) or an array of lines; serialized as `{ type, language: "javascript", script: [lines] }`, the shape the C3 editor renders |
 | `groupPath` | string | No | Insert inside group by title path (e.g., `"Movement > Collision"`) |
-| `position` | enum | No | `"start"` \| `"end"` (default: end) |
+| `parentSid` | number | No | Insert as a child of this group, block, or function-block SID |
+| `siblingSid` | number | No | Insert beside this event SID; requires `position` `"before"` or `"after"` |
+| `position` | enum | No | `"start"` \| `"end"` for root/group/parent insertion; `"before"` \| `"after"` with `siblingSid` (default: end) |
 | `disabled` | boolean | No | Create the block disabled (default: false) |
 | `isElse` | boolean | No | Mark as an else block — conditions become optional (default: false) |
 | `children` | array | No | Sub-events nested inside this block (recursive). Each child has the same shape: `{ conditions?, actions?, disabled?, isElse?, children? }` |
+
+Use at most one insertion locator: `groupPath`, `parentSid`, or `siblingSid`. Without a locator, the block is inserted at the event-sheet root.
 
 **Condition fields:**
 - `isOr` — OR-combine with the previous condition (default is AND). The first condition's `isOr` is ignored by C3.
@@ -310,7 +314,7 @@ Add a block event (conditions + actions) to an event sheet — the core of gamep
 
 **Validation:**
 - `objectClass` is hard-validated against project objects, families, and `"System"` — across the entire tree (parent + all descendants)
-- `behavior-type` is soft-validated (warning only, since behaviors may come from families)
+- `behaviorType` is soft-validated (warning only, since behaviors may come from families)
 - `id` (ACE identifier) is **not** validated — Claude knows the hundreds of C3 ACE IDs
 - Script actions (`type: "script"`) skip objectClass validation and SID generation
 
@@ -318,10 +322,10 @@ Add a block event (conditions + actions) to an event sheet — the core of gamep
 1. Reads the target event sheet
 2. Validates all `objectClass` references across the entire event tree
 3. Recursively generates SIDs for each block, condition, and standard action
-4. Builds condition/action objects with optional fields (`behavior-type`, `parameters`, `isInverted`, `isOr`, `callFunction`, `disabled`)
+4. Builds condition/action objects with optional fields (`behaviorType`, `parameters`, `isInverted`, `isOr`, `callFunction`, `disabled`)
 5. Recursively builds child sub-events with `isElse` support
-6. If `groupPath`: resolves nested group path (error with available groups on miss)
-7. Inserts at position (`start`/`end`)
+6. Resolves the optional group, parent SID, or sibling SID destination before mutating the event tree
+7. Inserts at the requested start/end or before/after position
 8. Writes sheet back with backup
 
 ### `delete_event_sheet`
@@ -360,6 +364,21 @@ Delete an event from an event sheet by SID or include name.
 - **Function safety**: Blocks deletion of function-blocks that have callers (unless `force=true`).
 - Error messages include a navigable summary of top-level events with their types and SIDs.
 
+### `move_event_block_items`
+
+Move or reorder existing actions or conditions within one block or between two blocks. Existing SIDs are preserved.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Target event sheet |
+| `sourceBlockSid` | number | Yes | Source block or function-block SID |
+| `targetBlockSid` | number | Yes | Target block or function-block SID |
+| `itemType` | enum | Yes | `"actions"` or `"conditions"` |
+| `indices` | number[] | Yes | Unique source indexes; selected items retain their source order |
+| `targetIndex` | number | Yes | Destination index; for same-block reorder this is measured after selected items are removed |
+
+Cross-block moves enforce the 100-item block limit. Conditions cannot move into an else block. Moving the last condition out of a non-else source succeeds with an unconditional-block warning.
+
 ### `update_event_block`
 
 Update an existing block event — modify action parameters, add/remove actions or conditions, toggle disabled state.
@@ -371,6 +390,9 @@ Update an existing block event — modify action parameters, add/remove actions 
 | `disabled` | boolean | No | Enable or disable the entire block |
 | `updateActions` | array | No | `[{ index, parameters?, disabled? }]` — update actions by index (merge semantics) |
 | `updateConditions` | array | No | `[{ index, parameters?, isInverted? }]` — update conditions by index |
+| `insertActions` | array | No | `[{ index, action }]` — insert at unique indexes measured after removals |
+| `insertConditions` | array | No | `[{ index, condition }]` — insert at unique indexes measured after removals |
+| `replaceConditions` | array | No | `[{ index, condition }]` — replace a condition in place and mint a fresh SID |
 | `addActions` | array | No | Append new actions (standard or script; script actions take the same shape as in `add_event_block`) |
 | `addConditions` | array | No | Append new conditions |
 | `removeActionIndices` | number[] | No | Remove actions by 0-based index |
@@ -378,17 +400,19 @@ Update an existing block event — modify action parameters, add/remove actions 
 
 At least one update parameter must be provided.
 
-**Operation ordering** (all indices reference the ORIGINAL array positions):
-1. Updates (non-length-mutating) — merge parameters, toggle flags
-2. Removals (descending order, deduped) — shrink arrays
-3. Additions (append) — grow arrays
-4. Final state checks — warn if all conditions removed
+**Operation ordering:**
+1. Updates and condition replacements use original array positions. Replacements mint fresh SIDs.
+2. Removals use original positions and are applied descending.
+3. Indexed insertions use the post-removal array and are applied descending. Duplicate insertion indexes are rejected.
+4. Additions append.
+5. Final state checks warn if all conditions were removed.
 
 **Notes:**
 - Only works on `block` or `function-block` events (not groups, variables, etc.)
 - New standard actions/conditions get fresh SIDs via the ID generator (script actions carry no SID, matching C3)
 - `objectClass` is validated on new conditions/actions
 - Duplicate removal indices are automatically deduplicated
+- Adding, inserting, or replacing conditions on an else block is rejected because Construct ignores them
 - Warns when all conditions are removed (block becomes unconditional)
 
 ### `create_layout`

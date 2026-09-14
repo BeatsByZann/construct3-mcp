@@ -55,6 +55,57 @@ export function toScriptLines(script: string | string[]): string[] {
   return Array.isArray(script) ? script : script.split(/\r?\n/);
 }
 
+/** Build a condition and mint its globally unique SID. */
+export async function buildCondition(
+  reader: Construct3ProjectReader,
+  idGen: IdGenerator,
+  input: z.infer<typeof conditionSchema>,
+): Promise<Condition> {
+  const sid = await idGen.generateSid(reader);
+  const condition: Condition = {
+    id: input.id,
+    objectClass: input.objectClass,
+    sid,
+  };
+  if (input.behaviorType) condition.behaviorType = input.behaviorType;
+  if (input.parameters) condition.parameters = input.parameters;
+  if (input.isInverted) condition.isInverted = true;
+  if (input.isOr) condition.isOr = true;
+  return condition;
+}
+
+/** Build an action and mint a SID for standard actions. Script actions have no SID in C3. */
+export async function buildAction(
+  reader: Construct3ProjectReader,
+  idGen: IdGenerator,
+  input: z.infer<typeof actionSchema>,
+): Promise<Action> {
+  if ('type' in input && input.type === 'script') {
+    const action: Action = {
+      type: 'script',
+      language: 'javascript',
+      script: toScriptLines(input.script),
+    };
+    if (input.disabled) action.disabled = true;
+    return action;
+  }
+
+  if (!('id' in input)) {
+    throw new Error('Invalid action input: expected a standard action or script action.');
+  }
+  const sid = await idGen.generateSid(reader);
+  const action: Action = {
+    id: input.id,
+    objectClass: input.objectClass,
+    sid,
+  };
+  if (input.behaviorType) action.behaviorType = input.behaviorType;
+  if (input.parameters) action.parameters = input.parameters;
+  if (input.callFunction) action.callFunction = input.callFunction;
+  if (input.disabled) action.disabled = true;
+  return action;
+}
+
 /** Union of standard and script actions */
 export const actionSchema = z.union([standardActionSchema, scriptActionSchema]);
 
@@ -92,6 +143,7 @@ export interface FindResult {
   event: Record<string, unknown>;
   parentArray: Record<string, unknown>[];
   index: number;
+  parentEvent?: Record<string, unknown>;
 }
 
 /**
@@ -103,7 +155,7 @@ export function findEventBySid(
   events: Record<string, unknown>[],
   targetSid: number,
 ): FindResult | null {
-  const stack: Array<{ events: Record<string, unknown>[]; depth: number }> = [
+  const stack: Array<{ events: Record<string, unknown>[]; depth: number; parentEvent?: Record<string, unknown> }> = [
     { events, depth: 0 },
   ];
   let nodeCount = 0;
@@ -112,19 +164,20 @@ export function findEventBySid(
     if (++nodeCount > MAX_SEARCH_NODES) {
       throw new Error(`SID search exceeded ${MAX_SEARCH_NODES} nodes`);
     }
-    const { events: currentEvents, depth } = stack.pop()!;
+    const { events: currentEvents, depth, parentEvent } = stack.pop()!;
     if (depth > MAX_SEARCH_DEPTH) continue;
 
     for (let i = 0; i < currentEvents.length; i++) {
       const event = currentEvents[i];
       if (event.sid === targetSid) {
-        return { event, parentArray: currentEvents, index: i };
+        return { event, parentArray: currentEvents, index: i, parentEvent };
       }
       // Recurse into children (groups, blocks, function-blocks)
       if (Array.isArray(event.children)) {
         stack.push({
           events: event.children as Record<string, unknown>[],
           depth: depth + 1,
+          parentEvent: event,
         });
       }
     }
@@ -362,43 +415,13 @@ export async function buildBlockEvent(
   // Build conditions with SIDs
   const builtConditions: Condition[] = [];
   for (const c of block.conditions) {
-    const condSid = await idGen.generateSid(reader);
-    const cond: Condition = {
-      id: c.id,
-      objectClass: c.objectClass,
-      sid: condSid,
-    };
-    if (c.behaviorType) cond.behaviorType = c.behaviorType;
-    if (c.parameters) cond.parameters = c.parameters;
-    if (c.isInverted) cond.isInverted = true;
-    if (c.isOr) cond.isOr = true;
-    builtConditions.push(cond);
+    builtConditions.push(await buildCondition(reader, idGen, c));
   }
 
   // Build actions with SIDs (or as script actions)
   const builtActions: Action[] = [];
   for (const a of block.actions) {
-    if ('type' in a && a.type === 'script') {
-      const scriptAct: Action = {
-        type: 'script' as const,
-        language: 'javascript',
-        script: toScriptLines(a.script),
-      };
-      if (a.disabled) scriptAct.disabled = true;
-      builtActions.push(scriptAct);
-    } else if ('id' in a) {
-      const actSid = await idGen.generateSid(reader);
-      const act: Action = {
-        id: a.id,
-        objectClass: a.objectClass,
-        sid: actSid,
-      };
-      if (a.behaviorType) act.behaviorType = a.behaviorType;
-      if (a.parameters) act.parameters = a.parameters;
-      if (a.callFunction) act.callFunction = a.callFunction;
-      if (a.disabled) act.disabled = true;
-      builtActions.push(act);
-    }
+    builtActions.push(await buildAction(reader, idGen, a));
   }
 
   // Recursively build children
