@@ -261,7 +261,8 @@ describe('add_instance_to_layout', () => {
     const world = instance.world as Record<string, unknown>;
     expect(world.angle).toBe(1.57);
     expect(world.color).toEqual([1, 0, 0, 0.5]);
-    expect(world.zElevation).toBe(10);
+    expect(world.z).toBe(10);
+    expect(world.zElevation).toBeUndefined();
   });
 
   it('creates instance with instanceVariables and behaviors', async () => {

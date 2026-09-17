@@ -577,7 +577,8 @@ export interface Instance {
     originY?: number;
     color?: number[];
     angle?: number;
-    zElevation?: number;
+    /** Construct writes the instance Z elevation as `z` (layers use `zElevation`). */
+    z?: number;
     blendMode?: string;
     [key: string]: unknown;
   };

@@ -120,17 +120,17 @@ describe('flowchart tools (real project on disk)', () => {
     expect(listed.count).toBe(1);
   });
 
-  it('refuses to create a flowchart when the Flowchart plugin is absent, and writes nothing', async () => {
+  it('creates a flowchart with a warning when the Flowchart plugin is absent, without registering the plugin', async () => {
     await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
     await boot(await makeTempProject(false));
 
     const result = await server.callTool('create_flowchart', { name: 'Graph' });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Flowchart plugin is not listed');
+    expect(result.isError).not.toBe(true);
+    expect(parseResult(result).warnings.join(' ')).toContain('Flowchart plugin is not listed');
 
-    await expect(stat(join(tmpDir, 'flowcharts', 'Graph.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await stat(join(tmpDir, 'flowcharts', 'Graph.json'));
     const project = JSON.parse(await readFile(join(tmpDir, 'project.c3proj'), 'utf-8'));
-    expect(project.flowcharts).toBeUndefined();
+    expect(project.flowcharts.items).toContain('Graph');
     expect(project.usedAddons.some((a: { id: string }) => a.id === 'Flowchart')).toBe(false);
   });
 

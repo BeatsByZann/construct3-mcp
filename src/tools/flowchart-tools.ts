@@ -463,7 +463,7 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
 
   server.tool(
     'create_flowchart',
-    'Create a new, empty flowchart file and register it in project.c3proj. Requires the Flowchart plugin to already be in the project.',
+    'Create a new, empty flowchart file and register it in project.c3proj. Warns when the Flowchart plugin is not in the project: the editor loads the flowchart anyway, but a Flowchart object is needed to use it at runtime.',
     {
       name: z.string().max(200).describe('Flowchart name'),
       subfolder: z.string().max(500).optional().describe('Subfolder within flowcharts/ (e.g. "AI Graph/State Machines")'),
@@ -474,10 +474,14 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
         if (args.subfolder !== undefined) validateSubfolder(args.subfolder);
 
         const project = reader.getProject();
+        const warnings: string[] = [];
         if (!hasFlowchartPlugin(project)) {
-          return toolError(
-            `Cannot create flowchart "${args.name}": the Flowchart plugin is not listed in this project's usedAddons. ` +
-            `Add a Flowchart object in the Construct 3 editor first — this tool does not register plugins.`
+          // A load check on r495.2 showed the editor opens a project whose flowchart
+          // has no Flowchart plugin (it even prunes the unused plugin), so this is
+          // advisory: the plugin is only needed to drive the flowchart at runtime.
+          warnings.push(
+            `The Flowchart plugin is not listed in this project's usedAddons. The editor loads the flowchart, ` +
+            `but add a Flowchart object in the Construct 3 editor before using it at runtime; this tool does not register plugins.`
           );
         }
 
@@ -505,6 +509,7 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
           action: 'created',
           generatedSid: sid,
           backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
         return toolResult(result);
       } catch (error) {

@@ -172,6 +172,11 @@ All notable changes to the Construct3 MCP Server are documented here.
 - `createLayer` now emits `sampling: "auto"`, which every layer in a real r495
   project carries.
 
+### Fixed
+
+- Placed instances now store their Z elevation under Construct's `world.z` key; the editor ignored the former `world.zElevation` key and reset the value to 0 (found by the r495.2 load check).
+- `create_flowchart` no longer refuses a project without the Flowchart plugin; the editor loads such a flowchart (and prunes the unused plugin), so the missing plugin is now a warning.
+
 ## [1.8.2] - 2026-09-10
 
 ### Source-verified defects from a live-project mutation evaluation

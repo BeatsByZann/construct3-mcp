@@ -1085,7 +1085,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           if (args.width !== undefined) inst.world.width = args.width;
           if (args.height !== undefined) inst.world.height = args.height;
           if (args.angle !== undefined) inst.world.angle = args.angle;
-          if (args.zElevation !== undefined) inst.world.zElevation = args.zElevation;
+          if (args.zElevation !== undefined) inst.world.z = args.zElevation;
           if (args.color !== undefined) inst.world.color = args.color;
         } else {
           const ignoredWorldProps = [args.x, args.y, args.width, args.height, args.angle, args.zElevation, args.color].filter(v => v !== undefined);

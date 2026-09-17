@@ -632,7 +632,7 @@ export function createInstance(
       originY: overrides?.originY ?? 0.5,
       color: overrides?.color ?? [1, 1, 1, 1],
       angle: overrides?.angle ?? 0,
-      zElevation: overrides?.zElevation ?? 0,
+      z: overrides?.zElevation ?? 0,
     },
   };
 }

@@ -123,13 +123,8 @@ describe('get_flowchart_details', () => {
 // ─── create_flowchart ─────────────────────────────────────
 
 describe('create_flowchart', () => {
-  it('refuses to create a flowchart when the Flowchart plugin is missing', async () => {
-    const { server } = setup({ withPlugin: false });
-    const result = await server.callTool('create_flowchart', { name: 'Graph A' });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Flowchart plugin is not listed');
-    expect(result.content[0].text).toContain('Construct 3 editor');
-  });
+  // The missing-plugin path now writes real files (a warning instead of a refusal); it is
+  // covered by flowchart-tools.integration.test.ts against a temp project.
 
   it('does not auto-register the Flowchart plugin', async () => {
     const { server, writer } = setup({ withPlugin: false });
