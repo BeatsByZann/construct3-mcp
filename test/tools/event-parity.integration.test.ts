@@ -266,6 +266,27 @@ describe('update_function on custom action definitions', () => {
     expect(actions.map((a: any) => a.customAction)).toEqual(['Flee', 'Flee', 'Flee', 'Retreat']);
   });
 
+  it('refuses a rename that would redirect plain member calls to a member\'s own action', async () => {
+    const { familySid } = await seedCustomActions();
+    // Enemy defines its own Charge; renaming Hostiles.Retreat to Charge would send
+    // the plain call { customAction: Retreat, objectClass: Enemy } to Enemy.Charge.
+    await server.callTool('add_custom_action', { sheetName: 'Main', objectClass: 'Enemy', aceName: 'Charge' });
+    const before = JSON.stringify(await sheet('Helpers'));
+    const result = await server.callTool('update_function', { sheetName: 'Main', sid: familySid, functionName: 'Charge', renameCallers: true });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Enemy already define a custom action named "Charge"');
+    expect(JSON.stringify(await sheet('Helpers'))).toBe(before);
+  });
+
+  it('refuses renaming a member action onto a family action name its plain calls reach', async () => {
+    await seedCustomActions();
+    const enemyOwn = parse(await server.callTool('add_custom_action', { sheetName: 'Main', objectClass: 'Enemy', aceName: 'Dodge' }));
+    // Enemy's plain Retreat call currently reaches Hostiles.Retreat.
+    const result = await server.callTool('update_function', { sheetName: 'Main', sid: enemyOwn.generatedSid, functionName: 'Retreat', renameCallers: true });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('reach the family definition in Hostiles');
+  });
+
   it('refuses a duplicate custom action name on the same owner', async () => {
     const { familySid } = await seedCustomActions();
     await server.callTool('add_custom_action', { sheetName: 'Main', objectClass: 'Hostiles', aceName: 'Charge' });

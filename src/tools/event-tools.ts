@@ -738,8 +738,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const { event } = found;
         const eventType = event.eventType as string;
 
-        if (eventType !== 'block' && eventType !== 'function-block') {
-          return toolError(`Event with SID ${args.blockSid} is a "${eventType}", not a block or function-block. Only block events have actions.`);
+        if (!BLOCK_LIKE.has(eventType)) {
+          return toolError(`Event with SID ${args.blockSid} is a "${eventType}", not a block, function-block or custom action. Only those have actions.`);
         }
 
         const actions = event.actions as Record<string, unknown>[];
@@ -751,6 +751,12 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
 
         const action = actions[args.actionIndex];
+        if (typeof action.callFunction === 'string' || typeof action.customAction === 'string') {
+          return toolError(`Action ${args.actionIndex} is a function or custom action call, whose arguments are positional; use update_event_block with updateActions[].arguments.`);
+        }
+        if (action.type === 'comment' || action.type === 'script') {
+          return toolError(`Action ${args.actionIndex} is a ${String(action.type)} row, which has no parameters; use update_event_block (text for comments) or remove and re-add a script action.`);
+        }
         action.parameters = args.parameters;
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
@@ -940,6 +946,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (args.itemType === 'conditions' && args.targetIndex === 0 && isElseBlock(targetFound.event)) {
           return toolError('The else condition must stay first in an else block; use targetIndex 1 or later.');
         }
+        if (args.itemType === 'conditions'
+          && args.indices.some(index => isElseCondition((sourceFound.event.conditions as unknown[] | undefined)?.[index]))) {
+          return toolError('An else condition cannot be moved: it must stay first in its own block. Move the other conditions instead.');
+        }
 
         const sourceItems = sourceFound.event[args.itemType];
         const targetItems = targetFound.event[args.itemType];
@@ -1100,6 +1110,12 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const conditions = event.conditions as Record<string, unknown>[];
         const actions = event.actions as Record<string, unknown>[];
         const warnings: string[] = [];
+        // Rewrite unknown keys older builds wrote (isElse, condition isOr) before
+        // any index is checked: adding the else condition shifts condition indexes.
+        // The sheet was parsed fresh for this call, so an early error discards it.
+        if (await normalizeLegacyBlock(reader, idGen, event)) {
+          warnings.push('The block carried keys older builds of this server wrote (isElse or condition-level isOr); they were rewritten to C3\'s else condition and isOrBlock before this update was applied, so condition indexes count that else condition.');
+        }
         const elseBlock = isElseBlock(event) && isElseCondition(conditions[0]);
         if (elseBlock) {
           if ((args.insertConditions ?? []).some(item => item.index === 0)) {
@@ -1217,11 +1233,6 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           const { errors, warnings: validationWarnings } = await validateObjectClasses(reader, newRefs);
           if (errors.length > 0) return toolError(`Object class validation failed:\n${errors.join('\n')}`);
           warnings.push(...validationWarnings);
-        }
-
-        // Rewrite unknown keys older builds wrote (isElse, condition isOr).
-        if (await normalizeLegacyBlock(reader, idGen, event)) {
-          warnings.push('The block carried keys older builds of this server wrote (isElse or condition-level isOr); they were rewritten to C3\'s else condition and isOrBlock.');
         }
 
         if (args.isOrBlock !== undefined) {
@@ -1981,6 +1992,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // member object type resolve to a family definition.
         const familyMembers = new Map<string, string[]>();
         if (isCustomAction) {
+          // Loaded for family owners (member resolution) and object-type owners (capture checks).
           for (const [family, data] of await reader.readAllFamilies()) {
             if (Array.isArray(data.members)) familyMembers.set(family, data.members as string[]);
           }
@@ -2068,6 +2080,30 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           }
           if (isCustomAction && customDefinitions.has(`${owner}::${args.functionName}`)) {
             return toolError(`"${owner}" already defines a custom action named "${args.functionName}".`);
+          }
+          if (isCustomAction) {
+            // Family owner: a member's own action of the new name would capture
+            // the renamed plain calls on that member.
+            const capturing = (familyMembers.get(owner) ?? []).filter(member => customDefinitions.has(`${member}::${args.functionName}`));
+            if (capturing.length > 0) {
+              return toolError(`Member object type(s) ${capturing.join(', ')} already define a custom action named "${args.functionName}"; renaming the family action to that name would send their plain calls to the member's own action. Choose another name.`);
+            }
+            // Object-type owner: plain calls of the new name on this object that
+            // currently reach a family definition would be captured by this one.
+            const familiesWithName = [...familyMembers].filter(([family, members]) => members.includes(owner) && customDefinitions.has(`${family}::${args.functionName}`)).map(([family]) => family);
+            if (familiesWithName.length > 0) {
+              let captured = 0;
+              for (const [, data] of loaded) {
+                walkEvents(data.events as Record<string, unknown>[], event => {
+                  for (const action of (Array.isArray(event.actions) ? event.actions : []) as Record<string, unknown>[]) {
+                    if (action.customAction === args.functionName && action.objectClass === owner && action.customActionObjectClass === undefined) captured++;
+                  }
+                });
+              }
+              if (captured > 0) {
+                return toolError(`${captured} plain call(s) of "${args.functionName}" on "${owner}" currently reach the family definition in ${familiesWithName.join(', ')}; renaming this action to "${args.functionName}" would redirect them. Choose another name.`);
+              }
+            }
           }
           if (callSites.length > 0 && !args.renameCallers && !args.dryRun) {
             const bySheet = [...new Set(callSites.map(c => c.sheet))];

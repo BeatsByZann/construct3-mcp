@@ -205,7 +205,9 @@ describe('Block Event Template', () => {
     expect(block.sid).toBe(100);
     expect(block.conditions).toHaveLength(1);
     expect(block.actions).toHaveLength(1);
-    expect(block.children).toEqual([]);
+    // r495 omits an empty children array; key order matches the editor's.
+    expect(block).not.toHaveProperty('children');
+    expect(Object.keys(block)).toEqual(['eventType', 'conditions', 'actions', 'sid']);
     expect(block.disabled).toBeUndefined();
     expect(block.isElse).toBeUndefined();
   });

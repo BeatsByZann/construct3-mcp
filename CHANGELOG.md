@@ -179,6 +179,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Fixed
 
+- `update_event_block` upgrades a block written with the legacy `isElse`/`isOr` keys before checking condition indexes, so the added else condition no longer shifts updates, removals and insertions.
+- `move_event_block_items` refuses to move an else condition; `update_event_block_action` refuses keyed parameters on calls, comments and script rows and accepts custom action bodies.
+- Renaming a custom action is refused when it would change which definition a plain call reaches (a family action renamed onto a name a member defines, or a member action renamed onto a family action name its plain calls use).
+- Blocks are written without an empty `children` array, as the editor saves them.
 - `update_instance_variable` counts and renames `<Object>.<variable>` expressions inside function and custom action call arguments, which are stored as positional arrays.
 - OR blocks are written with Construct's block-level `isOrBlock` key. Earlier builds wrote a condition-level `isOr` that r495 does not use (48 OR blocks in Construct's examples, none with `isOr`); a condition input with `isOr` now makes the whole block an OR block, with a warning.
 - Else blocks are written as a leading System `else` condition, the way r495 stores them (172 samples), instead of an unknown block-level `isElse` key. Conditions after the else condition are allowed (else-if); the else condition is kept first. `update_event_block` rewrites blocks that older builds wrote with `isElse` or `isOr`.

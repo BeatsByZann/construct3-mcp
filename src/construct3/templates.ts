@@ -473,9 +473,10 @@ export function createBlockEvent(
     eventType: 'block',
     conditions,
     actions,
-    children: children ?? [],
     sid,
     ...(disabled ? { disabled: true } : {}),
+    // r495 omits an empty children array on blocks (1,342 of 1,761 sampled blocks have none).
+    ...(children && children.length > 0 ? { children } : {}),
     ...(isOrBlock ? { isOrBlock: true } : {}),
   };
 }

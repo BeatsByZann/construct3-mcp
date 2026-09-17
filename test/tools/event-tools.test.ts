@@ -1210,6 +1210,83 @@ describe('update_event_block', () => {
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
+  it('upgrades a legacy isElse block before applying condition indexes', async () => {
+    const legacy = () => setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [{
+          eventType: 'block', sid: 100, isElse: true,
+          conditions: [{ id: 'a', objectClass: 'System', sid: 10 }, { id: 'b', objectClass: 'System', sid: 11 }],
+          actions: [],
+        }],
+      }]]),
+    });
+    // Index 0 is now the else condition: inserting before it is refused.
+    const refused = legacy();
+    const insert = await refused.server.callTool('update_event_block', {
+      sheetName: 'MainSheet', sid: 100, insertConditions: [{ index: 0, condition: { id: 'x', objectClass: 'System' } }],
+    });
+    expect(insert.isError).toBe(true);
+    expect(refused.writer.callsFor('writeEntityFile')).toHaveLength(0);
+
+    // Index 1 is condition "a" after the upgrade, and index 2 is "b".
+    const { server, writer } = legacy();
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet', sid: 100, removeConditionIndices: [1], updateConditions: [{ index: 2, disabled: true }],
+    });
+    expect(result.isError).not.toBe(true);
+    const block = (writer.callsFor('writeEntityFile')[0].args[2] as any).events[0];
+    expect(block.conditions.map((c: any) => c.id)).toEqual(['else', 'b']);
+    expect(block.conditions[1].disabled).toBe(true);
+  });
+
+  it('refuses to move an else condition out of first place', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          { eventType: 'block', sid: 100, conditions: [{ id: 'else', objectClass: 'System', sid: 10 }, { id: 'a', objectClass: 'System', sid: 11 }], actions: [] },
+          { eventType: 'block', sid: 200, conditions: [{ id: 'b', objectClass: 'System', sid: 20 }], actions: [] },
+        ],
+      }]]),
+    });
+    for (const move of [
+      { sourceBlockSid: 100, targetBlockSid: 100, indices: [0], targetIndex: 1 },
+      { sourceBlockSid: 100, targetBlockSid: 200, indices: [0], targetIndex: 1 },
+    ]) {
+      const result = await server.callTool('move_event_block_items', { sheetName: 'MainSheet', itemType: 'conditions', ...move });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('else condition cannot be moved');
+    }
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('update_event_block_action refuses keyed parameters on calls and comment rows', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [{
+          eventType: 'custom-ace-block', aceType: 'action', aceName: 'Go', objectClass: 'Hero', sid: 100,
+          conditions: [],
+          actions: [
+            { callFunction: 'f', sid: 101, parameters: ['1'] },
+            { type: 'comment', text: 'note' },
+            { id: 'destroy', objectClass: 'Hero', sid: 102 },
+          ],
+        }],
+      }]]),
+    });
+    const call = await server.callTool('update_event_block_action', { sheetName: 'MainSheet', blockSid: 100, actionIndex: 0, parameters: { a: '1' } });
+    expect(call.isError).toBe(true);
+    expect(call.content[0].text).toContain('positional');
+    const comment = await server.callTool('update_event_block_action', { sheetName: 'MainSheet', blockSid: 100, actionIndex: 1, parameters: { a: '1' } });
+    expect(comment.isError).toBe(true);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    // A standard action inside a custom action body is still editable.
+    const ok = await server.callTool('update_event_block_action', { sheetName: 'MainSheet', blockSid: 100, actionIndex: 2, parameters: { a: '1' } });
+    expect(ok.isError).not.toBe(true);
+  });
+
   it('adds conditions after the else condition (an else-if block)', async () => {
     const { server, writer } = setup(elseSheet());
     const result = await server.callTool('update_event_block', {
