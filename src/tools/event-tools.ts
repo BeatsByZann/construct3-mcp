@@ -16,6 +16,7 @@ import {
   buildBlockEvent,
   buildCondition,
   buildAction,
+  applyCustomEaseParameter,
   actionObjectRefs,
   isElseBlock,
   isElseCondition,
@@ -757,7 +758,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (action.type === 'comment' || action.type === 'script') {
           return toolError(`Action ${args.actionIndex} is a ${String(action.type)} row, which has no parameters; use update_event_block (text for comments) or remove and re-add a script action.`);
         }
-        action.parameters = args.parameters;
+        action.parameters = { ...args.parameters };
+        await applyCustomEaseParameter(reader, action.parameters);
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
@@ -1272,6 +1274,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             const cond = conditions[upd.index];
             if (upd.parameters) {
               cond.parameters = { ...(cond.parameters as Record<string, unknown> || {}), ...upd.parameters };
+              await applyCustomEaseParameter(reader, cond.parameters);
             }
             if (upd.isInverted !== undefined) {
               if (upd.isInverted) {
@@ -1299,6 +1302,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             const act = actions[upd.index];
             if (upd.parameters) {
               act.parameters = { ...(act.parameters as Record<string, unknown> || {}), ...upd.parameters };
+              await applyCustomEaseParameter(reader, act.parameters);
             }
             if (upd.arguments !== undefined) {
               if (upd.arguments.length > 0) act.parameters = upd.arguments;

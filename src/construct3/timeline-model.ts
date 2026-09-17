@@ -283,19 +283,63 @@ export function createValueTrack(name: string, projectId: string): AnyTrack {
   };
 }
 
-/** The file entry an audio track copies, and the root folder it came from. */
+/** The file entry an audio track copies, the root folder it came from, and its exported path. */
 export interface AudioFileRef {
   entry: Record<string, unknown>;
   audioType: 'sound' | 'music';
+  /** `audioProjectFilePath`, when it can be derived. */
+  path?: string;
 }
 
+/**
+ * The `audioProjectFilePath` Construct writes for an audio file.
+ *
+ * Evidence: the W90 live round trip (r495.2, project `exportFileStructure`
+ * "folders") saved `"audioProjectFilePath": "media/Theme.webm"` for a music
+ * file at the root of the Music folder, right after `audioProjectFile`. The
+ * synth-sunset sample (saved by r432.3, also "folders") has no such key, so
+ * the key is newer than r432. Assumed, not sampled: a sound file gets the same
+ * `media/` path, and files in Sounds/Music subfolders still export to
+ * `media/<file name>`. For "flat" (or a missing setting) no path was sampled
+ * (r495.2 converted the flat test project to "folders" when it saved it), so
+ * no path is written.
+ */
+export function audioProjectFilePath(fileName: string, exportFileStructure: unknown): string | undefined {
+  return exportFileStructure === 'folders' ? `media/${fileName}` : undefined;
+}
+
+/** Sampled key order of an audio track's `sourceAdapter`. */
+const AUDIO_ADAPTER_ORDER = ['audioProjectFile', 'audioProjectFilePath', 'audioStartOffset', 'audioTag', 'audioType'];
+
+/** Merge `patch` into an audio `sourceAdapter`, keeping the sampled key order; `undefined` removes a key. */
+export function mergeAudioSourceAdapter(
+  existing: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete merged[key];
+    else merged[key] = value;
+  }
+  const out: Record<string, unknown> = {};
+  for (const key of AUDIO_ADAPTER_ORDER) {
+    if (Object.prototype.hasOwnProperty.call(merged, key)) out[key] = merged[key];
+  }
+  for (const [key, value] of Object.entries(merged)) {
+    if (!AUDIO_ADAPTER_ORDER.includes(key)) out[key] = value;
+  }
+  return out;
+}
+
+/** The `sourceAdapter` of a new audio track. */
 export function createAudioSourceAdapter(file: AudioFileRef, startOffset: number, tag: string): Record<string, unknown> {
-  return {
+  return mergeAudioSourceAdapter({}, {
     audioProjectFile: structuredClone(file.entry),
+    audioProjectFilePath: file.path,
     audioStartOffset: startOffset,
     audioTag: tag,
     audioType: file.audioType,
-  };
+  });
 }
 
 export function createAudioTrack(

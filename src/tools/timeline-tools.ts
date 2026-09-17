@@ -58,7 +58,8 @@ import {
   findTrackByName,
   createPlainMasterKeyframe,
   createValueKeyframe,
-  createAudioSourceAdapter,
+  mergeAudioSourceAdapter,
+  audioProjectFilePath,
   syncTransitionsData,
   isBuiltinEaseName,
   folderChainResultMode,
@@ -70,6 +71,7 @@ import {
   type AudioFileRef,
 } from '../construct3/timeline-model.js';
 import { listFileEntries } from '../construct3/file-registration.js';
+import { loadCustomEases } from '../construct3/ease-params.js';
 import { registerTimelineTrackTools } from './timeline-track-tools.js';
 import { registerTimelineEaseTools } from './timeline-ease-tools.js';
 
@@ -613,15 +615,8 @@ export function registerTimelineTools(deps: MutationToolDeps) {
       toolError(`Timeline "${timelineName}" not found. Use list_timelines to see available timelines.`));
   }
 
-  async function loadEases(): Promise<Map<string, CustomEase>> {
-    const eases = new Map<string, CustomEase>();
-    for (const name of registeredEaseNames(timelinesContainer())) {
-      try {
-        const ease = await readJson<CustomEase>(easeFilePath(name));
-        if (ease && typeof ease === 'object' && Array.isArray(ease.transitionKeyframes)) eases.set(name, ease);
-      } catch { /* unreadable ease files are reported by list_eases */ }
-    }
-    return eases;
+  function loadEases(): Promise<Map<string, CustomEase>> {
+    return loadCustomEases(reader.getProjectDir(), timelinesContainer());
   }
 
   function easeFilePath(name: string): string {
@@ -732,7 +727,12 @@ export function registerTimelineTools(deps: MutationToolDeps) {
     if (typeof type !== 'string' || !type.startsWith('audio/')) {
       warnings.push(`"${name}" is registered with type "${String(type)}", not an audio type.`);
     }
-    return { ok: true as const, file: { entry: matches[0].entry, audioType: matches[0].audioType }, warnings };
+    const structure = (project as unknown as { properties?: { exportFileStructure?: unknown } }).properties?.exportFileStructure;
+    const path = audioProjectFilePath(name, structure);
+    if (path === undefined) {
+      warnings.push(`The project's export file structure is ${structure === undefined ? 'not set' : `"${String(structure)}"`}, for which no sample shows an audioProjectFilePath, so none was written; r495.2 added it when it saved such a project in the W90 check.`);
+    }
+    return { ok: true as const, file: { entry: matches[0].entry, audioType: matches[0].audioType, path }, warnings };
   }
 
   const toolkit: TimelineToolkit = {
@@ -1601,13 +1601,16 @@ export function registerTimelineTools(deps: MutationToolDeps) {
             const file = findAudioFile(args.audioFile, args.audioFolder);
             if (!file.ok) return file.error;
             warnings.push(...file.warnings);
-            const fresh = createAudioSourceAdapter(file.file, 0, '');
-            adapter.audioProjectFile = fresh.audioProjectFile;
-            adapter.audioType = fresh.audioType;
+            audio.sourceAdapter = mergeAudioSourceAdapter(adapter, {
+              audioProjectFile: structuredClone(file.file.entry),
+              audioProjectFilePath: file.file.path,
+              audioType: file.file.audioType,
+            });
           }
-          if (args.audioStartOffset !== undefined) adapter.audioStartOffset = args.audioStartOffset;
-          if (args.audioTag !== undefined) adapter.audioTag = args.audioTag;
-          audio.sourceAdapter = adapter;
+          const patch: Record<string, unknown> = {};
+          if (args.audioStartOffset !== undefined) patch.audioStartOffset = args.audioStartOffset;
+          if (args.audioTag !== undefined) patch.audioTag = args.audioTag;
+          audio.sourceAdapter = mergeAudioSourceAdapter((audio.sourceAdapter ?? {}) as Record<string, unknown>, patch);
         }
 
         if (args.name !== undefined) track.name = args.name;

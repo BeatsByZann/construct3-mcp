@@ -443,6 +443,8 @@ Use at most one of `groupPath` or `parentSid`; with neither, the event is added 
 
 Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Supports sub-events, else blocks, OR blocks, disabled conditions and actions, function and custom action calls, action comments, and script actions.
 
+An `ease` parameter that names a registered custom ease is stored as Construct r495.2 saves it, `{ "name": "<ease>", "json": [{ "folders": [], "json": <ease file> }] }`, here and in `update_event_block` and `update_event_block_action`. Built-in ease names and other values stay strings (see [Custom eases](#custom-eases)).
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet |
@@ -1589,6 +1591,15 @@ the track's `sourceAdapter.audioProjectFile` and the folder name becomes
 `audioType`. Only one audio track was sampled, so check the result in the
 editor. The result carries `trackName`.
 
+`sourceAdapter.audioProjectFilePath` follows `audioProjectFile`. A live
+r495.2 save of a project whose `exportFileStructure` was `folders` wrote
+`media/<file name>` for a music file; the r432.3 sample has no such key. The
+tools write `media/<file name>` for every audio file when the project uses
+`folders` (sound files and files in subfolders are assumed to follow the
+same rule) and write no path otherwise, with a warning. `update_track`
+writes the path when `audioFile` changes and removes a path that no longer
+applies.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
@@ -1657,8 +1668,9 @@ always written as `any`, the only sampled value.
 
 #### `list_eases`
 
-List custom eases with `linear`, `purpose`, `points` and `usedBy` (the
-timelines that name the ease). No parameters.
+List custom eases with `linear`, `purpose`, `points`, `usedBy` (the
+timelines that name the ease) and `usedByEventSheets` (sheets whose ACE `ease`
+parameters name it, as a string or an embedded copy). No parameters.
 
 #### `create_ease`
 
@@ -1671,7 +1683,8 @@ timelines that name the ease). No parameters.
 #### `update_ease`
 
 Rewrite the points or `linear` flag, then refresh the copy in every timeline
-that uses the ease. The result lists `timelinesRefreshed`.
+that uses the ease and every embedded copy in an event-sheet `ease`
+parameter. The result lists `timelinesRefreshed` and `eventSheetsRefreshed`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1688,7 +1701,9 @@ ease or a registered timeline cannot be opened. The Tween behavior and
 scripts can also name an ease, so event sheets and registered script files
 are searched for the name as a whole word; a hit, or a file that cannot be
 read, refuses the delete unless `force` is true, and a forced delete reports
-them in `warnings`.
+them in `warnings`. A forced delete leaves embedded copies in event
+parameters in place (and says so); what Construct does with such a copy
+after its ease is gone was not sampled.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
