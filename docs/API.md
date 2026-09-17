@@ -2032,7 +2032,7 @@ No instances are placed, and family and container membership is not copied
 | `newName` | string | Yes | Name of the copy |
 
 Writes `timelines/<newName>.json` with only `name` changed. The copy's tracks
-address the same instances by UID. Transition timelines are refused.
+address the same instances by UID. Custom eases (the unnamed subfolder of the timelines list) are refused.
 
 ### `replace_object_in_events`
 

@@ -488,10 +488,10 @@ describe('duplicate_timeline', () => {
     expect((await readJson('project.c3proj')).timelines.items).toEqual(['Intro', 'Intro2']);
   });
 
-  it('refuses a transition timeline', async () => {
+  it('refuses a custom ease', async () => {
     const result = await server.callTool('duplicate_timeline', { timelineName: 'Swipe', newName: 'Swipe2' });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('is a transition timeline');
+    expect(result.content[0].text).toContain('is a custom ease');
   });
 
   it('refuses a name already used by a transition', async () => {
