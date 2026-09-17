@@ -19,8 +19,8 @@
  * destination folder and a new folder is appended after its siblings.
  *
  * Timelines are not movable here: no sample has a timeline in a named folder,
- * and the timelines tree's only observed subfolder is the unnamed transitions
- * folder.
+ * and the timelines tree's only observed subfolder is the unnamed one that
+ * registers custom eases (files in timelines/transitions/).
  *
  * Duplicates. Every SID in a copy is fresh (instance, layer, layout, event,
  * condition, action, behavior, variable, animation and folder-entry SIDs), a
@@ -80,7 +80,7 @@ function isTree(value: unknown): value is TreeFolder {
 
 /**
  * Every place `name` is registered. Subfolders without a string name are
- * skipped: the timelines tree's unnamed transitions folder is the only one
+ * skipped: the timelines tree's unnamed custom-ease folder is the only one
  * observed, and it is not a user folder.
  */
 export function locateInTree(root: TreeFolder, name: string): TreeLocation[] {
@@ -438,7 +438,7 @@ function projectTree(reader: Reader, key: string): TreeFolder | undefined {
   return isTree(value) ? value : undefined;
 }
 
-/** Unnamed or "transitions" root subfolders hold transition timelines (timelines/transitions/). */
+/** Unnamed or "transitions" root subfolders register custom eases (files in timelines/transitions/), not timelines. */
 function transitionTimelineNames(root: TreeFolder): string[] {
   const out: string[] = [];
   for (const sub of root.subfolders) {
@@ -1030,7 +1030,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
 
   server.tool(
     'duplicate_timeline',
-    'Duplicate a timeline under a new name. The copy is registered next to the source and animates the same instances (tracks address instances by UID). Transition timelines cannot be duplicated.',
+    'Duplicate a timeline under a new name. The copy is registered next to the source and animates the same instances (tracks address instances by UID). Custom eases (registered in the unnamed subfolder of the timelines list) are not timelines and cannot be duplicated here.',
     {
       timelineName: z.string().max(200).describe('Timeline to copy'),
       newName: newNameSchema,
@@ -1041,7 +1041,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         const root = projectTree(reader, 'timelines');
         if (!root) return toolError('project.c3proj has no timelines tree.');
         if (transitionTimelineNames(root).includes(args.timelineName)) {
-          return toolError(`"${args.timelineName}" is a transition timeline; transitions cannot be duplicated.`);
+          return toolError(`"${args.timelineName}" is a custom ease, not a timeline; eases cannot be duplicated with this tool.`);
         }
         if (!root.items.includes(args.timelineName)) {
           const named = locateInTree(root, args.timelineName);
