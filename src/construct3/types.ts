@@ -33,7 +33,7 @@ export interface Construct3Project {
   functionsName?: string;
   autosaveData?: unknown;
   containers?: unknown[];
-  flowcharts?: { items: string[]; subfolders: Subfolder[] };
+  flowcharts?: FlowchartsContainer;
 }
 
 export interface Addon {
@@ -69,6 +69,11 @@ export interface EventSheetsContainer {
 }
 
 export interface TimelinesContainer {
+  items: string[];
+  subfolders: Subfolder[];
+}
+
+export interface FlowchartsContainer {
   items: string[];
   subfolders: Subfolder[];
 }
@@ -455,6 +460,79 @@ export interface Instance {
     blendMode?: string;
     [key: string]: unknown;
   };
+  [key: string]: unknown;
+}
+
+// ─── Flowchart Types ──────────────────────────────
+//
+// Shape confirmed against a real Construct 3 r495 project. A flowchart file
+// is flowcharts/[subfolder/]<name>.json; per-node editor state (colors, link
+// modes, folder expansion) lives in a sibling <name>.uistate.json that these
+// types deliberately do not model.
+
+/** One output pin on a flowchart node. */
+export interface FlowchartOutput {
+  sid: number;
+  /** SID of the node this output connects to, or null when unconnected. */
+  cnSID: number | null;
+  name: string;
+  value: string;
+  enable: boolean;
+  default: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * One flowchart node.
+ *
+ * `t` is the node type/title and `c` is the caption (equal on 1170 of the
+ * 1539 sampled nodes). `pnSIDs` and `poSIDs` are strictly parallel arrays with
+ * one entry per incoming connection: `poSIDs[i]` is an output of the node
+ * `pnSIDs[i]`. `nodeSIDs` holds the distinct child node SIDs in creation order,
+ * which is independent of the `outputs` array order.
+ */
+export interface FlowchartNode {
+  sid: number;
+  /** Parent node SIDs, one entry per incoming connection. */
+  pnSIDs: number[];
+  /** Parent output SIDs, parallel to pnSIDs. */
+  poSIDs: number[];
+  /** Distinct child node SIDs. */
+  nodeSIDs: number[];
+  outputs: FlowchartOutput[];
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Node type/title. Empty string on comment boxes. */
+  t: string;
+  /** True on the single start node; C3 keeps exactly one per flowchart. */
+  s: boolean;
+  /** Enabled. */
+  e: boolean;
+  /** Observed values 0, 1 and 2; meaning not determined from the sample. */
+  pi: number;
+  /** Caption. */
+  c: string;
+  /** Value type. Observed values: "dictionary" and "comment". */
+  ty: string;
+  /** Preset flag. Always false on ordinary nodes in the sample. */
+  pr: boolean;
+  /** Source preset flowchart SID, or null. Never written by the MCP tools. */
+  prfsid?: number | null;
+  /** Source preset node SID, or null. Never written by the MCP tools. */
+  prfnsid?: number | null;
+  [key: string]: unknown;
+}
+
+/** A flowchart file. */
+export interface Flowchart {
+  sid: number;
+  nodes: FlowchartNode[];
+  'preset-nodes': { items: unknown[]; subfolders: unknown[] };
+  name: string;
+  w: number;
+  h: number;
   [key: string]: unknown;
 }
 
