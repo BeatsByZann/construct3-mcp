@@ -339,7 +339,11 @@ function validateSubfolders(
 ): void {
   for (let i = 0; i < subfolders.length; i++) {
     const sf = subfolders[i];
-    if (typeof sf.name !== 'string' || sf.name === '') {
+    // Construct r495.2 itself saves an unnamed, empty subfolder (seen as
+    // `"timelines": { "items": [], "subfolders": [{ "items": [], "subfolders": [] }] }`
+    // in an editor-saved example) and reopens the project without complaint,
+    // so only a nameless subfolder that holds something is an error.
+    if ((typeof sf.name !== 'string' || sf.name === '') && !isEmptySubfolder(sf)) {
       errors.push({
         check: 'subfolder-structure',
         entity: `${path}/subfolders[${i}]`,
@@ -360,6 +364,14 @@ function validateSubfolders(
       validateSubfolders(sf.subfolders as Array<Record<string, unknown>>, childPath, errors);
     }
   }
+}
+
+/** True when a subfolder and all of its descendants hold no items. */
+function isEmptySubfolder(sf: Record<string, unknown>): boolean {
+  if (!Array.isArray(sf.items) || sf.items.length > 0) return false;
+  if (sf.subfolders === undefined) return true;
+  if (!Array.isArray(sf.subfolders)) return false;
+  return (sf.subfolders as Array<Record<string, unknown>>).every(child => child && typeof child === 'object' && isEmptySubfolder(child));
 }
 
 // ─── Check 4: Duplicate SIDs ─────────────────────────────────

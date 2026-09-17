@@ -174,6 +174,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Fixed
 
+- `validate_project` no longer reports an unnamed subfolder as an error when it and its descendants hold no items. Construct r495.2 saves such a subfolder itself (an empty `timelines` subfolder in the Crossing Frog example); a nameless subfolder that holds items is still an error.
 - Placed instances now store their Z elevation under Construct's `world.z` key; the editor ignored the former `world.zElevation` key and reset the value to 0 (found by the r495.2 load check).
 - `create_flowchart` no longer refuses a project without the Flowchart plugin; the editor loads such a flowchart (and prunes the unused plugin), so the missing plugin is now a warning.
 - `add_timeline_track` and `remove_timeline_track`: instance-track editing for

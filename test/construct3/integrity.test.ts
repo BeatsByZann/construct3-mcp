@@ -568,6 +568,33 @@ describe('validateProjectIntegrity', () => {
     expect(err!.message).toContain('missing required "name" field');
   });
 
+  it('accepts the unnamed empty subfolder that Construct r495.2 saves', async () => {
+    const reader = validProject();
+    const origGetProject = reader.getProject.bind(reader);
+    reader.getProject = () => {
+      const proj = origGetProject();
+      // Exactly as saved by the editor in the Crossing Frog example.
+      proj.timelines = { items: [], subfolders: [{ items: [], subfolders: [] }] };
+      proj.layouts = { items: ['Layout 1'], subfolders: [{ items: [], subfolders: [{ items: [] }] }] } as any;
+      return proj;
+    };
+    const result = await validateProjectIntegrity(reader);
+    expect(result.errors.filter((e: any) => e.check === 'subfolder-structure')).toEqual([]);
+  });
+
+  it('still flags an unnamed subfolder whose descendants hold items', async () => {
+    const reader = validProject();
+    const origGetProject = reader.getProject.bind(reader);
+    reader.getProject = () => {
+      const proj = origGetProject();
+      proj.timelines = { items: [], subfolders: [{ items: [], subfolders: [{ name: 'Inner', items: ['T2'], subfolders: [] }] }] } as any;
+      return proj;
+    };
+    const result = await validateProjectIntegrity(reader);
+    const err = result.errors.find((e: any) => e.check === 'subfolder-structure');
+    expect(err?.entity).toBe('timelines/subfolders[0]');
+  });
+
   it('passes subfolder check when all subfolders have names', async () => {
     const reader = validProject();
     const result = await validateProjectIntegrity(reader);
