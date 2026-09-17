@@ -1845,16 +1845,85 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
     }
   );
 
+  // ─── update_script_event ────────────────────────────────────
+
+  server.tool(
+    'update_script_event',
+    'Replace the JavaScript of a standalone script block, or remove the block. C3 stores script blocks without a SID, so address one by its 0-based index among its container\'s events (optionally with groupPath or parentSid).',
+    {
+      sheetName: z.string().max(200).describe('Event sheet containing the script block'),
+      index: z.number().int().min(0).describe('0-based index of the script block among its container\'s events'),
+      groupPath: z.string().max(500).optional().describe('Container group by title path (e.g., "Movement > Collision")'),
+      parentSid: z.number().int().positive().optional().describe('Container group, block, function-block or custom action SID'),
+      script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional()
+        .describe('New JavaScript as one string (split on newlines) or an array of lines'),
+      remove: z.boolean().optional().default(false).describe('Remove the script block instead of editing it'),
+    },
+    async (args) => {
+      try {
+        if ((args.script === undefined) === !args.remove) {
+          return toolError('Specify exactly one of: script (to edit) or remove: true.');
+        }
+        const locatorError = validateLocator({ groupPath: args.groupPath, parentSid: args.parentSid, position: 'end' });
+        if (locatorError) return toolError(locatorError);
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+        const resolution = resolveContainer(sheet.events as Record<string, unknown>[], args.sheetName, {
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          position: 'end',
+        });
+        if ('error' in resolution) return toolError(resolution.error);
+        const target = resolution.container.targetEvents;
+        if (args.index >= target.length) {
+          return toolError(`Index ${args.index} is out of range (the container holds ${target.length} event(s), indices 0-${Math.max(0, target.length - 1)}).`);
+        }
+        const candidate = target[args.index];
+        if (candidate.eventType !== 'script') {
+          return toolError(`Event at index ${args.index} is a "${String(candidate.eventType)}", not a script block. Indices count every event in the container.`);
+        }
+
+        if (args.remove) {
+          target.splice(args.index, 1);
+        } else {
+          candidate.script = toScriptLines(args.script!);
+          if (typeof candidate.language !== 'string') candidate.language = 'javascript';
+        }
+
+        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
+        resetProjectIndex();
+        const result: WriteResult = {
+          success: true,
+          entity: args.sheetName,
+          category: 'eventsheet',
+          action: args.remove ? 'deleted' : 'updated',
+          backupFile: backupPath,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[update_script_event] failed:', error);
+        return toolError(`Error updating script block: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
   // ─── update_function ────────────────────────────────────────
 
   server.tool(
     'update_function',
-    'Update a function-block definition — name, description, category, return type, async/copy-picked flags, and its parameter list. Renaming the function rewrites every callFunction action across all sheets when renameCallers is true, and is refused otherwise.',
+    'Update a function-block or a custom action definition (custom-ace-block) — name, description, category, return type, async/copy-picked flags, and its parameter list. A rename rewrites every call (callFunction actions, or customAction calls that resolve to this definition) across all sheets when renameCallers is true, and is refused otherwise. dryRun reports the calls without writing.',
     {
-      sheetName: z.string().max(200).describe('Event sheet containing the function'),
-      sid: z.number().int().positive().describe('SID of the function-block to update'),
-      functionName: z.string().max(200).optional().describe('New function name'),
-      renameCallers: z.boolean().optional().default(false).describe('Rewrite every callFunction action that targets the old name; without it a rename with callers is refused'),
+      sheetName: z.string().max(200).describe('Event sheet containing the definition'),
+      sid: z.number().int().positive().describe('SID of the function-block or custom-ace-block to update'),
+      functionName: z.string().max(200).optional().describe('New name: the function name, or the custom action name (aceName) for a custom-ace-block'),
+      renameCallers: z.boolean().optional().default(false).describe('Rewrite every call that targets the old name; without it a rename with callers is refused'),
+      dryRun: z.boolean().optional().default(false).describe('Report the definition and its call sites without writing'),
       description: z.string().max(2000).optional().describe('New functionDescription'),
       category: z.string().max(200).optional().describe('New functionCategory'),
       returnType: z.enum(['none', 'number', 'string', 'any']).optional().describe('New functionReturnType'),
@@ -1880,7 +1949,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           || (args.addParameters?.length ?? 0) > 0
           || (args.removeParameters?.length ?? 0) > 0
           || (args.renameParameters?.length ?? 0) > 0;
-        if (!hasUpdate) {
+        if (!hasUpdate && !args.dryRun) {
           return toolError('No updates provided. Specify at least one of: functionName, description, category, returnType, isAsync, copyPicked, addParameters, removeParameters, renameParameters.');
         }
 
@@ -1901,10 +1970,21 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           );
         }
         const func = found.event;
-        if (func.eventType !== 'function-block') {
-          return toolError(`Event with SID ${args.sid} is a "${func.eventType}", not a function-block.`);
+        const isCustomAction = func.eventType === 'custom-ace-block';
+        if (func.eventType !== 'function-block' && !isCustomAction) {
+          return toolError(`Event with SID ${args.sid} is a "${func.eventType}", not a function-block or custom-ace-block.`);
         }
-        const oldName = func.functionName as string;
+        const nameKey = isCustomAction ? 'aceName' : 'functionName';
+        const oldName = func[nameKey] as string;
+        const owner = isCustomAction ? String(func.objectClass ?? '') : '';
+        // Family membership decides which unqualified custom action calls on a
+        // member object type resolve to a family definition.
+        const familyMembers = new Map<string, string[]>();
+        if (isCustomAction) {
+          for (const [family, data] of await reader.readAllFamilies()) {
+            if (Array.isArray(data.members)) familyMembers.set(family, data.members as string[]);
+          }
+        }
 
         // Load every sheet once: the same pass finds duplicate function names
         // and the call sites, using index-builder's rule that a call site is a
@@ -1924,6 +2004,26 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         const callSites: Array<{ sheet: string; action: Record<string, unknown> }> = [];
         const otherFunctionNames = new Set<string>();
+        // Custom action definitions by owner: "owner::name".
+        const customDefinitions = new Set<string>();
+        for (const [, data] of loaded) {
+          walkEvents(data.events as Record<string, unknown>[], event => {
+            if (event.eventType === 'custom-ace-block' && event !== func) {
+              customDefinitions.add(`${String(event.objectClass)}::${String(event.aceName)}`);
+            }
+          });
+        }
+        const resolvesToThis = (action: Record<string, unknown>): boolean => {
+          if (action.customAction !== oldName) return false;
+          const explicit = action.customActionObjectClass as string | undefined;
+          if (explicit !== undefined) return explicit === owner;
+          const callee = String(action.objectClass ?? '');
+          if (callee === owner) return true;
+          // An unqualified call on a member resolves to the family definition
+          // unless the member defines its own custom action of that name.
+          return (familyMembers.get(owner) ?? []).includes(callee)
+            && !customDefinitions.has(`${callee}::${oldName}`);
+        };
         for (const [name, data] of loaded) {
           walkEvents(data.events as Record<string, unknown>[], event => {
             if (event.eventType === 'function-block' && event !== func && typeof event.functionName === 'string') {
@@ -1931,9 +2031,23 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             }
             if (!Array.isArray(event.actions)) return;
             for (const action of event.actions as Record<string, unknown>[]) {
-              if (action.type === 'script') continue;
-              if (action.callFunction === oldName) callSites.push({ sheet: name, action });
+              if (action.type === 'script' || action.type === 'comment') continue;
+              if (isCustomAction ? resolvesToThis(action) : action.callFunction === oldName) {
+                callSites.push({ sheet: name, action });
+              }
             }
+          });
+        }
+
+        if (args.dryRun && !hasUpdate) {
+          return toolResult({
+            dryRun: true,
+            kind: isCustomAction ? 'custom-action' : 'function',
+            name: oldName,
+            objectClass: isCustomAction ? owner : undefined,
+            callSites: callSites.map(site => ({ sheet: site.sheet, sid: site.action.sid, objectClass: site.action.objectClass, arguments: site.action.parameters })),
+            callCount: callSites.length,
+            parameters: (Array.isArray(func.functionParameters) ? func.functionParameters as Array<Record<string, unknown>> : []).map(p => p.name),
           });
         }
 
@@ -1949,14 +2063,17 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           } catch (error) {
             return toolError(`Invalid functionName: ${error instanceof Error ? error.message : String(error)}`);
           }
-          if (otherFunctionNames.has(args.functionName)) {
+          if (!isCustomAction && otherFunctionNames.has(args.functionName)) {
             return toolError(`A function named "${args.functionName}" already exists in this project.`);
           }
-          if (callSites.length > 0 && !args.renameCallers) {
+          if (isCustomAction && customDefinitions.has(`${owner}::${args.functionName}`)) {
+            return toolError(`"${owner}" already defines a custom action named "${args.functionName}".`);
+          }
+          if (callSites.length > 0 && !args.renameCallers && !args.dryRun) {
             const bySheet = [...new Set(callSites.map(c => c.sheet))];
             return toolError(
-              `Function "${oldName}" is called by ${callSites.length} action(s) in: ${bySheet.join(', ')}. ` +
-              `Set renameCallers=true to rewrite every callFunction action, or remove the callers first.`,
+              `${isCustomAction ? 'Custom action' : 'Function'} "${oldName}" is called by ${callSites.length} action(s) in: ${bySheet.join(', ')}. ` +
+              `Set renameCallers=true to rewrite every call, or remove the callers first.`,
             );
           }
         }
@@ -1972,7 +2089,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           const bySheet = [...new Set(callSites.map(c => c.sheet))];
           return toolError(
             `Cannot remove parameters from "${oldName}": ${callSites.length} caller action(s) in ${bySheet.join(', ')} pass arguments positionally ` +
-            `(callFunction actions store a "parameters" array indexed by position), so dropping a parameter would silently shift every later argument. ` +
+            `(call actions store a "parameters" array indexed by position), so dropping a parameter would silently shift every later argument. ` +
             `Update or delete the callers first.`,
           );
         }
@@ -2003,22 +2120,46 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           return toolError(`Function would have ${projectedNames.length} parameters (max ${MAX_ITEMS_PER_BLOCK}).`);
         }
 
+        if (args.dryRun) {
+          const renaming = args.functionName !== undefined && args.functionName !== oldName;
+          return toolResult({
+            dryRun: true,
+            kind: isCustomAction ? 'custom-action' : 'function',
+            name: oldName,
+            newName: renaming ? args.functionName : undefined,
+            objectClass: isCustomAction ? owner : undefined,
+            callSites: callSites.map(site => ({ sheet: site.sheet, sid: site.action.sid, objectClass: site.action.objectClass, arguments: site.action.parameters })),
+            callCount: callSites.length,
+            wouldRenameCallers: renaming ? callSites.length : 0,
+            parameters: projectedNames,
+          });
+        }
+
         // ── Apply ──
         const modifiedSheets = new Set<string>([args.sheetName]);
         let renamedCallers = 0;
         if (args.functionName !== undefined && args.functionName !== oldName) {
           for (const site of callSites) {
-            site.action.callFunction = args.functionName;
+            if (isCustomAction) site.action.customAction = args.functionName;
+            else site.action.callFunction = args.functionName;
             renamedCallers++;
             modifiedSheets.add(site.sheet);
           }
-          func.functionName = args.functionName;
+          func[nameKey] = args.functionName;
+          if (isCustomAction) {
+            const overrides = [...familyMembers.get(owner) ?? []].filter(member => customDefinitions.has(`${member}::${oldName}`));
+            if (overrides.length > 0) {
+              warnings.push(`Member object type(s) ${overrides.join(', ')} define their own "${oldName}" custom action, which overrides the family one; those definitions and their calls were left unchanged.`);
+            }
+          }
           // Expression references such as Functions.oldName(...) live inside
           // parameter strings and are not rewritten here.
           const expression = new RegExp(`Functions\\.${escapeRegExp(oldName)}\\b`, 'g');
           let expressionRefs = 0;
-          for (const data of loaded.values()) {
-            expressionRefs += (JSON.stringify(data.events).match(expression) ?? []).length;
+          if (!isCustomAction) {
+            for (const data of loaded.values()) {
+              expressionRefs += (JSON.stringify(data.events).match(expression) ?? []).length;
+            }
           }
           if (expressionRefs > 0) {
             warnings.push(`${expressionRefs} expression reference(s) to "Functions.${oldName}" were left unchanged; update them by hand.`);
@@ -2047,7 +2188,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
               + (JSON.stringify(func.actions ?? []).match(bare) ?? []).length
               + (JSON.stringify(func.children ?? []).match(bare) ?? []).length;
             if (hits > 0) {
-              warnings.push(`${hits} expression reference(s) to parameter "${rename.from}" remain inside "${func.functionName}"; update them by hand.`);
+              warnings.push(`${hits} expression reference(s) to parameter "${rename.from}" remain inside "${String(func[nameKey])}"; update them by hand.`);
             }
           }
         }
@@ -2079,7 +2220,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           category: 'eventsheet',
           action: 'updated',
           updatedSid: args.sid,
-          functionName: func.functionName,
+          kind: isCustomAction ? 'custom-action' : 'function',
+          functionName: func[nameKey],
           previousFunctionName: oldName,
           renamedCallers,
           updatedSheets: [...modifiedSheets],
