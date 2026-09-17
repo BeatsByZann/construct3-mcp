@@ -15,13 +15,24 @@
  *       <name>.uistate.json, which these tools never write)
  *   s   start node; every one of the 31 sampled files has exactly one
  *   e   enabled
- *   ty  value type; observed values "dictionary" and "comment"
+ *   ty  value type; observed values "dictionary" (1373 nodes) and "comment"
+ *       (166 nodes)
  *   pi  observed 0, 1 and 2; meaning not determined
  *   pnSIDs/poSIDs  strictly parallel, one entry per incoming connection
  *                  (1295 of 1295 sampled pairs valid): poSIDs[i] is an
  *                  output of the node pnSIDs[i]
  *   nodeSIDs       distinct child node SIDs, in an order independent of the
  *                  outputs array order
+ *
+ * Comment nodes (all 166 sampled) have no outputs or connections, `t: ""`,
+ * and six more keys after `prfnsid`, in this order:
+ *   n   comment body as the editor's HTML (first line plain, later lines in
+ *       <div>, blank lines as <div><br></div>, &nbsp; and &amp; entities)
+ *   fo  font face ("Calibri" 115, "Arial" 38, "calibri" 13)
+ *   fs  font size (36, 24, 32, 80, 18, 12)
+ *   fb  bold, fi italic (booleans)
+ *   fc  font color as "#rrggbb" (5 distinct lower-case values)
+ * `c` on a comment node is a separate caption: it matched `n` on only 21.
  *
  * `pr`, `prfsid` and `prfnsid` identify preset-derived nodes. They are never
  * taken from tool input: new nodes get pr:false / prfsid:null / prfnsid:null,
@@ -52,6 +63,19 @@ const FLOWCHART_PLUGIN_ID = 'Flowchart';
 
 /** Canvas size C3 gives a new flowchart. */
 const DEFAULT_CANVAS_SIZE = 20000;
+
+/** Value types seen in the sample; no other value was observed. */
+const VALUE_TYPES = ['dictionary', 'comment'] as const;
+type ValueType = typeof VALUE_TYPES[number];
+
+/** Comment formatting keys, in the sampled order after `prfnsid`. */
+const COMMENT_KEYS = ['n', 'fo', 'fs', 'fb', 'fi', 'fc'] as const;
+
+/**
+ * Formatting a new comment gets when the caller gives none: the most common
+ * value of each key in the sample. Construct's own defaults were not sampled.
+ */
+const COMMENT_DEFAULTS = { fo: 'Calibri', fs: 36, fb: true, fi: false, fc: '#39b530' };
 
 /** Most common node box in the sample (297x133 on 395 single-output nodes). */
 const DEFAULT_NODE_WIDTH = 300;
@@ -410,6 +434,95 @@ function createOutput(sid: number, name: string, value: string, enable: boolean,
   return { sid, cnSID: null, name, value, enable, default: isDefault };
 }
 
+// ─── Comment nodes ─────────────────────────────────────────
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Plain text as the editor stores a comment body: later lines in <div>, blank lines as <div><br></div>. */
+export function commentTextToHtml(text: string): string {
+  const lines = text.split(/\r?\n/);
+  return lines.map((line, i) => {
+    const escaped = escapeHtml(line);
+    if (i === 0) return escaped;
+    return `<div>${escaped === '' ? '<br>' : escaped}</div>`;
+  }).join('');
+}
+
+interface CommentInput {
+  commentText?: string;
+  commentHtml?: string;
+  font?: string;
+  fontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  fontColor?: string;
+}
+
+function hasCommentInput(args: CommentInput): boolean {
+  return args.commentText !== undefined || args.commentHtml !== undefined || args.font !== undefined
+    || args.fontSize !== undefined || args.bold !== undefined || args.italic !== undefined || args.fontColor !== undefined;
+}
+
+/**
+ * Write the comment keys, keeping them after every other key in the sampled
+ * order. Missing keys are filled from `fallbackText` and COMMENT_DEFAULTS;
+ * returns the names of keys that were defaulted.
+ */
+function applyCommentFields(node: FlowchartNode, args: CommentInput, fallbackText: string): string[] {
+  const current: Record<string, unknown> = {};
+  for (const key of COMMENT_KEYS) {
+    if (key in node) current[key] = node[key];
+    delete node[key];
+  }
+  if (args.commentHtml !== undefined) current.n = args.commentHtml;
+  else if (args.commentText !== undefined) current.n = commentTextToHtml(args.commentText);
+  if (args.font !== undefined) current.fo = args.font;
+  if (args.fontSize !== undefined) current.fs = args.fontSize;
+  if (args.bold !== undefined) current.fb = args.bold;
+  if (args.italic !== undefined) current.fi = args.italic;
+  if (args.fontColor !== undefined) current.fc = args.fontColor.toLowerCase();
+  const defaulted: string[] = [];
+  if (current.n === undefined) current.n = commentTextToHtml(fallbackText);
+  for (const [key, value] of Object.entries(COMMENT_DEFAULTS)) {
+    if (current[key] === undefined) { current[key] = value; defaulted.push(key); }
+  }
+  for (const key of COMMENT_KEYS) node[key] = current[key];
+  return defaulted;
+}
+
+function defaultedWarning(defaulted: string[]): string[] {
+  if (defaulted.length === 0) return [];
+  return [`Comment formatting ${defaulted.join(', ')} took the values most common in the sampled flowcharts (Calibri, 36, bold, not italic, #39b530); Construct's own defaults were not sampled.`];
+}
+
+/**
+ * Change a node's value type, keeping it valid for the new type: a comment
+ * has no outputs or connections and an empty `t`; a dictionary node has no
+ * comment keys and a `t` (the caption when it was empty).
+ */
+function changeValueType(node: FlowchartNode, to: ValueType, args: CommentInput & { nodeType?: string }): { ok: true; warnings: string[] } | { ok: false; error: string } {
+  if (node.ty === to) return { ok: true, warnings: [] };
+  if (!(VALUE_TYPES as readonly string[]).includes(node.ty)) {
+    return { ok: false, error: `Node ${node.sid} has value type "${node.ty}", which these tools do not convert.` };
+  }
+  if (to === 'comment') {
+    const outputs = node.outputs?.length ?? 0;
+    const incoming = node.pnSIDs?.length ?? 0;
+    if (outputs > 0 || incoming > 0 || (node.nodeSIDs?.length ?? 0) > 0) {
+      return { ok: false, error: `Node ${node.sid} has ${outputs} output(s) and ${incoming} incoming connection(s); a comment node has none. Delete its outputs and disconnect the nodes that lead to it first.` };
+    }
+    node.ty = 'comment';
+    if (args.nodeType === undefined) node.t = '';
+    return { ok: true, warnings: defaultedWarning(applyCommentFields(node, args, node.c)) };
+  }
+  for (const key of COMMENT_KEYS) delete node[key];
+  node.ty = 'dictionary';
+  if (args.nodeType === undefined && node.t === '') node.t = node.c;
+  return { ok: true, warnings: [] };
+}
+
 // ─── Zod fragments ─────────────────────────────────────────
 
 const outputInput = z.object({
@@ -418,6 +531,16 @@ const outputInput = z.object({
   enabled: z.boolean().optional().describe('Enable the output (default: true)'),
   isDefault: z.boolean().optional().describe('Mark the output as the default (default: false)'),
 });
+
+const commentFields = {
+  commentText: z.string().max(20000).optional().describe('Comment node: body as plain text, stored as the editor\'s HTML (the "n" field)'),
+  commentHtml: z.string().max(40000).optional().describe('Comment node: body as HTML, stored unchanged (the "n" field); give this or commentText'),
+  font: z.string().min(1).max(100).optional().describe('Comment node: font face ("fo"), e.g. "Arial"'),
+  fontSize: z.number().positive().max(1000).optional().describe('Comment node: font size ("fs"), e.g. 24'),
+  bold: z.boolean().optional().describe('Comment node: bold ("fb")'),
+  italic: z.boolean().optional().describe('Comment node: italic ("fi")'),
+  fontColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().describe('Comment node: font color as "#rrggbb" ("fc")'),
+};
 
 // ─── Registration ──────────────────────────────────────────
 
@@ -594,11 +717,23 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
       height: z.number().positive().optional().default(DEFAULT_NODE_HEIGHT).describe(`Box height (default: ${DEFAULT_NODE_HEIGHT})`),
       isStart: z.boolean().optional().default(false).describe('Make this the start node; clears the flag on every other node (default: false)'),
       enabled: z.boolean().optional().default(true).describe('Enable the node (default: true)'),
-      valueType: z.string().max(100).optional().default('dictionary').describe('Value type ("ty"); observed values: dictionary, comment (default: dictionary)'),
+      valueType: z.enum(VALUE_TYPES).optional().default('dictionary').describe('Value type ("ty"): "dictionary" or "comment" (default: dictionary). A comment node takes no outputs and the comment fields below'),
       outputs: z.array(outputInput).max(100).optional().describe('Output pins to create on the node'),
+      ...commentFields,
     },
     async (args) => {
       try {
+        const isComment = args.valueType === 'comment';
+        if (isComment && (args.outputs?.length ?? 0) > 0) {
+          return toolError('A comment node has no outputs; omit outputs or use valueType "dictionary".');
+        }
+        if (!isComment && hasCommentInput(args)) {
+          return toolError('commentText, commentHtml, font, fontSize, bold, italic and fontColor apply to comment nodes only (valueType "comment").');
+        }
+        if (args.commentText !== undefined && args.commentHtml !== undefined) {
+          return toolError('Give commentText or commentHtml, not both.');
+        }
+
         const opened = await openFlowchart(reader, args.flowchartName);
         if (!opened.ok) return opened.error;
         const { data, filePath } = opened;
@@ -626,7 +761,7 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
           y: args.y,
           w: args.width,
           h: args.height,
-          t: args.nodeType ?? args.caption,
+          t: args.nodeType ?? (isComment ? '' : args.caption),
           s: args.isStart,
           e: args.enabled,
           pi: 0,
@@ -637,10 +772,13 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
           prfnsid: null,
         };
 
+        const warnings: string[] = [];
+        if (isComment) warnings.push(...defaultedWarning(applyCommentFields(node, args, args.caption)));
+
         data.nodes.push(node);
         if (args.isStart) clearOtherStartNodes(data, nodeSid);
 
-        const warnings = startNodeWarnings(data);
+        warnings.push(...startNodeWarnings(data));
         const backupPath = await saveFlowchart(filePath, data);
 
         const result: WriteResult = {
@@ -678,15 +816,21 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
       y: z.number().optional().describe('New canvas Y position'),
       width: z.number().positive().optional().describe('New box width'),
       height: z.number().positive().optional().describe('New box height'),
+      valueType: z.enum(VALUE_TYPES).optional().describe('New value type ("ty"). To "comment": the node must have no outputs or connections; its caption becomes the comment body unless one is given, and "t" is cleared. To "dictionary": the comment fields are removed and an empty "t" takes the caption'),
+      ...commentFields,
     },
     async (args) => {
       try {
         const hasUpdates = args.caption !== undefined || args.nodeType !== undefined ||
           args.tags !== undefined || args.isStart !== undefined || args.enabled !== undefined ||
           args.parentIndex !== undefined || args.x !== undefined || args.y !== undefined ||
-          args.width !== undefined || args.height !== undefined;
+          args.width !== undefined || args.height !== undefined ||
+          args.valueType !== undefined || hasCommentInput(args);
         if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: caption, nodeType, tags, isStart, enabled, parentIndex, x, y, width, height.');
+          return toolError('No updates provided. Specify at least one of: caption, nodeType, tags, isStart, enabled, parentIndex, x, y, width, height, valueType, commentText, commentHtml, font, fontSize, bold, italic, fontColor.');
+        }
+        if (args.commentText !== undefined && args.commentHtml !== undefined) {
+          return toolError('Give commentText or commentHtml, not both.');
         }
 
         const opened = await openFlowchart(reader, args.flowchartName);
@@ -696,8 +840,20 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
         const node = findNode(data, args.nodeSid);
         if (!node) return nodeNotFound(data, args.flowchartName, args.nodeSid);
 
+        const finalType = args.valueType ?? node.ty;
+        if (hasCommentInput(args) && finalType !== 'comment') {
+          return toolError(`Node ${node.sid} is a "${finalType}" node; commentText, commentHtml, font, fontSize, bold, italic and fontColor apply to comment nodes only.`);
+        }
+
         const warnings: string[] = [];
         if (args.caption !== undefined) node.c = args.caption;
+        if (args.valueType !== undefined && args.valueType !== node.ty) {
+          const changed = changeValueType(node, args.valueType, args);
+          if (!changed.ok) return toolError(changed.error);
+          warnings.push(...changed.warnings);
+        } else if (finalType === 'comment' && hasCommentInput(args)) {
+          warnings.push(...defaultedWarning(applyCommentFields(node, args, node.c)));
+        }
         if (args.nodeType !== undefined) node.t = args.nodeType;
         if (args.tags !== undefined) {
           node.tags = args.tags;
