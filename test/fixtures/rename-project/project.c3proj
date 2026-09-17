@@ -128,7 +128,15 @@
 		"items": [
 			"Intro"
 		],
-		"subfolders": []
+		"subfolders": [
+			{
+				"items": [
+					"Swipe"
+				],
+				"subfolders": [],
+				"name": "transitions"
+			}
+		]
 	},
 	"properties": {
 		"description": "Fixture for the rename tools",

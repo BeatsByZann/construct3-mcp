@@ -50,6 +50,8 @@ export type RefKind =
   | 'imageFile'
   /** A `tilemapBrushes/objectTypes/<subfolder>/<name>.brush.json` file, renamed on disk. */
   | 'tilemapBrushFile'
+  /** `objectType` on a timeline track in a `timelines/` JSON file. */
+  | 'timelineTrackObjectType'
   // ── layout ──
   /** `firstLayout` in project.c3proj. */
   | 'firstLayout'
@@ -433,6 +435,69 @@ export function collectInstanceTypeRefsInLayout(
     }
   }
 
+  return sites;
+}
+
+// ─── Object type references in a timeline ─────────
+
+/** Cap the timeline walk so a hand-edited or cyclic file cannot hang it. */
+const MAX_TIMELINE_NODES = 200_000;
+
+/**
+ * Find (and optionally rewrite) every `objectType` naming an object type in
+ * one timeline file.
+ *
+ * An instance track stores the object type by name:
+ *
+ *   "tracks": [ { "type": "instance-track", "worldInstance": 2,
+ *                 "objectType": "Box", "project": "2wt2ovw8c2u", ... } ]
+ *
+ * Construct refuses to open a project whose track names an object type that
+ * no longer exists, so this has to be rewritten with the rest of a rename.
+ *
+ * The walk covers the whole document, not only `tracks[]`: `tracksRoot` and
+ * `nestedTimelinesRoot` are folder structures (`items`/`subfolders`) that are
+ * empty in every observed sample even when a track exists, so whether a track
+ * can nest inside them is not knowable from the data - walking everything
+ * makes the answer not matter. `objectType` has no other meaning in a
+ * timeline file.
+ *
+ * Left alone on purpose: `tracks[].worldInstance` and a property track's
+ * `source: { type: "world-instance", uid }` address an instance by UID, which
+ * a rename does not change, and `tracks[].project` holds the project's
+ * `uniqueId`, not a name.
+ */
+export function collectTimelineObjectTypeRefs(
+  file: string,
+  timeline: unknown,
+  oldName: string,
+  newName: string,
+  apply: boolean,
+): RefSite[] {
+  const sites: RefSite[] = [];
+  let nodes = 0;
+
+  const walk = (node: unknown, path: string, depth: number): void => {
+    if (depth > MAX_DEPTH || nodes++ > MAX_TIMELINE_NODES) return;
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) walk(node[i], `${path}[${i}]`, depth + 1);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    const record = node as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      const value = record[key];
+      const childPath = path ? `${path}.${key}` : key;
+      if (key === 'objectType' && value === oldName) {
+        sites.push({ file, path: childPath, kind: 'timelineTrackObjectType' });
+        if (apply) record[key] = newName;
+        continue;
+      }
+      walk(value, childPath, depth + 1);
+    }
+  };
+
+  walk(timeline, '', 0);
   return sites;
 }
 

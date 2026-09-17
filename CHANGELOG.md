@@ -178,6 +178,17 @@ All notable changes to the Construct3 MCP Server are documented here.
   (tile index, `null`, or weighted `{ index, probability }` alternatives).
   Tilemap tile data is deliberately not implemented: no sample of its
   serialization exists to work from.
+- `rename_object_type` now rewrites `tracks[].objectType` in every timeline
+  file. An instance track stores its object type by name, and Construct r495.2
+  refuses to open a packed project whose track names a type that no longer
+  exists. Timeline files are found by walking `timelines/` rather than the
+  `project.c3proj` `timelines` tree, so a transition timeline in an unlisted
+  subfolder is covered too, and the walk spans the whole document so a track
+  nested in `tracksRoot` cannot be missed. `tracks[].worldInstance`, a
+  property track's `source.uid` and `tracks[].project` are UID and id fields
+  and stay as they are. `rename_layout` uses the same walk, so
+  `startOnLayout` - the only layout-naming key in a timeline - is now found in
+  subfolders as well.
 
 ## [1.8.2] - 2026-09-10
 
