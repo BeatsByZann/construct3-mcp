@@ -440,7 +440,7 @@ export function createCustomActionEvent(
     conditions: [],
     actions: [],
     sid,
-    children: [],
+    // r495 omits children on a custom action with no sub-events.
   };
 }
 

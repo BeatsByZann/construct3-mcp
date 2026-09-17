@@ -2783,7 +2783,8 @@ describe('add_custom_action', () => {
     expect(def.functionIsAsync).toBe(false);
     expect(def.conditions).toEqual([]);
     expect(def.actions).toEqual([]);
-    expect(def.children).toEqual([]);
+    // r495 writes no children key on a custom action without sub-events.
+    expect(def).not.toHaveProperty('children');
     expect(def.functionParameters).toHaveLength(2);
     expect(def.functionParameters[0]).toMatchObject({ name: 'leafNodeId', type: 'string', initialValue: '', comment: '' });
     expect(def.functionParameters[1]).toMatchObject({ name: 'targetUid', type: 'number', initialValue: '0', comment: '' });

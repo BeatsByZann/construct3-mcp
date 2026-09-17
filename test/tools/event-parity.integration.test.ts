@@ -176,6 +176,8 @@ describe('update_event_block on comment rows, calls and conditions', () => {
     expect(result.isError).not.toBe(true);
     const def = findBySid((await sheet()).events, added.generatedSid);
     expect(def.actions).toEqual([{ type: 'comment', text: 'body' }]);
+    // Like the editor, a definition without sub-events has no children key.
+    expect(def).not.toHaveProperty('children');
   });
 });
 
