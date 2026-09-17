@@ -15,6 +15,7 @@ import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 import { registerFileTools } from './file-tools.js';
 import { registerEffectTools } from './effect-tools.js';
+import { registerFlowchartTools } from './flowchart-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -31,4 +32,5 @@ export function registerMutationTools(
   registerTimelineTools(deps);
   registerFileTools(deps);
   registerEffectTools(deps);
+  registerFlowchartTools(deps);
 }

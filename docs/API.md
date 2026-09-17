@@ -9,6 +9,7 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Analysis Tools](#analysis-tools)
 - [Mutation Tools](#mutation-tools)
 - [Effect Tools](#effect-tools)
+- [Flowchart Tools](#flowchart-tools)
 - [Runtime Connection Tools](#runtime-connection-tools)
 - [Prompts](#prompts)
 - [Error Handling](#error-handling)
@@ -653,6 +654,198 @@ Remove the effect named `name` from the target, and its per-instance state from 
 ### `reorder_effects`
 
 `names` must list every effect on the target exactly once, in the new order. Effects render in array order.
+## Flowchart Tools
+
+Flowcharts live in `flowcharts/[subfolder/]<name>.json` and are registered in
+the `flowcharts` container of `project.c3proj`, exactly like timelines. Every
+new `sid` comes from the project-wide ID generator, and every write makes a
+`.bak` copy first and then replaces the file through a temp file and a rename.
+
+### File format
+
+The shape below was confirmed against a real Construct 3 r495 project (31
+flowchart files, 1539 nodes).
+
+| Field | Meaning |
+|-------|---------|
+| `sid`, `name`, `w`, `h` | Flowchart SID, name and canvas size (20000 x 20000 on a new flowchart) |
+| `preset-nodes` | `{ items, subfolders }` preset-node folder tree |
+| `nodes[].t` | Node type/title. Equal to `c` on 1170 of the 1539 sampled nodes; empty on comment boxes |
+| `nodes[].c` | Node caption. **Not** a color: node and output colors live in the sibling `<name>.uistate.json` |
+| `nodes[].s` | Start node. All 31 sampled files carry exactly one |
+| `nodes[].e` | Enabled |
+| `nodes[].ty` | Value type. Observed values: `dictionary` and `comment` |
+| `nodes[].pi` | Observed values 0, 1 and 2; meaning could not be determined from the sample |
+| `nodes[].pr`, `prfsid`, `prfnsid` | Preset-node markers. Never taken from tool input: new nodes get `false`/`null`/`null` and existing nodes keep whatever they carry |
+| `nodes[].pnSIDs`, `poSIDs` | Strictly parallel, one entry per incoming connection (1295 of 1295 sampled pairs valid): `poSIDs[i]` is an output of the node `pnSIDs[i]` |
+| `nodes[].nodeSIDs` | Distinct child node SIDs, in an order independent of the `outputs` array order |
+| `nodes[].outputs[]` | `{ sid, cnSID, name, value, enable, default }`; `cnSID` is the connected node SID or `null` |
+
+Every unknown key is preserved on read-modify-write, at both the file and node
+level. These tools never create, update or delete the sibling
+`<name>.uistate.json` except when `delete_flowchart` removes the flowchart
+itself, which removes that file too (with its own `.bak`).
+
+### `list_flowcharts`
+
+List every flowchart registered in the project, at the container root and in
+every subfolder. Returns `{ flowcharts: string[], count: number }`.
+
+No parameters.
+
+### `get_flowchart_details`
+
+Return the parsed flowchart file, including all nodes, outputs and connections.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Flowchart name |
+
+### `create_flowchart`
+
+Create an empty flowchart file and register it. The call is refused when the
+Flowchart plugin is not already in `usedAddons`; add a Flowchart object in the
+Construct 3 editor first, because this tool never registers plugins itself.
+Duplicate names are refused wherever the existing name is registered.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Flowchart name |
+| `subfolder` | string | No | Slash-separated folder path under `flowcharts/`, created in both places |
+
+### `delete_flowchart`
+
+Delete the flowchart file, its `.uistate.json` sibling and the `project.c3proj`
+registration. The file is removed first, so a failure leaves the registration
+intact and the call retryable.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Flowchart name to delete |
+
+### `add_flowchart_node`
+
+Add a node. Outputs are created unconnected; wire them with
+`connect_flowchart_nodes`. When `isStart` is true the flag is cleared on every
+other node, because Construct 3 keeps exactly one start node per flowchart. The
+result carries `generatedSid` for the node and `outputSids` for its pins, plus a
+warning when the flowchart is left without a start node.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `caption` | string | Yes | Node caption (the `c` field) |
+| `nodeType` | string | No | Node type/title (the `t` field; defaults to `caption`) |
+| `x`, `y` | number | Yes | Canvas position |
+| `width`, `height` | number | No | Box size (defaults: 300 x 133) |
+| `isStart` | boolean | No | Make this the start node (default: false) |
+| `enabled` | boolean | No | The `e` field (default: true) |
+| `valueType` | string | No | The `ty` field (default: `dictionary`) |
+| `outputs` | array | No | `{ name, value?, enabled?, isDefault? }` pins to create |
+
+There is no `color` parameter: the node `c` field is the caption, and colors are
+held in the `.uistate.json` file these tools do not write.
+
+### `update_flowchart_node`
+
+Update node properties. Connections, preset markers and unknown keys are
+preserved. `isStart: true` clears the flag on every other node.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `nodeSid` | number | Yes | SID of the node to update |
+| `caption` | string | No | New caption (`c`) |
+| `nodeType` | string | No | New type/title (`t`) |
+| `tags` | string | No | Writes a `tags` key. **Not observed** in any r495 sample flowchart; the result carries a warning saying so |
+| `isStart` | boolean | No | Set or clear the start flag |
+| `enabled` | boolean | No | The `e` field |
+| `parentIndex` | number | No | The `pi` field (meaning undetermined) |
+| `x`, `y`, `width`, `height` | number | No | Canvas position and box size |
+
+### `delete_flowchart_node`
+
+Delete a node and clean every reference to it: other nodes' `nodeSIDs`, their
+parallel `pnSIDs`/`poSIDs` entries, and any output whose `cnSID` pointed at it
+(set back to `null`).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `nodeSid` | number | Yes | SID of the node to delete |
+
+### `add_flowchart_output`
+
+Add an output pin, unconnected, at the end of the array or at `index`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `nodeSid` | number | Yes | Node to add the pin to |
+| `name` | string | Yes | Output pin name |
+| `value` | string | No | Output value (default: empty string) |
+| `enabled` | boolean | No | The `enable` field (default: true) |
+| `isDefault` | boolean | No | The `default` field (default: false) |
+| `index` | number | No | Insertion index; must not exceed the current output count |
+
+### `update_flowchart_output`
+
+Update an output pin. Its `cnSID` is preserved.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `outputSid` | number | Yes | SID of the output to update |
+| `name`, `value` | string | No | New name / value |
+| `enabled` | boolean | No | The `enable` field |
+| `isDefault` | boolean | No | The `default` field |
+
+### `delete_flowchart_output`
+
+Delete an output pin, first undoing any connection it held.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `outputSid` | number | Yes | SID of the output to delete |
+
+### `reorder_flowchart_outputs`
+
+Reorder a node's output pins. `outputSids` must be a permutation of that node's
+current output SIDs, so a wrong, short or duplicated list is rejected and
+nothing is written. Output array order is execution order in Construct 3, so
+this changes behavior.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `nodeSid` | number | Yes | Node whose outputs to reorder |
+| `outputSids` | number[] | Yes | The node's output SIDs in their new order |
+
+### `connect_flowchart_nodes`
+
+Set the output's `cnSID`, append the source node SID to the target's `pnSIDs`
+and the output SID to its `poSIDs`, and add the target to the source's
+`nodeSIDs`. Connecting a node to itself is refused, as is reusing an output that
+is already connected; disconnect it first.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `outputSid` | number | Yes | Source output pin |
+| `targetNodeSid` | number | Yes | Node to connect to |
+
+### `disconnect_flowchart_nodes`
+
+Reverse one connection. Because `pnSIDs` and `poSIDs` are per connection, only
+the entry for this output is removed; the target stays in the source's
+`nodeSIDs` while any other output still points at it, so a second connection
+between the same two nodes survives untouched.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `outputSid` | number | Yes | Output pin to disconnect |
 
 ---
 

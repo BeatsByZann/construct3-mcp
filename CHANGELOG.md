@@ -14,6 +14,27 @@ All notable changes to the Construct3 MCP Server are documented here.
   settings, and per-instance `effects` state, finds instances in nested
   sub-layers, and warns instead of silently ignoring spatial values on
   non-world instances.
+- Flowchart tools: `list_flowcharts`, `get_flowchart_details`,
+  `create_flowchart` and `delete_flowchart` manage `flowcharts/<name>.json`
+  files and their `project.c3proj` registration, including nested subfolders.
+  Creation is refused unless the Flowchart plugin is already in `usedAddons`;
+  the tools never register a plugin themselves.
+- `add_flowchart_node`, `update_flowchart_node` and `delete_flowchart_node`:
+  node editing with SIDs from the project-wide generator, the one-start-node
+  invariant enforced on write, preservation of preset markers and unknown keys,
+  and full reference cleanup on delete (other nodes' `nodeSIDs`, the parallel
+  `pnSIDs`/`poSIDs` entries, and outputs whose `cnSID` pointed at the node).
+- `add_flowchart_output`, `update_flowchart_output`, `delete_flowchart_output`
+  and `reorder_flowchart_outputs`: output-pin editing, with deletion undoing any
+  connection the pin held and reordering rejecting anything that is not a
+  permutation of the node's current outputs.
+- `connect_flowchart_nodes` and `disconnect_flowchart_nodes`: connection editing
+  that keeps `cnSID`, `pnSIDs`, `poSIDs` and `nodeSIDs` consistent, refuses
+  self-connections and already-connected outputs, and leaves a second connection
+  between the same two nodes intact when one is removed.
+- `Flowchart`, `FlowchartNode`, `FlowchartOutput` and `FlowchartsContainer`
+  types, documenting the r495 field meanings (`t` is the node type, `c` is the
+  caption and not a color; `pnSIDs`/`poSIDs` are parallel per-connection arrays).
 - `connect_to_game` and `disconnect_from_game`: persistent Chrome DevTools
   Protocol connections, page-target discovery, bridge readiness checks,
   multiple retained connections, and server-shutdown cleanup.
