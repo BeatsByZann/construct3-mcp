@@ -190,6 +190,69 @@ async function reorderFrameImages(
 }
 
 /**
+ * Shift the image files of frames at or after `from` up by one, freeing the
+ * `from` slot for an inserted frame. Renaming runs from the highest index
+ * down, so no move targets a name that is still occupied. The caller owns the
+ * journal and is responsible for undoing it.
+ */
+async function shiftFrameImagesUp(
+  projectDir: string,
+  objectName: string,
+  animationName: string,
+  from: number,
+  frameCount: number,
+  journal: FileMoveJournal,
+): Promise<number> {
+  let moved = 0;
+  for (let index = frameCount - 1; index >= from; index--) {
+    const source = frameImagePath(projectDir, objectName, animationName, index);
+    if (!(await pathExists(source))) continue;
+    await journal.move(source, frameImagePath(projectDir, objectName, animationName, index + 1));
+    moved++;
+  }
+  return moved;
+}
+
+/**
+ * Park the removed frame's image file and shift every later frame's image down
+ * by one, so the surviving frames keep the images they had.
+ *
+ * The removed image is parked rather than deleted: undoing the journal then
+ * restores it, and the caller discards the parked file only once the JSON
+ * write has succeeded.
+ */
+async function removeFrameImageSlot(
+  projectDir: string,
+  objectName: string,
+  animationName: string,
+  frameIndex: number,
+  frameCount: number,
+  journal: FileMoveJournal,
+): Promise<{ moved: number; parked?: string }> {
+  try {
+    let moved = 0;
+    let parked: string | undefined;
+
+    const removed = frameImagePath(projectDir, objectName, animationName, frameIndex);
+    if (await pathExists(removed)) {
+      parked = removed + '.reorder-tmp';
+      await journal.move(removed, parked);
+      moved++;
+    }
+    for (let index = frameIndex + 1; index < frameCount; index++) {
+      const source = frameImagePath(projectDir, objectName, animationName, index);
+      if (!(await pathExists(source))) continue;
+      await journal.move(source, frameImagePath(projectDir, objectName, animationName, index - 1));
+      moved++;
+    }
+    return { moved, parked };
+  } catch (error) {
+    await journal.undo();
+    throw error;
+  }
+}
+
+/**
  * Shift frame image files up by one from `insertAt`, then copy the duplicated
  * frame's image into the freed slot. Mirrors reorderFrameImages' contract.
  */
@@ -203,13 +266,7 @@ async function duplicateFrameImage(
 ): Promise<{ moved: number; journal: FileMoveJournal }> {
   const journal = new FileMoveJournal();
   try {
-    let moved = 0;
-    for (let index = frameCount - 1; index >= insertAt; index--) {
-      const source = frameImagePath(projectDir, objectName, animationName, index);
-      if (!(await pathExists(source))) continue;
-      await journal.move(source, frameImagePath(projectDir, objectName, animationName, index + 1));
-      moved++;
-    }
+    let moved = await shiftFrameImagesUp(projectDir, objectName, animationName, insertAt, frameCount, journal);
     // The source frame's image has itself shifted when it sat at or after insertAt.
     const sourceIndex = frameIndex >= insertAt ? frameIndex + 1 : frameIndex;
     const sourcePath = frameImagePath(projectDir, objectName, animationName, sourceIndex);
@@ -583,40 +640,70 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         const frameWidth = args.width ?? (anim.frames[0]?.width ?? 100);
         const frameHeight = args.height ?? (anim.frames[0]?.height ?? 100);
 
-        const imageSpriteId = await idGen.generateImageSpriteId(reader);
-
-        // Write placeholder PNG
-        await writer.writeImageFiles([{
-          objectName: args.objectName,
-          animationName: args.animationName,
-          frameIndex: args.index ?? anim.frames.length,
-          pluginId: 'Sprite',
-          width: 1,
-          height: 1,
-        }]);
-
-        const newFrame: AnimationFrame = {
-          ...createAnimationFrame(frameWidth, frameHeight, imageSpriteId),
-          duration: args.duration,
-        };
-
-        if (args.index !== undefined) {
-          anim.frames.splice(args.index, 0, newFrame);
-        } else {
-          anim.frames.push(newFrame);
+        const insertAt = args.index ?? anim.frames.length;
+        if (insertAt > anim.frames.length) {
+          return toolError(`index ${insertAt} is out of range. It must be between 0 and ${anim.frames.length} (append).`);
         }
 
-        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
-        const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+        const imageSpriteId = await idGen.generateImageSpriteId(reader);
 
-        const result: WriteResult = {
-          success: true,
-          entity: args.objectName,
-          category: 'object',
-          action: 'updated',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
+        // Inserting mid-animation renumbers every later frame, and C3 addresses
+        // a frame's image by the index in its file name, so the existing image
+        // files move up before the placeholder claims the freed slot.
+        const journal = new FileMoveJournal();
+        let shifted: number;
+        try {
+          shifted = await shiftFrameImagesUp(
+            reader.getProjectDir(), args.objectName, args.animationName, insertAt, anim.frames.length, journal,
+          );
+        } catch (shiftError) {
+          await journal.undo();
+          throw shiftError;
+        }
+
+        let placeholderWritten = false;
+        try {
+          // Write placeholder PNG
+          await writer.writeImageFiles([{
+            objectName: args.objectName,
+            animationName: args.animationName,
+            frameIndex: insertAt,
+            pluginId: 'Sprite',
+            width: 1,
+            height: 1,
+          }]);
+          placeholderWritten = true;
+
+          const newFrame: AnimationFrame = {
+            ...createAnimationFrame(frameWidth, frameHeight, imageSpriteId),
+            duration: args.duration,
+          };
+
+          anim.frames.splice(insertAt, 0, newFrame);
+
+          const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+          const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+
+          const result: WriteResult = {
+            success: true,
+            entity: args.objectName,
+            category: 'object',
+            action: 'updated',
+            backupFile: backupPath,
+            warnings: shifted > 0
+              ? [`Shifted ${shifted} frame image file(s) under images/ up by one so they stay aligned with the inserted frame.`]
+              : undefined,
+          };
+          return toolResult(result);
+        } catch (writeError) {
+          if (placeholderWritten) {
+            try {
+              await unlink(frameImagePath(reader.getProjectDir(), args.objectName, args.animationName, insertAt));
+            } catch { /* best effort */ }
+          }
+          await journal.undo();
+          throw writeError;
+        }
       } catch (error) {
         console.error('[add_frame_to_animation] failed:', error);
         return toolError(`Error adding frame: ${error instanceof Error ? error.message : String(error)}`);
@@ -664,19 +751,40 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           return toolError(`Cannot delete the last frame of animation "${args.animationName}". An animation must have at least one frame.`);
         }
 
-        anim.frames.splice(args.frameIndex, 1);
+        // Removing a frame renumbers every later frame, and C3 addresses a
+        // frame's image by the index in its file name, so the later image files
+        // move down by one and the removed image is discarded only once the
+        // JSON write has succeeded.
+        const journal = new FileMoveJournal();
+        const { moved, parked } = await removeFrameImageSlot(
+          reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, anim.frames.length, journal,
+        );
 
-        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
-        const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+        try {
+          anim.frames.splice(args.frameIndex, 1);
 
-        const result: WriteResult = {
-          success: true,
-          entity: args.objectName,
-          category: 'object',
-          action: 'updated',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
+          const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+          const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+
+          if (parked) {
+            try { await unlink(parked); } catch { /* best effort */ }
+          }
+
+          const result: WriteResult = {
+            success: true,
+            entity: args.objectName,
+            category: 'object',
+            action: 'updated',
+            backupFile: backupPath,
+            warnings: moved > 0
+              ? [`Removed or shifted ${moved} frame image file(s) under images/ so they stay aligned with the remaining frames.`]
+              : undefined,
+          };
+          return toolResult(result);
+        } catch (writeError) {
+          await journal.undo();
+          throw writeError;
+        }
       } catch (error) {
         console.error('[delete_frame_from_animation] failed:', error);
         return toolError(`Error deleting frame: ${error instanceof Error ? error.message : String(error)}`);

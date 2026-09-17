@@ -397,6 +397,40 @@ describe('add_frame_to_animation', () => {
   });
 });
 
+describe('add_frame_to_animation index guard', () => {
+  it('rejects an index past the end of the animation', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
+    const result = await server.callTool('add_frame_to_animation', {
+      objectName: 'Hero', animationName: 'Animation 1', index: 5,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('out of range');
+    expect(writer.callsFor('writeImageFiles')).toHaveLength(0);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('appends at the end without shifting anything', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
+    const result = await server.callTool('add_frame_to_animation', {
+      objectName: 'Hero', animationName: 'Animation 1',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const files = writer.callsFor('writeImageFiles')[0].args[0] as Array<Record<string, unknown>>;
+    expect(files[0].frameIndex).toBe(2);
+  });
+
+  it('writes the placeholder into the freed slot when inserting mid-animation', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(3)]]) });
+    await server.callTool('add_frame_to_animation', {
+      objectName: 'Hero', animationName: 'Animation 1', index: 1,
+    });
+    const files = writer.callsFor('writeImageFiles')[0].args[0] as Array<Record<string, unknown>>;
+    expect(files[0].frameIndex).toBe(1);
+    const frames = writtenFrames(writer);
+    expect(frames.map((frame: any) => frame.imageSpriteId).slice(2)).toEqual([101, 102]);
+  });
+});
+
 // ─── delete_frame_from_animation ─────────────────────────
 
 describe('delete_frame_from_animation', () => {
