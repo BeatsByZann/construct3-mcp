@@ -126,11 +126,8 @@ describe('create_flowchart', () => {
   // The missing-plugin path now writes real files (a warning instead of a refusal); it is
   // covered by flowchart-tools.integration.test.ts against a temp project.
 
-  it('does not auto-register the Flowchart plugin', async () => {
-    const { server, writer } = setup({ withPlugin: false });
-    await server.callTool('create_flowchart', { name: 'Graph A' });
-    expect(writer.callsFor('ensureAddonRegistered')).toHaveLength(0);
-  });
+  // 'does not auto-register the Flowchart plugin' moved to the integration test as well: with the
+  // mock reader it would write into the mock's absolute project path on the real filesystem.
 
   it('rejects a duplicate flowchart name', async () => {
     const { server } = setup({ withPlugin: true, flowcharts: { items: ['Graph A'], subfolders: [] } });
