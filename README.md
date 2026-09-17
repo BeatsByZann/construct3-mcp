@@ -122,7 +122,7 @@ node dist/index.js /path/to/your/project.c3proj
 | `move_project_item` | Move an object type, family, layout, event sheet, flowchart, script or project file to another Project Bar folder, moving its files with it |
 | `duplicate_layout` | Copy a layout with fresh SIDs, new UIDs and remapped hierarchy links |
 | `duplicate_layer` | Copy a layer inside its layout, placed above the source |
-| `duplicate_event_sheet` | Copy an event sheet with fresh SIDs (refused when it declares functions, custom actions or global variables) |
+| `duplicate_event_sheet` | Copy an event sheet with fresh SIDs (refused when it declares groups, functions, custom actions or global variables) |
 | `duplicate_object_type` | Copy an object type with fresh SIDs and image IDs, its image files and its tilemap brush |
 | `duplicate_timeline` | Copy a timeline under a new name |
 | `replace_object_in_events` | Construct's Replace object: swap one object type or family for another in one sheet or all sheets, skipping events the replacement cannot serve (`dryRun`) |
