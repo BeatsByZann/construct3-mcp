@@ -137,7 +137,7 @@ export function registerFileTools({ server, reader, writer }: MutationToolDeps):
         if (!sourcePath) return toolError('sourcePath (or filePath) is required when the Project File is not already registered.');
 
         const sourceStat = await stat(sourcePath);
-        if (!sourceStat.isFile()) return toolError(`Source path is not a file: ${sourcePath}`);
+        if (!sourceStat.isFile()) return toolError('Source path is not a file.');
         destinationPath = resolveProjectPath(reader.getProjectDir(), 'files', ...(args.subfolder ? [args.subfolder] : []), name);
         await mkdir(join(reader.getProjectDir(), 'files', ...(args.subfolder ? args.subfolder.split('/') : [])), { recursive: true });
         try {

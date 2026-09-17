@@ -532,7 +532,7 @@ describe('delete_family', () => {
     expect(order.indexOf('removeFromProject')).toBeLessThan(order.indexOf('deleteEntityFile'));
   });
 
-  it('names the orphaned file when the file delete fails, without promising a validate_project report', async () => {
+  it('names the orphaned file when the file delete fails, with the validate_project recovery hint', async () => {
     const { server, writer } = setup({
       families: new Map([['btn_fam', { name: 'btn_fam', 'plugin-id': 'Sprite', sid: 1, members: [] }]]),
     });
@@ -540,8 +540,8 @@ describe('delete_family', () => {
     const result = await server.callTool('delete_family', { name: 'btn_fam' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('families/btn_fam.json');
-    // validate_project does not scan families for orphans, so the message must not claim it does
-    expect(result.content[0].text).not.toContain('validate_project');
+    // Families now participate in the recursive orphan-file scan.
+    expect(result.content[0].text).toContain('validate_project');
   });
 
   it('errors on nonexistent family', async () => {

@@ -2,6 +2,7 @@
  * MCP Tools for querying Construct3 project
  */
 
+import { redactFsPaths } from '../error-messages.js';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
@@ -21,7 +22,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error listing objects: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error listing objects: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -40,7 +41,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error listing event sheets: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error listing event sheets: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -59,7 +60,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error listing layouts: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error listing layouts: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -78,7 +79,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error listing families: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error listing families: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -99,7 +100,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         const suggestions = reader.findNearestName(args.name, 'objects');
         const hint = suggestions.length > 0 ? `\nDid you mean: ${suggestions.join(', ')}?\nUse list_objects to see all available names.` : '\nUse list_objects to see all available names.';
         return {
-          content: [{ type: 'text' as const, text: `Error reading object "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error reading object "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}`) }],
           isError: true,
         };
       }
@@ -120,7 +121,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         const suggestions = reader.findNearestName(args.name, 'eventsheets');
         const hint = suggestions.length > 0 ? `\nDid you mean: ${suggestions.join(', ')}?\nUse list_eventsheets to see all available names.` : '\nUse list_eventsheets to see all available names.';
         return {
-          content: [{ type: 'text' as const, text: `Error reading event sheet "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error reading event sheet "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}`) }],
           isError: true,
         };
       }
@@ -141,7 +142,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         const suggestions = reader.findNearestName(args.name, 'layouts');
         const hint = suggestions.length > 0 ? `\nDid you mean: ${suggestions.join(', ')}?\nUse list_layouts to see all available names.` : '\nUse list_layouts to see all available names.';
         return {
-          content: [{ type: 'text' as const, text: `Error reading layout "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error reading layout "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}`) }],
           isError: true,
         };
       }
@@ -160,7 +161,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error searching objects: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error searching objects: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -204,7 +205,7 @@ export function registerQueryTools(server: McpServer, reader: Construct3ProjectR
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error getting project summary: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error getting project summary: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
