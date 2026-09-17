@@ -22,7 +22,8 @@ export const conditionSchema = z.object({
     .refine(obj => JSON.stringify(obj).length <= 50_000, 'Parameters payload too large (max 50KB)')
     .optional().describe('Condition parameters as key-value pairs (max 100 keys, depth 6)'),
   isInverted: z.boolean().optional().describe('Negate the condition'),
-  isOr: z.boolean().optional().describe('OR-combine with previous condition (default: AND)'),
+  disabled: z.boolean().optional().describe('Disable this condition'),
+  isOr: z.boolean().optional().describe('Legacy: Construct has no per-condition OR. Any condition with isOr turns the whole block into an OR block (isOrBlock); prefer the block-level isOrBlock flag'),
 });
 
 /** Standard action schema */
@@ -36,6 +37,39 @@ export const standardActionSchema = z.object({
   callFunction: z.string().optional().describe('For function call actions'),
   disabled: z.boolean().optional().describe('Disable this individual action'),
 });
+
+/** Maximum positional arguments on one call action. */
+export const MAX_CALL_ARGUMENTS = 100;
+
+/** Positional arguments of a function or custom action call, as expression strings. */
+const callArgumentsSchema = z.array(z.string().max(50_000)).max(MAX_CALL_ARGUMENTS)
+  .describe('Arguments in parameter order, as expression strings (e.g. ["Player.X", "\"text\""])');
+
+/** Function call action: C3 stores { callFunction, sid, parameters: [args] } with no id or objectClass. */
+export const functionCallActionSchema = z.object({
+  callFunction: z.string().min(1).max(500).describe('Name of the function-block to call'),
+  parameters: callArgumentsSchema.optional(),
+  disabled: z.boolean().optional().describe('Disable this call'),
+}).strict();
+
+/** Custom action call: { customAction, objectClass, customActionObjectClass?, sid, parameters: [args] }. */
+export const customActionCallSchema = z.object({
+  customAction: z.string().min(1).max(500).describe('Custom action name (aceName of its custom-ace-block)'),
+  objectClass: z.string().min(1).max(500).describe('Object type or family the action is called on'),
+  customActionObjectClass: z.string().max(500).optional().describe('Family that defines the custom action, when calling a family custom action on a member object type (C3 writes this key only then)'),
+  parameters: callArgumentsSchema.optional(),
+  disabled: z.boolean().optional().describe('Disable this call'),
+}).strict();
+
+const rgbaSchema = z.array(z.number().min(0).max(1)).length(4);
+
+/** Comment row inside a block's action list: { type: "comment", text, text-color?, background-color? }. */
+export const commentActionSchema = z.object({
+  type: z.literal('comment').describe('Action comment'),
+  text: z.string().max(10_000).describe('Comment text'),
+  textColor: rgbaSchema.optional().describe('Text color [r,g,b,a], written as "text-color"'),
+  backgroundColor: rgbaSchema.optional().describe('Background color [r,g,b,a], written as "background-color"'),
+}).strict();
 
 /** Script action schema — accepts a single string or an array of lines as input */
 export const scriptActionSchema = z.object({
@@ -70,7 +104,7 @@ export async function buildCondition(
   if (input.behaviorType) condition.behaviorType = input.behaviorType;
   if (input.parameters) condition.parameters = input.parameters;
   if (input.isInverted) condition.isInverted = true;
-  if (input.isOr) condition.isOr = true;
+  if (input.disabled) condition.disabled = true;
   return condition;
 }
 
@@ -79,7 +113,28 @@ export async function buildAction(
   reader: Construct3ProjectReader,
   idGen: IdGenerator,
   input: z.infer<typeof actionSchema>,
+  warnings?: string[],
 ): Promise<Action> {
+  if ('type' in input && input.type === 'comment') {
+    const action: Record<string, unknown> = { type: 'comment', text: input.text };
+    if (input.textColor) action['text-color'] = input.textColor;
+    if (input.backgroundColor) action['background-color'] = input.backgroundColor;
+    return action as unknown as Action;
+  }
+  if ('customAction' in input) {
+    const action: Record<string, unknown> = {
+      customAction: input.customAction,
+      objectClass: input.objectClass,
+    };
+    if (input.customActionObjectClass) action.customActionObjectClass = input.customActionObjectClass;
+    action.sid = await idGen.generateSid(reader);
+    if (input.parameters && input.parameters.length > 0) action.parameters = input.parameters;
+    if (input.disabled) action.disabled = true;
+    return action as unknown as Action;
+  }
+  if ('callFunction' in input && !('id' in input)) {
+    return buildFunctionCall(reader, idGen, input.callFunction, input.parameters, input.disabled);
+  }
   if ('type' in input && input.type === 'script') {
     const action: Action = {
       type: 'script',
@@ -91,7 +146,15 @@ export async function buildAction(
   }
 
   if (!('id' in input)) {
-    throw new Error('Invalid action input: expected a standard action or script action.');
+    throw new Error('Invalid action input: expected a standard, function call, custom action call, comment or script action.');
+  }
+  if (input.callFunction) {
+    // Legacy input shape { id, objectClass, callFunction, parameters: {...} }:
+    // C3 stores function calls without id/objectClass and with positional arguments.
+    const params = input.parameters as Record<string, unknown> | undefined;
+    const args = params ? Object.values(params).map(v => (typeof v === 'string' ? v : JSON.stringify(v))) : undefined;
+    warnings?.push(`Function call "${input.callFunction}" was written in C3's call shape { callFunction, sid, parameters: [...] }; its id/objectClass were dropped${args && args.length > 0 ? ' and its parameters were converted to positional arguments in key order' : ''}. Prefer { callFunction, parameters: [...] }.`);
+    return buildFunctionCall(reader, idGen, input.callFunction, args, input.disabled);
   }
   const sid = await idGen.generateSid(reader);
   const action: Action = {
@@ -101,21 +164,135 @@ export async function buildAction(
   };
   if (input.behaviorType) action.behaviorType = input.behaviorType;
   if (input.parameters) action.parameters = input.parameters;
-  if (input.callFunction) action.callFunction = input.callFunction;
   if (input.disabled) action.disabled = true;
   return action;
 }
 
-/** Union of standard and script actions */
-export const actionSchema = z.union([standardActionSchema, scriptActionSchema]);
+async function buildFunctionCall(
+  reader: Construct3ProjectReader,
+  idGen: IdGenerator,
+  name: string,
+  args: string[] | undefined,
+  disabled: boolean | undefined,
+): Promise<Action> {
+  const action: Record<string, unknown> = { callFunction: name, sid: await idGen.generateSid(reader) };
+  if (args && args.length > 0) action.parameters = args;
+  if (disabled) action.disabled = true;
+  return action as unknown as Action;
+}
+
+/** Every action kind an event block can hold. Order matters: strict shapes first. */
+export const actionSchema = z.union([
+  scriptActionSchema,
+  commentActionSchema,
+  customActionCallSchema,
+  functionCallActionSchema,
+  standardActionSchema,
+]);
+
+/** An action input that carries an object reference to validate. */
+export function actionObjectRefs(action: Record<string, unknown>): Array<{ objectClass: string; behaviorType?: string }> {
+  const refs: Array<{ objectClass: string; behaviorType?: string }> = [];
+  if (typeof action.objectClass === 'string') {
+    refs.push({ objectClass: action.objectClass, behaviorType: action.behaviorType as string | undefined });
+  }
+  if (typeof action.customActionObjectClass === 'string') {
+    refs.push({ objectClass: action.customActionObjectClass });
+  }
+  return refs;
+}
+
+// ─── Else and OR blocks ─────────────────────────────────────
+
+/** C3 marks an else block with a System "else" condition in first position. */
+export function isElseCondition(condition: unknown): boolean {
+  const c = condition as Record<string, unknown> | undefined;
+  return !!c && c.id === 'else' && c.objectClass === 'System';
+}
+
+/** True for an else block: a leading System "else" condition, or the legacy isElse key older builds wrote. */
+export function isElseBlock(event: Record<string, unknown>): boolean {
+  const conditions = event.conditions as unknown[] | undefined;
+  return (Array.isArray(conditions) && isElseCondition(conditions[0])) || event.isElse === true;
+}
+
+/**
+ * Rewrite a block that older builds of this server wrote with the unknown
+ * keys isElse (block) and isOr (condition) into C3's shape: a leading else
+ * condition and a block-level isOrBlock. Returns true when anything changed.
+ */
+export async function normalizeLegacyBlock(
+  reader: Construct3ProjectReader,
+  idGen: IdGenerator,
+  event: Record<string, unknown>,
+): Promise<boolean> {
+  let changed = false;
+  const conditions = Array.isArray(event.conditions) ? event.conditions as Record<string, unknown>[] : null;
+  if (event.isElse === true) {
+    delete event.isElse;
+    if (conditions && !isElseCondition(conditions[0])) {
+      conditions.unshift({ id: 'else', objectClass: 'System', sid: await idGen.generateSid(reader) });
+    }
+    changed = true;
+  } else if (event.isElse !== undefined) {
+    delete event.isElse;
+    changed = true;
+  }
+  if (conditions) {
+    let anyOr = false;
+    for (const c of conditions) {
+      if ('isOr' in c) {
+        if (c.isOr) anyOr = true;
+        delete c.isOr;
+        changed = true;
+      }
+    }
+    if (anyOr) event.isOrBlock = true;
+  }
+  return changed;
+}
+
+// ─── Fresh SIDs for copies ──────────────────────────────────
+
+/**
+ * Give every SID inside copied event data a fresh project-unique value, so a
+ * copy never duplicates the original's SIDs. Walks nested events, conditions,
+ * actions and function parameters (any object key named "sid").
+ */
+export async function reassignSids(
+  reader: Construct3ProjectReader,
+  idGen: IdGenerator,
+  value: unknown,
+): Promise<number> {
+  let count = 0;
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (Array.isArray(node)) {
+      for (const item of node) stack.push(item);
+    } else if (node && typeof node === 'object') {
+      const record = node as Record<string, unknown>;
+      for (const [key, child] of Object.entries(record)) {
+        if (key === 'sid' && typeof child === 'number') {
+          record.sid = await idGen.generateSid(reader);
+          count++;
+        } else if (child && typeof child === 'object') {
+          stack.push(child);
+        }
+      }
+    }
+  }
+  return count;
+}
 
 // ─── Recursive Child Event Schema ───────────────────────────
 
 export interface ChildEventInput {
   conditions?: Array<z.infer<typeof conditionSchema>>;
-  actions?: Array<z.infer<typeof standardActionSchema> | z.infer<typeof scriptActionSchema>>;
+  actions?: Array<z.infer<typeof actionSchema>>;
   disabled?: boolean;
   isElse?: boolean;
+  isOrBlock?: boolean;
   children?: ChildEventInput[];
 }
 
@@ -123,7 +300,8 @@ export const childEventSchema: z.ZodType<ChildEventInput> = z.lazy(() => z.objec
   conditions: z.array(conditionSchema).optional().default([]),
   actions: z.array(actionSchema).optional().default([]),
   disabled: z.boolean().optional(),
-  isElse: z.boolean().optional(),
+  isElse: z.boolean().optional().describe('Else block: written as a leading System "else" condition'),
+  isOrBlock: z.boolean().optional().describe('OR block: the block is true when any condition is true'),
   children: z.array(childEventSchema).optional().default([]),
 }));
 
@@ -347,9 +525,7 @@ export function collectObjectRefs(
     refs.push({ objectClass: c.objectClass, behaviorType: c.behaviorType });
   }
   for (const a of actions) {
-    if ('objectClass' in a && typeof a.objectClass === 'string') {
-      refs.push({ objectClass: a.objectClass, behaviorType: a['behaviorType'] as string | undefined });
-    }
+    refs.push(...actionObjectRefs(a));
   }
   for (const child of children) {
     collectObjectRefs(
@@ -371,9 +547,10 @@ export async function buildBlockEvent(
   idGen: IdGenerator,
   block: {
     conditions: Array<z.infer<typeof conditionSchema>>;
-    actions: Array<z.infer<typeof standardActionSchema> | z.infer<typeof scriptActionSchema>>;
+    actions: Array<z.infer<typeof actionSchema>>;
     disabled?: boolean;
     isElse?: boolean;
+    isOrBlock?: boolean;
     children: ChildEventInput[];
   },
   depth: number,
@@ -387,8 +564,10 @@ export async function buildBlockEvent(
     throw new Error(`Total event count exceeds maximum of ${MAX_TOTAL_EVENTS}`);
   }
 
+  const startsWithElse = block.conditions.length > 0 && block.conditions[0].id === 'else' && block.conditions[0].objectClass === 'System';
+  const isElse = !!block.isElse || startsWithElse;
   // Validate: non-else blocks must have at least one condition
-  if (!block.isElse && block.conditions.length === 0) {
+  if (!isElse && block.conditions.length === 0) {
     throw new Error(`Non-else event block at depth ${depth} has no conditions. Add conditions or set isElse: true.`);
   }
 
@@ -400,20 +579,20 @@ export async function buildBlockEvent(
     throw new Error(`Block has ${block.actions.length} actions (max ${MAX_ITEMS_PER_BLOCK})`);
   }
 
-  // Warn: isElse blocks with conditions (C3 ignores them)
-  if (block.isElse && block.conditions.length > 0) {
-    counter.warnings.push(`Else block at depth ${depth} has ${block.conditions.length} condition(s) — C3 ignores conditions on else blocks.`);
+  // C3 has no per-condition OR: the whole block is an OR block or not.
+  const legacyOr = block.conditions.some(c => c.isOr);
+  if (legacyOr && !block.isOrBlock) {
+    counter.warnings.push(`A condition at depth ${depth} has isOr: C3 applies OR to the whole block, so the block was written with isOrBlock: true.`);
   }
-
-  // Warn: isOr on the first condition is meaningless
-  if (block.conditions.length > 0 && block.conditions[0].isOr) {
-    counter.warnings.push(`First condition at depth ${depth} has isOr: true — this is ignored by C3 (no previous condition to OR with).`);
-  }
+  const isOrBlock = !!block.isOrBlock || legacyOr;
 
   const blockSid = await idGen.generateSid(reader);
 
-  // Build conditions with SIDs
+  // Build conditions with SIDs; an else block starts with a System "else" condition.
   const builtConditions: Condition[] = [];
+  if (isElse && !startsWithElse) {
+    builtConditions.push({ id: 'else', objectClass: 'System', sid: await idGen.generateSid(reader) });
+  }
   for (const c of block.conditions) {
     builtConditions.push(await buildCondition(reader, idGen, c));
   }
@@ -421,7 +600,7 @@ export async function buildBlockEvent(
   // Build actions with SIDs (or as script actions)
   const builtActions: Action[] = [];
   for (const a of block.actions) {
-    builtActions.push(await buildAction(reader, idGen, a));
+    builtActions.push(await buildAction(reader, idGen, a, counter.warnings));
   }
 
   // Recursively build children
@@ -435,6 +614,7 @@ export async function buildBlockEvent(
         actions: child.actions ?? [],
         disabled: child.disabled,
         isElse: child.isElse,
+        isOrBlock: child.isOrBlock,
         children: child.children ?? [],
       },
       depth + 1,
@@ -449,7 +629,7 @@ export async function buildBlockEvent(
     builtActions,
     block.disabled || undefined,
     builtChildren.length > 0 ? builtChildren : undefined,
-    block.isElse || undefined,
+    isOrBlock || undefined,
   );
 }
 

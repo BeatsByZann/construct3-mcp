@@ -466,8 +466,9 @@ export function createBlockEvent(
   actions: Action[],
   disabled?: boolean,
   children?: C3Event[],
-  isElse?: boolean,
+  isOrBlock?: boolean,
 ): BlockEvent {
+  // An else block is a leading System "else" condition, not a block key.
   return {
     eventType: 'block',
     conditions,
@@ -475,7 +476,7 @@ export function createBlockEvent(
     children: children ?? [],
     sid,
     ...(disabled ? { disabled: true } : {}),
-    ...(isElse ? { isElse: true } : {}),
+    ...(isOrBlock ? { isOrBlock: true } : {}),
   };
 }
 

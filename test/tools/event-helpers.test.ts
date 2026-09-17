@@ -200,7 +200,11 @@ describe('buildBlockEvent', () => {
       counter,
     );
 
-    expect(block.isElse).toBe(true);
+    // C3 r495 marks an else block with a leading System "else" condition, not a block key.
+    expect(block).not.toHaveProperty('isElse');
+    expect(block.conditions).toHaveLength(1);
+    expect(block.conditions[0]).toMatchObject({ id: 'else', objectClass: 'System' });
+    expect(typeof block.conditions[0].sid).toBe('number');
   });
 
   it('builds script actions in C3 canonical shape (language tag + line array)', async () => {
@@ -328,12 +332,12 @@ describe('buildBlockEvent', () => {
     ).rejects.toThrow('no conditions');
   });
 
-  it('warns about else block with conditions', async () => {
+  it('builds an else-if block: the else condition first, then the given conditions', async () => {
     const reader = new MockReader();
     const idGen = new MockIdGenerator();
     const counter = { count: 0, warnings: [] };
 
-    await buildBlockEvent(
+    const block = await buildBlockEvent(
       reader as any,
       idGen as any,
       {
@@ -346,7 +350,21 @@ describe('buildBlockEvent', () => {
       counter,
     );
 
-    expect(counter.warnings.some(w => w.includes('Else block'))).toBe(true);
+    expect(block.conditions.map((c: any) => c.id)).toEqual(['else', 'x']);
+    expect(counter.warnings).toEqual([]);
+  });
+
+  it('does not add a second else condition when the input already starts with one', async () => {
+    const reader = new MockReader();
+    const idGen = new MockIdGenerator();
+    const block = await buildBlockEvent(
+      reader as any,
+      idGen as any,
+      { conditions: [{ id: 'else', objectClass: 'System' }], actions: [], isElse: true, children: [] },
+      1,
+      { count: 0, warnings: [] },
+    );
+    expect(block.conditions.map((c: any) => c.id)).toEqual(['else']);
   });
 
   it('warns about isOr on first condition', async () => {
@@ -390,7 +408,32 @@ describe('buildBlockEvent', () => {
     );
 
     expect(block.conditions[1].isInverted).toBe(true);
-    expect(block.conditions[1].isOr).toBe(true);
+    // C3 r495 has no per-condition OR: the legacy flag becomes the block-level isOrBlock.
+    expect(block.conditions[1]).not.toHaveProperty('isOr');
+    expect(block.isOrBlock).toBe(true);
+  });
+
+  it('writes an OR block from isOrBlock and a disabled condition', async () => {
+    const reader = new MockReader();
+    const idGen = new MockIdGenerator();
+    const block = await buildBlockEvent(
+      reader as any,
+      idGen as any,
+      {
+        conditions: [
+          { id: 'a', objectClass: 'System' },
+          { id: 'b', objectClass: 'System', disabled: true },
+        ],
+        actions: [],
+        isOrBlock: true,
+        children: [],
+      },
+      1,
+      { count: 0, warnings: [] },
+    );
+    expect(block.isOrBlock).toBe(true);
+    expect(block.conditions[1].disabled).toBe(true);
+    expect(block.conditions.some((c: any) => 'isOr' in c)).toBe(false);
   });
 
   it('sets disabled on actions', async () => {

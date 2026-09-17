@@ -175,6 +175,12 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Fixed
 
+- OR blocks are written with Construct's block-level `isOrBlock` key. Earlier builds wrote a condition-level `isOr` that r495 does not use (48 OR blocks in Construct's examples, none with `isOr`); a condition input with `isOr` now makes the whole block an OR block, with a warning.
+- Else blocks are written as a leading System `else` condition, the way r495 stores them (172 samples), instead of an unknown block-level `isElse` key. Conditions after the else condition are allowed (else-if); the else condition is kept first. `update_event_block` rewrites blocks that older builds wrote with `isElse` or `isOr`.
+- Function calls are written as `{ callFunction, sid, parameters: [args] }` like Construct, without `id`/`objectClass`; the older keyed-parameter input is converted to positional arguments with a warning.
+- `update_event_block` and `move_event_block_items` accept custom action bodies (`custom-ace-block`), as `add_custom_action` already advised.
+- `move_events_between_sheets` in copy mode gives the copies fresh SIDs throughout instead of duplicating the source's SIDs.
+- The usage index now covers instances on sub-layers and non-world instances, custom action bodies, calls and `customActionObjectClass`, and reads function parameters from `functionParameters`, so `get_object_dependencies`, `find_orphaned_objects` and `get_function_map` no longer under-report.
 - `validate_project` no longer reports an unnamed subfolder as an error when it and its descendants hold no items. Construct r495.2 saves such a subfolder itself (an empty `timelines` subfolder in the Crossing Frog example); a nameless subfolder that holds items is still an error.
 - Placed instances now store their Z elevation under Construct's `world.z` key; the editor ignored the former `world.zElevation` key and reset the value to 0 (found by the r495.2 load check).
 - `create_flowchart` no longer refuses a project without the Flowchart plugin; the editor loads such a flowchart (and prunes the unused plugin), so the missing plugin is now a warning.

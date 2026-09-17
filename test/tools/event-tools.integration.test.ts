@@ -251,7 +251,10 @@ describe('event structure tools (real project on disk)', () => {
     const mainOnDisk = await readSheet();
     const callAction = mainOnDisk.events[1].actions[0];
     expect(callAction.callFunction).toBe('doThingBetter');
-    expect(callAction.parameters).toEqual({ p0: '"x"' });
+    // Written in C3's call shape: positional arguments, no id/objectClass.
+    expect(callAction.parameters).toEqual(['"x"']);
+    expect(callAction).not.toHaveProperty('id');
+    expect(callAction).not.toHaveProperty('objectClass');
   });
 
   it('writes a custom action definition on disk that move_event_block can relocate', async () => {

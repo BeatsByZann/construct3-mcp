@@ -7,7 +7,6 @@ import type { Construct3ProjectReader } from '../project-reader.js';
 import type {
   C3Event,
   BlockEvent,
-  FunctionBlockEvent,
   GroupEvent,
   IncludeEvent,
   Condition,
@@ -15,6 +14,25 @@ import type {
   ObjectReference,
   Layout,
 } from '../types.js';
+import { collectInstances } from '../layout-walk.js';
+
+/** A place in an event sheet that uses a behavior through a condition or action. */
+export interface BehaviorReference {
+  objectClass: string;
+  behaviorType: string;
+  eventSheet: string;
+  path: string;
+  context: 'condition' | 'action';
+}
+
+/** A custom action definition (custom-ace-block). */
+export interface CustomActionDefinition {
+  objectClass: string;
+  aceName: string;
+  sheet: string;
+  sid?: number;
+  params: string[];
+}
 
 const MAX_NODES = 100_000;
 const MAX_DEPTH = 50;
@@ -30,8 +48,20 @@ export class ProjectIndex {
   /** Layout → event sheet binding */
   layoutToEventSheet: Map<string, string> = new Map();
 
-  /** Object → layout placements */
+  /** Object → layout placements (world layers at any depth, and non-world instances) */
   objectToLayouts: Map<string, string[]> = new Map();
+
+  /** Object → layout → number of placed instances */
+  objectInstanceCounts: Map<string, Map<string, number>> = new Map();
+
+  /** "objectClass::behaviorType" → event references */
+  behaviorReferences: Map<string, BehaviorReference[]> = new Map();
+
+  /** "objectClass::aceName" → custom action definition */
+  customActionDefinitions: Map<string, CustomActionDefinition> = new Map();
+
+  /** Custom action calls: action name → call sites (objectClass and customActionObjectClass as written) */
+  customActionCalls: Map<string, { sheet: string; path: string; objectClass: string; customActionObjectClass?: string }[]> = new Map();
 
   /** Function definitions & call sites */
   functionDefinitions: Map<string, { sheet: string; params: string[] }> = new Map();
@@ -122,9 +152,33 @@ export class ProjectIndex {
 
       const eventType = event.eventType;
 
-      if (eventType === 'block') {
+      if (eventType === 'block' || eventType === 'function-block' || eventType === 'custom-ace-block') {
         const block = event as BlockEvent;
-        const blockPath = path ? `${path} > block` : 'block';
+        const record = event as unknown as Record<string, unknown>;
+        let label = 'block';
+        if (eventType === 'function-block') {
+          const funcName = (record.functionName as string) || 'unknown';
+          label = `function:${funcName}`;
+          const params = (record.functionParameters ?? record.parameters) as Array<{ name?: string }> | undefined;
+          this.functionDefinitions.set(funcName, {
+            sheet: sheetName,
+            params: Array.isArray(params) ? params.map(p => String(p.name)) : [],
+          });
+        } else if (eventType === 'custom-ace-block') {
+          const owner = String(record.objectClass ?? '');
+          const aceName = String(record.aceName ?? 'unknown');
+          label = `custom-action:${owner}.${aceName}`;
+          const params = record.functionParameters as Array<{ name?: string }> | undefined;
+          this.customActionDefinitions.set(`${owner}::${aceName}`, {
+            objectClass: owner,
+            aceName,
+            sheet: sheetName,
+            sid: typeof record.sid === 'number' ? record.sid : undefined,
+            params: Array.isArray(params) ? params.map(p => String(p.name)) : [],
+          });
+          if (owner) this.addObjectReference(owner, sheetName, path ? `${path} > ${label}` : label, 'action');
+        }
+        const blockPath = path ? `${path} > ${label}` : label;
 
         // Index conditions
         if (block.conditions) {
@@ -144,33 +198,6 @@ export class ProjectIndex {
         if (block.children) {
           for (let i = block.children.length - 1; i >= 0; i--) {
             stack.push({ event: block.children[i], path: blockPath, depth: depth + 1 });
-          }
-        }
-      } else if (eventType === 'function-block') {
-        const func = event as FunctionBlockEvent;
-        const funcName = func.functionName || 'unknown';
-        const funcPath = path ? `${path} > function:${funcName}` : `function:${funcName}`;
-
-        // Record function definition
-        const paramNames = func.parameters?.map(p => p.name) || [];
-        this.functionDefinitions.set(funcName, { sheet: sheetName, params: paramNames });
-
-        // Index conditions & actions
-        if (func.conditions) {
-          for (let i = 0; i < func.conditions.length; i++) {
-            this.indexCondition(sheetName, func.conditions[i], `${funcPath} > condition:${i}`);
-          }
-        }
-        if (func.actions) {
-          for (let i = 0; i < func.actions.length; i++) {
-            this.indexAction(sheetName, func.actions[i], `${funcPath} > action:${i}`);
-          }
-        }
-
-        // Push children
-        if (func.children) {
-          for (let i = func.children.length - 1; i >= 0; i--) {
-            stack.push({ event: func.children[i], path: funcPath, depth: depth + 1 });
           }
         }
       } else if (eventType === 'group') {
@@ -201,15 +228,42 @@ export class ProjectIndex {
     if (!condition.objectClass) return;
     const objName = condition.objectClass;
     this.addObjectReference(objName, sheetName, path, 'condition');
+    if (condition.behaviorType) {
+      this.addBehaviorReference(objName, condition.behaviorType, sheetName, path, 'condition');
+    }
+  }
+
+  private addBehaviorReference(objectClass: string, behaviorType: string, sheetName: string, path: string, context: 'condition' | 'action'): void {
+    const key = `${objectClass}::${behaviorType}`;
+    if (!this.behaviorReferences.has(key)) this.behaviorReferences.set(key, []);
+    this.behaviorReferences.get(key)!.push({ objectClass, behaviorType, eventSheet: sheetName, path, context });
   }
 
   private indexAction(sheetName: string, action: Action, path: string): void {
     // Script actions have type: 'script' instead of objectClass
     if ('type' in action && action.type === 'script') return;
 
-    const stdAction = action as { objectClass?: string; callFunction?: string; id?: string };
+    if ('type' in action && action.type === 'comment') return;
+
+    const stdAction = action as { objectClass?: string; callFunction?: string; id?: string; behaviorType?: string; customAction?: string; customActionObjectClass?: string };
     if (stdAction.objectClass) {
       this.addObjectReference(stdAction.objectClass, sheetName, path, 'action');
+      if (stdAction.behaviorType) {
+        this.addBehaviorReference(stdAction.objectClass, stdAction.behaviorType, sheetName, path, 'action');
+      }
+    }
+    if (stdAction.customActionObjectClass) {
+      this.addObjectReference(stdAction.customActionObjectClass, sheetName, path, 'action');
+    }
+    if (stdAction.customAction && stdAction.objectClass) {
+      const calls = this.customActionCalls.get(stdAction.customAction) || [];
+      calls.push({
+        sheet: sheetName,
+        path,
+        objectClass: stdAction.objectClass,
+        customActionObjectClass: stdAction.customActionObjectClass,
+      });
+      this.customActionCalls.set(stdAction.customAction, calls);
     }
 
     // Check for function calls
@@ -244,23 +298,22 @@ export class ProjectIndex {
       this.layoutToEventSheet.set(layoutName, eventSheet);
     }
 
-    // Index object placements from instances
-    if (layout.layers) {
-      for (const layer of layout.layers) {
-        if (layer.instances) {
-          for (const instance of layer.instances) {
-            if (instance.type) {
-              if (!this.objectToLayouts.has(instance.type)) {
-                this.objectToLayouts.set(instance.type, []);
-              }
-              const layouts = this.objectToLayouts.get(instance.type)!;
-              if (!layouts.includes(layoutName)) {
-                layouts.push(layoutName);
-              }
-            }
-          }
-        }
+    // Index object placements: world instances on layers at any depth (sub-layers
+    // included) and non-world instances such as Keyboard or Array.
+    for (const instance of collectInstances(layout)) {
+      if (!instance.type) continue;
+      if (!this.objectToLayouts.has(instance.type)) {
+        this.objectToLayouts.set(instance.type, []);
       }
+      const layouts = this.objectToLayouts.get(instance.type)!;
+      if (!layouts.includes(layoutName)) {
+        layouts.push(layoutName);
+      }
+      if (!this.objectInstanceCounts.has(instance.type)) {
+        this.objectInstanceCounts.set(instance.type, new Map());
+      }
+      const counts = this.objectInstanceCounts.get(instance.type)!;
+      counts.set(layoutName, (counts.get(layoutName) ?? 0) + 1);
     }
   }
 

@@ -1191,23 +1191,54 @@ describe('update_event_block', () => {
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
-  it('rejects condition additions, insertions, and replacements on else blocks', async () => {
-    for (const update of [
-      { addConditions: [{ id: 'add', objectClass: 'System' }] },
-      { insertConditions: [{ index: 0, condition: { id: 'insert', objectClass: 'System' } }] },
-      { replaceConditions: [{ index: 0, condition: { id: 'replace', objectClass: 'System' } }] },
-    ]) {
-      const { server, writer } = setup({
-        eventSheets: new Map([['MainSheet', {
-          name: 'MainSheet', sid: 1,
-          events: [{ eventType: 'block', sid: 100, isElse: true, conditions: [{ id: 'old', objectClass: 'System', sid: 10 }], actions: [] }],
-        }]]),
-      });
-      const result = await server.callTool('update_event_block', { sheetName: 'MainSheet', sid: 100, ...update });
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('else block');
-      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-    }
+  function elseSheet() {
+    return {
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [{ eventType: 'block', sid: 100, conditions: [{ id: 'else', objectClass: 'System', sid: 10 }], actions: [] }],
+      }]]),
+    };
+  }
+
+  it('keeps the else condition first: refuses an insertion at index 0 of an else block', async () => {
+    const { server, writer } = setup(elseSheet());
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet', sid: 100, insertConditions: [{ index: 0, condition: { id: 'insert', objectClass: 'System' } }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('else condition must stay first');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('adds conditions after the else condition (an else-if block)', async () => {
+    const { server, writer } = setup(elseSheet());
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet', sid: 100, addConditions: [{ id: 'add', objectClass: 'System' }],
+    });
+    expect(result.isError).not.toBe(true);
+    const block = (writer.callsFor('writeEntityFile')[0].args[2] as any).events[0];
+    expect(block.conditions.map((c: any) => c.id)).toEqual(['else', 'add']);
+  });
+
+  it('rewrites a legacy isElse / isOr block into the else condition and isOrBlock', async () => {
+    const { server, writer } = setup({
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [{
+          eventType: 'block', sid: 100, isElse: true,
+          conditions: [{ id: 'a', objectClass: 'System', sid: 10 }, { id: 'b', objectClass: 'System', sid: 11, isOr: true }],
+          actions: [],
+        }],
+      }]]),
+    });
+    const result = await server.callTool('update_event_block', { sheetName: 'MainSheet', sid: 100, disabled: false });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text).warnings.join(' ')).toContain('older builds');
+    const block = (writer.callsFor('writeEntityFile')[0].args[2] as any).events[0];
+    expect(block).not.toHaveProperty('isElse');
+    expect(block.isOrBlock).toBe(true);
+    expect(block.conditions.map((c: any) => c.id)).toEqual(['else', 'a', 'b']);
+    expect(block.conditions.some((c: any) => 'isOr' in c)).toBe(false);
   });
 
   // ─── Script actions ──────────────────────────────────────
@@ -1524,7 +1555,53 @@ describe('move_events_between_sheets', () => {
     const writtenTarget = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
     const targetEvents = writtenTarget.events as Array<Record<string, unknown>>;
     expect(targetEvents).toHaveLength(1);
-    expect(targetEvents[0].sid).toBe(100);
+    // A copy must not duplicate the source's SIDs.
+    expect(targetEvents[0].sid).not.toBe(100);
+    expect(typeof targetEvents[0].sid).toBe('number');
+    expect(data.copiedTopLevelSids).toEqual([targetEvents[0].sid]);
+  });
+
+  it('gives every nested SID of a copy a fresh value and keeps SIDs on a move', async () => {
+    const source = {
+      eventType: 'block', sid: 100,
+      conditions: [{ id: 'c', objectClass: 'System', sid: 101 }],
+      actions: [{ id: 'a', objectClass: 'System', sid: 102 }],
+      children: [{ eventType: 'block', sid: 103, conditions: [{ id: 'd', objectClass: 'System', sid: 104 }], actions: [] }],
+    };
+    const make = () => setup({
+      eventSheets: new Map([
+        ['SourceSheet', { name: 'SourceSheet', sid: 1, events: [structuredClone(source)] }],
+        ['TargetSheet', { name: 'TargetSheet', sid: 2, events: [] }],
+      ]),
+    });
+    const collect = (value: unknown, out: number[] = []): number[] => {
+      if (Array.isArray(value)) value.forEach(v => collect(v, out));
+      else if (value && typeof value === 'object') {
+        for (const [k, v] of Object.entries(value)) {
+          if (k === 'sid' && typeof v === 'number') out.push(v);
+          else collect(v, out);
+        }
+      }
+      return out;
+    };
+
+    const copy = make();
+    const copied = parseResult(await copy.server.callTool('move_events_between_sheets', {
+      sourceSheet: 'SourceSheet', targetSheet: 'TargetSheet', sids: [100],
+    }));
+    expect(copied.reassignedSids).toBe(5);
+    const copyEvents = (copy.writer.callsFor('writeEntityFile')[0].args[2] as any).events;
+    const copySids = collect(copyEvents);
+    expect(copySids).toHaveLength(5);
+    expect(copySids.filter(s => [100, 101, 102, 103, 104].includes(s))).toEqual([]);
+    expect(new Set(copySids).size).toBe(5);
+
+    const move = make();
+    await move.server.callTool('move_events_between_sheets', {
+      sourceSheet: 'SourceSheet', targetSheet: 'TargetSheet', sids: [100], deleteSource: true,
+    });
+    const moved = (move.writer.callsFor('writeEntityFile')[0].args[2] as any).events;
+    expect(collect(moved)).toEqual([100, 101, 102, 103, 104]);
   });
 
   it('moves events (deleteSource=true) removes from source', async () => {
@@ -1627,6 +1704,7 @@ describe('move_events_between_sheets', () => {
       targetSheet: 'TargetSheet',
       sids: [100],
       position: 'start',
+      deleteSource: true,
     });
     const writtenTarget = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
     const targetEvents = writtenTarget.events as Array<Record<string, unknown>>;

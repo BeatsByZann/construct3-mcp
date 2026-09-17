@@ -16,6 +16,11 @@ import {
   buildBlockEvent,
   buildCondition,
   buildAction,
+  actionObjectRefs,
+  isElseBlock,
+  isElseCondition,
+  normalizeLegacyBlock,
+  reassignSids,
   findEventBySid,
   countDescendants,
   summarizeEvents,
@@ -68,6 +73,9 @@ function walkEvents(
     }
   }
 }
+
+/** Event types that hold conditions and actions. */
+const BLOCK_LIKE = new Set(['block', 'function-block', 'custom-ace-block']);
 
 /** Escape a name for safe use inside a RegExp literal. */
 function escapeRegExp(value: string): string {
@@ -138,10 +146,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'add_event_to_sheet',
-    'Add an event (group, function, variable, include, or comment) to an event sheet',
+    'Add an event (group, function, variable, include, comment, or script block) to an event sheet',
     {
       sheetName: z.string().max(200).describe('Target event sheet'),
-      eventType: z.enum(['group', 'function', 'variable', 'include', 'comment']).describe('Type of event to add'),
+      eventType: z.enum(['group', 'function', 'variable', 'include', 'comment', 'script']).describe('Type of event to add; "script" adds a standalone JavaScript block (C3 stores it without a SID)'),
       title: z.string().max(500).optional().describe('For groups: the group title'),
       functionName: z.string().max(200).optional().describe('For functions: function name'),
       functionParams: z.array(z.object({
@@ -155,6 +163,11 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
       variableName: z.string().max(200).optional().describe('For variables: variable name'),
       variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
       initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
+      variableComment: z.string().max(2000).optional().describe('For variables: the declaration comment'),
+      variableIsStatic: z.boolean().optional().describe('For local variables: keep the value between runs of the event'),
+      variableIsConstant: z.boolean().optional().describe('For variables: constant'),
+      script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional()
+        .describe('For script blocks: JavaScript as one string (split on newlines) or an array of lines'),
       includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
       commentText: z.string().max(2000).optional().describe('For comments: comment text'),
       groupPath: z.string().max(500).optional().describe('Insert inside a group by title path (e.g., "Movement > Collision")'),
@@ -229,6 +242,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             const defaultValue = args.initialValue || (varType === 'number' ? '0' : varType === 'boolean' ? 'false' : '');
             const sid = await idGen.generateSid(reader);
             event = createVariableEvent(args.variableName, varType, defaultValue, sid);
+            const variable = event as unknown as Record<string, unknown>;
+            if (args.variableComment !== undefined) variable.comment = args.variableComment;
+            if (args.variableIsStatic !== undefined) variable.isStatic = args.variableIsStatic;
+            if (args.variableIsConstant !== undefined) variable.isConstant = args.variableIsConstant;
             break;
           }
           case 'include': {
@@ -243,6 +260,12 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           case 'comment': {
             if (!args.commentText) return toolError('commentText is required for comment events');
             event = createCommentEvent(args.commentText);
+            break;
+          }
+          case 'script': {
+            if (args.script === undefined) return toolError('script is required for script blocks');
+            // C3 r495 stores a standalone script block as { eventType, language, script: [lines] } with no SID.
+            event = { eventType: 'script', language: 'javascript', script: toScriptLines(args.script) } as unknown as C3Event;
             break;
           }
         }
@@ -272,7 +295,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'add_event_block',
-    'Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Supports sub-events, else blocks, OR conditions, and per-action disabling.',
+    'Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Supports sub-events, else blocks (a leading System "else" condition), OR blocks, disabled conditions and actions, function calls, custom action calls, action comments and script actions.',
     {
       sheetName: z.string().max(200).describe('Target event sheet'),
       conditions: z.array(conditionSchema).optional().default([]).describe('Conditions array (at least one required, unless isElse is true)'),
@@ -282,7 +305,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
       siblingSid: z.number().int().positive().optional().describe('Insert beside this event SID; use position before or after'),
       position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('Where to insert the event block'),
       disabled: z.boolean().optional().default(false).describe('Create the event block disabled'),
-      isElse: z.boolean().optional().default(false).describe('Mark as an else block (conditions become optional)'),
+      isElse: z.boolean().optional().default(false).describe('Make an else block: written as a leading System "else" condition; further conditions make it an else-if'),
+      isOrBlock: z.boolean().optional().default(false).describe('Make an OR block: true when any condition is true'),
       children: z.array(childEventSchema).optional().default([]).describe('Sub-events nested inside this block (recursive, max depth 5, max 50 total events)'),
     },
     async (args) => {
@@ -344,6 +368,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             actions: args.actions,
             disabled: args.disabled,
             isElse: args.isElse,
+            isOrBlock: args.isOrBlock,
             children: args.children,
           },
           1,
@@ -753,7 +778,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'move_events_between_sheets',
-    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). SIDs and all nested children are preserved.',
+    'Copy (or move) top-level event blocks from one event sheet to another by SID. With deleteSource=true (move) SIDs and nested children are preserved; a copy gets fresh SIDs throughout, because SIDs must be unique in the project.',
     {
       sourceSheet: z.string().max(200).describe('Event sheet to copy/move events from'),
       targetSheet: z.string().max(200).describe('Event sheet to copy/move events into'),
@@ -829,6 +854,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         // Deep-copy events to avoid reference aliasing between sheets
         const copiedEvents = eventsToMove.map(e => JSON.parse(JSON.stringify(e)) as Record<string, unknown>);
+        let reassigned = 0;
+        if (!args.deleteSource) {
+          reassigned = await reassignSids(reader, idGen, copiedEvents);
+        }
 
         // Insert into target
         if (args.position === 'start') {
@@ -862,6 +891,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           movedSids: args.sids,
           movedCount: eventsToMove.length,
           deleteSource: args.deleteSource,
+          copiedTopLevelSids: args.deleteSource ? undefined : copiedEvents.map(e => e.sid),
+          reassignedSids: args.deleteSource ? undefined : reassigned,
           backupFiles: [targetBackup, ...(sourceBackup ? [sourceBackup] : [])].filter(Boolean),
         });
       } catch (error) {
@@ -900,14 +931,14 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (!targetFound) return toolError(`Target block with SID ${args.targetBlockSid} not found in sheet "${args.sheetName}".`);
         const sourceType = sourceFound.event.eventType as string;
         const targetType = targetFound.event.eventType as string;
-        if (sourceType !== 'block' && sourceType !== 'function-block') {
-          return toolError(`Source event with SID ${args.sourceBlockSid} is a "${sourceType}", not a block or function-block.`);
+        if (!BLOCK_LIKE.has(sourceType)) {
+          return toolError(`Source event with SID ${args.sourceBlockSid} is a "${sourceType}", not a block, function-block or custom action.`);
         }
-        if (targetType !== 'block' && targetType !== 'function-block') {
-          return toolError(`Target event with SID ${args.targetBlockSid} is a "${targetType}", not a block or function-block.`);
+        if (!BLOCK_LIKE.has(targetType)) {
+          return toolError(`Target event with SID ${args.targetBlockSid} is a "${targetType}", not a block, function-block or custom action.`);
         }
-        if (args.itemType === 'conditions' && targetFound.event.isElse) {
-          return toolError('Cannot move conditions into an else block because C3 ignores conditions on else blocks.');
+        if (args.itemType === 'conditions' && args.targetIndex === 0 && isElseBlock(targetFound.event)) {
+          return toolError('The else condition must stay first in an else block; use targetIndex 1 or later.');
         }
 
         const sourceItems = sourceFound.event[args.itemType];
@@ -946,7 +977,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             sourceItems.splice(orderedIndices[i], 1);
           }
           targetItems.splice(args.targetIndex, 0, ...selected);
-          if (args.itemType === 'conditions' && sourceItems.length === 0 && !sourceFound.event.isElse) {
+          if (args.itemType === 'conditions' && sourceItems.length === 0 && !isElseBlock(sourceFound.event)) {
             warnings.push('All conditions were removed — block will match unconditionally (always true).');
           }
         }
@@ -978,20 +1009,26 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'update_event_block',
-    'Update an existing block event in an event sheet — modify action parameters, add/remove actions or conditions, toggle disabled state. Identify the block by its SID (use get_eventsheet_details to find it).',
+    'Update an existing block, function-block or custom action body in an event sheet — modify action parameters, call arguments and comment rows, add/remove actions or conditions, toggle disabled state and OR mode. Identify the block by its SID (use get_eventsheet_details to find it).',
     {
       sheetName: z.string().max(200).describe('Target event sheet'),
-      sid: z.number().int().positive().describe('SID of the block event to update'),
+      sid: z.number().int().positive().describe('SID of the block, function-block or custom-ace-block to update'),
       disabled: z.boolean().optional().describe('Enable or disable the entire block'),
+      isOrBlock: z.boolean().optional().describe('Make the block an OR block (true) or an AND block (false)'),
       updateActions: z.array(z.object({
         index: z.number().int().min(0).describe('Action index (0-based)'),
-        parameters: boundedRecord().optional().describe('New parameter values — merged with existing (max 100 keys, depth 6)'),
+        parameters: boundedRecord().optional().describe('New parameter values — merged with existing (max 100 keys, depth 6); for standard actions'),
+        arguments: z.array(z.string().max(50_000)).max(100).optional().describe('Replacement positional arguments for a function call or custom action call'),
+        text: z.string().max(10_000).optional().describe('New text for an action comment'),
+        textColor: z.array(z.number().min(0).max(1)).length(4).optional().describe('Action comment text color [r,g,b,a]'),
+        backgroundColor: z.array(z.number().min(0).max(1)).length(4).optional().describe('Action comment background color [r,g,b,a]'),
         disabled: z.boolean().optional().describe('Enable or disable this action'),
       })).optional().describe('Actions to update by index'),
       updateConditions: z.array(z.object({
         index: z.number().int().min(0).describe('Condition index (0-based)'),
         parameters: boundedRecord().optional().describe('New parameter values — merged with existing (max 100 keys, depth 6)'),
         isInverted: z.boolean().optional().describe('Toggle inversion'),
+        disabled: z.boolean().optional().describe('Enable or disable this condition'),
       })).optional().describe('Conditions to update by index'),
       insertActions: z.array(z.object({
         index: z.number().int().min(0).describe('Insertion index (0-based, after removals)'),
@@ -1014,6 +1051,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
       try {
         // Validate at least one update is provided
         const hasUpdate = args.disabled !== undefined
+          || args.isOrBlock !== undefined
           || (args.updateActions && args.updateActions.length > 0)
           || (args.updateConditions && args.updateConditions.length > 0)
           || (args.insertActions && args.insertActions.length > 0)
@@ -1025,7 +1063,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           || (args.removeConditionIndices && args.removeConditionIndices.length > 0);
 
         if (!hasUpdate) {
-          return toolError('No updates provided. Specify at least one of: disabled, updateActions, updateConditions, insertActions, insertConditions, replaceConditions, addActions, addConditions, removeActionIndices, removeConditionIndices.');
+          return toolError('No updates provided. Specify at least one of: disabled, isOrBlock, updateActions, updateConditions, insertActions, insertConditions, replaceConditions, addActions, addConditions, removeActionIndices, removeConditionIndices.');
         }
 
         // Read the event sheet
@@ -1051,9 +1089,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const { event } = found;
         const eventType = event.eventType as string;
 
-        // Must be a block or function-block (not a group, variable, include, etc.)
-        if (eventType !== 'block' && eventType !== 'function-block') {
-          return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block or function-block. Only block events can be updated with this tool.`);
+        // Must hold conditions and actions (not a group, variable, include, etc.)
+        if (!BLOCK_LIKE.has(eventType)) {
+          return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action. Only those can be updated with this tool.`);
         }
 
         if (!Array.isArray(event.conditions) || !Array.isArray(event.actions)) {
@@ -1062,12 +1100,29 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const conditions = event.conditions as Record<string, unknown>[];
         const actions = event.actions as Record<string, unknown>[];
         const warnings: string[] = [];
-        if (event.isElse && (
-          (args.addConditions?.length ?? 0) > 0
-          || (args.insertConditions?.length ?? 0) > 0
-          || (args.replaceConditions?.length ?? 0) > 0
-        )) {
-          return toolError('Cannot add or replace conditions on an else block because C3 ignores conditions on else blocks.');
+        const elseBlock = isElseBlock(event) && isElseCondition(conditions[0]);
+        if (elseBlock) {
+          if ((args.insertConditions ?? []).some(item => item.index === 0)) {
+            return toolError('The else condition must stay first in an else block; insert at index 1 or later.');
+          }
+          if ((args.replaceConditions ?? []).some(item => item.index === 0) || (args.removeConditionIndices ?? []).includes(0)) {
+            warnings.push('Condition 0 of this block is its else condition; replacing or removing it turns the block into an ordinary block.');
+          }
+        }
+        for (const upd of args.updateActions ?? []) {
+          const target = actions[upd.index];
+          if (!target) continue;
+          const isComment = target.type === 'comment';
+          const isCall = typeof target.callFunction === 'string' || typeof target.customAction === 'string';
+          if ((upd.text !== undefined || upd.textColor !== undefined || upd.backgroundColor !== undefined) && !isComment) {
+            return toolError(`Action ${upd.index} is not an action comment; text and colors apply to comment rows only.`);
+          }
+          if (upd.arguments !== undefined && !isCall) {
+            return toolError(`Action ${upd.index} is not a function or custom action call; use parameters for standard actions.`);
+          }
+          if (upd.parameters !== undefined && (isCall || isComment || target.type === 'script')) {
+            return toolError(`Action ${upd.index} does not take keyed parameters; use arguments for calls or text for comments.`);
+          }
         }
 
         // Preflight every index and structural conflict before mutating the
@@ -1156,14 +1211,22 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           newRefs.push({ objectClass: c.objectClass, behaviorType: c.behaviorType });
         }
         for (const a of [...(args.insertActions ?? []).map(item => item.action), ...(args.addActions ?? [])]) {
-          if ('objectClass' in a && typeof a.objectClass === 'string') {
-            newRefs.push({ objectClass: a.objectClass, behaviorType: a.behaviorType });
-          }
+          newRefs.push(...actionObjectRefs(a as Record<string, unknown>));
         }
         if (newRefs.length > 0) {
           const { errors, warnings: validationWarnings } = await validateObjectClasses(reader, newRefs);
           if (errors.length > 0) return toolError(`Object class validation failed:\n${errors.join('\n')}`);
           warnings.push(...validationWarnings);
+        }
+
+        // Rewrite unknown keys older builds wrote (isElse, condition isOr).
+        if (await normalizeLegacyBlock(reader, idGen, event)) {
+          warnings.push('The block carried keys older builds of this server wrote (isElse or condition-level isOr); they were rewritten to C3\'s else condition and isOrBlock.');
+        }
+
+        if (args.isOrBlock !== undefined) {
+          if (args.isOrBlock) event.isOrBlock = true;
+          else delete event.isOrBlock;
         }
 
         // ── Apply block-level disabled toggle ──
@@ -1196,6 +1259,13 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
                 delete cond.isInverted;
               }
             }
+            if (upd.disabled !== undefined) {
+              if (upd.disabled) {
+                cond.disabled = true;
+              } else {
+                delete cond.disabled;
+              }
+            }
           }
         }
 
@@ -1209,6 +1279,13 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             if (upd.parameters) {
               act.parameters = { ...(act.parameters as Record<string, unknown> || {}), ...upd.parameters };
             }
+            if (upd.arguments !== undefined) {
+              if (upd.arguments.length > 0) act.parameters = upd.arguments;
+              else delete act.parameters;
+            }
+            if (upd.text !== undefined) act.text = upd.text;
+            if (upd.textColor !== undefined) act['text-color'] = upd.textColor;
+            if (upd.backgroundColor !== undefined) act['background-color'] = upd.backgroundColor;
             if (upd.disabled !== undefined) {
               if (upd.disabled) {
                 act.disabled = true;
@@ -1259,7 +1336,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (args.insertActions && args.insertActions.length > 0) {
           const sorted = [...args.insertActions].sort((a, b) => b.index - a.index);
           for (const insertion of sorted) {
-            const built = await buildAction(reader, idGen, insertion.action);
+            const built = await buildAction(reader, idGen, insertion.action, warnings);
             actions.splice(insertion.index, 0, built as unknown as Record<string, unknown>);
           }
         }
@@ -1278,17 +1355,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           warnings.push(...valWarnings);
 
           for (const c of args.addConditions) {
-            const condSid = await idGen.generateSid(reader);
-            const built: Record<string, unknown> = {
-              id: c.id,
-              objectClass: c.objectClass,
-              sid: condSid,
-            };
-            if (c.behaviorType) built.behaviorType = c.behaviorType;
-            if (c.parameters) built.parameters = c.parameters;
-            if (c.isInverted) built.isInverted = true;
-            if (c.isOr) built.isOr = true;
-            conditions.push(built);
+            conditions.push(await buildCondition(reader, idGen, c) as unknown as Record<string, unknown>);
           }
         }
 
@@ -1297,9 +1364,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           // Validate objectClasses for standard actions
           const refs: Array<{ objectClass: string; behaviorType?: string }> = [];
           for (const a of args.addActions) {
-            if ('objectClass' in a && typeof a.objectClass === 'string') {
-              refs.push({ objectClass: a.objectClass, behaviorType: a['behaviorType'] });
-            }
+            refs.push(...actionObjectRefs(a as Record<string, unknown>));
           }
           if (refs.length > 0) {
             const { errors, warnings: valWarnings } = await validateObjectClasses(reader, refs);
@@ -1310,27 +1375,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           }
 
           for (const a of args.addActions) {
-            if ('type' in a && a.type === 'script') {
-              const scriptAct: Record<string, unknown> = {
-                type: 'script',
-                language: 'javascript',
-                script: toScriptLines(a.script),
-              };
-              if (a.disabled) scriptAct.disabled = true;
-              actions.push(scriptAct);
-            } else if ('id' in a) {
-              const actSid = await idGen.generateSid(reader);
-              const built: Record<string, unknown> = {
-                id: a.id,
-                objectClass: a.objectClass,
-                sid: actSid,
-              };
-              if (a.behaviorType) built.behaviorType = a.behaviorType;
-              if (a.parameters) built.parameters = a.parameters;
-              if (a.callFunction) built.callFunction = a.callFunction;
-              if (a.disabled) built.disabled = true;
-              actions.push(built);
-            }
+            actions.push(await buildAction(reader, idGen, a, warnings) as unknown as Record<string, unknown>);
           }
         }
 
@@ -1338,8 +1383,12 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           return toolError(`Updated block exceeds the maximum of ${MAX_ITEMS_PER_BLOCK} conditions and actions per block.`);
         }
 
+        if (event.isOrBlock && conditions.filter(c => !isElseCondition(c)).length < 2) {
+          warnings.push('The block is an OR block with fewer than two conditions; OR has no effect until another condition is added.');
+        }
+
         // Warn if all conditions were removed (checked after adds, not just removals)
-        if (conditions.length === 0 && !event.isElse) {
+        if (conditions.length === 0 && eventType === 'block') {
           warnings.push('All conditions were removed — block will match unconditionally (always true).');
         }
 
@@ -2058,13 +2107,15 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
       newInitialValue: z.string().max(1000).optional().describe('New initial value (as string — use "0", "false", or "" for defaults)'),
       isStatic: z.boolean().optional().describe('Mark as static (value persists between calls)'),
       isConstant: z.boolean().optional().describe('Mark as constant (cannot be changed at runtime)'),
+      comment: z.string().max(2000).optional().describe('New declaration comment'),
     },
     async (args) => {
       try {
         const hasUpdates = args.newName !== undefined || args.newType !== undefined ||
-          args.newInitialValue !== undefined || args.isStatic !== undefined || args.isConstant !== undefined;
+          args.newInitialValue !== undefined || args.isStatic !== undefined || args.isConstant !== undefined ||
+          args.comment !== undefined;
         if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: newName, newType, newInitialValue, isStatic, isConstant.');
+          return toolError('No updates provided. Specify at least one of: newName, newType, newInitialValue, isStatic, isConstant, comment.');
         }
 
         let sheet: EventSheet;
@@ -2098,6 +2149,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (args.newInitialValue !== undefined) varEvent.initialValue = args.newInitialValue;
         if (args.isStatic !== undefined) varEvent.isStatic = args.isStatic;
         if (args.isConstant !== undefined) varEvent.isConstant = args.isConstant;
+        if (args.comment !== undefined) (varEvent as unknown as Record<string, unknown>).comment = args.comment;
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);

@@ -273,7 +273,7 @@ export interface Condition {
   behaviorType?: string;
   parameters?: Record<string, unknown>;
   isInverted?: boolean;
-  isOr?: boolean;
+  disabled?: boolean;
   [key: string]: unknown;
 }
 
@@ -318,7 +318,8 @@ export interface BlockEvent {
   children?: C3Event[];
   sid?: number;
   disabled?: boolean;
-  isElse?: boolean;
+  /** OR block: C3 stores OR at block level. An else block is a leading System "else" condition. */
+  isOrBlock?: boolean;
   [key: string]: unknown;
 }
 
