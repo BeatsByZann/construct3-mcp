@@ -214,7 +214,7 @@ export function registerFileTools({ server, reader, writer }: MutationToolDeps):
         if (!sourcePath) return toolError('sourcePath (or filePath) is required when the Project File is not already registered.');
 
         const sourceStat = await stat(sourcePath);
-        if (!sourceStat.isFile()) return toolError(`Source path is not a file: ${sourcePath}`);
+        if (!sourceStat.isFile()) return toolError('Source path is not a file.');
         // C3 keeps each Project File family in its own directory: general files
         // under files/, sound entries under sounds/, and so on. Copying every
         // family into files/ would leave the registration pointing at nothing.

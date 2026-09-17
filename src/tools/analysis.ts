@@ -2,6 +2,7 @@
  * MCP Tools for Phase 2 analysis features.
  */
 
+import { redactFsPaths } from '../error-messages.js';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
@@ -37,7 +38,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -63,7 +64,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -89,7 +90,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -109,7 +110,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -136,7 +137,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -162,7 +163,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -182,7 +183,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }
@@ -210,7 +211,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
           isError: true,
         };
       }

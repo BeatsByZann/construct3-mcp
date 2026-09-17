@@ -3,6 +3,7 @@
  * Extracted from mutations.ts to reduce duplication.
  */
 
+import { redactFsPaths } from '../error-messages.js';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
@@ -67,7 +68,7 @@ export function toolResult(data: unknown) {
 /** Format an error tool result as MCP content. */
 export function toolError(message: string) {
   return {
-    content: [{ type: 'text' as const, text: message }],
+    content: [{ type: 'text' as const, text: redactFsPaths(message) }],
     isError: true as const,
   };
 }
@@ -86,12 +87,7 @@ export function orphanedFileError(
 ) {
   const relPath = `${category}/${subfolder ? subfolder + '/' : ''}${name}.json`;
   const reason = error instanceof Error ? error.message : String(error);
-  // validate_project's orphaned-file scan covers objectTypes, eventSheets and
-  // layouts at the category root or one subfolder deep; it does not scan
-  // families or deeper subfolders, so do not promise a report there.
-  const visibility = category === 'families'
-    ? 'The file is now orphaned'
-    : 'The file is now orphaned (validate_project reports it as info when it sits at the category root or one subfolder deep)';
+  const visibility = 'The file is now orphaned (validate_project reports it as info if its directory is readable)';
   return toolError(
     `Removed "${name}" from project.c3proj but could not delete ${relPath}: ${reason}. ` +
     `${visibility}; delete it manually. A ${relPath}.bak backup may have been written next to it.`

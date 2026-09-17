@@ -148,7 +148,7 @@ After any write operation, three caches must be cleared:
 2. **Project index** — `resetProjectIndex()` clears the cross-reference index
 3. **ID generator** — `idGen.reset()` forces re-scan of existing IDs
 
-The `ProjectWriter.invalidateAll()` method handles all three. The `addToProject()` and `removeFromProject()` methods also call `reader.reloadProject()` which re-reads the c3proj file.
+The `ProjectWriter.invalidateAll()` method handles all three. After writing and verifying project.c3proj, `addToProject()` and `removeFromProject()` call `reader.reloadProject()` and then `invalidateAll()`: registration changes invalidate the project index and ID generator as well as reader caches. A later file-deletion failure therefore cannot leave the removed entity in those caches. Capture its subfolder before deregistration, because reloading drops its path-map entry.
 
 ## Testing
 

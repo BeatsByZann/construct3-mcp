@@ -4,7 +4,8 @@
  * orphaned files, and more.
  */
 
-import { readdir } from 'fs/promises';
+import { redactFsPaths } from '../../error-messages.js';
+import { readdir, lstat } from 'fs/promises';
 import { join } from 'path';
 import type { Construct3ProjectReader } from '../project-reader.js';
 import type { C3Event, Construct3Project, Layout, ObjectType, EventSheet } from '../types.js';
@@ -136,14 +137,6 @@ function flattenContainer(container: { items: string[]; subfolders: Array<{ item
   return result;
 }
 
-/**
- * Drop the trailing ", <syscall> '<absolute path>'" Node appends to fs
- * errors; tool output should not echo the project's absolute path.
- */
-function withoutFsPath(message: string): string {
-  return message.replace(/, (?:stat|lstat|open|read|access|scandir) '.*'$/, '');
-}
-
 // ─── Check 1: File Existence ─────────────────────────────────
 
 function checkFileExistence(
@@ -185,7 +178,7 @@ function checkFileExistence(
       errors.push({
         check: 'file-existence',
         entity: `${category}/${name}`,
-        message: `Registered in c3proj but could not be read: ${withoutFsPath(failure.message)}`,
+        message: `Registered in c3proj but could not be read: ${redactFsPaths(failure.message)}`,
         suggestion: `Check that ${reader.getEntityRelativePath(category, name)} exists and is valid JSON`,
       });
     } else {
@@ -727,70 +720,60 @@ async function checkOrphanedFiles(
   registeredLayouts: string[],
   info: IntegrityIssue[]
 ): Promise<void> {
-  const projectDir = reader.getProjectDir();
+  const registrations = {
+    objectTypes: registeredObjects,
+    eventSheets: registeredSheets,
+    layouts: registeredLayouts,
+    families: flattenContainer(reader.getProject().families),
+  };
+  for (const category of ['objectTypes', 'eventSheets', 'layouts', 'families'] as const) {
+    const registeredPaths = new Set(
+      registrations[category].map(name => reader.getEntityRelativePath(category, name))
+    );
+    await scanDirForOrphans(reader.getProjectDir(), category, registeredPaths, info);
+  }
+}
 
-  await scanDirForOrphans(projectDir, 'objectTypes', new Set(registeredObjects), info);
-  await scanDirForOrphans(projectDir, 'eventSheets', new Set(registeredSheets), info);
-  await scanDirForOrphans(projectDir, 'layouts', new Set(registeredLayouts), info);
+// Construct writes per-user editor UI state beside project files: `<name>.uistate.json`
+// files, and (r487+) `layouts/uistate/**/<name>.instancesBar.json`. They are never
+// registered in project.c3proj and do not affect the project.
+function isEditorUiStateFile(relativeDir: string, fileName: string): boolean {
+  if (fileName.endsWith('.uistate.json')) return true;
+  return fileName.endsWith('.instancesBar.json')
+    && (relativeDir === 'layouts/uistate' || relativeDir.startsWith('layouts/uistate/'));
 }
 
 async function scanDirForOrphans(
   projectDir: string,
-  dirName: string,
-  registered: Set<string>,
+  relativeDir: string,
+  registeredPaths: Set<string>,
   info: IntegrityIssue[]
 ): Promise<void> {
   try {
-    const dirPath = join(projectDir, dirName);
-    const entries = await readdir(dirPath, { withFileTypes: true });
+    const directory = join(projectDir, relativeDir);
+    if (!(await lstat(directory)).isDirectory()) return;
+    const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith('.json')) {
-        const baseName = entry.name.replace(/\.json$/, '');
-        if (!registered.has(baseName)) {
-          info.push({
-            check: 'orphaned-file',
-            entity: `${dirName}/${entry.name}`,
-            message: `File exists on disk but is not registered in c3proj`,
-            suggestion: `Delete the file or register it in the project`,
-          });
-        }
-      }
-    }
-    // Recurse into subdirectories
-    for (const entry of entries) {
+      const relativePath = `${relativeDir}/${entry.name}`;
       if (entry.isDirectory()) {
-        await scanSubdirForOrphans(join(dirPath, entry.name), dirName, entry.name, registered, info);
+        await scanDirForOrphans(projectDir, relativePath, registeredPaths, info);
+      } else if (
+        entry.isFile()
+        && entry.name.endsWith('.json')
+        && !isEditorUiStateFile(relativeDir, entry.name)
+        && !registeredPaths.has(relativePath)
+      ) {
+        info.push({
+          check: 'orphaned-file',
+          entity: relativePath,
+          message: `File exists on disk but is not registered in c3proj`,
+          suggestion: `Delete the file or register it in the project`,
+        });
       }
+      // Do not follow symbolic links outside the project or into cycles.
     }
   } catch {
-    // Directory doesn't exist or not readable — skip (common in tests)
-  }
-}
-
-async function scanSubdirForOrphans(
-  subDirPath: string,
-  category: string,
-  subDirName: string,
-  registered: Set<string>,
-  info: IntegrityIssue[]
-): Promise<void> {
-  try {
-    const entries = await readdir(subDirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith('.json')) {
-        const baseName = entry.name.replace(/\.json$/, '');
-        if (!registered.has(baseName)) {
-          info.push({
-            check: 'orphaned-file',
-            entity: `${category}/${subDirName}/${entry.name}`,
-            message: `File exists on disk but is not registered in c3proj`,
-            suggestion: `Delete the file or register it in the project`,
-          });
-        }
-      }
-    }
-  } catch {
-    // Skip unreadable
+    // Preserve the existing best-effort treatment of absent/unreadable directories.
   }
 }
 

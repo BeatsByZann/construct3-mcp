@@ -215,7 +215,7 @@ Claude → create_object({ name: "Enemy", pluginId: "Sprite" })
   → writer.addToProject("objectTypes", "Enemy")
       → createBackup(c3proj)
       → add "Enemy" to objectTypes.items
-      → writeFile + verify + reader.reloadProject()
+      → atomicWrite + verify + reader.reloadProject() + invalidateAll()
   → return WriteResult to Claude
 ```
 
