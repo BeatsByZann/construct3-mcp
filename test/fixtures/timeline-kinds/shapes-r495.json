@@ -1,0 +1,422 @@
+{
+	"source": "Shapes (key order and leaf types, arrays reduced to their first element) of Construct r495.2 example packages, extracted 2026-09-17 by the W90 probe; no values are copied.",
+	"tracksRootWithFolder": {
+		"enabled": "boolean",
+		"interpolationMode": "string",
+		"resultMode": "string",
+		"ease": "string",
+		"pathMode": "string",
+		"resizeMode": "string",
+		"expanded": "boolean",
+		"name": "string",
+		"items": [],
+		"subfolders": [
+			{
+				"enabled": "boolean",
+				"interpolationMode": "string",
+				"resultMode": "string",
+				"ease": "string",
+				"pathMode": "string",
+				"resizeMode": "string",
+				"expanded": "boolean",
+				"name": "string",
+				"items": [
+					{
+						"type": "string",
+						"worldInstance": "number",
+						"objectType": "string",
+						"project": "string",
+						"enabled": "boolean",
+						"interpolationMode": "string",
+						"resultMode": "string",
+						"ease": "string",
+						"pathMode": "string",
+						"resizeMode": "string",
+						"initialVisibility": "boolean",
+						"id": "string",
+						"virtualPosition": {
+							"offsetX": "number",
+							"useColor": "boolean",
+							"colorSet": "boolean",
+							"relativeFlags": "number"
+						},
+						"keyframes": [
+							{
+								"time": "number",
+								"tags": "string",
+								"enabled": "boolean",
+								"ease": "string",
+								"pathMode": "string"
+							}
+						],
+						"propertyTracks": [
+							{
+								"property": "string",
+								"source": {
+									"type": "string",
+									"uid": "number"
+								},
+								"enabled": "boolean",
+								"interpolationMode": "string",
+								"resultMode": "string",
+								"ease": "string",
+								"pathMode": "string",
+								"propertyKeyframes": [
+									{
+										"time": "number",
+										"enabled": "boolean",
+										"resultMode": "string",
+										"ease": "string",
+										"pathMode": "string",
+										"value": "number",
+										"rValue": "number",
+										"aValue": "number",
+										"addons": [
+											{
+												"id": "string",
+												"data": {
+													"startAnchor": "object",
+													"startEnable": "boolean",
+													"endAnchor": "object",
+													"endEnable": "boolean"
+												}
+											}
+										]
+									}
+								]
+							}
+						],
+						"propertyTracksRoot": {
+							"enabled": "boolean",
+							"interpolationMode": "string",
+							"resultMode": "string",
+							"ease": "string",
+							"pathMode": "string",
+							"resizeMode": "string",
+							"expanded": "boolean",
+							"name": "string",
+							"items": [],
+							"subfolders": []
+						}
+					}
+				],
+				"subfolders": []
+			}
+		]
+	},
+	"valueTrack": {
+		"type": "string",
+		"name": "string",
+		"project": "string",
+		"enabled": "boolean",
+		"interpolationMode": "string",
+		"ease": "string",
+		"initialVisibility": "boolean",
+		"id": "string",
+		"keyframes": [
+			{
+				"time": "number",
+				"tags": "string",
+				"enabled": "boolean",
+				"ease": "string"
+			}
+		],
+		"propertyTracks": [
+			{
+				"property": "string",
+				"source": {
+					"type": "string",
+					"uid": "string"
+				},
+				"enabled": "boolean",
+				"interpolationMode": "string",
+				"ease": "string",
+				"propertyKeyframes": [
+					{
+						"time": "number",
+						"enabled": "boolean",
+						"ease": "string",
+						"value": "number",
+						"rValue": "number",
+						"aValue": "number",
+						"addons": []
+					}
+				]
+			}
+		],
+		"propertyTracksRoot": {
+			"enabled": "boolean",
+			"interpolationMode": "string",
+			"resultMode": "string",
+			"ease": "string",
+			"pathMode": "string",
+			"resizeMode": "string",
+			"expanded": "boolean",
+			"name": "string",
+			"items": [],
+			"subfolders": []
+		}
+	},
+	"audioTrack": {
+		"type": "string",
+		"name": "string",
+		"project": "string",
+		"enabled": "boolean",
+		"interpolationMode": "string",
+		"resultMode": "string",
+		"ease": "string",
+		"initialVisibility": "boolean",
+		"id": "string",
+		"keyframes": [
+			{
+				"time": "number",
+				"tags": "string",
+				"enabled": "boolean",
+				"ease": "string"
+			}
+		],
+		"propertyTracks": [
+			{
+				"property": "string",
+				"source": {
+					"type": "string",
+					"uid": "string"
+				},
+				"enabled": "boolean",
+				"propertyKeyframes": [],
+				"sourceAdapter": {
+					"audioProjectFile": {
+						"name": "string",
+						"type": "string",
+						"sid": "number",
+						"file-info": {
+							"purpose": "string"
+						}
+					},
+					"audioStartOffset": "number",
+					"audioTag": "string",
+					"audioType": "string"
+				}
+			}
+		],
+		"propertyTracksRoot": {
+			"enabled": "boolean",
+			"interpolationMode": "string",
+			"resultMode": "string",
+			"ease": "string",
+			"pathMode": "string",
+			"resizeMode": "string",
+			"expanded": "boolean",
+			"name": "string",
+			"items": [],
+			"subfolders": []
+		}
+	},
+	"propertyTracksRootWithFolder": {
+		"enabled": "boolean",
+		"interpolationMode": "string",
+		"resultMode": "string",
+		"ease": "string",
+		"pathMode": "string",
+		"resizeMode": "string",
+		"expanded": "boolean",
+		"name": "string",
+		"items": [],
+		"subfolders": [
+			{
+				"enabled": "boolean",
+				"interpolationMode": "string",
+				"resultMode": "string",
+				"ease": "string",
+				"pathMode": "string",
+				"resizeMode": "string",
+				"expanded": "boolean",
+				"name": "string",
+				"items": [
+					{
+						"property": "string",
+						"source": {
+							"type": "string",
+							"uid": "string"
+						},
+						"enabled": "boolean",
+						"interpolationMode": "string",
+						"resultMode": "string",
+						"ease": "string",
+						"pathMode": "string",
+						"propertyKeyframes": [
+							{
+								"time": "number",
+								"enabled": "boolean",
+								"resultMode": "string",
+								"ease": "string",
+								"pathMode": "string",
+								"value": "number",
+								"rValue": "number",
+								"aValue": "number",
+								"addons": []
+							}
+						]
+					}
+				],
+				"subfolders": [],
+				"ownerId": "string",
+				"ownerUid": "string"
+			}
+		]
+	},
+	"transitionsData": [
+		{
+			"folders": [],
+			"json": {
+				"name": "string",
+				"linear": "boolean",
+				"purpose": "string",
+				"transitionKeyframes": [
+					{
+						"x": "number",
+						"y": "number",
+						"sax": "number",
+						"say": "number",
+						"eax": "number",
+						"eay": "number",
+						"se": "boolean",
+						"ee": "boolean",
+						"sm": "string"
+					}
+				]
+			}
+		}
+	],
+	"ease": {
+		"name": "string",
+		"linear": "boolean",
+		"purpose": "string",
+		"transitionKeyframes": [
+			{
+				"x": "number",
+				"y": "number",
+				"sax": "number",
+				"say": "number",
+				"eax": "number",
+				"eay": "number",
+				"se": "boolean",
+				"ee": "boolean",
+				"sm": "string"
+			}
+		]
+	},
+	"projectTimelines": {
+		"items": [
+			"string"
+		],
+		"subfolders": [
+			{
+				"items": [
+					"string"
+				],
+				"subfolders": []
+			}
+		]
+	},
+	"legacyTimelineKeys": [
+		"name",
+		"enabled",
+		"interpolationMode",
+		"resultMode",
+		"ease",
+		"pathMode",
+		"playheadTime",
+		"totalTime",
+		"stepTime",
+		"showingInterpolationModes",
+		"showingResultModes",
+		"showingEases",
+		"showingPathModes",
+		"scale",
+		"loop",
+		"pingPong",
+		"repeatCount",
+		"tracks",
+		"tracksRoot"
+	],
+	"legacyTrack": {
+		"worldInstance": "number",
+		"enabled": "boolean",
+		"interpolationMode": "string",
+		"resultMode": "string",
+		"ease": "string",
+		"pathMode": "string",
+		"initialVisibility": "boolean",
+		"id": "string",
+		"virtualPosition": {
+			"offsetX": "number",
+			"offsetY": "number",
+			"offsetWidth": "number",
+			"offsetHeight": "number",
+			"offsetAngle": "number",
+			"offsetOpacity": "number",
+			"offsetOriginX": "number",
+			"offsetOriginY": "number",
+			"offsetColor": [
+				"number"
+			],
+			"offsetZElevation": "number",
+			"useColor": "boolean",
+			"colorSet": "boolean"
+		},
+		"keyframes": [
+			{
+				"time": "number",
+				"tags": "string",
+				"enabled": "boolean",
+				"ease": "string",
+				"pathMode": "string"
+			}
+		],
+		"propertyTracks": [
+			{
+				"property": "string",
+				"source": {
+					"type": "string",
+					"uid": "number"
+				},
+				"enabled": "boolean",
+				"interpolationMode": "string",
+				"resultMode": "string",
+				"ease": "string",
+				"pathMode": "string",
+				"propertyKeyframes": [
+					{
+						"time": "number",
+						"enabled": "boolean",
+						"ease": "string",
+						"pathMode": "string",
+						"value": "number",
+						"addons": [
+							{
+								"id": "string",
+								"data": {
+									"startAnchor": "object",
+									"startEnable": "boolean",
+									"endAnchor": "object",
+									"endEnable": "boolean"
+								}
+							}
+						]
+					}
+				]
+			}
+		],
+		"propertyTracksRoot": {
+			"enabled": "boolean",
+			"interpolationMode": "string",
+			"resultMode": "string",
+			"ease": "string",
+			"pathMode": "string",
+			"name": "string",
+			"items": [],
+			"subfolders": []
+		}
+	}
+}

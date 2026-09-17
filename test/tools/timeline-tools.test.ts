@@ -75,6 +75,55 @@ describe('list_timelines', () => {
     expect(data.count).toBe(3);
     expect(data.timelines).toContain('inback');
   });
+
+  it('leaves out the custom eases listed in the nameless first subfolder', async () => {
+    const server = new MockServer();
+    const reader = new MockReader();
+    const origGetProject = reader.getProject.bind(reader);
+    (reader as any).getProject = () => ({
+      ...origGetProject(),
+      timelines: {
+        items: ['Timeline 1'],
+        subfolders: [{ items: ['LightOutBack'], subfolders: [] }, { name: 'Scenes', items: ['Intro'], subfolders: [] }],
+      },
+    });
+    registerTimelineTools({ server, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as any);
+
+    const data = parseResult(await server.callTool('list_timelines', {}));
+    expect(data.timelines).toEqual(['Timeline 1', 'Intro']);
+    const details = await server.callTool('get_timeline_details', { name: 'LightOutBack' });
+    expect(details.isError).toBe(true);
+    expect(details.content[0].text).toContain('not found');
+  });
+});
+
+describe('value/audio track, folder and ease tools', () => {
+  it('registers every new tool', () => {
+    const { server } = setup();
+    for (const name of [
+      'list_timeline_tracks', 'add_value_track', 'add_audio_track',
+      'add_timeline_folder', 'rename_timeline_folder', 'delete_timeline_folder', 'move_timeline_track',
+      'list_eases', 'create_ease', 'update_ease', 'delete_ease',
+    ]) {
+      expect(server.hasTool(name), name).toBe(true);
+    }
+  });
+
+  it('refuses a timeline subfolder that would sit among the ease files', async () => {
+    const { server } = setup();
+    for (const subfolder of ['transitions', 'TRANSITIONS/more']) {
+      const result = await server.callTool('create_timeline', { name: 'Intro', subfolder });
+      expect(result.isError, subfolder).toBe(true);
+      expect(result.content[0].text).toContain('custom eases');
+    }
+  });
+
+  it('refuses a custom ease named like a built-in ease', async () => {
+    const { server } = setup();
+    const result = await server.callTool('create_ease', { name: 'easeinoutsine', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Construct's own ease names");
+  });
 });
 
 // ─── get_timeline_details ─────────────────────────────────
