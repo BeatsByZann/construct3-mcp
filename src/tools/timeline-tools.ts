@@ -8,7 +8,8 @@
  * The project.c3proj timelines container tracks their names.
  * JSON shape validated against production slot-game projects and against a
  * Construct 3 r495.2 timeline with an instance track
- * (test/fixtures/timeline-sample).
+ * (test/fixtures/timeline-sample). Property rules are in
+ * ../construct3/timeline-properties.ts.
  */
 
 import { z } from 'zod';
@@ -19,6 +20,7 @@ import type {
   WriteResult,
   Instance,
   Layout,
+  ObjectType,
   Timeline,
   TimelineFolder,
   TimelineInstanceTrack,
@@ -29,6 +31,19 @@ import type {
 import { validateName, toolResult, toolError, notFoundError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { collectInstances } from '../construct3/layout-walk.js';
+import {
+  WORLD_PROPERTIES,
+  resolveTimelineProperty,
+  specForExistingTrack,
+  effectiveResultMode,
+  valuesFor,
+  checkValue,
+  addVirtualPositionKey,
+  trackRank,
+  type PropertySpec,
+  type KeyframeValues,
+  type TimelineValue,
+} from '../construct3/timeline-properties.js';
 
 export type { Timeline, TimelineFolder };
 
@@ -232,38 +247,13 @@ function sameTime(a: number, b: number): boolean {
   return Math.abs(a - b) < TIME_EPSILON;
 }
 
-/**
- * Property names whose relative `value` and absolute `aValue` the tools can
- * relate through the instance's layout position. Verified against a Construct
- * r495.2 timeline file: the offsetX track of an instance at x 324 carries
- * `value: 0, rValue: 0, aValue: 324`. Every other property name is accepted
- * as written but is unverified, so its two values must be supplied explicitly.
- */
-const POSITION_PROPERTIES: Record<string, 'x' | 'y'> = {
-  offsetX: 'x',
-  offsetY: 'y',
-};
-
-function isPositionProperty(property: string): boolean {
-  return Object.prototype.hasOwnProperty.call(POSITION_PROPERTIES, property);
-}
-
-/** The instance's own layout value for a position property, or undefined. */
-function positionBase(property: string, instance: Instance): number | undefined {
-  const axis = POSITION_PROPERTIES[property];
-  if (axis === undefined) return undefined;
-  const world = instance.world;
-  if (!world) return undefined;
-  return world[axis];
-}
-
-/** Warn about property names no Construct sample confirmed. */
-function unverifiedPropertyWarnings(properties: string[]): string[] {
-  const unverified = properties.filter(p => !isPositionProperty(p));
+/** Warn about property names that matched no sampled rule. */
+function unverifiedPropertyWarnings(specs: PropertySpec[]): string[] {
+  const unverified = specs.filter(spec => !spec.verified).map(spec => spec.property);
   if (unverified.length === 0) return [];
   return [
-    `Property name(s) ${unverified.join(', ')} are not verified against a Construct sample ` +
-    '(only offsetX and offsetY were observed); check the track in the Construct 3 editor.',
+    `Property name(s) ${unverified.join(', ')} match no world property, instance variable or plugin property ` +
+    `sampled from Construct (world properties: ${Object.keys(WORLD_PROPERTIES).join(', ')}); check the track in the Construct 3 editor.`,
   ];
 }
 
@@ -276,11 +266,21 @@ function findInstanceTrack(data: Timeline, uid: number): TimelineInstanceTrack |
   return data.tracks.filter(isInstanceTrack).find(track => track.worldInstance === uid);
 }
 
+/**
+ * Find a property track by name. `var:` and `plugin:` prefixes select the
+ * instance-variable or plugin track when a world, variable and plugin
+ * property share a name.
+ */
 function findPropertyTrack(
   track: TimelineInstanceTrack,
   property: string,
 ): TimelinePropertyTrack | undefined {
-  return track.propertyTracks.find(pt => pt.property === property);
+  let sourceType: string | undefined;
+  let bare = property;
+  if (property.startsWith('var:')) { sourceType = 'instance-variable'; bare = property.slice(4); }
+  else if (property.startsWith('plugin:')) { sourceType = 'plugin'; bare = property.slice(7); }
+  return track.propertyTracks.find(pt => pt.property === bare
+    && (sourceType === undefined || pt.source?.type === sourceType));
 }
 
 function createMasterKeyframe(time: number): TimelineKeyframe {
@@ -295,42 +295,34 @@ function createMasterKeyframe(time: number): TimelineKeyframe {
 
 function createPropertyKeyframe(
   time: number,
-  value: number,
-  aValue: number,
+  spec: PropertySpec,
+  values: KeyframeValues,
 ): TimelinePropertyKeyframe {
-  return {
+  const keyframe: Record<string, unknown> = {
     time,
     enabled: true,
     resultMode: 'default',
     ease: 'default',
-    pathMode: 'default',
-    value,
-    rValue: value,
-    aValue,
-    addons: [
-      {
-        id: 'cubic-bezier',
-        data: {
-          startAnchor: null,
-          startEnable: false,
-          endAnchor: null,
-          endEnable: false,
-        },
-      },
-    ],
+    pathMode: spec.pathMode,
+    value: values.value,
   };
+  if (values.rValue !== undefined) keyframe.rValue = values.rValue;
+  keyframe.aValue = values.aValue;
+  keyframe.addons = spec.addons();
+  return keyframe as TimelinePropertyKeyframe;
 }
 
-function createPropertyTrack(property: string, uid: number): TimelinePropertyTrack {
+function createPropertyTrack(spec: PropertySpec): TimelinePropertyTrack {
   return {
-    property,
-    source: { type: 'world-instance', uid },
+    property: spec.property,
+    source: { ...spec.source },
     enabled: true,
     interpolationMode: 'default',
     resultMode: 'default',
     ease: 'default',
-    pathMode: 'default',
+    pathMode: spec.pathMode,
     propertyKeyframes: [],
+    ...spec.trackExtras,
   };
 }
 
@@ -353,8 +345,6 @@ function createInstanceTrack(
     initialVisibility: true,
     id: '',
     virtualPosition: {
-      offsetX: 0,
-      offsetY: 0,
       useColor: true,
       colorSet: false,
       relativeFlags: 16383,
@@ -366,34 +356,87 @@ function createInstanceTrack(
   };
 }
 
-/** Insert or update a property keyframe at `time`, keeping the list sorted. */
-function setPropertyKeyframe(
+/** Add a property track to an instance track, keeping virtualPosition in step as the editor does. */
+function attachPropertyTrack(
+  track: TimelineInstanceTrack,
+  spec: PropertySpec,
   propertyTrack: TimelinePropertyTrack,
-  time: number,
-  value: number,
-  aValue: number,
+  instance: Instance,
+  objectType: ObjectType | undefined,
 ): void {
-  const existing = propertyTrack.propertyKeyframes.find(kf => sameTime(kf.time, time));
-  if (existing) {
-    existing.value = value;
-    existing.rValue = value;
-    existing.aValue = aValue;
-    return;
+  const at = track.propertyTracks.findIndex(pt => trackRank(pt, instance, objectType) > spec.order);
+  if (at === -1) track.propertyTracks.push(propertyTrack);
+  else track.propertyTracks.splice(at, 0, propertyTrack);
+  if (spec.virtualKey) {
+    track.virtualPosition = addVirtualPositionKey(
+      track.virtualPosition as unknown as Record<string, unknown>,
+      spec.virtualKey,
+      spec.kind,
+    ) as unknown as TimelineInstanceTrack['virtualPosition'];
   }
-  propertyTrack.propertyKeyframes.push(createPropertyKeyframe(time, value, aValue));
-  propertyTrack.propertyKeyframes.sort((a, b) => a.time - b.time);
+}
+
+/** Result mode in force for a keyframe, from the keyframe out to the timeline. */
+function keyframeMode(
+  data: Timeline,
+  track: TimelineInstanceTrack,
+  propertyTrack: TimelinePropertyTrack | undefined,
+  keyframe: TimelinePropertyKeyframe | undefined,
+): string {
+  return effectiveResultMode(keyframe?.resultMode, propertyTrack?.resultMode, track.resultMode, data.resultMode);
 }
 
 /**
- * The value pair to write for a property whose current state comes from the
- * layout. Position properties resolve to `value: 0` plus the instance's own
- * coordinate; anything else has no observed mapping, so both values are 0 and
- * the caller reports the property as unverified.
+ * Recompute each numeric keyframe's `value` after a result mode changed: the
+ * editor stores `aValue` there under "absolute" and `rValue` otherwise, and
+ * rewrites stale values when it saves.
  */
-function currentValuePair(property: string, instance: Instance): { value: number; aValue: number } {
-  const base = positionBase(property, instance);
-  if (base === undefined) return { value: 0, aValue: 0 };
-  return { value: 0, aValue: base };
+function refreshModeValues(data: Timeline): void {
+  for (const track of data.tracks.filter(isInstanceTrack)) {
+    for (const propertyTrack of track.propertyTracks) {
+      for (const keyframe of propertyTrack.propertyKeyframes) {
+        if (typeof keyframe.aValue === 'number' && typeof keyframe.rValue === 'number') {
+          keyframe.value = keyframeMode(data, track, propertyTrack, keyframe) === 'absolute' ? keyframe.aValue : keyframe.rValue;
+        }
+      }
+    }
+  }
+}
+
+/** Insert or update a property keyframe at `time`, keeping the list sorted. */
+function setPropertyKeyframe(
+  data: Timeline,
+  track: TimelineInstanceTrack,
+  propertyTrack: TimelinePropertyTrack,
+  spec: PropertySpec,
+  time: number,
+  absolute: TimelineValue,
+): void {
+  const existing = propertyTrack.propertyKeyframes.find(kf => sameTime(kf.time, time));
+  const values = valuesFor(spec, absolute, keyframeMode(data, track, propertyTrack, existing));
+  if (existing) {
+    existing.value = values.value;
+    if (values.rValue !== undefined) existing.rValue = values.rValue;
+    existing.aValue = values.aValue;
+    return;
+  }
+  propertyTrack.propertyKeyframes.push(createPropertyKeyframe(time, spec, values));
+  propertyTrack.propertyKeyframes.sort((a, b) => a.time - b.time);
+}
+
+/** Keyframes holding the instance's current value at each time. */
+function currentKeyframes(
+  data: Timeline,
+  track: TimelineInstanceTrack,
+  propertyTrack: TimelinePropertyTrack,
+  spec: PropertySpec,
+  times: number[],
+): TimelinePropertyKeyframe[] {
+  const mode = keyframeMode(data, track, propertyTrack, undefined);
+  if (!spec.verified) {
+    return times.map(time => createPropertyKeyframe(time, spec, { value: 0, rValue: 0, aValue: 0 }));
+  }
+  return times.map(time => createPropertyKeyframe(time, spec, valuesFor(spec, spec.base as TimelineValue, mode)));
 }
 
 /** Locate a timeline file at the timelines root or in the transitions subfolder. */
@@ -605,7 +648,10 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
         if (args.enabled !== undefined) data.enabled = args.enabled;
         if (args.ease !== undefined) data.ease = args.ease;
         if (args.interpolationMode !== undefined) data.interpolationMode = args.interpolationMode;
-        if (args.resultMode !== undefined) data.resultMode = args.resultMode;
+        if (args.resultMode !== undefined) {
+          data.resultMode = args.resultMode;
+          refreshModeValues(data);
+        }
         if (args.pathMode !== undefined) data.pathMode = args.pathMode;
         if (args.transformWithSceneGraph !== undefined) data.transformWithSceneGraph = args.transformWithSceneGraph;
 
@@ -746,37 +792,69 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
     return result;
   }
 
-  /** The world instance with this UID, searched across every layout. */
+  /** The world instance with this UID, searched across every layout, and its object type. */
   async function requireWorldInstance(uid: number): Promise<
-    { ok: true; instance: Instance } | { ok: false; error: ReturnType<typeof toolError> }
+    { ok: true; instance: Instance; objectType?: ObjectType } | { ok: false; error: ReturnType<typeof toolError> }
   > {
     const located = findInstanceAnywhere(await reader.readAllLayouts(), uid);
     if (!located) {
       return {
         ok: false,
-        error: toolError(`Instance UID ${uid} was not found in any layout, so the absolute and relative values of a position property cannot be related. Remove the stale track with remove_timeline_track, or set only non-position properties by supplying both their absolute and relative values.`),
+        error: toolError(`Instance UID ${uid} was not found in any layout, so its current property values cannot be read. Remove the stale track with remove_timeline_track.`),
       };
     }
     if (!located.instance.world) {
       return {
         ok: false,
-        error: toolError(`Instance UID ${uid} in layout "${located.layoutName}" is not a world instance, so it has no position to relate keyframe values to.`),
+        error: toolError(`Instance UID ${uid} in layout "${located.layoutName}" is not a world instance.`),
       };
     }
-    return { ok: true, instance: located.instance };
+    return { ok: true, instance: located.instance, objectType: await readObjectTypeSafe(located.instance.type) };
   }
+
+  async function readObjectTypeSafe(name: string): Promise<ObjectType | undefined> {
+    try {
+      return await reader.readObjectType(name);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Resolve property names for new tracks; a known property whose current value is unreadable is an error. */
+  function resolveNewProperties(
+    properties: string[],
+    instance: Instance,
+    objectType: ObjectType | undefined,
+  ): { ok: true; specs: PropertySpec[] } | { ok: false; error: ReturnType<typeof toolError> } {
+    const specs: PropertySpec[] = [];
+    for (const name of properties) {
+      const resolved = resolveTimelineProperty(name, instance, objectType);
+      if (!resolved.ok) return { ok: false, error: toolError(resolved.error) };
+      const spec = resolved.spec;
+      if (spec.verified && spec.base === undefined) {
+        return { ok: false, error: toolError(`Cannot read the current value of "${spec.property}" for instance UID ${instance.uid}${spec.property.startsWith('offsetScale') ? ' (its object type has no frame size to divide by)' : ''}.`) };
+      }
+      if (specs.some(other => other.property === spec.property && other.source.type === spec.source.type)) {
+        return { ok: false, error: toolError(`Duplicate property "${name}" in properties; each property track must appear once.`) };
+      }
+      specs.push(spec);
+    }
+    return { ok: true, specs };
+  }
+
+  const propertyNameHelp = `World properties: ${Object.keys(WORLD_PROPERTIES).join(', ')}. Instance variable names and plugin property ids (e.g. "initial-animation") are also accepted; prefix "var:" or "plugin:" when a name is both`;
 
   // ─── add_timeline_track ───────────────────────────────────
 
   server.tool(
     'add_timeline_track',
-    'Add an instance track for one world instance of a layout to a timeline, with master keyframes and one property track per property',
+    'Add an instance track for one world instance of a layout to a timeline, with master keyframes and one property track per property holding the instance\'s current value',
     {
       timelineName: z.string().max(200).describe('Timeline name'),
       layoutName: z.string().max(200).describe('Layout that holds the instance'),
       instanceUid: z.number().int().min(0).describe('UID of the world instance to animate'),
       properties: z.array(z.string().min(1).max(100)).max(32).optional().default(['offsetX', 'offsetY'])
-        .describe('Property track names (default: ["offsetX","offsetY"]). Only offsetX and offsetY are verified against a Construct sample'),
+        .describe(`Properties to animate (default: ["offsetX","offsetY"]). ${propertyNameHelp}`),
       keyframeTimes: z.array(z.number().min(0)).min(1).max(200).optional().default([0])
         .describe('Master keyframe times in seconds, each within [0, totalTime] (default: [0])'),
     },
@@ -810,11 +888,9 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
           return toolError(`Instance UID ${args.instanceUid} already has a track in timeline "${args.timelineName}". Extend it with add_property_track or set_keyframe.`);
         }
 
-        const properties = args.properties;
-        const duplicate = properties.find((p, i) => properties.indexOf(p) !== i);
-        if (duplicate !== undefined) {
-          return toolError(`Duplicate property "${duplicate}" in properties; each property track name must appear once.`);
-        }
+        const instanceType = await readObjectTypeSafe(instance.type);
+        const resolved = resolveNewProperties(args.properties, instance, instanceType);
+        if (!resolved.ok) return resolved.error;
 
         const times = [...new Set(args.keyframeTimes)].sort((a, b) => a - b);
         const outOfRange = times.find(t => t < 0 || t > data.totalTime);
@@ -828,14 +904,11 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
           reader.getProject().uniqueId,
         );
         track.keyframes = times.map(time => createMasterKeyframe(time));
-        track.propertyTracks = properties.map(property => {
-          const propertyTrack = createPropertyTrack(property, args.instanceUid);
-          const pair = currentValuePair(property, instance);
-          propertyTrack.propertyKeyframes = times.map(
-            time => createPropertyKeyframe(time, pair.value, pair.aValue),
-          );
-          return propertyTrack;
-        });
+        for (const spec of resolved.specs) {
+          const propertyTrack = createPropertyTrack(spec);
+          propertyTrack.propertyKeyframes = currentKeyframes(data, track, propertyTrack, spec, times);
+          attachPropertyTrack(track, spec, propertyTrack, instance, instanceType);
+        }
         data.tracks.push(track);
 
         const backupPath = await saveTimeline(filePath, data);
@@ -843,7 +916,7 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
           args.timelineName,
           'track-added',
           backupPath,
-          unverifiedPropertyWarnings(properties),
+          unverifiedPropertyWarnings(resolved.specs),
         ));
       } catch (error) {
         console.error('[add_timeline_track] failed:', error);
@@ -885,11 +958,11 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
 
   server.tool(
     'add_property_track',
-    'Add one property track to an existing instance track, with a keyframe at every existing master keyframe time',
+    'Add one property track to an existing instance track, with a keyframe holding the instance\'s current value at every existing master keyframe time',
     {
       timelineName: z.string().max(200).describe('Timeline name'),
       instanceUid: z.number().int().min(0).describe('UID of the animated instance'),
-      property: z.string().min(1).max(100).describe('Property name. Only offsetX and offsetY are verified against a Construct sample'),
+      property: z.string().min(1).max(100).describe(`Property to animate. ${propertyNameHelp}`),
     },
     async (args) => {
       try {
@@ -901,33 +974,28 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
         if (!found.ok) return found.error;
         const { track } = found;
 
-        if (findPropertyTrack(track, args.property)) {
+        const located = await requireWorldInstance(args.instanceUid);
+        if (!located.ok) return located.error;
+
+        const resolved = resolveNewProperties([args.property], located.instance, located.objectType);
+        if (!resolved.ok) return resolved.error;
+        const spec = resolved.specs[0];
+
+        if (track.propertyTracks.some(pt => pt.property === spec.property && pt.source?.type === spec.source.type)) {
           return toolError(`Property track "${args.property}" already exists on the track for instance UID ${args.instanceUid}. Use set_keyframe to change its values.`);
         }
 
-        let instance: Instance | undefined;
-        if (isPositionProperty(args.property)) {
-          const located = await requireWorldInstance(args.instanceUid);
-          if (!located.ok) return located.error;
-          instance = located.instance;
-        }
-
-        const propertyTrack = createPropertyTrack(args.property, args.instanceUid);
-        const pair = instance
-          ? currentValuePair(args.property, instance)
-          : { value: 0, aValue: 0 };
-        propertyTrack.propertyKeyframes = track.keyframes
-          .map(kf => kf.time)
-          .sort((a, b) => a - b)
-          .map(time => createPropertyKeyframe(time, pair.value, pair.aValue));
-        track.propertyTracks.push(propertyTrack);
+        const propertyTrack = createPropertyTrack(spec);
+        const times = track.keyframes.map(kf => kf.time).sort((a, b) => a - b);
+        propertyTrack.propertyKeyframes = currentKeyframes(data, track, propertyTrack, spec, times);
+        attachPropertyTrack(track, spec, propertyTrack, located.instance, located.objectType);
 
         const backupPath = await saveTimeline(filePath, data);
         return toolResult(writeResult(
           args.timelineName,
           'property-track-added',
           backupPath,
-          unverifiedPropertyWarnings([args.property]),
+          unverifiedPropertyWarnings([spec]),
         ));
       } catch (error) {
         console.error('[add_property_track] failed:', error);
@@ -944,7 +1012,7 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
     {
       timelineName: z.string().max(200).describe('Timeline name'),
       instanceUid: z.number().int().min(0).describe('UID of the animated instance'),
-      property: z.string().min(1).max(100).describe('Property track name to remove'),
+      property: z.string().min(1).max(100).describe('Property track name to remove ("var:" or "plugin:" prefix selects between tracks sharing a name)'),
     },
     async (args) => {
       try {
@@ -956,15 +1024,15 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
         if (!found.ok) return found.error;
         const { track } = found;
 
-        const index = track.propertyTracks.findIndex(pt => pt.property === args.property);
-        if (index === -1) {
+        const propertyTrack = findPropertyTrack(track, args.property);
+        if (!propertyTrack) {
           const existing = track.propertyTracks.map(pt => pt.property);
           const hint = existing.length > 0
             ? ` Property tracks present: ${existing.join(', ')}.`
             : ' The track has no property tracks.';
           return toolError(`Property track "${args.property}" not found on the track for instance UID ${args.instanceUid}.${hint}`);
         }
-        track.propertyTracks.splice(index, 1);
+        track.propertyTracks.splice(track.propertyTracks.indexOf(propertyTrack), 1);
 
         const backupPath = await saveTimeline(filePath, data);
         return toolResult(writeResult(args.timelineName, 'property-track-removed', backupPath));
@@ -977,6 +1045,13 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
 
   // ─── set_keyframe ─────────────────────────────────────────
 
+  const absoluteSchema = z.union([
+    z.number(),
+    z.string().max(10000),
+    z.boolean(),
+    z.array(z.number().min(0).max(1)).length(4),
+  ]);
+
   server.tool(
     'set_keyframe',
     'Create or update the master keyframe at a time on an instance track, and the per-property keyframes at that time',
@@ -985,9 +1060,9 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
       instanceUid: z.number().int().min(0).describe('UID of the animated instance'),
       time: z.number().describe('Keyframe time in seconds, within [0, totalTime]'),
       values: z.record(z.object({
-        absolute: z.number().optional().describe('Absolute value of the property (written to aValue)'),
-        relative: z.number().optional().describe('Value relative to the instance layout value (written to value and rValue)'),
-      })).optional().describe('Per-property values, e.g. { "offsetX": { "absolute": 400 } }. For offsetX/offsetY give absolute or relative and the other is computed from the instance position; for any other property give both, because no mapping was observed'),
+        absolute: absoluteSchema.optional().describe('Value of the property at this keyframe: a number, a string or boolean for such variables and plugin properties, or [r,g,b,a] for offsetColor'),
+        relative: z.number().optional().describe('For a number property: offset from the instance\'s own layout value'),
+      })).optional().describe('Per-property values, e.g. { "offsetX": { "absolute": 400 }, "offsetOpacity": { "relative": -0.5 }, "tag": { "absolute": "done" } }. Numbers take absolute or relative; the stored values follow the result mode in force. A name matching no sampled property needs both absolute and relative numbers'),
       ease: z.string().max(100).optional().describe('Master keyframe ease name (a new keyframe gets "default")'),
       enabled: z.boolean().optional().describe('Master keyframe enabled flag'),
       tags: z.string().max(500).optional().describe('Master keyframe tags string'),
@@ -1011,33 +1086,51 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
           return toolError(`Too many properties in values: ${entries.length} (max 32).`);
         }
 
-        let instance: Instance | undefined;
-        if (entries.some(([property]) => isPositionProperty(property))) {
-          const located = await requireWorldInstance(args.instanceUid);
-          if (!located.ok) return located.error;
-          instance = located.instance;
+        let located: { instance: Instance; objectType?: ObjectType } | undefined;
+        if (entries.length > 0) {
+          const result = await requireWorldInstance(args.instanceUid);
+          if (!result.ok) return result.error;
+          located = result;
         }
 
-        // Resolve every value pair before touching the timeline.
-        const resolved: Array<{ property: string; value: number; aValue: number }> = [];
-        for (const [property, spec] of entries) {
-          if (isPositionProperty(property)) {
-            const base = instance ? positionBase(property, instance) : undefined;
-            if (base === undefined) {
-              return toolError(`Cannot resolve the instance position for property "${property}" of instance UID ${args.instanceUid}.`);
+        // Resolve every value before touching the timeline.
+        const resolved: Array<{ spec: PropertySpec; existing?: TimelinePropertyTrack; absolute: TimelineValue; relative?: number }> = [];
+        for (const [name, input] of entries) {
+          const existing = findPropertyTrack(track, name);
+          const lookup = existing
+            ? specForExistingTrack(existing as { property: string; source: { type: string; uid: number | string } }, located!.instance, located!.objectType)
+            : resolveTimelineProperty(name, located!.instance, located!.objectType);
+          if (!lookup.ok) return toolError(lookup.error);
+          const spec = lookup.spec;
+
+          if (!spec.verified) {
+            if (typeof input.absolute !== 'number' || input.relative === undefined) {
+              return toolError(`Property "${name}" matches no sampled property, so its absolute and relative values cannot be related: supply both "absolute" and "relative" as numbers. ${propertyNameHelp}.`);
             }
-            if (spec.absolute !== undefined) {
-              resolved.push({ property, value: spec.absolute - base, aValue: spec.absolute });
-            } else if (spec.relative !== undefined) {
-              resolved.push({ property, value: spec.relative, aValue: base + spec.relative });
+            resolved.push({ spec, existing, absolute: input.absolute, relative: input.relative });
+            continue;
+          }
+
+          if (spec.kind === 'number') {
+            if (typeof spec.base !== 'number') {
+              return toolError(`Cannot read the current value of "${spec.property}" for instance UID ${args.instanceUid}.`);
+            }
+            if (input.absolute !== undefined) {
+              const problem = checkValue(spec, input.absolute);
+              if (problem) return toolError(problem);
+              resolved.push({ spec, existing, absolute: input.absolute });
+            } else if (input.relative !== undefined) {
+              resolved.push({ spec, existing, absolute: spec.base + input.relative });
             } else {
-              return toolError(`Property "${property}" needs an "absolute" or a "relative" value.`);
+              return toolError(`Property "${name}" needs an "absolute" or a "relative" value.`);
             }
           } else {
-            if (spec.absolute === undefined || spec.relative === undefined) {
-              return toolError(`Property "${property}" is not a verified position property, so its absolute and relative values cannot be related: supply both "absolute" and "relative". Only offsetX and offsetY were observed in a Construct sample.`);
+            if (input.relative !== undefined) {
+              return toolError(`Property "${name}" is a ${spec.kind === 'color' ? 'color' : spec.kind}; give "absolute" only.`);
             }
-            resolved.push({ property, value: spec.relative, aValue: spec.absolute });
+            const problem = input.absolute === undefined ? `Property "${name}" needs an "absolute" value.` : checkValue(spec, input.absolute);
+            if (problem) return toolError(problem);
+            resolved.push({ spec, existing, absolute: input.absolute as TimelineValue });
           }
         }
 
@@ -1052,17 +1145,27 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
         if (args.tags !== undefined) master.tags = args.tags;
 
         const createdTracks: string[] = [];
-        for (const { property, value, aValue } of resolved) {
-          let propertyTrack = findPropertyTrack(track, property);
+        for (const { spec, existing, absolute, relative } of resolved) {
+          let propertyTrack = existing;
           if (!propertyTrack) {
-            propertyTrack = createPropertyTrack(property, args.instanceUid);
-            track.propertyTracks.push(propertyTrack);
-            createdTracks.push(property);
+            propertyTrack = createPropertyTrack(spec);
+            attachPropertyTrack(track, spec, propertyTrack, located!.instance, located!.objectType);
+            createdTracks.push(spec.property);
           }
-          setPropertyKeyframe(propertyTrack, args.time, value, aValue);
+          if (!spec.verified) {
+            const current = propertyTrack.propertyKeyframes.find(kf => sameTime(kf.time, args.time));
+            const values = { value: relative as number, rValue: relative as number, aValue: absolute as number };
+            if (current) Object.assign(current, values);
+            else {
+              propertyTrack.propertyKeyframes.push(createPropertyKeyframe(args.time, spec, values));
+              propertyTrack.propertyKeyframes.sort((a, b) => a.time - b.time);
+            }
+          } else {
+            setPropertyKeyframe(data, track, propertyTrack, spec, args.time, absolute);
+          }
         }
 
-        const warnings = unverifiedPropertyWarnings(resolved.map(r => r.property));
+        const warnings = unverifiedPropertyWarnings(resolved.map(r => r.spec));
         if (createdTracks.length > 0) {
           warnings.push(`Created property track(s) ${createdTracks.join(', ')} on the track for instance UID ${args.instanceUid}; they hold a keyframe only at the times set so far.`);
         }
@@ -1176,7 +1279,10 @@ export function registerTimelineTools({ server, reader, writer }: MutationToolDe
         if (args.enabled !== undefined) track.enabled = args.enabled;
         if (args.ease !== undefined) track.ease = args.ease;
         if (args.interpolationMode !== undefined) track.interpolationMode = args.interpolationMode;
-        if (args.resultMode !== undefined) track.resultMode = args.resultMode;
+        if (args.resultMode !== undefined) {
+          track.resultMode = args.resultMode;
+          refreshModeValues(data);
+        }
         if (args.pathMode !== undefined) track.pathMode = args.pathMode;
         if (args.initialVisibility !== undefined) track.initialVisibility = args.initialVisibility;
 

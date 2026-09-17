@@ -6,6 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
+- Timeline property tracks now cover every property the r495.2 editor offers: the world properties `offsetX`, `offsetY`, `offsetZElevation`, `offsetWidth`, `offsetHeight`, `offsetScaleX`, `offsetScaleY`, `offsetAngle`, `offsetOpacity` and `offsetColor`, instance variables (`source.type` `instance-variable`), and plugin properties (`source.type` `plugin`, e.g. `initial-animation`). New tracks hold the instance's current value, carry the editor's path mode, addons and `sourceAdapter`, sit in the editor's track order, and extend `virtualPosition`. `set_keyframe` takes numbers as absolute or relative values, strings, booleans and `[r,g,b,a]` colors, and writes `value` as `aValue` under the absolute result mode and as `rValue` otherwise. Rules come from a track built in the editor with every picker entry, which the tools reproduce exactly, and from 2,215 keyframes in 21 Construct timeline examples. Names matching none of these are still accepted with a warning.
 - `list_effects`, `add_effect`, `update_effect`, `remove_effect`, and
   `reorder_effects`: attach registered effect addons to object types,
   families, layers, and layouts, keeping per-instance state on every placed

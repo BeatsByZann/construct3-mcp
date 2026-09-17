@@ -690,12 +690,14 @@ export interface TimelineFolder {
  * instance track and the tools never compute another value.
  */
 export interface TimelineVirtualPosition {
-  offsetX: number;
-  offsetY: number;
+  /** One offset key per animated world property, added as its property track is added. */
+  offsetX?: number;
+  offsetY?: number;
   useColor: boolean;
   colorSet: boolean;
   relativeFlags: number;
   version: number;
+  [key: string]: unknown;
 }
 
 /**
@@ -714,7 +716,7 @@ export interface TimelineKeyframe {
 /** An addon entry on a property keyframe (r495.2 writes one cubic-bezier entry). */
 export interface TimelineKeyframeAddon {
   id: string;
-  data: Record<string, unknown>;
+  data?: Record<string, unknown>;
 }
 
 /**
@@ -731,21 +733,22 @@ export interface TimelinePropertyKeyframe {
   resultMode: string;
   ease: string;
   pathMode: string;
-  /** Value relative to the instance's layout value. */
-  value: number;
-  /** Equal to `value` in every observed keyframe. */
-  rValue: number;
-  /** Absolute value of the property at this keyframe. */
-  aValue: number;
+  /** Equal to `aValue` when the result mode in force is "absolute", otherwise to `rValue`. */
+  value: number | string | boolean | number[];
+  /** Offset from the instance's own value for numbers; the value itself for strings and booleans; absent for colors. */
+  rValue?: number | string | boolean;
+  /** Value of the property at this keyframe. */
+  aValue: number | string | boolean | number[];
   addons: TimelineKeyframeAddon[];
   [key: string]: unknown;
 }
 
 /** One animated property of an instance track. */
 export interface TimelinePropertyTrack {
-  /** Property name. Only "offsetX" and "offsetY" were observed in a sample. */
+  /** World property name (offsetX, ...), instance variable name, or plugin property id. */
   property: string;
-  source: { type: string; uid: number; [key: string]: unknown };
+  /** `uid` is the instance UID for world-instance, the variable name for instance-variable, the plugin id for plugin. */
+  source: { type: string; uid: number | string; [key: string]: unknown };
   enabled: boolean;
   interpolationMode: string;
   resultMode: string;
