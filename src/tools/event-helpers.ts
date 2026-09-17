@@ -452,3 +452,206 @@ export async function buildBlockEvent(
     block.isElse || undefined,
   );
 }
+
+// ─── Container Resolution (shared by add_* and move_* tools) ─
+
+/** Resolve a group path without creating missing children arrays. */
+export function resolveGroupContainer(
+  events: Record<string, unknown>[],
+  groupPath: string,
+): { owner: Record<string, unknown>; children: Record<string, unknown>[] } | null {
+  const segments = groupPath.split('>').map(segment => segment.trim());
+  let current = events;
+  let owner: Record<string, unknown> | undefined;
+  for (const segment of segments) {
+    const group = current.find(event => event.eventType === 'group' && event.title === segment);
+    if (!group) return null;
+    owner = group;
+    if (!Array.isArray(group.children)) {
+      current = [];
+    } else {
+      current = group.children as Record<string, unknown>[];
+    }
+  }
+  return owner ? {
+    owner,
+    children: Array.isArray(owner.children) ? owner.children as Record<string, unknown>[] : [],
+  } : null;
+}
+
+/** Event types that can hold nested children in a C3 event sheet. */
+export const CONTAINER_EVENT_TYPES = new Set(['group', 'block', 'function-block']);
+
+export interface LocatorInput {
+  groupPath?: string;
+  parentSid?: number;
+  siblingSid?: number;
+  position: 'start' | 'end' | 'before' | 'after';
+}
+
+/**
+ * Validate the locator/position combination shared by add_event_block,
+ * add_event_to_sheet and move_event_block. Returns an error message, or null
+ * when the combination is usable.
+ */
+export function validateLocator(locator: LocatorInput): string | null {
+  const locatorCount = [locator.groupPath, locator.parentSid, locator.siblingSid]
+    .filter(value => value !== undefined).length;
+  if (locatorCount > 1) {
+    return 'Specify at most one of: groupPath, parentSid, siblingSid.';
+  }
+  if (locator.siblingSid === undefined && (locator.position === 'before' || locator.position === 'after')) {
+    return 'position before/after requires siblingSid.';
+  }
+  if (locator.siblingSid !== undefined && locator.position !== 'before' && locator.position !== 'after') {
+    return 'siblingSid requires position before or after.';
+  }
+  if (locator.parentSid !== undefined && (locator.position === 'before' || locator.position === 'after')) {
+    return 'parentSid requires position start or end.';
+  }
+  return null;
+}
+
+export interface ResolvedContainer {
+  /** The array the event will be inserted into. */
+  targetEvents: Record<string, unknown>[];
+  /** The event that owns targetEvents, when the destination is nested. */
+  owner?: Record<string, unknown>;
+  /** The sibling event itself, for before/after insertion (index is read at insert time). */
+  siblingEvent?: Record<string, unknown>;
+}
+
+/**
+ * Resolve a locator to an insertion container. Purely read-only: a missing
+ * children array is reported as an empty array and only committed to the owner
+ * by commitContainer() once the caller has finished validating.
+ */
+export function resolveContainer(
+  events: Record<string, unknown>[],
+  sheetName: string,
+  locator: LocatorInput,
+): { container: ResolvedContainer } | { error: string } {
+  if (locator.groupPath !== undefined) {
+    const resolved = resolveGroupContainer(events, locator.groupPath);
+    if (!resolved) {
+      const topGroups = events
+        .filter(e => e.eventType === 'group')
+        .map(e => e.title as string);
+      const hint = topGroups.length > 0
+        ? `\nAvailable top-level groups: ${topGroups.join(', ')}`
+        : '\nNo groups found in this event sheet.';
+      return { error: `Group path "${locator.groupPath}" not found in "${sheetName}".${hint}` };
+    }
+    return { container: { targetEvents: resolved.children, owner: resolved.owner } };
+  }
+
+  if (locator.parentSid !== undefined) {
+    const parent = findEventBySid(events, locator.parentSid);
+    if (!parent) {
+      return { error: `Parent event with SID ${locator.parentSid} not found in sheet "${sheetName}".` };
+    }
+    if (!CONTAINER_EVENT_TYPES.has(parent.event.eventType as string)) {
+      return { error: `Event with SID ${locator.parentSid} is a "${parent.event.eventType}" and cannot contain sub-events.` };
+    }
+    return {
+      container: {
+        targetEvents: Array.isArray(parent.event.children)
+          ? parent.event.children as Record<string, unknown>[]
+          : [],
+        owner: parent.event,
+      },
+    };
+  }
+
+  if (locator.siblingSid !== undefined) {
+    const sibling = findEventBySid(events, locator.siblingSid);
+    if (!sibling) {
+      return { error: `Sibling event with SID ${locator.siblingSid} not found in sheet "${sheetName}".` };
+    }
+    return {
+      container: {
+        targetEvents: sibling.parentArray,
+        siblingEvent: sibling.event,
+      },
+    };
+  }
+
+  return { container: { targetEvents: events } };
+}
+
+/**
+ * Attach a deferred children array to its owner. Call only after every
+ * validation has passed, so an invalid request leaves the tree untouched.
+ */
+export function commitContainer(container: ResolvedContainer): void {
+  const owner = container.owner;
+  if (owner && !Array.isArray(owner.children)) {
+    owner.children = container.targetEvents;
+  }
+}
+
+/**
+ * Insert an event into a resolved container at the requested position.
+ * The sibling index is read at insert time so callers that removed an event
+ * from the same array beforehand still land in the right place.
+ */
+export function insertIntoContainer(
+  container: ResolvedContainer,
+  position: 'start' | 'end' | 'before' | 'after',
+  event: Record<string, unknown>,
+): void {
+  const { targetEvents, siblingEvent } = container;
+  if (siblingEvent && (position === 'before' || position === 'after')) {
+    const index = targetEvents.indexOf(siblingEvent);
+    // indexOf can only be -1 if the sibling left the array between resolution
+    // and insertion; fall back to appending rather than splicing at -1.
+    if (index === -1) {
+      targetEvents.push(event);
+    } else {
+      targetEvents.splice(position === 'before' ? index : index + 1, 0, event);
+    }
+    return;
+  }
+  if (position === 'start') {
+    targetEvents.unshift(event);
+  } else {
+    targetEvents.push(event);
+  }
+}
+
+// ─── Subtree Identity Helpers ───────────────────────────────
+
+export interface SubtreeIdentity {
+  /** The event itself plus every descendant event, by object identity. */
+  events: Set<Record<string, unknown>>;
+  /** Every children array inside the subtree, by object identity. */
+  childArrays: Set<Record<string, unknown>[]>;
+}
+
+/**
+ * Collect object identities for an event and everything below it. Used to
+ * refuse a move that would place an event inside its own subtree, which would
+ * detach the branch from the sheet.
+ */
+export function collectSubtree(event: Record<string, unknown>): SubtreeIdentity {
+  const events = new Set<Record<string, unknown>>([event]);
+  const childArrays = new Set<Record<string, unknown>[]>();
+  const stack: Record<string, unknown>[] = [event];
+  let nodeCount = 0;
+
+  while (stack.length > 0) {
+    if (++nodeCount > MAX_SEARCH_NODES) {
+      throw new Error(`Subtree scan exceeded ${MAX_SEARCH_NODES} nodes`);
+    }
+    const current = stack.pop()!;
+    if (!Array.isArray(current.children)) continue;
+    const children = current.children as Record<string, unknown>[];
+    childArrays.add(children);
+    for (const child of children) {
+      events.add(child);
+      stack.push(child);
+    }
+  }
+
+  return { events, childArrays };
+}

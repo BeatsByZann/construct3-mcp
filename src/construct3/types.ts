@@ -322,6 +322,31 @@ export interface FunctionBlockEvent {
   [key: string]: unknown;
 }
 
+/**
+ * Custom ACE block event — defines a custom action on an object type or
+ * family. Verified against a real project: every observed definition uses
+ * aceType "action"; the condition and expression forms are not implemented
+ * because none were observed.
+ */
+export interface CustomActionBlockEvent {
+  eventType: 'custom-ace-block';
+  aceType: string;
+  aceName?: string;
+  /** Object type or family the custom action belongs to */
+  objectClass?: string;
+  functionDescription?: string;
+  functionCategory?: string;
+  functionReturnType?: string;
+  functionCopyPicked?: boolean;
+  functionIsAsync?: boolean;
+  functionParameters?: Array<{ name: string; type: string; initialValue?: string; comment?: string; sid?: number }>;
+  conditions: Condition[];
+  actions: Action[];
+  children?: C3Event[];
+  sid?: number;
+  [key: string]: unknown;
+}
+
 /** Group event — organizes events into named groups */
 export interface GroupEvent {
   eventType: 'group';
@@ -331,6 +356,11 @@ export interface GroupEvent {
   isActiveOnStart?: boolean;
   children: C3Event[];
   sid?: number;
+  /** Editor colors, serialized by C3 as kebab-case RGBA arrays of four 0-1 numbers */
+  'background-color'?: number[];
+  'text-color'?: number[];
+  /** Editor bookmark flag */
+  bookmark?: boolean;
   [key: string]: unknown;
 }
 
@@ -345,6 +375,11 @@ export interface IncludeEvent {
 export interface CommentEvent {
   eventType: 'comment';
   text: string;
+  /** Editor colors, serialized by C3 as kebab-case RGBA arrays of four 0-1 numbers */
+  'background-color'?: number[];
+  'text-color'?: number[];
+  /** Editor bookmark flag */
+  bookmark?: boolean;
   [key: string]: unknown;
 }
 
@@ -366,6 +401,7 @@ export type C3Event =
   | BlockEvent
   | VariableEvent
   | FunctionBlockEvent
+  | CustomActionBlockEvent
   | GroupEvent
   | IncludeEvent
   | CommentEvent

@@ -1883,3 +1883,845 @@ describe('update_event_variable', () => {
     expect(result.content[0].text).toContain('No updates');
   });
 });
+
+describe('add_event_to_sheet nested locators', () => {
+  function nestedSheet() {
+    return {
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          { eventType: 'group', title: 'Movement', sid: 50, children: [] },
+          { eventType: 'block', sid: 60, conditions: [{ id: 'x', objectClass: 'System', sid: 10 }], actions: [], children: [] },
+          { eventType: 'group', title: 'NoChildrenArray', sid: 70 },
+        ],
+      }]]),
+    };
+  }
+
+  it('adds a local variable inside a group by groupPath', async () => {
+    const { server, writer } = setup(nestedSheet());
+    const result = await server.callTool('add_event_to_sheet', {
+      sheetName: 'MainSheet', eventType: 'variable', variableName: 'localCount',
+      variableType: 'number', groupPath: 'Movement',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events).toHaveLength(3);
+    expect(written.events[0].children).toHaveLength(1);
+    expect(written.events[0].children[0]).toMatchObject({ eventType: 'variable', name: 'localCount', type: 'number' });
+  });
+
+  it('adds a comment inside a block by parentSid at the start', async () => {
+    const { server, writer } = setup(nestedSheet());
+    const result = await server.callTool('add_event_to_sheet', {
+      sheetName: 'MainSheet', eventType: 'comment', commentText: 'note', parentSid: 60, position: 'start',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[1].children[0]).toEqual({ eventType: 'comment', text: 'note' });
+  });
+
+  it('creates the children array on a group that has none', async () => {
+    const { server, writer } = setup(nestedSheet());
+    const result = await server.callTool('add_event_to_sheet', {
+      sheetName: 'MainSheet', eventType: 'group', title: 'Inner', parentSid: 70,
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[2].children).toHaveLength(1);
+    expect(written.events[2].children[0].title).toBe('Inner');
+  });
+
+  it('keeps root behavior when no locator is given', async () => {
+    const { server, writer } = setup(nestedSheet());
+    const result = await server.callTool('add_event_to_sheet', {
+      sheetName: 'MainSheet', eventType: 'comment', commentText: 'root note',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events).toHaveLength(4);
+    expect(written.events[3]).toEqual({ eventType: 'comment', text: 'root note' });
+  });
+
+  it('rejects both groupPath and parentSid', async () => {
+    const { server, writer } = setup(nestedSheet());
+    const result = await server.callTool('add_event_to_sheet', {
+      sheetName: 'MainSheet', eventType: 'comment', commentText: 'x', groupPath: 'Movement', parentSid: 60,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('at most one of');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects a nested include because C3 only serializes includes at the sheet root', async () => {
+    const data = nestedSheet();
+    data.eventSheets.set('Shared', { name: 'Shared', sid: 2, events: [] } as any);
+    const { server, writer } = setup(data);
+    const result = await server.callTool('add_event_to_sheet', {
+      sheetName: 'MainSheet', eventType: 'include', includeSheet: 'Shared', groupPath: 'Movement',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('root');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects an unknown groupPath without writing', async () => {
+    const { server, writer } = setup(nestedSheet());
+    const result = await server.callTool('add_event_to_sheet', {
+      sheetName: 'MainSheet', eventType: 'comment', commentText: 'x', groupPath: 'Nope',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not found');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+});
+
+describe('move_event_block', () => {
+  function movableSheet() {
+    return {
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          {
+            eventType: 'group', title: 'Outer', sid: 50, children: [
+              { eventType: 'group', title: 'Inner', sid: 51, children: [] },
+            ],
+          },
+          {
+            eventType: 'block', sid: 60,
+            conditions: [{ id: 'x', objectClass: 'System', sid: 10 }],
+            actions: [{ id: 'a', objectClass: 'System', sid: 20 }],
+            children: [
+              { eventType: 'block', sid: 61, conditions: [], actions: [], children: [
+                { eventType: 'block', sid: 62, conditions: [], actions: [], children: [] },
+              ] },
+            ],
+          },
+          { eventType: 'block', sid: 70, conditions: [], actions: [], children: [] },
+          { eventType: 'group', title: 'Empty', sid: 80 },
+        ],
+      }]]),
+    };
+  }
+
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('move_event_block')).toBe(true);
+  });
+
+  it('moves a block into a group by groupPath, keeping its SID and children', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 60, groupPath: 'Outer > Inner',
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    expect(data.movedSid).toBe(60);
+    expect(data.childrenMoved).toBe(2);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events.map((e: any) => e.sid)).toEqual([50, 70, 80]);
+    const moved = written.events[0].children[0].children[0];
+    expect(moved.sid).toBe(60);
+    expect(moved.conditions[0].sid).toBe(10);
+    expect(moved.actions[0].sid).toBe(20);
+    expect(moved.children[0].sid).toBe(61);
+    expect(moved.children[0].children[0].sid).toBe(62);
+  });
+
+  it('moves an event beside a sibling with position before', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 70, siblingSid: 50, position: 'before',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events.map((e: any) => e.sid)).toEqual([70, 50, 60, 80]);
+  });
+
+  it('reorders within one array using the post-removal sibling position', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 50, siblingSid: 70, position: 'after',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events.map((e: any) => e.sid)).toEqual([60, 70, 50, 80]);
+  });
+
+  it('moves a nested event out to the sheet root', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 61, position: 'start',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events.map((e: any) => e.sid)).toEqual([61, 50, 60, 70, 80]);
+    expect(written.events[0].children[0].sid).toBe(62);
+    expect(written.events[2].children).toHaveLength(0);
+  });
+
+  it('creates the children array on a container that has none', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 70, parentSid: 80,
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    const empty = written.events.find((e: any) => e.sid === 80);
+    expect(empty.children.map((e: any) => e.sid)).toEqual([70]);
+  });
+
+  it('refuses to move an event into its own descendant', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 60, parentSid: 62,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('its own descendants');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('refuses to move a group into a path that runs through itself', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 50, groupPath: 'Outer > Inner',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('its own descendants');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('refuses a siblingSid inside the moved subtree', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 60, siblingSid: 62, position: 'after',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('its own descendants');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('refuses siblingSid equal to sid', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 60, siblingSid: 60, position: 'after',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('beside itself');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('refuses parentSid equal to sid', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 50, parentSid: 50,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('inside itself');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects more than one locator', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 70, groupPath: 'Outer', parentSid: 50,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('at most one of');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects before/after without siblingSid', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 70, position: 'before',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('requires siblingSid');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects a target that cannot contain sub-events', async () => {
+    const data = movableSheet();
+    (data.eventSheets.get('MainSheet') as any).events.push({ eventType: 'variable', name: 'v', type: 'number', initialValue: '0', sid: 90 });
+    const { server, writer } = setup(data);
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 70, parentSid: 90,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('cannot contain sub-events');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('reports a missing SID with a navigable summary', async () => {
+    const { server, writer } = setup(movableSheet());
+    const result = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 999, groupPath: 'Outer',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not found');
+    expect(result.content[0].text).toContain('carry no SID');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+});
+
+describe('update_event_group', () => {
+  function groupSheet() {
+    return {
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          {
+            eventType: 'group', disabled: false, title: 'Movement', description: 'old',
+            isActiveOnStart: true, sid: 50, children: [
+              { eventType: 'group', disabled: false, title: 'Collision', description: '', isActiveOnStart: true, sid: 51, children: [] },
+            ],
+          },
+          { eventType: 'group', disabled: false, title: 'Combat', description: '', isActiveOnStart: true, sid: 52, children: [] },
+          { eventType: 'block', sid: 60, conditions: [], actions: [], children: [] },
+        ],
+      }]]),
+    };
+  }
+
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('update_event_group')).toBe(true);
+  });
+
+  it('updates title, description, flags and the observed color keys', async () => {
+    const { server, writer } = setup(groupSheet());
+    const result = await server.callTool('update_event_group', {
+      sheetName: 'MainSheet', sid: 50, title: 'Locomotion', description: 'new',
+      isActiveOnStart: false, disabled: true,
+      backgroundColor: [0.36, 0.2, 0.2, 1], textColor: [0.82, 0.82, 0.82, 1],
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0]).toMatchObject({
+      title: 'Locomotion', description: 'new', isActiveOnStart: false, disabled: true,
+      'background-color': [0.36, 0.2, 0.2, 1], 'text-color': [0.82, 0.82, 0.82, 1],
+    });
+    // children untouched
+    expect(written.events[0].children[0].sid).toBe(51);
+  });
+
+  it('rejects a title that collides with a sibling group', async () => {
+    const { server, writer } = setup(groupSheet());
+    const result = await server.callTool('update_event_group', {
+      sheetName: 'MainSheet', sid: 50, title: 'Combat',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already exists');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('warns when the new title duplicates a group in another container', async () => {
+    const { server } = setup(groupSheet());
+    const result = await server.callTool('update_event_group', {
+      sheetName: 'MainSheet', sid: 52, title: 'Collision',
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    expect(data.warnings.join(' ')).toContain('Collision');
+  });
+
+  it('rejects a non-group SID', async () => {
+    const { server, writer } = setup(groupSheet());
+    const result = await server.callTool('update_event_group', { sheetName: 'MainSheet', sid: 60, title: 'x' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not a group');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects an empty update', async () => {
+    const { server } = setup(groupSheet());
+    const result = await server.callTool('update_event_group', { sheetName: 'MainSheet', sid: 50 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates provided');
+  });
+
+  it('rejects an out-of-range color channel', async () => {
+    const { server } = setup(groupSheet());
+    await expect(server.callTool('update_event_group', {
+      sheetName: 'MainSheet', sid: 50, backgroundColor: [2, 0, 0, 1],
+    })).rejects.toThrow();
+  });
+});
+
+describe('update_comment', () => {
+  function commentSheet() {
+    return {
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          { eventType: 'comment', text: 'root comment' },
+          {
+            eventType: 'group', title: 'Movement', sid: 50, children: [
+              { eventType: 'block', sid: 60, conditions: [], actions: [], children: [] },
+              { eventType: 'comment', text: 'group comment' },
+            ],
+          },
+          { eventType: 'comment', text: 'sid comment', sid: 70 },
+        ],
+      }]]),
+    };
+  }
+
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('update_comment')).toBe(true);
+  });
+
+  it('updates a root comment by index', async () => {
+    const { server, writer } = setup(commentSheet());
+    const result = await server.callTool('update_comment', { sheetName: 'MainSheet', index: 0, text: 'rewritten' });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0].text).toBe('rewritten');
+  });
+
+  it('updates a nested comment by groupPath and index', async () => {
+    const { server, writer } = setup(commentSheet());
+    const result = await server.callTool('update_comment', {
+      sheetName: 'MainSheet', groupPath: 'Movement', index: 1, text: 'nested rewrite',
+      backgroundColor: [0.58, 0.15, 0.15, 1], textColor: [0, 0, 0, 0],
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[1].children[1]).toEqual({
+      eventType: 'comment', text: 'nested rewrite',
+      'background-color': [0.58, 0.15, 0.15, 1], 'text-color': [0, 0, 0, 0],
+    });
+  });
+
+  it('updates a comment by sid when one is present', async () => {
+    const { server, writer } = setup(commentSheet());
+    const result = await server.callTool('update_comment', { sheetName: 'MainSheet', sid: 70, text: 'by sid' });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[2]).toEqual({ eventType: 'comment', text: 'by sid', sid: 70 });
+  });
+
+  it('rejects an index that addresses a non-comment event', async () => {
+    const { server, writer } = setup(commentSheet());
+    const result = await server.callTool('update_comment', {
+      sheetName: 'MainSheet', groupPath: 'Movement', index: 0, text: 'x',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not a comment');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects an out-of-range index', async () => {
+    const { server, writer } = setup(commentSheet());
+    const result = await server.callTool('update_comment', { sheetName: 'MainSheet', index: 9, text: 'x' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('out of range');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects both sid and index', async () => {
+    const { server } = setup(commentSheet());
+    const result = await server.callTool('update_comment', { sheetName: 'MainSheet', sid: 70, index: 0, text: 'x' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('exactly one of');
+  });
+
+  it('rejects neither sid nor index', async () => {
+    const { server } = setup(commentSheet());
+    const result = await server.callTool('update_comment', { sheetName: 'MainSheet', text: 'x' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('exactly one of');
+  });
+
+  it('rejects a container locator combined with sid', async () => {
+    const { server } = setup(commentSheet());
+    const result = await server.callTool('update_comment', {
+      sheetName: 'MainSheet', sid: 70, groupPath: 'Movement', text: 'x',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('index addressing only');
+  });
+
+  it('rejects an empty update', async () => {
+    const { server } = setup(commentSheet());
+    const result = await server.callTool('update_comment', { sheetName: 'MainSheet', index: 0 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates provided');
+  });
+});
+
+describe('update_function', () => {
+  function functionProject() {
+    return {
+      eventSheets: new Map<string, any>([
+        ['Functions', {
+          name: 'Functions', sid: 1,
+          events: [
+            {
+              eventType: 'function-block', functionName: 'doThing', functionDescription: '',
+              functionCategory: '', functionReturnType: 'none', functionCopyPicked: false,
+              functionIsAsync: false,
+              functionParameters: [
+                { name: 'first', type: 'string', initialValue: '', comment: '', sid: 11 },
+                { name: 'second', type: 'number', initialValue: '0', comment: '', sid: 12 },
+              ],
+              conditions: [], actions: [], children: [], sid: 100,
+            },
+            {
+              eventType: 'function-block', functionName: 'otherThing', functionDescription: '',
+              functionCategory: '', functionReturnType: 'none', functionCopyPicked: false,
+              functionIsAsync: false, functionParameters: [],
+              conditions: [], actions: [], children: [], sid: 101,
+            },
+          ],
+        }],
+        ['Callers', {
+          name: 'Callers', sid: 2,
+          events: [
+            {
+              eventType: 'group', title: 'Calls', sid: 200, children: [
+                {
+                  eventType: 'block', sid: 201, conditions: [], actions: [
+                    { callFunction: 'doThing', sid: 210, parameters: ['"a"', '1'] },
+                    { callFunction: 'otherThing', sid: 211 },
+                    { type: 'script', language: 'javascript', script: ['// doThing'] },
+                  ], children: [],
+                },
+              ],
+            },
+          ],
+        }],
+      ]),
+    };
+  }
+
+  function callerFreeProject() {
+    const data = functionProject();
+    (data.eventSheets.get('Callers') as any).events[0].children[0].actions =
+      [{ callFunction: 'otherThing', sid: 211 }];
+    return data;
+  }
+
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('update_function')).toBe(true);
+  });
+
+  it('updates metadata without touching callers', async () => {
+    const { server, writer } = setup(functionProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, description: 'does a thing',
+      category: 'Gameplay', returnType: 'number', isAsync: true, copyPicked: true,
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    expect(data.renamedCallers).toBe(0);
+    expect(data.updatedSheets).toEqual(['Functions']);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0]).toMatchObject({
+      functionDescription: 'does a thing', functionCategory: 'Gameplay',
+      functionReturnType: 'number', functionIsAsync: true, functionCopyPicked: true,
+    });
+  });
+
+  it('refuses a rename while callers exist and renameCallers is false', async () => {
+    const { server, writer } = setup(functionProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, functionName: 'doThingBetter',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('renameCallers=true');
+    expect(result.content[0].text).toContain('Callers');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rewrites every callFunction action when renameCallers is true', async () => {
+    const { server, writer } = setup(functionProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, functionName: 'doThingBetter', renameCallers: true,
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    expect(data.renamedCallers).toBe(1);
+    expect(data.updatedSheets.sort()).toEqual(['Callers', 'Functions']);
+
+    const writes = writer.callsFor('writeEntityFile');
+    const callers = writes.find(c => c.args[1] === 'Callers')!.args[2] as any;
+    const actions = callers.events[0].children[0].actions;
+    expect(actions[0].callFunction).toBe('doThingBetter');
+    expect(actions[0].sid).toBe(210);
+    expect(actions[0].parameters).toEqual(['"a"', '1']);
+    // unrelated call and the script action are untouched
+    expect(actions[1].callFunction).toBe('otherThing');
+    expect(actions[2].script).toEqual(['// doThing']);
+
+    const funcs = writes.find(c => c.args[1] === 'Functions')!.args[2] as any;
+    expect(funcs.events[0].functionName).toBe('doThingBetter');
+  });
+
+  it('renames without renameCallers when nothing calls the function', async () => {
+    const { server, writer } = setup(callerFreeProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, functionName: 'doThingBetter',
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    expect(data.renamedCallers).toBe(0);
+    expect(writer.callsFor('writeEntityFile').map(c => c.args[1])).toEqual(['Functions']);
+  });
+
+  it('refuses a rename onto an existing function name', async () => {
+    const { server, writer } = setup(callerFreeProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, functionName: 'otherThing',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already exists');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('appends parameters with fresh SIDs and warns about existing callers', async () => {
+    const { server, writer } = setup(functionProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100,
+      addParameters: [{ name: 'third', type: 'boolean' }],
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    expect(data.parameters).toEqual(['first', 'second', 'third']);
+    expect(data.warnings.join(' ')).toContain('initial values');
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    const params = written.events[0].functionParameters;
+    expect(params[2]).toMatchObject({ name: 'third', type: 'boolean', initialValue: 'false', comment: '' });
+    expect(params[2].sid).toEqual(expect.any(Number));
+    expect(params[0].sid).toBe(11);
+  });
+
+  it('refuses parameter removal while callers exist because callers pass arguments positionally', async () => {
+    const { server, writer } = setup(functionProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, removeParameters: ['first'],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('positionally');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('removes a parameter when nothing calls the function', async () => {
+    const { server, writer } = setup(callerFreeProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, removeParameters: ['first'],
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0].functionParameters.map((p: any) => p.name)).toEqual(['second']);
+  });
+
+  it('renames a parameter in place and keeps its SID and position', async () => {
+    const { server, writer } = setup(functionProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, renameParameters: [{ from: 'first', to: 'primary' }],
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0].functionParameters[0]).toMatchObject({ name: 'primary', sid: 11 });
+  });
+
+  it('warns about parameter references left inside the function body', async () => {
+    const data = functionProject();
+    (data.eventSheets.get('Functions') as any).events[0].actions =
+      [{ id: 'set-value', objectClass: 'System', sid: 20, parameters: { value: 'first + 1' } }];
+    const { server } = setup(data);
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, renameParameters: [{ from: 'first', to: 'primary' }],
+    });
+    const parsed = parseResult(result);
+    expect(parsed.success).toBe(true);
+    expect(parsed.warnings.join(' ')).toContain('parameter "first"');
+  });
+
+  it('rejects an unknown parameter name', async () => {
+    const { server, writer } = setup(callerFreeProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, removeParameters: ['missing'],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('no parameter named');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects a duplicate parameter name', async () => {
+    const { server, writer } = setup(callerFreeProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Functions', sid: 100, addParameters: [{ name: 'second', type: 'number' }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already has a parameter');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects a non-function SID', async () => {
+    const { server, writer } = setup(functionProject());
+    const result = await server.callTool('update_function', {
+      sheetName: 'Callers', sid: 201, description: 'x',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not a function-block');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects an empty update', async () => {
+    const { server } = setup(functionProject());
+    const result = await server.callTool('update_function', { sheetName: 'Functions', sid: 100 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates provided');
+  });
+});
+
+describe('add_custom_action', () => {
+  function customActionProject(extraEvents: any[] = []) {
+    return {
+      objects: new Map([['Sprite', { name: 'Sprite', sid: 5 }]]),
+      families: new Map([['fAgents', { name: 'fAgents', sid: 6 }]]),
+      eventSheets: new Map<string, any>([['MainSheet', {
+        name: 'MainSheet', sid: 1,
+        events: [
+          { eventType: 'group', title: 'Behaviors', sid: 50, children: [] },
+          ...extraEvents,
+        ],
+      }]]),
+    };
+  }
+
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('add_custom_action')).toBe(true);
+  });
+
+  it('writes the observed custom-ace-block shape with parameter SIDs', async () => {
+    const { server, writer } = setup(customActionProject());
+    const result = await server.callTool('add_custom_action', {
+      sheetName: 'MainSheet', objectClass: 'fAgents', aceName: 'Validate Behavior: MoveToTargetUID',
+      description: 'Validate the preconditions for the action.', category: '_Validate Behavior',
+      parameters: [
+        { name: 'leafNodeId', type: 'string' },
+        { name: 'targetUid', type: 'number' },
+      ],
+      groupPath: 'Behaviors',
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    expect(data.generatedSid).toEqual(expect.any(Number));
+
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    const def = written.events[0].children[0];
+    expect(def.eventType).toBe('custom-ace-block');
+    expect(def.aceType).toBe('action');
+    expect(def.aceName).toBe('Validate Behavior: MoveToTargetUID');
+    expect(def.objectClass).toBe('fAgents');
+    expect(def.functionDescription).toBe('Validate the preconditions for the action.');
+    expect(def.functionCategory).toBe('_Validate Behavior');
+    expect(def.functionReturnType).toBe('none');
+    expect(def.functionCopyPicked).toBe(false);
+    expect(def.functionIsAsync).toBe(false);
+    expect(def.conditions).toEqual([]);
+    expect(def.actions).toEqual([]);
+    expect(def.children).toEqual([]);
+    expect(def.functionParameters).toHaveLength(2);
+    expect(def.functionParameters[0]).toMatchObject({ name: 'leafNodeId', type: 'string', initialValue: '', comment: '' });
+    expect(def.functionParameters[1]).toMatchObject({ name: 'targetUid', type: 'number', initialValue: '0', comment: '' });
+    expect(def.functionParameters[0].sid).toEqual(expect.any(Number));
+    expect(def.functionParameters[1].sid).not.toBe(def.functionParameters[0].sid);
+  });
+
+  it('accepts an object type and honours the flags', async () => {
+    const { server, writer } = setup(customActionProject());
+    const result = await server.callTool('add_custom_action', {
+      sheetName: 'MainSheet', objectClass: 'Sprite', aceName: 'blink',
+      returnType: 'number', isAsync: true, copyPicked: true, position: 'start',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events[0]).toMatchObject({
+      eventType: 'custom-ace-block', objectClass: 'Sprite', aceName: 'blink',
+      functionReturnType: 'number', functionIsAsync: true, functionCopyPicked: true,
+    });
+  });
+
+  it('rejects System as the owning object class', async () => {
+    const { server, writer } = setup(customActionProject());
+    const result = await server.callTool('add_custom_action', {
+      sheetName: 'MainSheet', objectClass: 'System', aceName: 'doThing',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not System');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects a duplicate name on the same object class', async () => {
+    const { server, writer } = setup(customActionProject([{
+      eventType: 'custom-ace-block', aceType: 'action', aceName: 'blink', objectClass: 'Sprite',
+      functionParameters: [], conditions: [], actions: [], children: [], sid: 60,
+    }]));
+    const result = await server.callTool('add_custom_action', {
+      sheetName: 'MainSheet', objectClass: 'Sprite', aceName: 'blink',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already defines a custom action');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('allows the same name on a different object class', async () => {
+    const { server } = setup(customActionProject([{
+      eventType: 'custom-ace-block', aceType: 'action', aceName: 'blink', objectClass: 'Sprite',
+      functionParameters: [], conditions: [], actions: [], children: [], sid: 60,
+    }]));
+    const result = await server.callTool('add_custom_action', {
+      sheetName: 'MainSheet', objectClass: 'fAgents', aceName: 'blink',
+    });
+    expect(parseResult(result).success).toBe(true);
+  });
+
+  it('rejects duplicate parameter names', async () => {
+    const { server, writer } = setup(customActionProject());
+    const result = await server.callTool('add_custom_action', {
+      sheetName: 'MainSheet', objectClass: 'Sprite', aceName: 'blink',
+      parameters: [{ name: 'a', type: 'number' }, { name: 'a', type: 'string' }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('unique');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rejects an unknown groupPath without writing', async () => {
+    const { server, writer } = setup(customActionProject());
+    const result = await server.callTool('add_custom_action', {
+      sheetName: 'MainSheet', objectClass: 'Sprite', aceName: 'blink', groupPath: 'Nope',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not found');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('can be moved and updated like any other event', async () => {
+    const { server, writer } = setup(customActionProject([{
+      eventType: 'custom-ace-block', aceType: 'action', aceName: 'blink', objectClass: 'Sprite',
+      functionParameters: [], conditions: [], actions: [],
+      children: [{ eventType: 'block', sid: 61, conditions: [], actions: [], children: [] }],
+      sid: 60,
+    }]));
+    const moved = await server.callTool('move_event_block', {
+      sheetName: 'MainSheet', sid: 60, parentSid: 50,
+    });
+    const data = parseResult(moved);
+    expect(data.success).toBe(true);
+    expect(data.movedType).toBe('custom-ace-block');
+    expect(data.childrenMoved).toBe(1);
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.events).toHaveLength(1);
+    expect(written.events[0].children[0].sid).toBe(60);
+    expect(written.events[0].children[0].children[0].sid).toBe(61);
+  });
+});
