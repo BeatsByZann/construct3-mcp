@@ -5,9 +5,10 @@
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { WriteResult, Layout, Layer } from '../construct3/types.js';
+import type { WriteResult, Layout, Layer, Instance } from '../construct3/types.js';
 import { validateName, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord } from './shared.js';
 import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
+import { collectInstances } from '../construct3/layout-walk.js';
 import {
   DEFAULT_INSTANCE_PROPERTIES,
   createLayout,
@@ -15,6 +16,35 @@ import {
   createLayer,
 } from '../construct3/templates.js';
 import type { InstanceOverrides } from '../construct3/templates.js';
+
+/**
+ * Behavior and effect names an instance of `objectType` may carry: those on
+ * the object type itself plus those on every family that lists it as a member.
+ * Returns undefined when the object type cannot be read (unknown type).
+ */
+async function definedBehaviorsAndEffects(
+  reader: MutationToolDeps['reader'],
+  objectType: string,
+): Promise<{ behaviors: Set<string>; effects: Set<string> } | undefined> {
+  let obj: Record<string, unknown>;
+  try {
+    obj = await reader.readObjectType(objectType) as unknown as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const names = (list: unknown): string[] => Array.isArray(list)
+    ? (list as Array<{ name?: unknown }>).map(e => e.name).filter((n): n is string => typeof n === 'string')
+    : [];
+  const behaviors = new Set(names(obj.behaviorTypes));
+  const effects = new Set(names(obj.effectTypes));
+  for (const family of (await reader.readAllFamilies()).values()) {
+    const members = Array.isArray(family.members) ? (family.members as string[]) : [];
+    if (!members.includes(objectType)) continue;
+    for (const n of names(family.behaviorTypes)) behaviors.add(n);
+    for (const n of names(family.effectTypes)) effects.add(n);
+  }
+  return { behaviors, effects };
+}
 
 export function registerLayoutTools({ server, reader, writer, idGen }: MutationToolDeps) {
   // ─── create_layout ────────────────────────────────────────
@@ -689,13 +719,24 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       locked: z.boolean().optional().describe('Locked in editor'),
       tags: z.string().max(500).optional().describe('Comma-separated tags'),
       instanceVariables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().describe('Instance variable values to update'),
+      properties: boundedRecord(100, 4).optional().describe('Plugin property values to merge (e.g. Text "text", iframe "url", Tilemap "tile-width"); keys are the plugin\'s property IDs'),
+      behaviors: z.record(z.string(), z.object({
+        properties: boundedRecord(100, 4).describe('Behavior property values to merge'),
+      })).refine(obj => Object.keys(obj).length <= 50, 'Too many behaviors (max 50)').optional()
+        .describe('Per-instance behavior settings keyed by behavior name, e.g. { "Platform": { "properties": { "max-speed": 330 } } }'),
+      effects: z.record(z.string(), z.object({
+        isEnabled: z.boolean().optional().describe('Enable or disable this effect on the instance'),
+        parameters: boundedRecord(50, 3).optional().describe('Effect parameter values to merge'),
+      })).refine(obj => Object.keys(obj).length <= 50, 'Too many effects (max 50)').optional()
+        .describe('Per-instance effect state keyed by effect name, as defined on the object type or its family'),
     },
     async (args) => {
       try {
         const hasUpdates = args.x !== undefined || args.y !== undefined || args.width !== undefined ||
           args.height !== undefined || args.angle !== undefined || args.zElevation !== undefined ||
           args.color !== undefined || args.showing !== undefined || args.locked !== undefined ||
-          args.tags !== undefined || args.instanceVariables !== undefined;
+          args.tags !== undefined || args.instanceVariables !== undefined ||
+          args.properties !== undefined || args.behaviors !== undefined || args.effects !== undefined;
 
         if (!hasUpdates) {
           return toolError('No updates provided. Specify at least one property to update.');
@@ -708,56 +749,79 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        // Find the instance in layers
-        let found = false;
-
-        for (const layer of layout.layers) {
-          const inst = layer.instances.find(i => i.uid === args.uid);
-          if (inst) {
-            // Update world properties
-            if (inst.world) {
-              if (args.x !== undefined) inst.world.x = args.x;
-              if (args.y !== undefined) inst.world.y = args.y;
-              if (args.width !== undefined) inst.world.width = args.width;
-              if (args.height !== undefined) inst.world.height = args.height;
-              if (args.angle !== undefined) inst.world.angle = args.angle;
-              if (args.zElevation !== undefined) inst.world.zElevation = args.zElevation;
-              if (args.color !== undefined) inst.world.color = args.color;
-            }
-            if (args.showing !== undefined) inst.showing = args.showing;
-            if (args.locked !== undefined) inst.locked = args.locked;
-            if (args.tags !== undefined) inst.tags = args.tags;
-            if (args.instanceVariables !== undefined) {
-              inst.instanceVariables = { ...(inst.instanceVariables ?? {}), ...args.instanceVariables };
-            }
-            found = true;
-            break;
-          }
-        }
-
-        // Also check nonworld-instances (no world prop, but can update other fields)
-        if (!found) {
-          const nonworld = layout['nonworld-instances'] as Array<Record<string, unknown>> | undefined;
-          if (Array.isArray(nonworld)) {
-            const inst = nonworld.find(i => i.uid === args.uid);
-            if (inst) {
-              if (args.showing !== undefined) inst.showing = args.showing;
-              if (args.locked !== undefined) inst.locked = args.locked;
-              if (args.tags !== undefined) inst.tags = args.tags;
-              if (args.instanceVariables !== undefined) {
-                inst.instanceVariables = { ...(inst.instanceVariables as Record<string, unknown> ?? {}), ...args.instanceVariables };
-              }
-              const ignoredWorldProps = [args.x, args.y, args.width, args.height, args.angle, args.zElevation, args.color].filter(v => v !== undefined);
-              if (ignoredWorldProps.length > 0) {
-                // nonworld instances have no position — silently ignore spatial props
-              }
-              found = true;
-            }
-          }
-        }
-
-        if (!found) {
+        // Instances live in nested layers and in nonworld-instances alike.
+        const inst: Instance | undefined = collectInstances(layout).find(i => i.uid === args.uid);
+        if (!inst) {
           return toolError(`Instance with UID ${args.uid} not found in layout "${args.layoutName}". Use get_layout_details to see all instance UIDs.`);
+        }
+
+        const warnings: string[] = [];
+
+        // Behavior and effect names must be defined on the object type or on a
+        // family it belongs to; a stray effect key would fail the editor load.
+        if (args.behaviors || args.effects) {
+          const defined = await definedBehaviorsAndEffects(reader, inst.type);
+          if (args.behaviors && defined) {
+            for (const key of Object.keys(args.behaviors)) {
+              if (!defined.behaviors.has(key)) {
+                warnings.push(`Behavior "${key}" is not defined on "${inst.type}" or its families. Defined behaviors: ${[...defined.behaviors].join(', ') || '(none)'}.`);
+              }
+            }
+          }
+          if (args.effects && defined) {
+            const unknown = Object.keys(args.effects).filter(key => !defined.effects.has(key));
+            if (unknown.length > 0) {
+              return toolError(`Effect(s) ${unknown.map(k => `"${k}"`).join(', ')} are not defined on "${inst.type}" or its families. Add them with add_effect first. Defined effects: ${[...defined.effects].join(', ') || '(none)'}.`);
+            }
+          }
+        }
+
+        // World properties apply only to world instances.
+        if (inst.world) {
+          if (args.x !== undefined) inst.world.x = args.x;
+          if (args.y !== undefined) inst.world.y = args.y;
+          if (args.width !== undefined) inst.world.width = args.width;
+          if (args.height !== undefined) inst.world.height = args.height;
+          if (args.angle !== undefined) inst.world.angle = args.angle;
+          if (args.zElevation !== undefined) inst.world.zElevation = args.zElevation;
+          if (args.color !== undefined) inst.world.color = args.color;
+        } else {
+          const ignoredWorldProps = [args.x, args.y, args.width, args.height, args.angle, args.zElevation, args.color].filter(v => v !== undefined);
+          if (ignoredWorldProps.length > 0) {
+            warnings.push(`Instance ${args.uid} is a non-world instance; position, size, angle, Z elevation and color were ignored.`);
+          }
+        }
+        if (args.showing !== undefined) inst.showing = args.showing;
+        if (args.locked !== undefined) inst.locked = args.locked;
+        if (args.tags !== undefined) inst.tags = args.tags;
+        if (args.instanceVariables !== undefined) {
+          inst.instanceVariables = { ...(inst.instanceVariables ?? {}), ...args.instanceVariables };
+        }
+        if (args.properties !== undefined) {
+          inst.properties = { ...(inst.properties ?? {}), ...args.properties };
+        }
+        if (args.behaviors !== undefined) {
+          const behaviors = (inst.behaviors ?? {}) as Record<string, { properties?: Record<string, unknown> }>;
+          for (const [name, update] of Object.entries(args.behaviors)) {
+            const existing = behaviors[name] ?? { properties: {} };
+            behaviors[name] = { ...existing, properties: { ...(existing.properties ?? {}), ...update.properties } };
+          }
+          inst.behaviors = behaviors;
+        }
+        if (args.effects !== undefined) {
+          const instRecord = inst as Record<string, unknown>;
+          const effects = (instRecord.effects && typeof instRecord.effects === 'object'
+            ? instRecord.effects
+            : {}) as Record<string, { isEnabled?: boolean; parameters?: Record<string, unknown> }>;
+          for (const [name, update] of Object.entries(args.effects)) {
+            const existing = effects[name] ?? { isEnabled: true, parameters: {} };
+            effects[name] = {
+              ...existing,
+              isEnabled: update.isEnabled ?? existing.isEnabled ?? true,
+              parameters: { ...(existing.parameters ?? {}), ...(update.parameters ?? {}) },
+            };
+          }
+          instRecord.effects = effects;
         }
 
         const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
@@ -769,6 +833,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           category: 'layout',
           action: 'updated',
           backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
         return toolResult(result);
       } catch (error) {

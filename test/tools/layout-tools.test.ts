@@ -904,3 +904,77 @@ describe('update_instance', () => {
     expect(result.content[0].text).toContain('not found');
   });
 });
+
+describe('update_instance (properties, behaviors, effects)', () => {
+  function richSetup() {
+    return setup({
+      objects: new Map([
+        ['Player', { name: 'Player', 'plugin-id': 'Sprite', sid: 10, behaviorTypes: [{ behaviorId: 'Platform', name: 'Platform', sid: 11 }], effectTypes: [{ effectId: 'hsladjust', name: 'Tint' }] }],
+        ['Sign', { name: 'Sign', 'plugin-id': 'Text', sid: 12, behaviorTypes: [], effectTypes: [] }],
+      ]),
+      families: new Map([['Actors', { name: 'Actors', sid: 20, members: ['Player'], behaviorTypes: [{ behaviorId: 'Timer', name: 'FamTimer', sid: 21 }], effectTypes: [{ effectId: 'hsladjust', name: 'FamGlow' }] }]]),
+      layouts: new Map([['Level 1', {
+        ...makeLayout(),
+        layers: [{
+          name: 'Layer 0', sid: 2, effectTypes: [],
+          instances: [
+            { uid: 42, sid: 100, type: 'Player', world: { x: 0, y: 0 }, properties: { 'initial-frame': 0 }, behaviors: { Platform: { properties: { 'max-speed': 100, gravity: 1500 } } }, effects: { Tint: { isEnabled: true, parameters: { hue: 0, sat: 0 } } } },
+          ],
+          subLayers: [{ name: 'Inner', sid: 3, effectTypes: [], instances: [{ uid: 43, sid: 101, type: 'Sign', world: { x: 5, y: 5 }, properties: { text: 'old' } }] }],
+        }],
+        'nonworld-instances': [{ uid: 44, sid: 102, type: 'Sign', properties: {} }],
+      }]]),
+    });
+  }
+
+  it('merges plugin properties, behavior properties, and effect state', async () => {
+    const { server, writer } = richSetup();
+    const result = parseResult(await server.callTool('update_instance', {
+      layoutName: 'Level 1', uid: 42,
+      properties: { 'initial-animation': 'Run' },
+      behaviors: { Platform: { properties: { 'max-speed': 330 } }, FamTimer: { properties: {} } },
+      effects: { Tint: { isEnabled: false, parameters: { hue: 90 } }, FamGlow: { parameters: { amount: 2 } } },
+    }));
+    expect(result.success).toBe(true);
+    expect(result.warnings).toBeUndefined();
+    const inst = (writer.callsFor('writeEntityFile')[0].args[2] as any).layers[0].instances[0];
+    expect(inst.properties).toEqual({ 'initial-frame': 0, 'initial-animation': 'Run' });
+    expect(inst.behaviors.Platform.properties).toEqual({ 'max-speed': 330, gravity: 1500 });
+    expect(inst.behaviors.FamTimer).toEqual({ properties: {} });
+    expect(inst.effects.Tint).toEqual({ isEnabled: false, parameters: { hue: 90, sat: 0 } });
+    expect(inst.effects.FamGlow).toEqual({ isEnabled: true, parameters: { amount: 2 } });
+  });
+
+  it('rejects an effect that is not defined on the type or its families', async () => {
+    const { server, writer } = richSetup();
+    const result = await server.callTool('update_instance', { layoutName: 'Level 1', uid: 42, effects: { Nope: { isEnabled: false } } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('add_effect');
+    expect(writer.calls).toHaveLength(0);
+  });
+
+  it('warns on an undefined behavior but still writes', async () => {
+    const { server, writer } = richSetup();
+    const result = parseResult(await server.callTool('update_instance', { layoutName: 'Level 1', uid: 42, behaviors: { Ghost: { properties: { a: 1 } } } }));
+    expect(result.success).toBe(true);
+    expect(result.warnings[0]).toContain('Behavior "Ghost" is not defined');
+    expect(writer.calls).toHaveLength(1);
+  });
+
+  it('finds instances in sub-layers and edits their properties', async () => {
+    const { server, writer } = richSetup();
+    const result = parseResult(await server.callTool('update_instance', { layoutName: 'Level 1', uid: 43, properties: { text: 'new' }, x: 50 }));
+    expect(result.success).toBe(true);
+    const inst = (writer.callsFor('writeEntityFile')[0].args[2] as any).layers[0].subLayers[0].instances[0];
+    expect(inst.properties.text).toBe('new');
+    expect(inst.world.x).toBe(50);
+  });
+
+  it('edits non-world instances and warns that spatial values were ignored', async () => {
+    const { server, writer } = richSetup();
+    const result = parseResult(await server.callTool('update_instance', { layoutName: 'Level 1', uid: 44, properties: { text: 'x' }, x: 10 }));
+    expect(result.success).toBe(true);
+    expect(result.warnings[0]).toContain('non-world');
+    expect((writer.callsFor('writeEntityFile')[0].args[2] as any)['nonworld-instances'][0].properties.text).toBe('x');
+  });
+});

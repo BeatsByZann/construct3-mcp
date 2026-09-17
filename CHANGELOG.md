@@ -6,6 +6,14 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
+- `list_effects`, `add_effect`, `update_effect`, `remove_effect`, and
+  `reorder_effects`: attach registered effect addons to object types,
+  families, layers, and layouts, keeping per-instance state on every placed
+  instance in sync.
+- `update_instance` now merges plugin `properties`, per-instance `behaviors`
+  settings, and per-instance `effects` state, finds instances in nested
+  sub-layers, and warns instead of silently ignoring spatial values on
+  non-world instances.
 - `connect_to_game` and `disconnect_from_game`: persistent Chrome DevTools
   Protocol connections, page-target discovery, bridge readiness checks,
   multiple retained connections, and server-shutdown cleanup.

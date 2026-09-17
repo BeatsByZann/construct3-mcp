@@ -8,6 +8,7 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Query Tools](#query-tools)
 - [Analysis Tools](#analysis-tools)
 - [Mutation Tools](#mutation-tools)
+- [Effect Tools](#effect-tools)
 - [Runtime Connection Tools](#runtime-connection-tools)
 - [Prompts](#prompts)
 - [Error Handling](#error-handling)
@@ -476,6 +477,25 @@ Delete a layout from the project.
 - If referenced and `force=true`: deletes with warning (references NOT cleaned up)
 - Removes the name from c3proj first, then backs up and deletes the JSON file. A failure between the two steps leaves an orphaned file (reported by `validate_project` as info when it sits at the category root or one subfolder deep), never a registration that points at nothing; the error names the file to clean up
 
+### `update_instance`
+
+Update a placed instance on a layout. Instances are found by UID in any layer, nested sub-layer, or the layout's non-world instances.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of the instance |
+| `x`, `y`, `width`, `height`, `angle`, `zElevation`, `color` | number / number[4] | No | World transform and tint (ignored, with a warning, on non-world instances) |
+| `showing`, `locked`, `tags` | boolean / string | No | Editor visibility, lock, and tags |
+| `instanceVariables` | object | No | Instance variable values to merge |
+| `properties` | object | No | Plugin property values to merge, keyed by property ID (Text `text`, iframe `url`, Tilemap `tile-width`, ...) |
+| `behaviors` | object | No | Per-instance behavior settings as `{ behaviorName: { properties: { ... } } }`, merged per behavior |
+| `effects` | object | No | Per-instance effect state as `{ effectName: { isEnabled?, parameters? } }`, merged per effect |
+
+**Notes:**
+- Behavior names not defined on the object type or one of its families produce a warning; effect names not defined there are rejected, because Construct fails to load an instance with an unknown effect key. Attach the effect first with `add_effect`.
+- Property keys are not validated against the plugin; use the IDs Construct writes into the layout file.
+
 ### `update_layout`
 
 Update layout properties (event sheet binding, dimensions).
@@ -589,6 +609,50 @@ Remove a Project File registration and its corresponding file under `files/`.
 | `name` | string | Yes | Project File name |
 | `folder` | enum | No | Project File family (default: `general`) |
 | `subfolder` | string | No | Slash-separated folder path under `files/` |
+
+---
+
+## Effect Tools
+
+Effects attach to object types, families, layers, and layouts. Object-type and family effects keep the shared definition on the type (`effectTypes: [{ effectId, name }]`) and the per-instance state on every placed instance (`effects: { name: { isEnabled, parameters } }`). Layer and layout effects keep both in one entry (`effectTypes: [{ effectId, name, instance: { isEnabled, parameters } }]`).
+
+Effects are never auto-registered: the effect addon must already be listed in `usedAddons` (add it in the Construct editor or with `register_addon`), because the effect's files must be present in the project. Neither coordinate parameter defaults nor parameter validation come from the addon; when `parameters` are omitted the tools write an empty parameter set for Construct to default on load.
+
+All targets take the same addressing parameters:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `targetType` | `objectType` / `family` / `layer` / `layout` | Yes | What the effect is attached to |
+| `targetName` | string | Yes | Object type, family, layout, or layer name |
+| `layoutName` | string | For `layer` | The layout containing the layer |
+
+### `list_effects`
+
+Returns the target's effect stack and the effect addon IDs registered in the project.
+
+### `add_effect`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `effectId` | string | Yes | Effect addon ID from `usedAddons` |
+| `name` | string | No | Effect name shown in the editor (default: the ID); must be unique on the target |
+| `parameters` | object | No | Initial parameter values |
+| `isEnabled` | boolean | No | Initially enabled (default: true) |
+| `index` | number | No | Position in the stack (default: append) |
+
+For object-type and family targets, every placed instance of the type (or of each member) receives the per-instance state; the layouts written are listed in `warnings`.
+
+### `update_effect`
+
+Set `isEnabled` and/or merge `parameters` on a **layer or layout** effect identified by `name`. Per-instance state of object-type and family effects is edited with `update_instance` (`effects`).
+
+### `remove_effect`
+
+Remove the effect named `name` from the target, and its per-instance state from every placed instance.
+
+### `reorder_effects`
+
+`names` must list every effect on the target exactly once, in the new order. Effects render in array order.
 
 ---
 

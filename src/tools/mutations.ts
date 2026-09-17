@@ -14,6 +14,7 @@ import { registerProjectTools } from './project-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 import { registerFileTools } from './file-tools.js';
+import { registerEffectTools } from './effect-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -29,4 +30,5 @@ export function registerMutationTools(
   registerAnimationTools(deps);
   registerTimelineTools(deps);
   registerFileTools(deps);
+  registerEffectTools(deps);
 }
