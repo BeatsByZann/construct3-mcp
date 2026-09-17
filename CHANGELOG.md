@@ -176,6 +176,38 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 - Placed instances now store their Z elevation under Construct's `world.z` key; the editor ignored the former `world.zElevation` key and reset the value to 0 (found by the r495.2 load check).
 - `create_flowchart` no longer refuses a project without the Flowchart plugin; the editor loads such a flowchart (and prunes the unused plugin), so the missing plugin is now a warning.
+- `add_timeline_track` and `remove_timeline_track`: instance-track editing for
+  one world instance of a layout, with master keyframes at the requested times
+  and one property track per property, refusing a second track for the same
+  instance, a non-world instance, and a keyframe time outside
+  `[0, totalTime]`. New tracks carry the Construct r495.2 shape, including the
+  `virtualPosition` block, the per-track `Property Track Folder`, and the
+  `cubic-bezier` addons entry on every property keyframe.
+- `add_property_track` and `remove_property_track`: per-property track editing,
+  with the new track's keyframes created at every existing master keyframe time
+  holding the instance's current value.
+- `set_keyframe` and `delete_keyframe`: keyframe editing that keeps keyframes
+  sorted by time, creates a missing property track, and relates a keyframe's
+  relative `value`/`rValue` and absolute `aValue` through the instance's layout
+  position for `offsetX`/`offsetY` (the only property names a Construct sample
+  confirmed; any other name is accepted, reported as unverified, and needs both
+  values supplied). Deleting the last remaining master keyframe of a track is
+  refused.
+- `update_track`: per-track `enabled`, `ease`, `interpolationMode`,
+  `resultMode`, `pathMode` and `initialVisibility`.
+- `update_timeline` now also writes `ease`, `interpolationMode`, `resultMode`,
+  `pathMode` and `transformWithSceneGraph`.
+- `Timeline`, `TimelineFolder`, `TimelineInstanceTrack`, `TimelinePropertyTrack`,
+  `TimelineKeyframe`, `TimelinePropertyKeyframe`, `TimelineKeyframeAddon` and
+  `TimelineVirtualPosition` types, documenting the r495.2 field meanings
+  (`value` is relative to the instance's layout value, `aValue` is absolute,
+  `rValue` equals `value`; `playheadTime`, `stepTime` and the `showing*` flags
+  are editor UI state the tools never compute). `create_timeline` now writes
+  the `childrenNestedData` container the editor writes. Nested timelines and
+  custom eases have no tool support, because no sample of either was available.
+- Timeline integration coverage against a Construct r495.2 timeline fixture
+  (`test/fixtures/timeline-sample`), comparing the written track key-for-key
+  with the editor's own output.
 
 ## [1.8.2] - 2026-09-10
 

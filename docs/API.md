@@ -8,6 +8,7 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Query Tools](#query-tools)
 - [Analysis Tools](#analysis-tools)
 - [Mutation Tools](#mutation-tools)
+- [Timeline Tools](#timeline-tools)
 - [Effect Tools](#effect-tools)
 - [Flowchart Tools](#flowchart-tools)
 - [Runtime Connection Tools](#runtime-connection-tools)
@@ -1142,6 +1143,233 @@ directory its family uses (see the table under `register_project_file`).
 | `name` | string | Yes | Project File name |
 | `folder` | enum | No | Project File family (default: `general`) |
 | `subfolder` | string | No | Slash-separated folder path inside the family directory |
+
+---
+
+## Timeline Tools
+
+Timelines live in `timelines/[subfolder/]<name>.json` and are registered in the
+`timelines` container of `project.c3proj`. Every write makes a `.bak` copy
+first and then replaces the file through a temp file and a rename.
+
+`playheadTime`, `stepTime` and the `showing*` flags are editor UI state: the
+tools preserve whatever the editor wrote and never compute them. Unknown keys
+survive a read-modify-write at the file, track, property-track and keyframe
+level.
+
+### File format
+
+The track shape below was confirmed against a timeline saved by Construct 3
+r495.2 with one instance track (`test/fixtures/timeline-sample`).
+
+| Field | Meaning |
+|-------|---------|
+| `tracks[]` | One entry per animated instance. Only `type: "instance-track"` is written by these tools; any other track kind in the file is left untouched |
+| `tracks[].worldInstance` | UID of the animated world instance |
+| `tracks[].objectType` | Object type name of that instance |
+| `tracks[].project` | The project's `uniqueId` |
+| `tracks[].initialVisibility` | Visibility applied when the timeline starts. New tracks get `true` |
+| `tracks[].virtualPosition` | Editor anchoring state. A new track gets the r495.2 values, including `relativeFlags: 16383`, which the tools never compute |
+| `tracks[].keyframes[]` | Master keyframes: `{ time, tags, enabled, ease, pathMode }`. They carry no value |
+| `tracks[].propertyTracks[]` | One per animated property: `{ property, source, enabled, interpolationMode, resultMode, ease, pathMode, propertyKeyframes }` |
+| `propertyKeyframes[]` | `{ time, enabled, resultMode, ease, pathMode, value, rValue, aValue, addons }` |
+| `propertyKeyframes[].addons` | r495.2 writes one `cubic-bezier` entry with all four anchors disabled; new keyframes get exactly that entry |
+| `tracks[].propertyTracksRoot` | The per-track `Property Track Folder` tree |
+
+### Keyframe values: `value`, `rValue` and `aValue`
+
+`aValue` is the property's absolute value and `value` is its value relative to
+the instance's own layout value. `rValue` equals `value` in every observed
+keyframe, and these tools always write the two equal. In the sample, an
+instance placed at x 324 has an offsetX keyframe of
+`value: 0, rValue: 0, aValue: 324`, so for `offsetX` and `offsetY`:
+
+```
+value = rValue = absolute - instance.world.x|y
+aValue = absolute
+```
+
+**Verified property names:** `offsetX` and `offsetY`. Those are the only two a
+Construct sample confirmed, and the only two whose absolute and relative values
+the tools can relate on their own.
+
+**Unverified property names:** `property` is a free string, so a name the
+Construct editor uses for width, height, angle, opacity, zElevation or color
+can be written, but none of those names was observed and the Construct manual
+text bundled with this server does not list them. Any name other than
+`offsetX`/`offsetY` is accepted, reported in the result `warnings`, and given
+no derived value: `set_keyframe` requires both `absolute` and `relative` for
+it, and a track created for it starts at `value: 0, aValue: 0`. Check such a
+track in the Construct 3 editor before relying on it.
+
+Nested timelines (`nestedData`, `childrenNestedData`, `nestedTimelinesRoot`)
+and custom eases have no tool support, because no sample of either was
+available. Their containers are created empty and preserved as written.
+
+### `list_timelines`
+
+List every timeline registered in the project, at the container root and in
+every subfolder. Returns `{ timelines: string[], count: number }`. No parameters.
+
+### `get_timeline_details`
+
+Return the parsed timeline file unchanged, including all tracks, property
+tracks and keyframes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Timeline name |
+
+### `create_timeline`
+
+Create an empty timeline file and register it. Duplicate names are refused.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Timeline name |
+| `totalTime` | number | No | Duration in seconds (default: 5) |
+| `loop`, `pingPong` | boolean | No | Playback flags (default: false) |
+| `repeatCount` | number | No | Repeats when not looping (default: 1) |
+| `startOnLayout` | string | No | Layout to auto-start on (default: none) |
+| `ignoreSystemTimescale` | boolean | No | Default: true |
+| `subfolder` | string | No | Slash-separated folder path under `timelines/` |
+
+### `update_timeline`
+
+Update timeline-level properties. At least one is required.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Timeline name |
+| `totalTime` | number | No | New duration in seconds |
+| `loop`, `pingPong`, `enabled` | boolean | No | Playback flags |
+| `repeatCount` | number | No | Repeat count |
+| `startOnLayout` | string | No | Auto-start layout (empty string = none) |
+| `ignoreSystemTimescale` | boolean | No | Ignore system timescale |
+| `ease` | string | No | Timeline-level ease name (e.g. `noease`) |
+| `interpolationMode` | string | No | Timeline-level interpolation mode |
+| `resultMode` | string | No | Timeline-level result mode |
+| `pathMode` | string | No | Timeline-level path mode (e.g. `line`) |
+| `transformWithSceneGraph` | boolean | No | Apply values through scene-graph parents |
+
+The five mode strings are written as given: they are not validated against the
+project's ease list or against an enumeration, because no such list was
+observed in the project format.
+
+### `delete_timeline`
+
+Delete the timeline file and its `project.c3proj` registration.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Timeline name to delete |
+
+### `add_timeline_track`
+
+Add an instance track for one world instance, with a master keyframe at each
+`keyframeTimes` entry and one property track per `properties` entry whose
+keyframes hold the instance's current values. Refused when the instance already
+has a track in this timeline, when the UID is not in the layout, when it is a
+non-world instance, when `properties` repeats a name, or when a time falls
+outside `[0, totalTime]`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `layoutName` | string | Yes | Layout that holds the instance |
+| `instanceUid` | number | Yes | UID of the world instance to animate |
+| `properties` | string[] | No | Property track names (default: `["offsetX","offsetY"]`) |
+| `keyframeTimes` | number[] | No | Master keyframe times in seconds (default: `[0]`) |
+
+### `remove_timeline_track`
+
+Remove the instance track for `instanceUid`, with all of its property tracks
+and keyframes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | number | Yes | UID of the animated instance |
+
+### `add_property_track`
+
+Add one property track to an existing instance track. Its keyframes are created
+at every existing master keyframe time, holding the instance's current value
+(`value: 0, aValue: 0` for an unverified property name). Refused when the track
+already has that property.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | number | Yes | UID of the animated instance |
+| `property` | string | Yes | Property name; only `offsetX` and `offsetY` are verified |
+
+### `remove_property_track`
+
+Remove one property track and all of its keyframes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | number | Yes | UID of the animated instance |
+| `property` | string | Yes | Property track name to remove |
+
+### `set_keyframe`
+
+Create or update the master keyframe at `time`, and create or update the
+keyframe at `time` on each property track named in `values`, creating a missing
+property track (reported in `warnings`). Keyframes stay sorted by time. `time`
+must be within `[0, totalTime]`; raise `totalTime` with `update_timeline`
+first if it is not.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | number | Yes | UID of the animated instance; it must already have a track |
+| `time` | number | Yes | Keyframe time in seconds, within `[0, totalTime]` |
+| `values` | object | No | Per-property `{ absolute?, relative? }`, e.g. `{ "offsetX": { "absolute": 400 } }` |
+| `ease` | string | No | Master keyframe ease (a new keyframe gets `default`) |
+| `enabled` | boolean | No | Master keyframe enabled flag |
+| `tags` | string | No | Master keyframe tags string |
+
+For `offsetX`/`offsetY`, give `absolute` **or** `relative` and the other is
+computed from the instance's layout position; supplying neither is refused. For
+any other property name, both `absolute` and `relative` are required, because
+no mapping between them was observed; supplying only one is refused. Resolving
+a position property needs the instance to still exist in some layout: a track
+left behind by a deleted instance is refused with a message naming
+`remove_timeline_track`.
+
+### `delete_keyframe`
+
+Without `property`, delete the master keyframe at `time` and every property
+keyframe at that time. With `property`, delete only that one property keyframe
+and leave the master keyframe in place. Deleting the last remaining master
+keyframe is refused, because an instance track with no keyframes is not a valid
+track; use `remove_timeline_track` instead.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | number | Yes | UID of the animated instance |
+| `time` | number | Yes | Time of the keyframe to delete |
+| `property` | string | No | Delete only this property track's keyframe |
+
+### `update_track`
+
+Update the playback properties of one instance track. At least one is required.
+Keyframes and property tracks are left alone.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | number | Yes | UID of the animated instance |
+| `enabled` | boolean | No | Enable/disable the track |
+| `ease` | string | No | Track ease name |
+| `interpolationMode` | string | No | Track interpolation mode |
+| `resultMode` | string | No | Track result mode |
+| `pathMode` | string | No | Track path mode |
+| `initialVisibility` | boolean | No | Visibility applied when the timeline starts |
 
 ---
 
