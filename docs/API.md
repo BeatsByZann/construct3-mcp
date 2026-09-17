@@ -800,7 +800,7 @@ Update a placed instance on a layout. Instances are found by UID in any layer, n
 | `layoutName` | string | Yes | Layout name |
 | `uid` | number | Yes | UID of the instance |
 | `x`, `y`, `width`, `height`, `angle`, `zElevation`, `color` | number / number[4] | No | World transform and tint (ignored, with a warning, on non-world instances) |
-| `originX`, `originY` | number | No | Origin as a fraction of the instance size |
+| `originX`, `originY` | number | No | Origin as a fraction of the instance size; see the origin notes below |
 | `blendMode` | string | No | `normal` (removes the stored key), `additive`, `xor`, `copy`, `destination-over`, `source-in`, `destination-in`, `source-out`, `destination-out`, `source-atop`, `destination-atop` |
 | `depth` | number | No | 3D Shape depth (`world.depth`, written after the Z key); other plugins get a warning |
 | `showing`, `locked`, `tags` | boolean / string | No | Editor visibility, lock, and tags |
@@ -812,6 +812,7 @@ Update a placed instance on a layout. Instances are found by UID in any layer, n
 **Notes:**
 - Behavior names not defined on the object type or one of its families produce a warning; effect names not defined there are rejected, because Construct fails to load an instance with an unknown effect key. Attach the effect first with `add_effect`.
 - Property keys are not validated against the plugin; use the IDs Construct writes into the layout file.
+- Origin follows the editor: a Sprite instance always carries its animation frame's origin (30,222 of 30,223 sampled instances), so any other value is refused (use `update_frame`). Objects with an `origin` property (Text, Tiled Background, 9-patch, Sprite Font, SVG Picture) take only the nine grid points; `originX`/`originY` set `properties.origin` too, and `properties: { origin }` sets the world origin. The r495.2 editor recomputes the world origin from that property on load.
 - `zElevation` is written to `world.zElevation` when the instance already stores that key (projects saved by older releases) and to `world.z` otherwise.
 
 ### `move_instance`

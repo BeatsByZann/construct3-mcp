@@ -84,6 +84,77 @@ function insertKeyAfter(record: Record<string, unknown>, key: string, value: unk
   return out;
 }
 
+/**
+ * The "origin" instance property (Text, Tiled Background, 9-patch, Sprite Font,
+ * SVG Picture, Drawing Canvas) and the world origin it stands for. The r495.2
+ * editor recomputes world.originX/Y from this property on load (a Tiled
+ * Background written with 0.5/0.5 and "top-left" came back as 0/0), and in
+ * the examples the pair agrees for every Tiled Background, 9-patch, Sprite
+ * Font and SVG Picture instance.
+ */
+const ORIGIN_GRID: Record<string, [number, number]> = {
+  'top-left': [0, 0], top: [0.5, 0], 'top-right': [1, 0],
+  left: [0, 0.5], center: [0.5, 0.5], right: [1, 0.5],
+  'bottom-left': [0, 1], bottom: [0.5, 1], 'bottom-right': [1, 1],
+};
+
+function originGridName(x: number, y: number): string | undefined {
+  return Object.keys(ORIGIN_GRID).find(name => ORIGIN_GRID[name][0] === x && ORIGIN_GRID[name][1] === y);
+}
+
+/**
+ * The origin of a Sprite's first frame in its initial animation. Every one of
+ * the 30,223 sampled Sprite instances but one carries exactly this origin.
+ */
+function spriteFrameOrigin(obj: Record<string, unknown> | undefined, props: Record<string, unknown> | undefined): [number, number] | undefined {
+  const items = (obj?.animations as { items?: Array<{ name?: string; frames?: Array<{ originX?: number; originY?: number }> }> } | undefined)?.items;
+  if (!Array.isArray(items) || items.length === 0) return undefined;
+  const initial = typeof props?.['initial-animation'] === 'string' ? props['initial-animation'] : undefined;
+  const anim = items.find(a => a.name === initial) ?? items[0];
+  const frame = anim.frames?.[0];
+  if (typeof frame?.originX !== 'number' || typeof frame?.originY !== 'number') return undefined;
+  return [frame.originX, frame.originY];
+}
+
+/**
+ * Resolve a requested origin for an instance the way the editor stores it.
+ * Returns the world origin to write (and the property value to set, if any),
+ * or an error message.
+ */
+function resolveInstanceOrigin(
+  pluginId: string | undefined,
+  obj: Record<string, unknown> | undefined,
+  props: Record<string, unknown>,
+  requested: { x?: number; y?: number },
+  current: { x: number; y: number },
+): { x: number; y: number; property?: string } | { error: string } {
+  if (pluginId === 'Sprite') {
+    const frame = spriteFrameOrigin(obj, props);
+    if (requested.x !== undefined || requested.y !== undefined) {
+      if (!frame) return { x: requested.x ?? current.x, y: requested.y ?? current.y };
+      if ((requested.x ?? current.x) === frame[0] && (requested.y ?? current.y) === frame[1]) {
+        return { x: frame[0], y: frame[1] };
+      }
+      return { error: 'A Sprite instance takes its origin from its animation frame, and the editor overwrites any other value. Change the frame origin with update_frame instead.' };
+    }
+    return frame ? { x: frame[0], y: frame[1] } : { x: current.x, y: current.y };
+  }
+  if (typeof props.origin === 'string' && props.origin in ORIGIN_GRID) {
+    if (requested.x === undefined && requested.y === undefined) {
+      const [x, y] = ORIGIN_GRID[props.origin];
+      return { x, y };
+    }
+    const x = requested.x ?? current.x;
+    const y = requested.y ?? current.y;
+    const name = originGridName(x, y);
+    if (!name) {
+      return { error: `This object's origin is the "origin" property, which only takes the nine grid points (${Object.entries(ORIGIN_GRID).map(([n, [gx, gy]]) => `${n} = ${gx},${gy}`).join('; ')}).` };
+    }
+    return { x, y, property: name };
+  }
+  return { x: requested.x ?? current.x, y: requested.y ?? current.y };
+}
+
 /** The plugin id of an object type, or undefined when it cannot be read. */
 async function pluginOf(reader: MutationToolDeps['reader'], objectType: string): Promise<string | undefined> {
   try {
@@ -387,6 +458,17 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
             pluginProps,
             hasOverrides ? overrides : undefined,
           );
+          if (instance.world) {
+            const origin = resolveInstanceOrigin(
+              pluginId, objData as unknown as Record<string, unknown> | undefined, instance.properties,
+              { x: args.originX, y: args.originY },
+              { x: instance.world.originX ?? 0.5, y: instance.world.originY ?? 0.5 },
+            );
+            if ('error' in origin) return toolError(origin.error);
+            instance.world.originX = origin.x;
+            instance.world.originY = origin.y;
+            if (origin.property) instance.properties = { ...instance.properties, origin: origin.property };
+          }
 
           targetLayer.instances.push(instance);
         }
@@ -1156,8 +1238,28 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
             else inst.world.z = args.zElevation;
           }
           if (args.color !== undefined) inst.world.color = args.color;
-          if (args.originX !== undefined) inst.world.originX = args.originX;
-          if (args.originY !== undefined) inst.world.originY = args.originY;
+          const originProperty = args.properties && typeof args.properties.origin === 'string' ? args.properties.origin : undefined;
+          if (args.originX !== undefined || args.originY !== undefined || originProperty !== undefined) {
+            let obj: Record<string, unknown> | undefined;
+            try {
+              obj = await reader.readObjectType(inst.type) as unknown as Record<string, unknown>;
+            } catch {
+              obj = undefined;
+            }
+            const origin = resolveInstanceOrigin(
+              typeof obj?.['plugin-id'] === 'string' ? obj['plugin-id'] as string : undefined,
+              obj, { ...(inst.properties ?? {}), ...(args.properties ?? {}) },
+              { x: args.originX, y: args.originY },
+              { x: inst.world.originX ?? 0.5, y: inst.world.originY ?? 0.5 },
+            );
+            if ('error' in origin) return toolError(origin.error);
+            if (origin.property && originProperty !== undefined && origin.property !== originProperty) {
+              return toolError(`properties.origin "${originProperty}" and originX/originY (${origin.x}, ${origin.y} = "${origin.property}") disagree; give one of them.`);
+            }
+            inst.world.originX = origin.x;
+            inst.world.originY = origin.y;
+            if (origin.property) inst.properties = { ...(inst.properties ?? {}), origin: origin.property };
+          }
           if (args.depth !== undefined) {
             if (!('depth' in inst.world)) {
               inst.world = insertKeyAfter(inst.world, 'depth', args.depth, ['zElevation', 'z']) as typeof inst.world;

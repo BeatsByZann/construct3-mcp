@@ -88,10 +88,10 @@ afterEach(async () => {
 
 describe('update_instance world fields (A2)', () => {
   it('writes origin, blend mode and depth, and drops blend mode for normal', async () => {
-    const r = parse(await server.callTool('update_instance', { layoutName: 'Level 1', uid: 1, originX: 0, originY: 1, blendMode: 'additive', depth: 12 }));
+    const r = parse(await server.callTool('update_instance', { layoutName: 'Level 1', uid: 1, originX: 0.5, originY: 0.5, blendMode: 'additive', depth: 12 }));
     expect(r.success).toBe(true);
     let world = byUid(await level1(), 1).world;
-    expect(world).toMatchObject({ originX: 0, originY: 1, blendMode: 'additive', depth: 12 });
+    expect(world).toMatchObject({ originX: 0.5, originY: 0.5, blendMode: 'additive', depth: 12 });
     // depth sits right after z, as Construct writes it
     expect(Object.keys(world)).toEqual(['x', 'y', 'width', 'height', 'originX', 'originY', 'color', 'z', 'depth', 'angle', 'blendMode']);
     expect(r.warnings.some((w: string) => w.includes('3D Shape'))).toBe(true);
@@ -99,6 +99,31 @@ describe('update_instance world fields (A2)', () => {
     await server.callTool('update_instance', { layoutName: 'Level 1', uid: 1, blendMode: 'normal' });
     world = byUid(await level1(), 1).world;
     expect(world).not.toHaveProperty('blendMode');
+  });
+
+  it('refuses a Sprite origin that differs from its frame origin', async () => {
+    const r = await server.callTool('update_instance', { layoutName: 'Level 1', uid: 1, originX: 0 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('update_frame');
+  });
+
+  it('keeps world origin and the origin property in step', async () => {
+    await editJson('layouts/Level 1.json', l => {
+      const inst = l.layers[0].instances.find((i: any) => i.uid === 5);
+      inst.type = 'Tiles';
+      inst.properties = { origin: 'top-left' };
+      inst.world.originX = 0;
+      inst.world.originY = 0;
+    });
+    let r = parse(await server.callTool('update_instance', { layoutName: 'Level 1', uid: 5, originX: 0.5, originY: 1 }));
+    expect(r.success).toBe(true);
+    let inst = byUid(await level1(), 5);
+    expect([inst.world.originX, inst.world.originY, inst.properties.origin]).toEqual([0.5, 1, 'bottom']);
+    r = parse(await server.callTool('update_instance', { layoutName: 'Level 1', uid: 5, properties: { origin: 'right' } }));
+    inst = byUid(await level1(), 5);
+    expect([inst.world.originX, inst.world.originY, inst.properties.origin]).toEqual([1, 0.5, 'right']);
+    expect((await server.callTool('update_instance', { layoutName: 'Level 1', uid: 5, originX: 0.3 })).isError).toBe(true);
+    expect((await server.callTool('update_instance', { layoutName: 'Level 1', uid: 5, originX: 0, originY: 0, properties: { origin: 'center' } })).isError).toBe(true);
   });
 
   it('keeps an old-format zElevation key instead of adding z', async () => {

@@ -230,6 +230,27 @@ describe('instance hierarchy and cross-layer moves', () => {
     expect(ui.at(-1)).toMatchObject({ type: 'Enemy', uid: r.generatedUid });
   });
 
+  it('derives a new instance origin from the origin property or the Sprite frame', async () => {
+    expect(parse(await server.callTool('create_object', { name: 'Wall', pluginId: 'TiledBg' })).success).toBe(true);
+    const wall = parse(await server.callTool('add_instance_to_layout', { layoutName: 'Level 1', layerName: 'Game', objectType: 'Wall', x: 1, y: 1 }));
+    let layout = await readJson('layouts/Level 1.json');
+    let inst = layout.layers[0].instances.find((i: any) => i.uid === wall.generatedUid);
+    expect([inst.world.originX, inst.world.originY, inst.properties.origin]).toEqual([0, 0, 'top-left']);
+
+    const centered = parse(await server.callTool('add_instance_to_layout', { layoutName: 'Level 1', layerName: 'Game', objectType: 'Wall', x: 1, y: 1, originX: 0.5, originY: 0.5 }));
+    layout = await readJson('layouts/Level 1.json');
+    inst = layout.layers[0].instances.find((i: any) => i.uid === centered.generatedUid);
+    expect([inst.world.originX, inst.world.originY, inst.properties.origin]).toEqual([0.5, 0.5, 'center']);
+
+    await editJson('objectTypes/Actors/Player.json', o => { o.animations.items[0].frames[0].originX = 0.25; });
+    reader.invalidateCaches();
+    const sprite = parse(await server.callTool('add_instance_to_layout', { layoutName: 'Level 1', layerName: 'Game', objectType: 'Player', x: 1, y: 1 }));
+    layout = await readJson('layouts/Level 1.json');
+    inst = layout.layers[0].instances.find((i: any) => i.uid === sprite.generatedUid);
+    expect([inst.world.originX, inst.world.originY]).toEqual([0.25, 0.5]);
+    expect((await server.callTool('add_instance_to_layout', { layoutName: 'Level 1', layerName: 'Game', objectType: 'Player', x: 1, y: 1, originX: 0 })).isError).toBe(true);
+  });
+
   it('appends depth when the instance has no Z key', async () => {
     await server.callTool('update_instance', { layoutName: 'Level 1', uid: 2, depth: 4 });
     const world = (await readJson('layouts/Level 1.json')).layers[0].instances[1].world;
