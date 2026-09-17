@@ -34,6 +34,30 @@ All notable changes to the Construct3 MCP Server are documented here.
 - Fake-CDP integration coverage for discovery, direct endpoints, readiness,
   persistence, all bridge commands, rapid calls, errors, timeouts, disconnect,
   missing targets, runtime condition waits, and exact input event sequences.
+- `update_frame` now edits a frame's `tag`, its `imagePoints` (replace the
+  whole list, or add and remove by name, validated as unique names with x/y
+  normalized 0-1), its `collisionPoly` (a flat x,y list normalized 0-1, even
+  length and at least three points, `[]` to clear), and `useCollisionPoly`.
+- `reorder_frames` and `reverse_frames`: reorder a Sprite animation's frames
+  and rename the frame image files under `images/` to match, because C3
+  addresses a frame's image by the index in its file name. The order must be a
+  full permutation, the files are parked under temporary names during the move,
+  and every rename is rolled back if the JSON write fails.
+- `duplicate_frame`: copy a frame's JSON with a freshly generated
+  `imageSpriteId`, shift later frame image files up by one, and copy the source
+  frame's image into the freed slot, rolling back on failure.
+- `create_animation_folder` and `move_animation_to_folder`: build and populate
+  the `animations.subfolders` tree on a Sprite, finding an animation wherever it
+  currently sits.
+- `create_data_file`: write an Array (`c2array`), Dictionary (`c2dictionary`),
+  JSON, or text body under `files/` and register it as a general Project File,
+  refusing to overwrite an existing file or registration.
+- `set_main_script`: set `script-info.purpose` to `main` on one registered
+  script and clear it from every other, keeping C3's single-main-script rule.
+- `register_project_file` and `deregister_project_file` now use the directory
+  each Project File family actually stores files in (`files/`, `sounds/`,
+  `music/`, `videos/`, `fonts/`) instead of copying every family into `files/`,
+  where C3 would not find them.
 
 ## [1.8.2] - 2026-09-10
 

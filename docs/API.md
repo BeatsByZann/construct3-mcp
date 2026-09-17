@@ -558,6 +558,123 @@ Update properties of an existing animation on a Sprite object.
 
 At least one property must be provided.
 
+### `update_frame`
+
+Update per-frame properties of one Sprite animation frame.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name |
+| `frameIndex` | number | Yes | 0-based frame index |
+| `width` | number | No | New frame width in pixels |
+| `height` | number | No | New frame height in pixels |
+| `duration` | number | No | New frame duration in seconds |
+| `originX` | number | No | Horizontal origin, normalized 0-1 |
+| `originY` | number | No | Vertical origin, normalized 0-1 |
+| `tag` | string | No | Frame tag; an empty string clears it |
+| `imagePoints` | array | No | Replace the whole image point list with `{ name, x, y }` entries |
+| `addImagePoints` | array | No | Append `{ name, x, y }` entries to the existing list |
+| `removeImagePoints` | string[] | No | Remove image points by name |
+| `collisionPoly` | number[] | No | Custom collision polygon as `[x0, y0, x1, y1, ...]`, or `[]` to clear it |
+| `useCollisionPoly` | boolean | No | Whether C3 uses the custom polygon for this frame |
+
+At least one updatable property must be provided.
+
+**Notes:**
+- Image point `x`/`y` are normalized 0-1 relative to the frame, and names must
+  be unique within a frame. The frame origin is not an image point; it is
+  stored separately as `originX`/`originY`.
+- `imagePoints` replaces the whole list and cannot be combined with
+  `addImagePoints` or `removeImagePoints`. Within one call, removals are
+  applied before additions, so a point can be replaced by name.
+- `removeImagePoints` fails if any named point is absent, rather than removing
+  the points it did find.
+- `collisionPoly` is a flat list of x,y pairs normalized 0-1 relative to the
+  frame, so its length must be even and at least 6 (three points). Values
+  outside 0-1 are accepted with a warning, because a polygon point may sit
+  beyond the frame edge.
+
+### `reorder_frames`
+
+Reorder the frames of a Sprite animation.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name |
+| `order` | number[] | Yes | Full permutation of the current 0-based frame indices |
+
+**Notes:**
+- `order` must list every current frame index exactly once. A partial list, a
+  repeated index, or an out-of-range index is rejected before anything is
+  written.
+- C3 addresses a frame's image by the frame index baked into its file name
+  (`images/<object>-<animation>-NNN.png`), so the tool renames the frame image
+  files to match the new order. Without that rename the reordered frames would
+  each show whichever image previously sat at their index. The files are parked
+  under temporary names first, and the renames are rolled back if the JSON
+  write then fails.
+- When no frame image files exist under `images/` the frame JSON is reordered
+  on its own, and the result says so in `warnings`.
+
+### `reverse_frames`
+
+Reverse the frame order of a Sprite animation. Shares `reorder_frames`'
+image-file handling.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name |
+
+### `duplicate_frame`
+
+Duplicate one frame of a Sprite animation, copying both its JSON and its image
+file.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name |
+| `frameIndex` | number | Yes | 0-based index of the frame to duplicate |
+| `insertAt` | number | No | 0-based insert position (default: immediately after the source frame) |
+
+**Notes:**
+- The copy receives a freshly generated `imageSpriteId` when the source frame
+  has one, so the two frames do not share an image identity. A frame without
+  that field stays without it.
+- Frame image files at or after `insertAt` are shifted up by one and the source
+  frame's image is copied into the freed slot. All moves are rolled back if the
+  JSON write fails.
+
+### `create_animation_folder`
+
+Create an animation subfolder on a Sprite object, mirroring C3's
+`animations.subfolders` tree.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `folderPath` | string | Yes | Slash-separated folder path, e.g. `"Combat/Melee"` |
+
+Missing parent folders are created. The call fails when the full path already
+exists.
+
+### `move_animation_to_folder`
+
+Move an animation between the animations root and an existing subfolder.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name to move |
+| `folderPath` | string or null | Yes | Destination folder path, or `null` for the animations root |
+
+The animation is found anywhere in the folder tree. The destination folder must
+already exist; create it with `create_animation_folder` first. A move that
+would not change the folder is rejected.
+
 ### `register_script_file`
 
 Register a script file in `rootFileFolders.script`. The registration uses C3's
@@ -584,10 +701,11 @@ itself is preserved.
 
 ### `register_project_file`
 
-Copy a source file into `files/` and register it under one of the Project File
-families (`general`, `sound`, `music`, `video`, or `font`). The registration
-uses `file-info` metadata and a collision-safe SID. Nested subfolders are
-created below `files/` and mirrored in `rootFileFolders`.
+Copy a source file into the directory its Project File family uses and register
+it under that family (`general`, `sound`, `music`, `video`, or `font`). The
+registration uses `file-info` metadata and a collision-safe SID. Nested
+subfolders are created below the family directory and mirrored in
+`rootFileFolders`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -596,19 +714,79 @@ created below `files/` and mirrored in `rootFileFolders`.
 | `folder` | enum | No | `general`, `sound`, `music`, `video`, or `font` (default: `general`) |
 | `type` | string | No | MIME type (`mimeType` is an alias; inferred when omitted) |
 | `purpose` | string | No | `file-info.purpose` (default: `none`) |
-| `subfolder` | string | No | Slash-separated folder path under `files/` |
+| `subfolder` | string | No | Slash-separated folder path inside the family directory |
 
 *Required unless the exact Project File registration already exists.
 
+Each family keeps its files in its own directory of a project saved as a
+folder, so a file copied into the wrong one leaves the registration pointing at
+nothing:
+
+| Family | Directory |
+|--------|-----------|
+| `general` | `files/` |
+| `sound` | `sounds/` |
+| `music` | `music/` |
+| `video` | `videos/` |
+| `font` | `fonts/` |
+
+`files/` and `sounds/` are confirmed against the C3-ACE project on r495; the
+other three follow Construct's project-folder layout.
+
+### `create_data_file`
+
+Create a Construct 3 data file under `files/` and register it as a `general`
+Project File.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | File name including its extension |
+| `kind` | enum | Yes | `array`, `dictionary`, `json`, or `text` |
+| `content` | string | No | `dictionary`/`json`: a JSON document. `text`: the literal body. `array`: an optional JSON `[width][height][depth]` data array |
+| `arraySize` | number[] | No | `array` only: `[width, height, depth]` (default: `[1, 1, 1]`) |
+| `type` | string | No | MIME type recorded by C3 (inferred from `kind` when omitted) |
+| `purpose` | string | No | `file-info.purpose` (default: `none`) |
+| `subfolder` | string | No | Slash-separated folder path under `files/` |
+
+**Notes:**
+- `array` writes `{"c2array":true,"size":[w,h,d],"data":[[[...]]]}` and
+  `dictionary` writes `{"c2dictionary":true,"data":{}}` — the bodies the Array
+  and Dictionary plugins load. `json` and `text` are written verbatim for a
+  project that parses them itself.
+- `array` and `dictionary` register as `application/json`, `text` as
+  `text/plain`.
+- Supplied `array` content must match `arraySize` in all three dimensions.
+- The tool never overwrites: it refuses when the name is already registered or
+  a file already sits at the destination, and it deletes the file it wrote if
+  the registration then fails.
+
+### `set_main_script`
+
+Mark one registered script as the project main script.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Registered script file name |
+| `subfolder` | string | No | Script subfolder; required only when the same name is registered more than once |
+
+**Notes:**
+- Exactly one script may carry `script-info.purpose` of `main`, so the tool
+  sets `main` on the target and clears every other script that held it back to
+  `none`. Other purposes are left alone.
+- The script must already be registered; register it with
+  `register_script_file` first.
+- The result reports `unchanged` when the script was already the main script.
+
 ### `deregister_project_file`
 
-Remove a Project File registration and its corresponding file under `files/`.
+Remove a Project File registration and its corresponding file from the
+directory its family uses (see the table under `register_project_file`).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Project File name |
 | `folder` | enum | No | Project File family (default: `general`) |
-| `subfolder` | string | No | Slash-separated folder path under `files/` |
+| `subfolder` | string | No | Slash-separated folder path inside the family directory |
 
 ---
 

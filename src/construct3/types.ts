@@ -161,6 +161,17 @@ export interface ProjectProperties {
 
 // ─── Animation Types ────────────────────────────────────────
 
+/**
+ * A named image point on a Sprite animation frame.
+ * x and y are normalized 0-1 relative to the frame; the frame origin is not
+ * in this list (it is stored as originX/originY).
+ */
+export interface ImagePoint {
+  name: string;
+  x: number;
+  y: number;
+}
+
 export interface AnimationFrame {
   width: number;
   height: number;
@@ -172,6 +183,7 @@ export interface AnimationFrame {
   fileType?: string;
   duration?: number;
   tag?: string;
+  imagePoints?: ImagePoint[];
   useCollisionPoly?: boolean;
   imageSpriteId?: number;
   collisionPoly?: { points: number[] };
