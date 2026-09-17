@@ -20,6 +20,7 @@ import {
   collectLayerRefsInSheet,
   collectVariableRefsInSheet,
   collectContainerMemberRefs,
+  collectTimelineObjectTypeRefs,
   countUnrewrittenObjectMentions,
   renameTreeItem,
   countByKind,
@@ -310,6 +311,53 @@ describe('collectVariableRefsInSheet', () => {
     expect(actions[0].parameters).toEqual({ variable: 'points', value: 'points + 1' });
     expect(actions[1].parameters['instance-variable']).toBe('score');
     expect(actions[2].parameters.value).toBe('Player.score');
+  });
+});
+
+describe('collectTimelineObjectTypeRefs', () => {
+  const build = () => ({
+    name: 'T',
+    startOnLayout: 'Level 1',
+    tracks: [
+      {
+        type: 'instance-track',
+        worldInstance: 2,
+        objectType: 'Enemy',
+        project: 'uniq-id',
+        propertyTracks: [{ property: 'offsetX', source: { type: 'world-instance', uid: 2 } }],
+      },
+      { type: 'instance-track', worldInstance: 3, objectType: 'Player', project: 'uniq-id' },
+    ],
+    tracksRoot: { name: 'Track Folder', items: [], subfolders: [{ name: 'N', items: [{ objectType: 'Enemy' }], subfolders: [] }] },
+    nestedTimelinesRoot: { name: 'Timelines', items: [], subfolders: [] },
+  });
+
+  it('finds every objectType, including one nested in tracksRoot', () => {
+    const timeline = build();
+    const sites = collectTimelineObjectTypeRefs('timelines/T.json', timeline, 'Enemy', 'Monster', false);
+    expect(sites.map(site => site.path)).toEqual([
+      'tracks[0].objectType',
+      'tracksRoot.subfolders[0].items[0].objectType',
+    ]);
+    expect(countByKind(sites)).toEqual({ timelineTrackObjectType: 2 });
+    expect(JSON.stringify(timeline)).toContain('"Enemy"');
+  });
+
+  it('rewrites only objectType, never the UID or project fields', () => {
+    const timeline = build();
+    collectTimelineObjectTypeRefs('timelines/T.json', timeline, 'Enemy', 'Monster', true);
+    expect(timeline.tracks[0].objectType).toBe('Monster');
+    expect(timeline.tracks[0].worldInstance).toBe(2);
+    expect(timeline.tracks[0].propertyTracks![0].source).toEqual({ type: 'world-instance', uid: 2 });
+    expect(timeline.tracks[0].project).toBe('uniq-id');
+    expect(timeline.tracks[1].objectType).toBe('Player');
+    expect(timeline.startOnLayout).toBe('Level 1');
+    expect(collectTimelineObjectTypeRefs('timelines/T.json', timeline, 'Enemy', 'Monster', false)).toHaveLength(0);
+  });
+
+  it('tolerates a timeline with no tracks and a non-object payload', () => {
+    expect(collectTimelineObjectTypeRefs('f', { tracks: [] }, 'Enemy', 'Monster', true)).toHaveLength(0);
+    expect(collectTimelineObjectTypeRefs('f', null, 'Enemy', 'Monster', true)).toHaveLength(0);
   });
 });
 

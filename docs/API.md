@@ -1691,9 +1691,20 @@ Reference kinds: `objectClass` (conditions and actions),
 `parent`, `child`, `instance`), `expression` (identifier tokens in any other
 string parameter, including the array-form arguments of a custom-action call),
 `instanceType` (layout instances, nested sub-layers and `nonworld-instances`),
-`familyMember`, `containerMember` (`containers[].members`), `projectTree`,
-`entityName`, `entityFile`, `imageFile` (`images/<lowercase name>-...png` and
-the TiledBg form `images/<lowercase name>.png`) and `tilemapBrushFile`.
+`familyMember`, `containerMember` (`containers[].members`),
+`timelineTrackObjectType` (`tracks[].objectType` on an instance track, in
+every `timelines/**/*.json`), `projectTree`, `entityName`, `entityFile`,
+`imageFile` (`images/<lowercase name>-...png` and the TiledBg form
+`images/<lowercase name>.png`) and `tilemapBrushFile`.
+
+Timeline files are found by walking the `timelines/` directory rather than the
+`project.c3proj` `timelines` tree, so a transition timeline in a subfolder the
+tree does not list is still rewritten; `*.uistate.json` siblings are skipped.
+Construct r495.2 refuses to open a project whose track names an object type
+that no longer exists, so this is not optional. A track's `worldInstance` and
+a property track's `source: { type: "world-instance", uid }` address an
+instance by UID and are left alone, as is `tracks[].project` (the project's
+`uniqueId`).
 
 An image whose new name is already taken is skipped with a warning rather
 than overwritten.
@@ -1720,9 +1731,10 @@ rename does not touch.
 | `dryRun` | boolean | No | Report only |
 
 Reference kinds: `firstLayout`, `projectTree`, `timelineStartOnLayout`
-(`startOnLayout` in each `timelines/<name>.json`), `layoutParameter` (a
-`layout`-keyed parameter, in both the bare-name and quoted-expression forms),
-`entityName` and `entityFile`.
+(`startOnLayout`, the only key in a timeline file that names a layout, in
+every `timelines/**/*.json`), `layoutParameter` (a `layout`-keyed parameter,
+in both the bare-name and quoted-expression forms), `entityName` and
+`entityFile`.
 
 ### `rename_event_sheet`
 

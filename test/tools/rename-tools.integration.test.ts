@@ -90,6 +90,7 @@ describe('rename_object_type', () => {
       entityName: 1,
       entityFile: 1,
       imageFile: 2,
+      timelineTrackObjectType: 1,
     });
     // Player owns no custom action, and the Tilemap brush file belongs to Tiles.
     expect(result.references.byKind.customAceObjectClass).toBeUndefined();
@@ -237,6 +238,71 @@ describe('rename_object_type', () => {
   });
 });
 
+describe('rename_object_type: timeline tracks', () => {
+  /**
+   * Revert check: dropping the timeline pass from rename_object_type makes
+   * this fail. A track naming a missing object type is what made Construct
+   * r495.2 refuse the packed project outright.
+   */
+  it('rewrites tracks[].objectType in every timeline, including subfolders', async () => {
+    const result = parseResult(await server.callTool('rename_object_type', { name: 'Enemy', newName: 'Monster' }));
+    expect(result.success).toBe(true);
+    expect(result.references.byKind.timelineTrackObjectType).toBe(2);
+    expect(result.filesWritten).toContain('timelines/Intro.json');
+    expect(result.filesWritten).toContain('timelines/transitions/Swipe.json');
+
+    const intro = await readJson('timelines', 'Intro.json');
+    expect(intro.tracks[0].objectType).toBe('Monster');
+    const swipe = await readJson('timelines', 'transitions', 'Swipe.json');
+    expect(swipe.tracks[0].objectType).toBe('Monster');
+
+    // Nothing in any timeline still names the old type.
+    expect(JSON.stringify([intro, swipe])).not.toContain('"Enemy"');
+  });
+
+  it('leaves UID-based track fields and the project id alone', async () => {
+    await server.callTool('rename_object_type', { name: 'Enemy', newName: 'Monster' });
+    const intro = await readJson('timelines', 'Intro.json');
+    expect(intro.tracks[0].worldInstance).toBe(2);
+    expect(intro.tracks[0].propertyTracks[0].source).toEqual({ type: 'world-instance', uid: 2 });
+    expect(intro.tracks[0].project).toBe('rename-fixture-id');
+    expect(intro.startOnLayout).toBe('Level 1');
+  });
+
+  it('rewrites a track nested inside tracksRoot', async () => {
+    // Shape not observed in any sample (tracksRoot is empty even when a track
+    // exists), so the walk covers the whole document defensively.
+    const result = parseResult(await server.callTool('rename_object_type', { name: 'Player', newName: 'Hero' }));
+    expect(result.references.byKind.timelineTrackObjectType).toBe(1);
+    const swipe = await readJson('timelines', 'transitions', 'Swipe.json');
+    expect(swipe.tracksRoot.subfolders[0].items[0].objectType).toBe('Hero');
+  });
+
+  it('reports timeline references on a dry run without writing', async () => {
+    const result = parseResult(await server.callTool('rename_object_type', {
+      name: 'Enemy', newName: 'Monster', dryRun: true,
+    }));
+    expect(result.references.byKind.timelineTrackObjectType).toBe(2);
+    expect(result.references.byFile.map((entry: { file: string }) => entry.file))
+      .toEqual(expect.arrayContaining(['timelines/Intro.json', 'timelines/transitions/Swipe.json']));
+    expect(result.filesWritten).toEqual([]);
+    expect((await readJson('timelines', 'Intro.json')).tracks[0].objectType).toBe('Enemy');
+  });
+
+  it('scans a timeline file the project.c3proj tree does not list', async () => {
+    const unlisted = await readJson('timelines', 'transitions', 'Swipe.json');
+    unlisted.name = 'Unlisted';
+    await writeFile(join(tmpDir, 'timelines', 'Unlisted.json'), JSON.stringify(unlisted, null, '	'), 'utf-8');
+    // A uistate sibling must be ignored: it carries no objectType.
+    await writeFile(join(tmpDir, 'timelines', 'Unlisted.uistate.json'), '{"visible":true}', 'utf-8');
+
+    const result = parseResult(await server.callTool('rename_object_type', { name: 'Enemy', newName: 'Monster' }));
+    expect(result.filesWritten).toContain('timelines/Unlisted.json');
+    expect((await readJson('timelines', 'Unlisted.json')).tracks[0].objectType).toBe('Monster');
+    expect(await readFile(join(tmpDir, 'timelines', 'Unlisted.uistate.json'), 'utf-8')).toBe('{"visible":true}');
+  });
+});
+
 describe('rename_family', () => {
   it('rewrites objectClass, the custom-action owner, expressions and the registration', async () => {
     const result = parseResult(await server.callTool('rename_family', { name: 'Hostiles', newName: 'Threats' }));
@@ -283,6 +349,9 @@ describe('rename_layout', () => {
     const result = parseResult(await server.callTool('rename_layout', { name: 'Level 2', newName: 'Stage 2' }));
     expect(result.references.byKind.firstLayout).toBeUndefined();
     expect(result.references.byKind.layoutParameter).toBe(2);
+    // The transitions timeline lives in a subfolder and is found there.
+    expect(result.references.byKind.timelineStartOnLayout).toBe(1);
+    expect((await readJson('timelines', 'transitions', 'Swipe.json')).startOnLayout).toBe('Stage 2');
 
     const sheet = await readJson('eventSheets', 'Main.json');
     expect(sheet.events[2].actions[6].parameters.layout).toBe('Stage 2');

@@ -23,8 +23,9 @@
 
 import { z } from 'zod';
 import { readFile, writeFile, copyFile, unlink, rename as renameFile, readdir, stat } from 'fs/promises';
+import type { Dirent } from 'fs';
 import type { MutationToolDeps } from './shared.js';
-import type { WriteResult, EventSheet, Layout, ObjectType, Subfolder } from '../construct3/types.js';
+import type { WriteResult, EventSheet, Layout, ObjectType } from '../construct3/types.js';
 import { validateName, toolResult, toolError, notFoundError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
@@ -40,6 +41,7 @@ import {
   collectLayerRefsInSheet,
   collectVariableRefsInSheet,
   collectContainerMemberRefs,
+  collectTimelineObjectTypeRefs,
   countUnrewrittenObjectMentions,
   renameTreeItem,
   countByKind,
@@ -150,34 +152,6 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
 
 type Reader = MutationToolDeps['reader'];
 type Writer = MutationToolDeps['writer'];
-
-/** Every name registered in a project.c3proj container (root plus subfolders). */
-function collectContainerNames(container: unknown): Array<{ name: string; subfolder: string }> {
-  const out: Array<{ name: string; subfolder: string }> = [];
-  const typed = container as { items?: unknown; subfolders?: unknown } | undefined;
-  if (!typed) return out;
-  if (Array.isArray(typed.items)) {
-    for (const item of typed.items) {
-      if (typeof item === 'string') out.push({ name: item, subfolder: '' });
-    }
-  }
-  const walk = (subfolders: unknown, prefix: string) => {
-    if (!Array.isArray(subfolders)) return;
-    for (const raw of subfolders) {
-      const folder = raw as Subfolder | undefined;
-      if (!folder || typeof folder !== 'object') continue;
-      const path = prefix ? `${prefix}/${folder.name}` : String(folder.name);
-      if (Array.isArray(folder.items)) {
-        for (const item of folder.items) {
-          if (typeof item === 'string') out.push({ name: item, subfolder: path });
-        }
-      }
-      walk(folder.subfolders, path);
-    }
-  };
-  walk(typed.subfolders, '');
-  return out;
-}
 
 /** Warn when the new name cannot appear as an expression identifier. */
 function expressionIdentifierWarnings(oldName: string, newName: string): string[] {
@@ -349,23 +323,70 @@ export function brushAbsolutePath(projectDir: string, objectName: string, subfol
   return resolveProjectPath(projectDir, ...segments);
 }
 
-// ─── Timelines ─────────────────────────────────────────────
+// ─── Timelines ─────────────────────────────────
 
-function timelineAbsolutePath(projectDir: string, name: string, subfolder: string): string {
-  const segments = subfolder
-    ? ['timelines', subfolder, `${name}.json`]
-    : ['timelines', `${name}.json`];
-  return resolveProjectPath(projectDir, ...segments);
+/**
+ * Every timeline JSON file under `timelines/`, at any depth.
+ *
+ * The `project.c3proj` `timelines` tree is deliberately not the source here: a
+ * transition timeline is loaded from a `timelines/transitions/` subfolder that
+ * the tree need not list, and a timeline the tree misses still has to be
+ * rewritten or Construct refuses to open the project. `*.uistate.json`
+ * siblings are skipped - they mirror only editor flags and carry no
+ * `objectType` or `startOnLayout`.
+ */
+async function listTimelineFiles(projectDir: string): Promise<Array<{ absolute: string; file: string }>> {
+  const out: Array<{ absolute: string; file: string }> = [];
+
+  const walk = async (relative: string, depth: number): Promise<void> => {
+    if (depth > 16) return;
+    let entries: Dirent[];
+    try {
+      entries = await readdir(resolveProjectPath(projectDir, relative), { withFileTypes: true });
+    } catch {
+      return; // no timelines/ directory at all
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const childRelative = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(childRelative, depth + 1);
+        continue;
+      }
+      if (!entry.name.endsWith('.json') || entry.name.endsWith('.uistate.json')) continue;
+      out.push({ absolute: resolveProjectPath(projectDir, childRelative), file: childRelative });
+    }
+  };
+
+  await walk('timelines', 0);
+  return out;
 }
 
-function timelineRelativePath(name: string, subfolder: string): string {
-  return `timelines/${subfolder ? subfolder + '/' : ''}${name}.json`;
+/** Read one timeline file, or null when it is missing or unparsable. */
+async function readTimelineJson(absolute: string): Promise<Record<string, unknown> | null> {
+  try {
+    return JSON.parse(await readFile(absolute, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function writeTimelineJson(
+  absolute: string,
+  file: string,
+  timeline: Record<string, unknown>,
+  filesWritten: string[],
+): Promise<void> {
+  await backupFileIfPresent(absolute);
+  await atomicWriteJson(absolute, timeline);
+  filesWritten.push(file);
 }
 
 /**
  * Find (and optionally rewrite) `startOnLayout` in every timeline file.
  * Confirmed key in C3-ACE: `timelines/Timeline 1.json` has
- * `"startOnLayout": ""`.
+ * `"startOnLayout": ""`. It is the only key in a timeline file that names a
+ * layout; a track addresses its instance by UID (`worldInstance`, and a
+ * property track's `source.uid`), and `project` holds the project `uniqueId`.
  */
 async function rewriteTimelineStartOnLayout(
   reader: Reader,
@@ -375,24 +396,40 @@ async function rewriteTimelineStartOnLayout(
   filesWritten: string[],
 ): Promise<RefSite[]> {
   const sites: RefSite[] = [];
-  const projectDir = reader.getProjectDir();
-  const project = reader.getProject() as unknown as ProjectJson;
-  for (const { name, subfolder } of collectContainerNames(project.timelines)) {
-    const absolute = timelineAbsolutePath(projectDir, name, subfolder);
-    let timeline: Record<string, unknown>;
-    try {
-      timeline = JSON.parse(await readFile(absolute, 'utf-8')) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (timeline.startOnLayout !== oldName) continue;
-    const file = timelineRelativePath(name, subfolder);
+  for (const { absolute, file } of await listTimelineFiles(reader.getProjectDir())) {
+    const timeline = await readTimelineJson(absolute);
+    if (!timeline || timeline.startOnLayout !== oldName) continue;
     sites.push({ file, path: 'startOnLayout', kind: 'timelineStartOnLayout' });
     if (apply) {
       timeline.startOnLayout = newName;
-      await backupFileIfPresent(absolute);
-      await atomicWriteJson(absolute, timeline);
-      filesWritten.push(file);
+      await writeTimelineJson(absolute, file, timeline, filesWritten);
+    }
+  }
+  return sites;
+}
+
+/**
+ * Find (and optionally rewrite) every timeline track's `objectType`.
+ * An instance track names its object type, so a rename that misses it leaves
+ * a project Construct will not open.
+ */
+async function rewriteTimelineObjectTypes(
+  reader: Reader,
+  oldName: string,
+  newName: string,
+  apply: boolean,
+  filesWritten: string[],
+): Promise<RefSite[]> {
+  const sites: RefSite[] = [];
+  for (const { absolute, file } of await listTimelineFiles(reader.getProjectDir())) {
+    const timeline = await readTimelineJson(absolute);
+    if (!timeline) continue;
+    const found = collectTimelineObjectTypeRefs(file, timeline, oldName, newName, false);
+    if (found.length === 0) continue;
+    sites.push(...found);
+    if (apply) {
+      collectTimelineObjectTypeRefs(file, timeline, oldName, newName, true);
+      await writeTimelineJson(absolute, file, timeline, filesWritten);
     }
   }
   return sites;
@@ -469,6 +506,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
             warnings.push(`Family "${familyName}" could not be read and was not scanned: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
+        sites.push(...await rewriteTimelineObjectTypes(reader, name, newName, false, filesWritten));
         const projectProbe = await readProjectJson(reader.getProjectPath());
         sites.push(...collectContainerMemberRefs(projectProbe, name, newName, false));
         sites.push({ file: 'project.c3proj', path: `objectTypes.items[${name}]`, kind: 'projectTree' });
@@ -514,6 +552,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
           filesWritten,
         );
         await rewriteFamilies(reader, writer, name, newName, filesWritten);
+        await rewriteTimelineObjectTypes(reader, name, newName, true, filesWritten);
 
         // New object file first, so the c3proj rename never points at a
         // missing file.

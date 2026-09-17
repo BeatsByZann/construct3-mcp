@@ -1,5 +1,5 @@
 {
-	"name": "Intro",
+	"name": "Swipe",
 	"enabled": true,
 	"interpolationMode": "default",
 	"resultMode": "default",
@@ -18,13 +18,13 @@
 	"loop": false,
 	"pingPong": false,
 	"repeatCount": 1,
-	"startOnLayout": "Level 1",
+	"startOnLayout": "Level 2",
 	"transformWithSceneGraph": true,
 	"ignoreSystemTimescale": true,
 	"tracks": [
 		{
 			"type": "instance-track",
-			"worldInstance": 2,
+			"worldInstance": 10,
 			"objectType": "Enemy",
 			"project": "rename-fixture-id",
 			"enabled": true,
@@ -46,10 +46,10 @@
 			"keyframes": [],
 			"propertyTracks": [
 				{
-					"property": "offsetX",
+					"property": "offsetY",
 					"source": {
 						"type": "world-instance",
-						"uid": 2
+						"uid": 10
 					},
 					"enabled": true,
 					"interpolationMode": "default",
@@ -83,7 +83,71 @@
 		"expanded": true,
 		"name": "Track Folder",
 		"items": [],
-		"subfolders": []
+		"subfolders": [
+			{
+				"enabled": true,
+				"interpolationMode": "default",
+				"resultMode": "default",
+				"ease": "default",
+				"pathMode": "default",
+				"resizeMode": "default",
+				"expanded": true,
+				"name": "Nested",
+				"items": [
+					{
+						"type": "instance-track",
+						"worldInstance": 1,
+						"objectType": "Player",
+						"project": "rename-fixture-id",
+						"enabled": true,
+						"interpolationMode": "default",
+						"resultMode": "default",
+						"ease": "default",
+						"pathMode": "default",
+						"resizeMode": "default",
+						"initialVisibility": true,
+						"id": "",
+						"virtualPosition": {
+							"offsetX": 0,
+							"offsetY": 0,
+							"useColor": true,
+							"colorSet": false,
+							"relativeFlags": 16383,
+							"version": 1
+						},
+						"keyframes": [],
+						"propertyTracks": [
+							{
+								"property": "offsetX",
+								"source": {
+									"type": "world-instance",
+									"uid": 1
+								},
+								"enabled": true,
+								"interpolationMode": "default",
+								"resultMode": "default",
+								"ease": "default",
+								"pathMode": "default",
+								"propertyKeyframes": []
+							}
+						],
+						"propertyTracksRoot": {
+							"enabled": true,
+							"interpolationMode": "default",
+							"resultMode": "default",
+							"ease": "default",
+							"pathMode": "default",
+							"resizeMode": "default",
+							"expanded": true,
+							"name": "Property Track Folder",
+							"items": [],
+							"subfolders": []
+						}
+					}
+				],
+				"subfolders": []
+			}
+		]
 	},
 	"nestedTimelinesRoot": {
 		"enabled": true,
