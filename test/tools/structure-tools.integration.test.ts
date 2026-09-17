@@ -609,10 +609,21 @@ describe('move_project_item folder names and failures', () => {
     expect(result.content[0].text).toContain('already in "Actors"');
   });
 
-  it.each(['Enemies.', 'Enemies ', ' Enemies', 'a:b', 'what?', 'CON', 'Lpt1.txt', 'x/nul'])('rejects the folder name %j', async (folder) => {
+  it.each([
+    ['Enemies.', 'end with a space or a dot'],
+    ['Enemies ', 'end with a space or a dot'],
+    [' Enemies', 'must not start with a space'],
+    ['a:b', 'does not allow'],
+    ['what?', 'does not allow'],
+    ['tab\there', 'does not allow'],
+    ['CON', 'reserved on Windows'],
+    ['Lpt1.txt', 'reserved on Windows'],
+    ['x/nul', 'reserved on Windows'],
+  ])('rejects the folder name %j', async (folder, message) => {
     const before = await readFile(join(tmpDir, 'project.c3proj'), 'utf-8');
     const result = await server.callTool('move_project_item', { category: 'layout', name: 'Level 1', folder });
     expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(message);
     expect(await readFile(join(tmpDir, 'project.c3proj'), 'utf-8')).toBe(before);
     expect(await exists('layouts', 'Level 1.json')).toBe(true);
   });
