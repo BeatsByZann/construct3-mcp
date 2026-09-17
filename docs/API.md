@@ -11,6 +11,7 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Timeline Tools](#timeline-tools)
 - [Effect Tools](#effect-tools)
 - [Flowchart Tools](#flowchart-tools)
+- [Structure Tools](#structure-tools)
 - [Rename Tools](#rename-tools)
 - [Template and Tilemap Brush Tools](#template-and-tilemap-brush-tools)
 - [Runtime Connection Tools](#runtime-connection-tools)
@@ -535,7 +536,7 @@ Delete an event from an event sheet by SID or include name.
 
 ### `move_event_block_items`
 
-Move or reorder existing actions or conditions within one block or between two blocks. Existing SIDs are preserved.
+Move or reorder existing actions or conditions within one block or between two blocks. Existing SIDs are preserved. With `copy: true` the source block is left unchanged and the selected items are inserted as copies with fresh SIDs (nested `sid` keys included).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -544,9 +545,10 @@ Move or reorder existing actions or conditions within one block or between two b
 | `targetBlockSid` | number | Yes | Target block or function-block SID |
 | `itemType` | enum | Yes | `"actions"` or `"conditions"` |
 | `indices` | number[] | Yes | Unique source indexes; selected items retain their source order |
-| `targetIndex` | number | Yes | Destination index; for same-block reorder this is measured after selected items are removed |
+| `targetIndex` | number | Yes | Destination index; for same-block reorder this is measured after selected items are removed (a copy removes nothing) |
+| `copy` | boolean | No | Copy instead of move (default `false`). The result lists `copiedSids` and `reassignedSids` instead of `movedSids` |
 
-Cross-block moves enforce the 100-item block limit. Conditions cannot move into an else block. Moving the last condition out of a non-else source succeeds with an unconditional-block warning.
+Cross-block moves and all copies enforce the 100-item block limit. Conditions cannot move into an else block, and an else condition can be neither moved nor copied. Moving the last condition out of a non-else source succeeds with an unconditional-block warning.
 
 ### `update_event_block`
 
@@ -1724,6 +1726,167 @@ between the same two nodes survives untouched.
 |-----------|------|----------|-------------|
 | `flowchartName` | string | Yes | Flowchart name |
 | `outputSid` | number | Yes | Output pin to disconnect |
+
+---
+
+## Structure Tools
+
+Moving and copying Project Bar items (`src/tools/structure-tools.ts`) and
+Construct's Replace object and expression find-and-replace
+(`src/tools/replace-tools.ts`).
+
+### Project Bar folders
+
+`project.c3proj` stores each tree as `{ "items": [...], "subfolders": [...] }`
+and each folder as `{ "items", "subfolders", "name" }`, in that key order.
+Construct keeps the file path in step with the folder: an item in folder
+`Enemies/Bosses` lives at `<category>/Enemies/Bosses/<name>.json`, with its
+`<name>.uistate.json` beside it (sheets, layouts, flowcharts) and, for a
+layout, `layouts/uistate/Enemies/Bosses/<name>.instancesBar.json`. A tilemap's
+brush file mirrors the object type's folder under
+`tilemapBrushes/objectTypes/`. Scripts and imported project files follow the
+same rule under `scripts/` and `files/`. Folders keep the user's order; new
+ones are appended.
+
+### `move_project_item`
+
+Move an existing item to another folder, or to the root.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `category` | enum | Yes | `objectType`, `family`, `layout`, `eventSheet`, `flowchart`, `script` or `file` (an imported project file under `files/`) |
+| `name` | string | Yes | Item name; for scripts and files, the file name (`main.js`) |
+| `folder` | string | No | Destination path such as `Enemies/Bosses`; empty (default) moves to the root |
+| `sourceFolder` | string | No | Scripts and files: the current folder, when the file name exists in more than one folder |
+| `createFolders` | boolean | No | Create a missing destination path (default `true`) |
+
+The files are copied to the new location first, then `project.c3proj` is
+rewritten, then the old files are deleted; a failure before the rewrite
+removes the copies. A move is refused when any destination file already
+exists. The emptied source folder is kept, with a warning. Moving a script
+warns that module imports naming its path are not rewritten. Timelines cannot
+be moved: no sample project has a timeline in a named folder.
+
+Result: `from`, `to`, `foldersCreated`, `filesMoved` (`[{ from, to }]`),
+`warnings`, `backupFile`.
+
+### Duplicates
+
+Every duplicate gets fresh SIDs throughout (one old SID always maps to the
+same new SID inside the copy), is registered directly after its source in the
+same folder, and does not copy editor state (`*.uistate.json`,
+`*.instancesBar.json`). New names are compared with existing ones without
+case, because they become file names. A copy that cannot be faithful is
+refused with the reason and nothing is written.
+
+### `duplicate_layout`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout to copy |
+| `newName` | string | Yes | Name of the copy |
+
+Every instance (world and non-world) gets a UID above the project maximum;
+`sceneGraphData.uid`, `parent-uid` and `children[].uid` are remapped through
+the same map, and `instanceFolderItem.sid` and `scene-graphs-folder-root`
+entries follow their instance's new SID. The copy keeps `eventSheet`. Refused
+when an instance is a template (`template.mode: "template"`), because a
+template name exists only once per object type; replicas copy normally. Warns
+when the layout places global object types, and that timelines still animate
+the source instances.
+
+### `duplicate_layer`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout that owns the layer |
+| `layerName` | string | Yes | Layer to copy |
+| `newName` | string | Yes | Name of the new layer (unique in the layout) |
+
+The copy is inserted directly above the source (the next index in the same
+sibling array). Its instances get new UIDs and SIDs, and a
+`scene-graphs-folder-root` entry is added after each entry of a copied
+instance. Refused for a layer with sub-layers (their names would repeat), for
+template instances, and for hierarchy links to instances on other layers.
+
+### `duplicate_event_sheet`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet to copy |
+| `newName` | string | Yes | Name of the copy |
+
+Refused when the sheet declares a function, a custom action or a root-level
+(global) variable anywhere, since the copy would declare the name twice. The
+copy is attached to no layout; a warning notes repeated group titles.
+
+### `duplicate_object_type`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Object type to copy |
+| `newName` | string | Yes | Name of the copy (must not match an object type or family) |
+
+Behaviors, instance variables, effects and animations are copied with fresh
+SIDs and fresh `imageSpriteId` values. Image files named from the lowercased
+object name (`<name>-<animation>-NNN.<ext>` and `<name>.<ext>`) are copied
+under the new name, and a tilemap brush file is copied beside the original.
+No instances are placed, and family and container membership is not copied
+(the result warns). Single-global objects are refused.
+
+### `duplicate_timeline`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline at the root of the timelines tree |
+| `newName` | string | Yes | Name of the copy |
+
+Writes `timelines/<newName>.json` with only `name` changed. The copy's tracks
+address the same instances by UID. Transition timelines are refused.
+
+### `replace_object_in_events`
+
+Construct's event-sheet Replace object.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `fromObject` | string | Yes | Object type or family to replace |
+| `toObject` | string | Yes | Replacement of the same plugin |
+| `sheetName` | string | No | Limit to one sheet (default: all sheets) |
+| `dryRun` | boolean | No | Report only (default `false`) |
+
+The references are the rename scanner's: `objectClass`, the bare object-name
+parameters (`object`, `object-to-create`, `parent`, `child`, `instance`) and
+identifier tokens in expressions. Each event is swapped whole or not at all.
+It is skipped when a condition or action on the replaced object uses a
+behavior (`behaviorType`), an instance variable (`instance-variable`) or an
+effect (an `effect` parameter holding a quoted name) that the replacement
+lacks (object types inherit their families' behaviors, variables and
+effects), when an expression reads `From.Member` for such a behavior or
+variable, or when it calls a custom action. A custom action definition owned
+by the replaced object is skipped with its body. Layouts are not changed. The
+result has `references` (as in the rename tools), `skippedEvents`
+(`[{ file, path, eventSid, references, reasons }]`) and `filesWritten`.
+
+### `replace_in_expressions`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `find` | string | Yes | Text, or a regular expression when `regex` is true |
+| `replace` | string | Yes | Replacement; `$1`-style groups only with `regex` |
+| `regex` | boolean | No | Default `false` |
+| `caseSensitive` | boolean | No | Default `true` |
+| `wholeWord` | boolean | No | Default `false` |
+| `sheets` | string[] | No | Limit to these sheets |
+| `parameterKeys` | string[] | No | Only these parameter keys; positional call arguments use `"0"`, `"1"`, ... |
+| `dryRun` | boolean | No | Report only (default `false`) |
+| `maxReported` | number | No | Individual changes listed (default 100); counts are always complete |
+
+Only condition and action parameter strings are changed, never comments,
+scripts, names or variable declarations. A pattern that matches empty text is
+refused. The result has `totalMatches`, `parametersChanged`, `bySheet`,
+`changes` (`[{ sheet, eventSid, path, key, before, after }]`) and
+`filesWritten`.
 
 ---
 

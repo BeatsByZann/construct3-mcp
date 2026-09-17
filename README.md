@@ -121,7 +121,15 @@ node dist/index.js /path/to/your/project.c3proj
 | `add_event_block` | Add a block event at the sheet root, under a parent SID, or beside a sibling SID |
 | `delete_event_sheet` | Delete an event sheet (with reference checking and optional force) |
 | `delete_event_from_sheet` | Delete an event from a sheet by SID or include name (dry-run, force) |
-| `move_event_block_items` | Reorder or move actions/conditions within or between blocks while preserving SIDs |
+| `move_event_block_items` | Reorder or move actions/conditions within or between blocks while preserving SIDs, or copy them with fresh SIDs (`copy: true`) |
+| `move_project_item` | Move an object type, family, layout, event sheet, flowchart, script or project file to another Project Bar folder, moving its files with it |
+| `duplicate_layout` | Copy a layout with fresh SIDs, new UIDs and remapped hierarchy links |
+| `duplicate_layer` | Copy a layer inside its layout, placed above the source |
+| `duplicate_event_sheet` | Copy an event sheet with fresh SIDs (refused when it declares functions, custom actions or global variables) |
+| `duplicate_object_type` | Copy an object type with fresh SIDs and image IDs, its image files and its tilemap brush |
+| `duplicate_timeline` | Copy a timeline under a new name |
+| `replace_object_in_events` | Construct's Replace object: swap one object type or family for another in one sheet or all sheets, skipping events the replacement cannot serve (`dryRun`) |
+| `replace_in_expressions` | Find and replace text in condition and action parameters, scoped by sheet and parameter key (`dryRun`) |
 | `update_event_block` | Update an existing block: modify, insert, replace, add, or remove actions and conditions |
 | `create_layout` | Create a new layout with configurable layers |
 | `add_instance_to_layout` | Place an object instance on a layout layer with full property control |
