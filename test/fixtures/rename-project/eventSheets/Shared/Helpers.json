@@ -1,0 +1,51 @@
+{
+	"name": "Helpers",
+	"events": [
+		{
+			"eventType": "include",
+			"includeSheet": "Main"
+		},
+		{
+			"eventType": "variable",
+			"name": "highScore",
+			"type": "number",
+			"initialValue": "0",
+			"isStatic": false,
+			"isConstant": false,
+			"sid": 620000000000006
+		},
+		{
+			"eventType": "block",
+			"conditions": [
+				{
+					"id": "every-tick",
+					"objectClass": "System",
+					"sid": 620000000000001
+				}
+			],
+			"actions": [
+				{
+					"id": "set-eventvar-value",
+					"objectClass": "System",
+					"sid": 620000000000002,
+					"parameters": {
+						"variable": "score",
+						"value": "score + Player.X"
+					}
+				},
+				{
+					"id": "set-layer-scroll",
+					"objectClass": "System",
+					"sid": 620000000000003,
+					"parameters": {
+						"layer": "\"UI\"",
+						"scroll-x": "ViewportLeft(\"UI\")",
+						"scroll-y": "ViewportTop(\"Shared\")"
+					}
+				}
+			],
+			"sid": 620000000000004
+		}
+	],
+	"sid": 620000000000005
+}

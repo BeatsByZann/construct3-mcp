@@ -10,6 +10,8 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Mutation Tools](#mutation-tools)
 - [Effect Tools](#effect-tools)
 - [Flowchart Tools](#flowchart-tools)
+- [Rename Tools](#rename-tools)
+- [Template and Tilemap Brush Tools](#template-and-tilemap-brush-tools)
 - [Runtime Connection Tools](#runtime-connection-tools)
 - [Prompts](#prompts)
 - [Error Handling](#error-handling)
@@ -1245,6 +1247,295 @@ between the same two nodes survives untouched.
 |-----------|------|----------|-------------|
 | `flowchartName` | string | Yes | Flowchart name |
 | `outputSid` | number | Yes | Output pin to disconnect |
+
+---
+
+## Rename Tools
+
+Renaming an entity in Construct 3 touches many files: the name is duplicated
+into event sheets, layouts, families, `project.c3proj` trees and containers,
+the entity's own file name, and (for object types) its image and tilemap-brush
+file names. These tools collect every reference through one shared scanner,
+rewrite exactly what they report, and return the counts per reference kind.
+
+Every tool accepts `dryRun` (default `false`). A dry run returns the same
+reference report and writes nothing.
+
+**Result shape** (extends the standard `WriteResult`):
+
+```json
+{
+  "success": true,
+  "entity": "Hero",
+  "category": "objecttype",
+  "action": "renamed",
+  "previousName": "Player",
+  "references": {
+    "total": 21,
+    "byKind": { "objectClass": 4, "expression": 6, "instanceType": 2 },
+    "byFile": [
+      { "file": "eventSheets/Main.json", "count": 13, "kinds": { "objectClass": 4 } }
+    ]
+  },
+  "filesWritten": ["eventSheets/Main.json", "project.c3proj"],
+  "dryRun": false,
+  "warnings": ["..."],
+  "backupFile": "..."
+}
+```
+
+### Expression rewriting
+
+Expression text is rewritten token-aware, never textually:
+
+- only a whole identifier run matches, so `PlayerShip.X` survives a rename of
+  `Player`;
+- a run right after a `.` is a member name, so `Enemy.Player` is left alone;
+- text inside a `"..."` string literal is never touched, so
+  `"Player wins" & Player.X` rewrites only the second occurrence.
+
+Layer names are the one exception: a layer reaches an expression only as a
+whole string literal (`"layer": "\"UI\""`, `LayerScale("UI")`), so
+`rename_layer` rewrites whole literals and nothing else.
+
+### Write order and interrupted renames
+
+Referencing files are written first and the entity itself (file plus
+`project.c3proj` registration) last. Every scan looks for the *old* name, so a
+file already rewritten contributes nothing on a second pass: re-running the
+identical call after a failure finishes the rename. Each result lists
+`filesWritten` in order, and a failure message repeats that list.
+
+### What is never rewritten
+
+| Location | Why |
+|---|---|
+| `script` action and event bodies | JavaScript; a name there cannot be told from an unrelated identifier. Counted and reported as a warning. |
+| `comment` text and a variable's `initialValue` | Free text. Counted and reported as a warning. |
+| Instance-variable values holding a layer or layout name | Data, not a reference. |
+| `parameters.instance-variable` | A different name space from event variables. |
+| Layout names in general expression text | No layout-valued parameter exists in the reference project, so only `layout`-keyed parameters are rewritten. |
+
+### `rename_object_type`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Current object type name |
+| `newName` | string | Yes | New name; must be unique among object types *and* families |
+| `dryRun` | boolean | No | Report only (default `false`) |
+
+Reference kinds: `objectClass` (conditions and actions),
+`customAceObjectClass` (a `custom-ace-block` event's owner),
+`parameterObjectName` (the bare-name keys `object`, `object-to-create`,
+`parent`, `child`, `instance`), `expression` (identifier tokens in any other
+string parameter, including the array-form arguments of a custom-action call),
+`instanceType` (layout instances, nested sub-layers and `nonworld-instances`),
+`familyMember`, `containerMember` (`containers[].members`), `projectTree`,
+`entityName`, `entityFile`, `imageFile` (`images/<lowercase name>-...png` and
+the TiledBg form `images/<lowercase name>.png`) and `tilemapBrushFile`.
+
+An image whose new name is already taken is skipped with a warning rather
+than overwritten.
+
+### `rename_family`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Current family name |
+| `newName` | string | Yes | New name; must be unique among families *and* object types |
+| `dryRun` | boolean | No | Report only |
+
+Same event-sheet kinds as `rename_object_type`, plus `projectTree`,
+`entityName` and `entityFile`. A family has no layout instances, images or
+brush file, and its own `members` list holds object types, which a family
+rename does not touch.
+
+### `rename_layout`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Current layout name |
+| `newName` | string | Yes | New layout name |
+| `dryRun` | boolean | No | Report only |
+
+Reference kinds: `firstLayout`, `projectTree`, `timelineStartOnLayout`
+(`startOnLayout` in each `timelines/<name>.json`), `layoutParameter` (a
+`layout`-keyed parameter, in both the bare-name and quoted-expression forms),
+`entityName` and `entityFile`.
+
+### `rename_event_sheet`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Current event sheet name |
+| `newName` | string | Yes | New event sheet name |
+| `dryRun` | boolean | No | Report only |
+
+Reference kinds: `layoutEventSheet` (each layout's `eventSheet`),
+`includeSheet`, `projectTree`, `entityName` and `entityFile`.
+
+### `rename_layer`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout that owns the layer |
+| `layerName` | string | Yes | Current layer name |
+| `newName` | string | Yes | New name; must be unique within this layout |
+| `dryRun` | boolean | No | Report only |
+
+Reference kinds: `layerName` (the layer in its layout), `layerParameter` (a
+`layer`-keyed parameter) and `layerLiteral` (a whole `"<name>"` literal in any
+other expression, such as `LayerScale("UI")`).
+
+A layer name is unique only within its layout, but an event-sheet `layer`
+parameter is not layout-scoped. When another layout has a layer of the same
+name, the event-sheet pass is skipped and the affected layouts are named in a
+warning; only the chosen layout's layer is renamed.
+
+### `rename_event_variable`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Sheet holding the declaration |
+| `sid` | number | Yes | SID of the `variable` event |
+| `newName` | string | Yes | New variable name |
+| `dryRun` | boolean | No | Report only |
+
+Reference kinds: `variableDeclaration`, `variableParameter` (the `variable`
+key used by `set-eventvar-value`, `add-to-eventvar`, `subtract-from-eventvar`,
+`reset-eventvar` and `compare-eventvar`) and `expression`.
+
+A declaration at the sheet root is a global event variable and is rewritten
+across every sheet; a nested declaration is local and only its own sheet is
+rewritten. A new name that collides with another sheet's global is refused; a
+local declaration of the same name is allowed but warned about, because
+Construct resolves the local first inside its container.
+
+---
+
+## Template and Tilemap Brush Tools
+
+### Instance templates
+
+A Construct 3 template is a layout instance the editor treats as the master
+copy for other instances ("replicas"). The state lives entirely in the
+instance's `template` block inside `layouts/<name>.json`; there is no separate
+registry. The block carries `mode`, `templateName`, `sourceTemplateName`, the
+three hierarchy flags, a `components` list and `replicasUIDs`.
+
+`components` always holds the five ids `plugin`, `instance-variable`,
+`behavior`, `effect` and `world-instance`, in that order. Each entry says
+which properties the instance keeps in sync with its template. The tools
+derive them from the instance itself:
+
+| Component | Derived from | Notes |
+|---|---|---|
+| `plugin` | the instance's `properties` keys | `live-preview` is excluded; it is the only property observed being dropped |
+| `instance-variable` | `instanceVariables` keys | written as `{ iv, state }` records |
+| `behavior` | one entry per `behaviors` key | state lists that behavior's own property keys; a behavior with no properties gets `[]` |
+| `effect` | one entry per `effects` key | state lists the effect's parameters plus the `<<effect-template-enable>>` marker |
+| `world-instance` | fixed 24-key list | `x` and `y` are `false`, every other key `true`; empty for a non-world instance |
+
+`replicasUIDs` is always written as `null`: it is `null` on every template
+block on disk, including templates that have replicas, so Construct
+recomputes it on load.
+
+### `list_templates`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectType` | string | No | Only list templates for this object type |
+
+Returns one row per template instance with its `templateName`, `objectType`,
+`layout`, `uid` and `replicaCount`. A replica whose named template is not in
+the project is reported separately under `orphanedReplicas`.
+
+### `set_instance_template`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout holding the instance |
+| `uid` | number | Yes | Instance UID (searched across nested sub-layers and non-world instances) |
+| `mode` | enum | Yes | `none`, `template` or `replica` |
+| `templateName` | string | For `template` | Template name; must be unique per object type |
+| `sourceTemplateName` | string | For `replica` | Name of the template to follow |
+
+`none` removes the `template` block. `replica` is written even when the named
+template does not exist yet, with a warning. A non-world instance gets a
+warning: no template block was observed on one in the reference project.
+
+### `set_default_template`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Object type name |
+| `templateName` | string \| null | Yes | Template to create new instances from, or `null` to clear it |
+
+Sets `editorNewInstanceIsReplica` and `editorNewInstanceTemplateName` on the
+object type, which is how the editor decides what a newly placed instance
+copies. In the reference project 109 object types carry the flag and only 53
+also carry the name, so the flag can stand alone; this tool always writes them
+together and says so in a warning.
+
+### Tilemap brushes
+
+A tilemap object type's editor brushes live at
+`tilemapBrushes/objectTypes/<same subfolder as the object type>/<name>.brush.json`
+— the brush path mirrors the object type's subfolder. The file is a JSON array
+of `{ name, type, data }`:
+
+| `type` | `data` |
+|---|---|
+| `auto16` | 4 rows of 4 cells |
+| `auto47` | 6 rows of 8 cells |
+| `patch` | `{ width, height, data }`, where `data` has `height` rows of `width` cells |
+
+A cell is a non-negative tile index, `null` for an empty cell, or a list of
+weighted alternatives `[{ index, probability }, ...]`. Grid dimensions and
+every cell are validated before the file is written.
+
+**Tile data is not implemented.** No sample of a Tilemap instance's tile-data
+serialization exists in the reference project, so its shape would have to be
+invented; use the Construct editor for tile data.
+
+### `list_tilemap_brushes`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+
+Returns the brush file path, whether it exists, and each brush's index, name,
+type and grid size. A non-`Tilemap` plugin is a warning, not an error.
+
+### `add_tilemap_brush`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Brush name, unique within this object type |
+| `type` | enum | Yes | `auto16`, `auto47` or `patch` |
+| `data` | object | Yes | Grid matching the type |
+
+Creates the brush file when it does not exist yet.
+
+### `update_tilemap_brush`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Current brush name |
+| `newName` | string | No | New brush name |
+| `type` | enum | No | New brush type — requires `data` |
+| `data` | object | No | Replacement grid, validated against the brush's (new) type |
+
+### `delete_tilemap_brush`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Brush name to delete |
+
+Removing the last brush leaves the file as an empty array.
 
 ---
 

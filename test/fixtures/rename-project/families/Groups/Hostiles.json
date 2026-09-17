@@ -1,0 +1,20 @@
+{
+	"name": "Hostiles",
+	"plugin-id": "Sprite",
+	"sid": 650000000000001,
+	"instanceVariables": [
+		{
+			"name": "health",
+			"type": "number",
+			"desc": "",
+			"show": true,
+			"sid": 650000000000002
+		}
+	],
+	"behaviorTypes": [],
+	"effectTypes": [],
+	"members": [
+		"Enemy",
+		"Player"
+	]
+}

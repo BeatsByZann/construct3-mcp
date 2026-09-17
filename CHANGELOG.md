@@ -136,6 +136,49 @@ All notable changes to the Construct3 MCP Server are documented here.
   expression forms are not invented. `System` and duplicate object-class plus
   name pairs are rejected.
 
+- `rename_object_type`, `rename_family`, `rename_layout`,
+  `rename_event_sheet`, `rename_layer` and `rename_event_variable`: rename an
+  entity and rewrite every reference through one shared scanner in
+  `src/construct3/references.ts`, so the reference report and the rewrite
+  cannot disagree. Covered: `objectClass` on conditions, actions and
+  `custom-ace-block` owners; the bare-name parameter keys `object`,
+  `object-to-create`, `parent`, `child` and `instance`; identifier tokens in
+  every other string parameter, including the array-form arguments of a
+  custom-action call; layout instance `type` in nested sub-layers and
+  `nonworld-instances`; family `members`; `containers[].members`; the
+  `project.c3proj` trees (renamed in place, keeping position and subfolder);
+  `firstLayout`; each timeline's `startOnLayout`; `layout`- and `layer`-keyed
+  parameters in both their bare and quoted forms; `layoutEventSheet` and
+  `includeSheet`; the `variable` key; and the entity, image and tilemap-brush
+  file names. Every tool takes `dryRun`.
+- Expression rewriting is token-aware: only whole identifier runs match, a run
+  after a `.` is treated as a member name, and string literals are never
+  touched, so `"Player wins" & Player.X` rewrites one occurrence and
+  `PlayerShip.X` none. Script bodies, comments and variable initial values are
+  counted and warned about rather than rewritten.
+- Renames write referencing files first and the entity last, so re-running an
+  interrupted rename resumes it; each result lists `filesWritten` in order and
+  a failure repeats that list. `rename_layer` skips the event-sheet pass, with
+  a warning, when another layout has a layer of the same name, because a
+  `layer` parameter is not layout-scoped.
+- `list_templates`, `set_instance_template` and `set_default_template`: read
+  and write a layout instance's `template` block, reproducing the r495 shape
+  (`mode`, `templateName`, `sourceTemplateName`, the three hierarchy flags, the
+  five `components` ids in order, `replicasUIDs: null`). Components are derived
+  from the instance's own plugin properties (minus `live-preview`), instance
+  variables, behaviors and effects (with the `<<effect-template-enable>>`
+  marker), plus the fixed 24-key `world-instance` list whose `x` and `y` are
+  `false`. `set_default_template` sets `editorNewInstanceIsReplica` and
+  `editorNewInstanceTemplateName` on the object type.
+- `list_tilemap_brushes`, `add_tilemap_brush`, `update_tilemap_brush` and
+  `delete_tilemap_brush`: manage
+  `tilemapBrushes/objectTypes/<subfolder>/<name>.brush.json`, whose path
+  mirrors the object type's subfolder. Grid dimensions are validated per type
+  (`auto16` 4x4, `auto47` 6x8, `patch` `width` by `height`), as is every cell
+  (tile index, `null`, or weighted `{ index, probability }` alternatives).
+  Tilemap tile data is deliberately not implemented: no sample of its
+  serialization exists to work from.
+
 ## [1.8.2] - 2026-09-10
 
 ### Source-verified defects from a live-project mutation evaluation
