@@ -397,6 +397,30 @@ export class Construct3ProjectWriter {
   }
 
   /**
+   * Edit project.c3proj in place under the project lock: backup, apply
+   * `mutate` to the parsed JSON, validate, write atomically, verify, reload
+   * and invalidate every cache. `mutate` may throw to abort before anything is
+   * written. Key order is whatever the parsed JSON already had.
+   */
+  async mutateProjectJson<T>(
+    mutate: (project: Record<string, unknown>) => T | Promise<T>,
+  ): Promise<{ result: T; backupPath: string }> {
+    return this.withProjectLock(async () => {
+      const projectPath = this.reader.getProjectPath();
+      const content = await readFile(projectPath, 'utf-8');
+      const project = JSON.parse(content) as Record<string, unknown>;
+      const result = await mutate(project);
+      const json = this.validateJsonData(project, 'project.c3proj');
+      const backupPath = await this.createBackup(projectPath);
+      await this.atomicWrite(projectPath, json);
+      await this.verifyWrittenFile(projectPath, 'project.c3proj');
+      await this.reader.reloadProject();
+      this.invalidateAll();
+      return { result, backupPath };
+    });
+  }
+
+  /**
    * Get the subfolder path for an existing entity name.
    */
   getSubfolderForEntity(

@@ -912,14 +912,15 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'move_event_block_items',
-    'Move or reorder actions or conditions within and between block events. Existing item SIDs are preserved.',
+    'Move, reorder or copy actions or conditions within and between block events. A move keeps the item SIDs; with copy=true the source is left unchanged and each copy gets fresh SIDs.',
     {
       sheetName: z.string().max(200).describe('Target event sheet'),
       sourceBlockSid: z.number().int().positive().describe('SID of the source block or function-block'),
       targetBlockSid: z.number().int().positive().describe('SID of the target block or function-block'),
       itemType: z.enum(['actions', 'conditions']).describe('Array to move: actions or conditions'),
       indices: z.array(z.number().int().min(0)).min(1).describe('Source indexes to move, in their existing order'),
-      targetIndex: z.number().int().min(0).describe('Destination index; for same-block moves, measured after removal'),
+      targetIndex: z.number().int().min(0).describe('Destination index; for same-block moves, measured after removal (a copy removes nothing)'),
+      copy: z.boolean().optional().default(false).describe('Copy the items instead of moving them: the source keeps its items and the copies get fresh SIDs'),
     },
     async (args) => {
       try {
@@ -948,7 +949,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
         if (args.itemType === 'conditions'
           && args.indices.some(index => isElseCondition((sourceFound.event.conditions as unknown[] | undefined)?.[index]))) {
-          return toolError('An else condition cannot be moved: it must stay first in its own block. Move the other conditions instead.');
+          return toolError(`An else condition cannot be ${args.copy ? 'copied' : 'moved'}: it must stay first in its own block. ${args.copy ? 'Copy' : 'Move'} the other conditions instead.`);
         }
 
         const sourceItems = sourceFound.event[args.itemType];
@@ -965,19 +966,25 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
         const orderedIndices = [...uniqueIndices].sort((a, b) => a - b);
         const selected = orderedIndices.map(index => sourceItems[index]);
-        const remainingLength = sourceFound.event === targetFound.event
+        const remainingLength = sourceFound.event === targetFound.event && !args.copy
           ? sourceItems.length - selected.length
           : targetItems.length;
         if (args.targetIndex > remainingLength) {
           return toolError(`targetIndex ${args.targetIndex} is out of range (valid range 0-${remainingLength}).`);
         }
-        if (sourceFound.event !== targetFound.event && targetItems.length + selected.length > MAX_ITEMS_PER_BLOCK) {
+        if ((args.copy || sourceFound.event !== targetFound.event) && targetItems.length + selected.length > MAX_ITEMS_PER_BLOCK) {
           return toolError(`Target block would exceed the maximum of ${MAX_ITEMS_PER_BLOCK} ${args.itemType}.`);
         }
 
         const warnings: string[] = [];
 
-        if (sourceFound.event === targetFound.event) {
+        let reassigned = 0;
+        if (args.copy) {
+          const copies = selected.map(item => JSON.parse(JSON.stringify(item)) as Record<string, unknown>);
+          reassigned = await reassignSids(reader, idGen, copies);
+          targetItems.splice(args.targetIndex, 0, ...copies);
+          selected.splice(0, selected.length, ...copies);
+        } else if (sourceFound.event === targetFound.event) {
           const selectedSet = new Set(orderedIndices);
           const remaining = sourceItems.filter((_item, index) => !selectedSet.has(index));
           remaining.splice(args.targetIndex, 0, ...selected);
@@ -1003,7 +1010,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           sourceBlockSid: args.sourceBlockSid,
           targetBlockSid: args.targetBlockSid,
           itemType: args.itemType,
-          movedSids: selected.map(item => item.sid).filter((sid): sid is number => typeof sid === 'number'),
+          copy: args.copy,
+          movedSids: args.copy ? undefined : selected.map(item => item.sid).filter((sid): sid is number => typeof sid === 'number'),
+          copiedSids: args.copy ? selected.map(item => item.sid).filter((sid): sid is number => typeof sid === 'number') : undefined,
+          reassignedSids: args.copy ? reassigned : undefined,
           targetIndex: args.targetIndex,
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
