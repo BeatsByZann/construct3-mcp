@@ -143,6 +143,78 @@ describe('animation frame tools against a real project on disk', () => {
     expect(await readImage(3)).toBe('image-2');
   });
 
+  it('add_frame_to_animation shifts later image files up when inserting mid-animation', async () => {
+    const result = resultOf(await server.callTool('add_frame_to_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, index: 1,
+    }));
+    expect(result.success).toBe(true);
+    expect((result.warnings as string[])[0]).toContain('Shifted 2 frame image file(s)');
+
+    const frames = await readFrames();
+    expect(frames).toHaveLength(4);
+    expect(frames.map(frame => frame.imageSpriteId).slice(2)).toEqual([501, 502]);
+
+    // The inserted slot holds the freshly written placeholder PNG, and every
+    // later frame still owns the image it had before the insert.
+    const placeholder = await readFile(join(projectDir, 'images', imageName(1)));
+    expect(placeholder.subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    expect(await readImage(0)).toBe('image-0');
+    expect(await readImage(2)).toBe('image-1');
+    expect(await readImage(3)).toBe('image-2');
+  });
+
+  it('add_frame_to_animation leaves the existing image files alone when appending', async () => {
+    const result = resultOf(await server.callTool('add_frame_to_animation', {
+      objectName: 'Sprite', animationName: ANIMATION,
+    }));
+    expect(result.warnings).toBeUndefined();
+
+    expect(await readImage(0)).toBe('image-0');
+    expect(await readImage(1)).toBe('image-1');
+    expect(await readImage(2)).toBe('image-2');
+    const appended = await readFile(join(projectDir, 'images', imageName(3)));
+    expect(appended.subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  });
+
+  it('add_frame_to_animation rejects an index past the end of the animation', async () => {
+    const result = await server.callTool('add_frame_to_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, index: 9,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('out of range');
+    expect(await readFrames()).toHaveLength(3);
+    const images = await readdir(join(projectDir, 'images'));
+    expect(images.filter(name => name.endsWith('.png'))).toHaveLength(3);
+  });
+
+  it('delete_frame_from_animation shifts later image files down and drops the freed slot', async () => {
+    const result = resultOf(await server.callTool('delete_frame_from_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, frameIndex: 0,
+    }));
+    expect(result.success).toBe(true);
+    expect((result.warnings as string[])[0]).toContain('Removed or shifted 3 frame image file(s)');
+
+    const frames = await readFrames();
+    expect(frames.map(frame => frame.imageSpriteId)).toEqual([501, 502]);
+    expect(await readImage(0)).toBe('image-1');
+    expect(await readImage(1)).toBe('image-2');
+    await expect(readFile(join(projectDir, 'images', imageName(2)))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const images = await readdir(join(projectDir, 'images'));
+    expect(images.filter(name => name.includes('reorder-tmp'))).toHaveLength(0);
+    expect(images).toHaveLength(2);
+  });
+
+  it('delete_frame_from_animation removes only the last image file when deleting the last frame', async () => {
+    resultOf(await server.callTool('delete_frame_from_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, frameIndex: 2,
+    }));
+
+    expect(await readImage(0)).toBe('image-0');
+    expect(await readImage(1)).toBe('image-1');
+    await expect(readFile(join(projectDir, 'images', imageName(2)))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('update_frame persists image points, a tag and a collision polygon', async () => {
     resultOf(await server.callTool('update_frame', {
       objectName: 'Sprite', animationName: ANIMATION, frameIndex: 1,

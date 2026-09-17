@@ -96,6 +96,13 @@ All notable changes to the Construct3 MCP Server are documented here.
   refusing to overwrite an existing file or registration.
 - `set_main_script`: set `script-info.purpose` to `main` on one registered
   script and clear it from every other, keeping C3's single-main-script rule.
+- `add_frame_to_animation` and `delete_frame_from_animation` now shift the
+  later frames' image files under `images/` with the same journal-and-rollback
+  handling as `reorder_frames`. Inserting mid-animation used to overwrite the
+  image of the frame at that index and leave the last frame without one, and
+  deleting a frame used to leave every later frame showing its neighbour's
+  image. `add_frame_to_animation` also rejects an `index` past the end of the
+  animation instead of silently appending.
 - `register_project_file` and `deregister_project_file` now use the directory
   each Project File family actually stores files in (`files/`, `sounds/`,
   `music/`, `videos/`, `fonts/`) instead of copying every family into `files/`,
