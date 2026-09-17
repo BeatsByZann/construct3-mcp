@@ -1202,7 +1202,10 @@ directory its family uses (see the table under `register_project_file`).
 ## Timeline Tools
 
 Timelines live in `timelines/[subfolder/]<name>.json` and are registered in the
-`timelines` container of `project.c3proj`. Every write makes a `.bak` copy
+`timelines` container of `project.c3proj`. The first, nameless subfolder of
+that container lists custom eases, whose files live in `timelines/transitions/`
+(see [Custom eases](#custom-eases)); timeline tools never treat either as a
+timeline. Every write makes a `.bak` copy
 first and then replaces the file through a temp file and a rename.
 
 `playheadTime`, `stepTime` and the `showing*` flags are editor UI state: the
@@ -1217,7 +1220,7 @@ r495.2 with one instance track (`test/fixtures/timeline-sample`).
 
 | Field | Meaning |
 |-------|---------|
-| `tracks[]` | One entry per animated instance. Only `type: "instance-track"` is written by these tools; any other track kind in the file is left untouched |
+| `tracks[]` | Tracks at the root of the track list: `type` `instance-track`, `value-track` or `audio-track`. Tracks with no `type` are an older instance-track form (below) |
 | `tracks[].worldInstance` | UID of the animated world instance |
 | `tracks[].objectType` | Object type name of that instance |
 | `tracks[].project` | The project's `uniqueId` |
@@ -1228,6 +1231,22 @@ r495.2 with one instance track (`test/fixtures/timeline-sample`).
 | `propertyKeyframes[]` | `{ time, enabled, resultMode, ease, pathMode, value, rValue, aValue, addons }` |
 | `propertyKeyframes[].addons` | r495.2 writes one `cubic-bezier` entry with all four anchors disabled; new keyframes get exactly that entry |
 | `tracks[].propertyTracksRoot` | The per-track `Property Track Folder` tree |
+| `tracksRoot` | Track folder tree. A track in a folder is removed from `tracks` and stored whole in the folder's `items` (robotic-loader example: 12 tracks in 3 folders, `tracks` empty). The root folder's own `items` stayed empty in every sample |
+| `transitionsData[]` | `{ folders: [], json: <ease file> }`, one copy of each custom ease the timeline uses |
+
+Other track kinds, from the r495.2 example packages:
+
+| Kind | Shape |
+|------|-------|
+| `value-track` (10 samples, 3 packages) | `{ type, name, project, enabled, interpolationMode, ease, initialVisibility, id, keyframes, propertyTracks, propertyTracksRoot }` with no `resultMode`/`pathMode`/`resizeMode`. Master keyframes are `{ time, tags, enabled, ease }`. One property track, `{ property: "value", source: { type: "value", uid: "value" }, enabled, interpolationMode, ease, propertyKeyframes }`, whose keyframes are `{ time, enabled, ease, value, rValue, aValue, addons: [] }` with the three values equal (32 of 32) and one keyframe per master keyframe time |
+| `audio-track` (1 sample, synth-sunset) | Like a value track plus `resultMode` after `interpolationMode`. One property track `{ property: "audioSource", source: { type: "audio", uid: "audio" }, enabled, propertyKeyframes: [], sourceAdapter }`; `sourceAdapter` is `{ audioProjectFile, audioStartOffset, audioTag, audioType }`, where `audioProjectFile` is a verbatim copy of the file's `rootFileFolders` entry and `audioType` names that folder (`music` in the sample) |
+| untyped (5 samples, 4 packages saved by r168-r184) | An older instance track: `worldInstance` but no `type`, `objectType`, `project` or `resizeMode`; property keyframes without `resultMode` and mostly without `rValue`/`aValue`. No sample shows how Construct upgrades one, so the tools read these tracks, and can re-flag, move or remove them, but refuse edits that would rewrite their values (`set_keyframe`, `add_property_track`, a result-mode change) and refuse a second track for the same instance |
+
+Property-track folders were sampled only as the editor's own folders for
+behavior property tracks (tasty-cappuccino): each carries
+`ownerId: "behavior"` and `ownerUid: <behavior name>` after `subfolders`.
+The tools find and edit property tracks inside such folders but do not
+create, rename or delete property-track folders.
 
 ### Keyframe values: `value`, `rValue` and `aValue`
 
@@ -1256,18 +1275,40 @@ it, and a track created for it starts at `value: 0, aValue: 0`. Check such a
 track in the Construct 3 editor before relying on it.
 
 Nested timelines (`nestedData`, `childrenNestedData`, `nestedTimelinesRoot`)
-and custom eases have no tool support, because no sample of either was
-available. Their containers are created empty and preserved as written.
+have no tool support. Their containers are created empty and preserved as
+written.
+
+Tools that take `instanceUid` or `trackName` address one track, wherever it is
+in the track folders: an instance track by UID, or a value or audio track by
+name. Give exactly one. Every timeline write also refreshes `transitionsData`:
+a copy of each custom ease the timeline uses is added or updated, and copies of
+project eases it no longer uses are dropped. Ease names that are neither
+Construct's own (`default`, `noease`, `linear`, `ease...`) nor a custom ease
+are written with a warning.
 
 ### `list_timelines`
 
 List every timeline registered in the project, at the container root and in
-every subfolder. Returns `{ timelines: string[], count: number }`. No parameters.
+every subfolder except the nameless eases folder. Returns
+`{ timelines: string[], count: number }`. No parameters.
+
+### `list_timeline_tracks`
+
+Summarize every track: `kind` (`instance-track`, `value-track`, `audio-track`,
+`legacy-instance-track` or `unknown`), `instanceUid`/`objectType` or `name`,
+`folder`, `enabled`, `keyframeTimes`, and each property track's `property`,
+`sourceType`, `folder` and `keyframeCount`. Audio tracks also report
+`audioFile`, `audioType`, `audioStartOffset` and `audioTag`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
 
 ### `get_timeline_details`
 
 Return the parsed timeline file unchanged, including all tracks, property
-tracks and keyframes.
+tracks and keyframes. A registered name whose file has no `tracks` (an ease
+file) is reported as not a timeline.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1285,7 +1326,7 @@ Create an empty timeline file and register it. Duplicate names are refused.
 | `repeatCount` | number | No | Repeats when not looping (default: 1) |
 | `startOnLayout` | string | No | Layout to auto-start on (default: none) |
 | `ignoreSystemTimescale` | boolean | No | Default: true |
-| `subfolder` | string | No | Slash-separated folder path under `timelines/` |
+| `subfolder` | string | No | Slash-separated folder path under `timelines/`. A path starting with `transitions` (any case) is refused, because Construct keeps custom eases in `timelines/transitions/`. A name already used by a custom ease is refused too |
 
 ### `update_timeline`
 
@@ -1336,20 +1377,22 @@ outside `[0, totalTime]`.
 
 ### `remove_timeline_track`
 
-Remove the instance track for `instanceUid`, with all of its property tracks
-and keyframes.
+Remove one track, at the root or in a track folder, with all of its property
+tracks and keyframes. Untyped (older) instance tracks can be removed too.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | Yes | UID of the animated instance |
+| `instanceUid` | number | One of | UID of the animated instance |
+| `trackName` | string | One of | Name of a value or audio track |
 
 ### `add_property_track`
 
 Add one property track to an existing instance track. Its keyframes are created
 at every existing master keyframe time, holding the instance's current value
 (`value: 0, aValue: 0` for an unverified property name). Refused when the track
-already has that property.
+already has that property, including inside a property-track folder, and on
+untyped (older) tracks.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1359,7 +1402,8 @@ already has that property.
 
 ### `remove_property_track`
 
-Remove one property track and all of its keyframes.
+Remove one property track and all of its keyframes, also from a
+property-track folder.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1378,9 +1422,10 @@ first if it is not.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | Yes | UID of the animated instance; it must already have a track |
+| `instanceUid` | number | One of | UID of the animated instance; it must already have a track |
+| `trackName` | string | One of | Name of a value or audio track |
 | `time` | number | Yes | Keyframe time in seconds, within `[0, totalTime]` |
-| `values` | object | No | Per-property `{ absolute?, relative? }`, e.g. `{ "offsetX": { "absolute": 400 } }` |
+| `values` | object | No | Per-property `{ absolute?, relative?, ease? }`, e.g. `{ "offsetX": { "absolute": 400 } }`; `ease` sets that property keyframe's ease |
 | `ease` | string | No | Master keyframe ease (a new keyframe gets `default`) |
 | `enabled` | boolean | No | Master keyframe enabled flag |
 | `tags` | string | No | Master keyframe tags string |
@@ -1393,36 +1438,173 @@ a position property needs the instance to still exist in some layout: a track
 left behind by a deleted instance is refused with a message naming
 `remove_timeline_track`.
 
+A value track takes only `values.value` with an `absolute` number, and needs
+it when `time` has no keyframe yet; its master keyframe and value keyframe are
+kept at the same times. An audio track takes no `values`: only its master
+keyframe is created or updated. Untyped (older) instance tracks are refused.
+
 ### `delete_keyframe`
 
 Without `property`, delete the master keyframe at `time` and every property
 keyframe at that time. With `property`, delete only that one property keyframe
-and leave the master keyframe in place. Deleting the last remaining master
-keyframe is refused, because an instance track with no keyframes is not a valid
-track; use `remove_timeline_track` instead.
+and leave the master keyframe in place (instance tracks only). Deleting the
+last remaining master keyframe is refused, because a track with no keyframes
+is not a valid track; use `remove_timeline_track` instead. Property keyframes
+inside property-track folders are removed with their master keyframe.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | Yes | UID of the animated instance |
+| `instanceUid` | number | One of | UID of the animated instance |
+| `trackName` | string | One of | Name of a value or audio track |
 | `time` | number | Yes | Time of the keyframe to delete |
 | `property` | string | No | Delete only this property track's keyframe |
 
 ### `update_track`
 
-Update the playback properties of one instance track. At least one is required.
-Keyframes and property tracks are left alone.
+Update the playback properties of one track. At least one is required.
+Keyframes and property tracks are left alone, except that a result-mode change
+recomputes the stored `value` of typed instance-track keyframes. Fields a
+track kind does not have are refused (`resultMode` on value tracks and untyped
+tracks, `pathMode` on value and audio tracks).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | Yes | UID of the animated instance |
+| `instanceUid` | number | One of | UID of the animated instance |
+| `trackName` | string | One of | Name of a value or audio track |
 | `enabled` | boolean | No | Enable/disable the track |
 | `ease` | string | No | Track ease name |
 | `interpolationMode` | string | No | Track interpolation mode |
-| `resultMode` | string | No | Track result mode |
-| `pathMode` | string | No | Track path mode |
+| `resultMode` | string | No | Track result mode (instance and audio tracks) |
+| `pathMode` | string | No | Track path mode (instance tracks) |
 | `initialVisibility` | boolean | No | Visibility applied when the timeline starts |
+| `name` | string | No | New name of a value or audio track (unique in the timeline) |
+| `audioFile` | string | No | Audio track: another registered sound or music file |
+| `audioFolder` | `sound` / `music` | No | Where `audioFile` is registered, when both folders hold that name |
+| `audioStartOffset` | number | No | Audio track: offset into the file, in seconds |
+| `audioTag` | string | No | Audio track: tag given to the playing audio |
+
+### `add_value_track`
+
+Add a value track: a named number animated over time. Each keyframe creates a
+master keyframe and a value keyframe at the same time. Refused when the
+timeline already has a value or audio track of that name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `name` | string | Yes | Track name |
+| `keyframes` | array | No | `{ time, value, ease? }` (default: one keyframe of value 0 at time 0) |
+| `folder` | string | No | Track folder to put it in (default: the root) |
+
+### `add_audio_track`
+
+Add an audio track that plays a sound or music file. The file must be
+registered in `rootFileFolders.sound` or `.music`; its entry is copied into
+the track's `sourceAdapter.audioProjectFile` and the folder name becomes
+`audioType`. Only one audio track was sampled, so check the result in the
+editor. The result carries `trackName`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `audioFile` | string | Yes | Registered file name, e.g. `Theme.webm` |
+| `audioFolder` | `sound` / `music` | No | Needed only when both folders hold that name |
+| `name` | string | No | Track name (default: `Audio Track N`, the next free number) |
+| `audioStartOffset` | number | No | Offset into the file, in seconds (default: 0) |
+| `audioTag` | string | No | Tag given to the playing audio (default: empty) |
+| `keyframeTimes` | number[] | No | Master keyframe times (default: `[0]`) |
+| `folder` | string | No | Track folder to put it in (default: the root) |
+
+### `add_timeline_folder`, `rename_timeline_folder`, `delete_timeline_folder`
+
+Edit track folders in `tracksRoot`. Folder paths are slash-separated
+(`"Doors"`, `"Doors/Left"`); sibling folder names must differ. Every sampled
+folder sat directly under the root, so creating a nested folder returns a
+warning. Deleting a folder moves its tracks and subfolders to the parent
+(tracks moved to the root go back into `tracks`) unless `deleteContents` is
+true.
+
+| Parameter | Type | Tool | Description |
+|-----------|------|------|-------------|
+| `timelineName` | string | all | Timeline name |
+| `name` | string | add | New folder name |
+| `parentFolder` | string | add | Parent folder (default: the root) |
+| `folder` | string | rename, delete | Folder path |
+| `newName` | string | rename | New folder name |
+| `deleteContents` | boolean | delete | Delete the contents too (default: false) |
+
+### `move_timeline_track`
+
+Move a track into a track folder, or back to the root (`tracks`) with
+`folder: ""`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | number | One of | UID of the animated instance |
+| `trackName` | string | One of | Name of a value or audio track |
+| `folder` | string | Yes | Destination track folder, or `""` for the root |
+
+### Custom eases
+
+A custom ease (sample: tasty-cappuccino `LightOutBack`) is
+`timelines/transitions/<name>.json`:
+
+```json
+{
+  "name": "LightOutBack",
+  "linear": false,
+  "purpose": "any",
+  "transitionKeyframes": [
+    { "x": 0, "y": 0, "sax": 0.433, "say": 1.329, "eax": 0, "eay": 0, "se": true, "ee": false, "sm": "cubic" },
+    { "x": 1, "y": 1, "sax": 0, "say": 0, "eax": -0.355, "eay": 0.009, "se": false, "ee": true, "sm": "cubic" }
+  ]
+}
+```
+
+Its name is listed in the first, nameless subfolder of the `project.c3proj`
+`timelines` container (every sampled project has that folder), and each
+timeline using the ease holds a copy in `transitionsData`. `sax`/`say` is the
+outgoing handle and `eax`/`eay` the incoming handle, as offsets from the
+point; `se`/`ee` mark which handles exist. The sample has two points only:
+points between the ends get both handles, which is unsampled. `purpose` is
+always written as `any`, the only sampled value.
+
+#### `list_eases`
+
+List custom eases with `linear`, `purpose`, `points` and `usedBy` (the
+timelines that name the ease). No parameters.
+
+#### `create_ease`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Ease name; refused when it looks like a Construct ease name or is already an ease or timeline name |
+| `points` | array | Yes | `{ x, y, startHandle?: { x, y }, endHandle?: { x, y } }` from `(0,0)` to `(1,1)`, x strictly increasing; the first point takes no `endHandle` and the last no `startHandle` |
+| `linear` | boolean | No | Default: false |
+
+#### `update_ease`
+
+Rewrite the points or `linear` flag, then refresh the copy in every timeline
+that uses the ease. The result lists `timelinesRefreshed`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Ease name |
+| `points` | array | No | New points, as for `create_ease` |
+| `linear` | boolean | No | New flag |
+
+#### `delete_ease`
+
+Delete an ease that no timeline uses (otherwise refused, naming the
+timelines): its file and `.uistate.json` (with `.bak` copies), its
+registration, and any stale copy left in a timeline's `transitionsData`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Ease name |
 
 ---
 
@@ -1487,7 +1669,8 @@ flowchart files, 1539 nodes).
 | `nodes[].c` | Node caption. **Not** a color: node and output colors live in the sibling `<name>.uistate.json` |
 | `nodes[].s` | Start node. All 31 sampled files carry exactly one |
 | `nodes[].e` | Enabled |
-| `nodes[].ty` | Value type. Observed values: `dictionary` and `comment` |
+| `nodes[].ty` | Value type. Observed values: `dictionary` (1373) and `comment` (166) |
+| `nodes[].n`, `fo`, `fs`, `fb`, `fi`, `fc` | Comment nodes only, after `prfnsid`: body as the editor's HTML (first line plain, later lines in `<div>`, blank lines `<div><br></div>`), font face, font size, bold, italic and `#rrggbb` font color. Comment nodes have no outputs or connections and `t: ""`; their `c` is a separate caption |
 | `nodes[].pi` | Observed values 0, 1 and 2; meaning could not be determined from the sample |
 | `nodes[].pr`, `prfsid`, `prfnsid` | Preset-node markers. Never taken from tool input: new nodes get `false`/`null`/`null` and existing nodes keep whatever they carry |
 | `nodes[].pnSIDs`, `poSIDs` | Strictly parallel, one entry per incoming connection (1295 of 1295 sampled pairs valid): `poSIDs[i]` is an output of the node `pnSIDs[i]` |
@@ -1553,8 +1736,13 @@ warning when the flowchart is left without a start node.
 | `width`, `height` | number | No | Box size (defaults: 300 x 133) |
 | `isStart` | boolean | No | Make this the start node (default: false) |
 | `enabled` | boolean | No | The `e` field (default: true) |
-| `valueType` | string | No | The `ty` field (default: `dictionary`) |
+| `valueType` | `dictionary` / `comment` | No | The `ty` field (default: `dictionary`). A comment node takes no `outputs`, gets `t: ""` unless `nodeType` is given, and gets the comment keys |
 | `outputs` | array | No | `{ name, value?, enabled?, isDefault? }` pins to create |
+| `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption) |
+| `commentHtml` | string | No | Comment body as HTML, stored unchanged; give this or `commentText` |
+| `font`, `fontSize`, `bold`, `italic`, `fontColor` | string, number, boolean, boolean, `#rrggbb` | No | Comment formatting (`fo`, `fs`, `fb`, `fi`, `fc`). Missing values take the most common sampled values (Calibri, 36, bold, not italic, `#39b530`) with a warning; Construct's own defaults were not sampled |
+
+The comment fields are refused on a dictionary node.
 
 There is no `color` parameter: the node `c` field is the caption, and colors are
 held in the `.uistate.json` file these tools do not write.
@@ -1575,6 +1763,8 @@ preserved. `isStart: true` clears the flag on every other node.
 | `enabled` | boolean | No | The `e` field |
 | `parentIndex` | number | No | The `pi` field (meaning undetermined) |
 | `x`, `y`, `width`, `height` | number | No | Canvas position and box size |
+| `valueType` | `dictionary` / `comment` | No | Change the `ty` field. To `comment`: refused while the node has outputs or connections; `t` is cleared and the comment keys are added (body from the caption unless given). To `dictionary`: the comment keys are removed and an empty `t` takes the caption |
+| `commentText`, `commentHtml`, `font`, `fontSize`, `bold`, `italic`, `fontColor` | | No | Comment fields as for `add_flowchart_node`; only on a node that is, or becomes, a comment |
 
 ### `delete_flowchart_node`
 

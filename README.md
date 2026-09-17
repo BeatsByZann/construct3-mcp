@@ -131,6 +131,10 @@ node dist/index.js /path/to/your/project.c3proj
 | `deregister_script_file` | Remove a script registration while preserving the script file |
 | `register_project_file` | Copy a file into `files/` and register it in the general, sound, music, video, or font family |
 | `deregister_project_file` | Deregister a Project File and remove its file under `files/` |
+| `list_timeline_tracks` | Summarize a timeline's tracks by kind, including untyped tracks from older releases |
+| `add_value_track` / `add_audio_track` | Add a value track or an audio track playing a registered sound or music file |
+| `add_timeline_folder` / `rename_timeline_folder` / `delete_timeline_folder` / `move_timeline_track` | Organize timeline tracks in track folders |
+| `list_eases` / `create_ease` / `update_ease` / `delete_ease` | Custom ease curves in `timelines/transitions/`, kept in step with the timelines that use them |
 
 ### Runtime Tools (Live Game Control)
 
