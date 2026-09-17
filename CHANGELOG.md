@@ -196,6 +196,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 - `update_instance` wrote `zElevation` to `world.z` even on instances that store `world.zElevation` (projects saved by older releases), leaving two Z keys.
 - `delete_instance_from_layout` left hierarchy links to a deleted instance (its parent's `children` entry and its children's `parent-uid`); it now detaches both sides and reports the detached children.
+- `add_instance_to_layout` could not place an instance on a sub-layer ("Layer not found").
 - `delete_instance_from_layout` did not find instances on sub-layers, and `update_object_properties` did not give sub-layer instances their `behaviors`/`instanceVariables` dicts.
 - Timeline tools found only tracks and property tracks at the root, so a track moved into a track folder could get a duplicate from `add_timeline_track`, and keyframe deletion skipped property tracks in folders. They now search the folders too.
 - Untyped instance tracks from older Construct releases were invisible to the timeline tools: `add_timeline_track` could add a second track for the same instance. They are now found, listed as `legacy-instance-track`, and protected from edits that would rewrite their values.

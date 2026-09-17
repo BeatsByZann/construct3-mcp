@@ -223,6 +223,13 @@ describe('instance hierarchy and cross-layer moves', () => {
     expect(ui).toEqual([2, 1, 3]);
   });
 
+  it('places a new instance on a sub-layer', async () => {
+    const r = parse(await server.callTool('add_instance_to_layout', { layoutName: 'Level 1', layerName: 'UI', objectType: 'Enemy', x: 5, y: 6 }));
+    expect(r.success).toBe(true);
+    const ui = (await readJson('layouts/Level 1.json')).layers[0].subLayers[0].instances;
+    expect(ui.at(-1)).toMatchObject({ type: 'Enemy', uid: r.generatedUid });
+  });
+
   it('appends depth when the instance has no Z key', async () => {
     await server.callTool('update_instance', { layoutName: 'Level 1', uid: 2, depth: 4 });
     const world = (await readJson('layouts/Level 1.json')).layers[0].instances[1].world;

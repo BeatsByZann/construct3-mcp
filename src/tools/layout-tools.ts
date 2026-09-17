@@ -367,9 +367,10 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           });
           warnings.push(`"${args.objectType}" is a global (nonworld) object — placed in nonworld-instances instead of on a layer. Layer and position parameters were ignored.`);
         } else {
-          const targetLayer = layout.layers.find(l => l.name === args.layerName);
+          // Sub-layers hold instances too.
+          const targetLayer = collectLayers(layout).find(l => l.name === args.layerName);
           if (!targetLayer) {
-            const layerNames = layout.layers.map(l => l.name).join(', ');
+            const layerNames = collectLayers(layout).map(l => l.name).join(', ');
             return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Available layers: ${layerNames}`);
           }
 
