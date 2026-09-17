@@ -17,6 +17,9 @@ import { registerFileTools } from './file-tools.js';
 import { registerEffectTools } from './effect-tools.js';
 import { registerFlowchartTools } from './flowchart-tools.js';
 import { registerContainerTools } from './container-tools.js';
+import { registerRenameTools } from './rename-tools.js';
+import { registerTemplateTools } from './template-tools.js';
+import { registerTilemapBrushTools } from './tilemap-brush-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -35,4 +38,7 @@ export function registerMutationTools(
   registerEffectTools(deps);
   registerFlowchartTools(deps);
   registerContainerTools(deps);
+  registerRenameTools(deps);
+  registerTemplateTools(deps);
+  registerTilemapBrushTools(deps);
 }

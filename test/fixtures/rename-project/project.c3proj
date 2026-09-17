@@ -1,0 +1,175 @@
+{
+	"projectFormatVersion": 1,
+	"savedWithRelease": 44000,
+	"name": "RenameProject",
+	"runtime": "c3",
+	"useWorker": "dom",
+	"bundleAddons": false,
+	"usedAddons": [
+		{
+			"type": "plugin",
+			"id": "Sprite",
+			"name": "Sprite",
+			"author": "Scirra",
+			"bundled": false
+		},
+		{
+			"type": "plugin",
+			"id": "Tilemap",
+			"name": "Tilemap",
+			"author": "Scirra",
+			"bundled": false
+		},
+		{
+			"type": "plugin",
+			"id": "Keyboard",
+			"name": "Keyboard",
+			"author": "Scirra",
+			"bundled": false
+		}
+	],
+	"uniqueId": "rename-fixture-id",
+	"objectTypes": {
+		"items": [
+			"Tiles",
+			"Keyboard"
+		],
+		"subfolders": [
+			{
+				"items": [
+					"Player",
+					"PlayerShip",
+					"Enemy"
+				],
+				"subfolders": [],
+				"name": "Actors"
+			}
+		]
+	},
+	"containers": [
+		{
+			"members": [
+				"Player",
+				"Enemy"
+			]
+		}
+	],
+	"families": {
+		"items": [],
+		"subfolders": [
+			{
+				"items": [
+					"Hostiles"
+				],
+				"subfolders": [],
+				"name": "Groups"
+			}
+		]
+	},
+	"layouts": {
+		"items": [
+			"Level 1"
+		],
+		"subfolders": [
+			{
+				"items": [
+					"Level 2"
+				],
+				"subfolders": [],
+				"name": "Extra"
+			}
+		]
+	},
+	"eventSheets": {
+		"items": [
+			"Main"
+		],
+		"subfolders": [
+			{
+				"items": [
+					"Helpers"
+				],
+				"subfolders": [],
+				"name": "Shared"
+			}
+		]
+	},
+	"rootFileFolders": {
+		"script": {
+			"items": [],
+			"subfolders": []
+		},
+		"sound": {
+			"items": [],
+			"subfolders": []
+		},
+		"music": {
+			"items": [],
+			"subfolders": []
+		},
+		"video": {
+			"items": [],
+			"subfolders": []
+		},
+		"font": {
+			"items": [],
+			"subfolders": []
+		},
+		"icon": {
+			"items": [],
+			"subfolders": []
+		},
+		"general": {
+			"items": [],
+			"subfolders": []
+		}
+	},
+	"timelines": {
+		"items": [
+			"Intro"
+		],
+		"subfolders": []
+	},
+	"properties": {
+		"description": "Fixture for the rename tools",
+		"version": "1.0.0",
+		"autoIncrementVersion": false,
+		"author": "TestAuthor",
+		"authorEmail": "test@example.com",
+		"authorWebsite": "https://example.com",
+		"appId": "com.test.rename",
+		"pixelRounding": false,
+		"zAxisScale": "normalized",
+		"fov": 0.7853981633974483,
+		"useLoaderLayout": false,
+		"fullscreenMode": "letterbox-scale",
+		"fullscreenQuality": "high",
+		"viewportFit": "auto",
+		"backgroundColor": [0, 0, 0, 0],
+		"splashColor": [1, 1, 1, 0],
+		"useThemeColor": false,
+		"themeColor": [1, 1, 1, 0],
+		"orientations": "landscape",
+		"webgpu": "auto",
+		"multitexturing": "auto",
+		"gpuPreference": "high-performance",
+		"scriptsType": "module",
+		"framerateMode": "vsync",
+		"sampling": "trilinear",
+		"downscaling": "medium",
+		"renderingMode": "auto",
+		"anisotropicFiltering": "16x",
+		"zNear": 1,
+		"zFar": 10000,
+		"maxSpriteSheetSize": 2048,
+		"loaderStyle": "splash",
+		"preloadSounds": true,
+		"cordovaiOSScheme": "app",
+		"cordovaAndroidScheme": "https",
+		"exportFileStructure": "folders",
+		"uidAllocationMode": "increment"
+	},
+	"viewportWidth": 1920,
+	"viewportHeight": 1080,
+	"firstLayout": "Level 1"
+}

@@ -1,0 +1,120 @@
+{
+	"name": "Level 1",
+	"layers": [
+		{
+			"name": "Game",
+			"sid": 630000000000001,
+			"instances": [
+				{
+					"type": "Player",
+					"uid": 1,
+					"sid": 630000000000002,
+					"tags": "",
+					"properties": {
+						"initially-visible": true,
+						"initial-animation": "Default",
+						"initial-frame": 0,
+						"enable-collisions": true,
+						"live-preview": false
+					},
+					"instanceVariables": {
+						"health": 100,
+						"name": "hero"
+					},
+					"behaviors": {
+						"Platform": {
+							"properties": {
+								"max-speed": 330,
+								"enabled": true
+							}
+						},
+						"Fade": {
+							"properties": {}
+						}
+					},
+					"effects": {
+						"Glow": {
+							"isEnabled": true,
+							"parameters": {
+								"intensity": 0.5
+							}
+						}
+					},
+					"showing": true,
+					"locked": false,
+					"world": {
+						"x": 100,
+						"y": 200,
+						"width": 64,
+						"height": 64,
+						"originX": 0.5,
+						"originY": 0.5,
+						"color": [1, 1, 1, 1],
+						"z": 0,
+						"angle": 0
+					}
+				},
+				{
+					"type": "Enemy",
+					"uid": 2,
+					"sid": 630000000000003,
+					"tags": "",
+					"properties": {},
+					"instanceVariables": {},
+					"behaviors": {},
+					"showing": true,
+					"locked": false,
+					"world": {
+						"x": 300,
+						"y": 200,
+						"width": 64,
+						"height": 64
+					}
+				}
+			],
+			"isInitiallyVisible": true,
+			"isTransparent": true,
+			"color": [1, 1, 1, 1],
+			"blendMode": "normal",
+			"subLayers": [
+				{
+					"name": "UI",
+					"sid": 630000000000004,
+					"instances": [
+						{
+							"type": "Player",
+							"uid": 3,
+							"sid": 630000000000005,
+							"tags": "",
+							"properties": {},
+							"instanceVariables": {},
+							"behaviors": {},
+							"world": {
+								"x": 10,
+								"y": 10,
+								"width": 16,
+								"height": 16
+							}
+						}
+					],
+					"isInitiallyVisible": true,
+					"isTransparent": true,
+					"color": [1, 1, 1, 1],
+					"blendMode": "normal"
+				}
+			]
+		}
+	],
+	"nonworld-instances": [
+		{
+			"type": "Keyboard",
+			"uid": 4,
+			"sid": 630000000000006,
+			"properties": {}
+		}
+	],
+	"sid": 630000000000007,
+	"eventSheet": "Main",
+	"width": 1920,
+	"height": 1080
+}

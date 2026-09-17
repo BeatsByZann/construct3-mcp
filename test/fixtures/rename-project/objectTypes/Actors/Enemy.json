@@ -1,0 +1,32 @@
+{
+	"name": "Enemy",
+	"plugin-id": "Sprite",
+	"sid": 660000000000003,
+	"isGlobal": false,
+	"instanceVariables": [],
+	"behaviorTypes": [],
+	"effectTypes": [],
+	"animations": {
+		"items": [
+			{
+				"name": "Default",
+				"sid": 660000000000013,
+				"speed": 5,
+				"isLooping": false,
+				"isPingPong": false,
+				"repeatCount": 1,
+				"repeatTo": 0,
+				"frames": [
+					{
+						"width": 64,
+						"height": 64,
+						"originX": 0.5,
+						"originY": 0.5,
+						"duration": 1
+					}
+				]
+			}
+		],
+		"subfolders": []
+	}
+}
