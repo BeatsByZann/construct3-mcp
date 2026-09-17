@@ -226,7 +226,7 @@ Update an existing object's instance variables and behaviors.
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Existing object name |
 | `isGlobal` | boolean | No | Change global status |
-| `addVariables` | array | No | `[{ name, type: "number"\|"string"\|"boolean" }]` |
+| `addVariables` | array | No | `[{ name, type: "number"\|"string"\|"boolean", description?, showInPropertiesBar? }]` |
 | `removeVariables` | string[] | No | Variable names to remove |
 | `addBehaviors` | array | No | `[{ behaviorId: "Tween"\|"Sin"\|etc., name }]` |
 | `removeBehaviors` | string[] | No | Behavior names to remove |
@@ -236,6 +236,97 @@ Update an existing object's instance variables and behaviors.
 - Validates behavior addon registration (auto-adds known Scirra behaviors)
 - Generates unique SIDs for each new variable and behavior
 - Warns on duplicate variable/behavior names (skips them)
+- `description` sets C3's `desc` field and `showInPropertiesBar` sets `show` (defaults `""` and `true`). `update_family`'s `addVariables` accepts the same two options
+- There is no `initialValue` parameter: a C3 instance-variable definition has no default-value field. A placed instance's starting value lives in that instance's own `instanceVariables` dict, set with `add_instance_to_layout` / `update_instance`
+- To rename, retype or re-describe an existing variable, use `update_instance_variable`
+
+### `update_instance_variable`
+
+Edit an existing instance variable *definition* on an object type or a family, and keep placed instances and event-sheet references in sync.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | One of | Object type that owns the variable |
+| `familyName` | string | One of | Family that owns the variable |
+| `variableName` | string | Yes | Current variable name |
+| `newName` | string | No | New variable name |
+| `newType` | string | No | `"number"`, `"string"` or `"boolean"` — stored values are coerced |
+| `description` | string | No | New description (C3 `desc`) |
+| `showInPropertiesBar` | boolean | No | Show in the properties bar (C3 `show`) |
+| `renameReferences` | boolean | No | Rewrite event-sheet references on a rename (default: false) |
+
+Exactly one of `objectName` / `familyName` is required, and at least one of `newName`, `newType`, `description`, `showInPropertiesBar`.
+
+**What it does:**
+1. Reads the owning object type or family and locates the variable by name
+2. On a rename: validates the new name and rejects a collision with another variable on the same owner, or — for a family — with a variable a member object type defines itself
+3. On a rename: scans every event sheet for references (see below) and refuses the whole operation unless there are none or `renameReferences=true`
+4. Writes the updated definition (`name` / `type` / `desc` / `show`), preserving every other field and the variable's `sid`
+5. Renames the stored key and/or coerces the stored value on every placed instance of the affected object types, in all layers, nested sub-layers and non-world instances, across all layouts
+
+**Affected object types:** for `objectName`, that object type. For `familyName`, every family member — C3 stores a family instance variable flat in each member instance's own `instanceVariables` dict.
+
+**Event-sheet references** (both shapes confirmed against a production project):
+- an ACE parameter keyed `instance-variable` whose value is the bare variable name, on an action/condition whose `objectClass` is the owner (or, for a family variable, the family or one of its members)
+- expression text naming it as `<ReferringName>.<variableName>` in any other parameter value
+
+Both are rewritten when `renameReferences=true`. A reference built by string concatenation, or written inside a JavaScript script action or a script file, is **not** rewritten; the result warns about this. An identically named variable on a different object type is left alone.
+
+**Value coercion on `newType`:**
+
+| To | Rule |
+|-----|------|
+| `string` | `String(value)`; `null`/`undefined` become `""` |
+| `number` | `Number(value)`, falling back to `0` when not finite; `true`/`false` become `1`/`0` |
+| `boolean` | JavaScript truthiness (`0` and `""` are false) |
+
+### `list_containers`
+
+List the project's object containers. A container makes C3 create, pick and destroy a set of object types together.
+
+No parameters. Returns `{ containers: [{ members }], count }`.
+
+Containers have no name and no file of their own: the whole set lives in a flat `containers: [{ "members": [...] }]` array at the root of `project.c3proj`, so a container is identified by any one of its members.
+
+### `create_container`
+
+Create an object container from existing object types.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `members` | string[] | Yes | Object type names (1-100; 2 or more for a meaningful container) |
+
+**Behavior:**
+- Every member must exist as an object type; a family is rejected with an explicit message (containers hold object types only)
+- An object type may belong to at most one container; a member already held by another container is rejected and nothing is written
+- A member listed twice in one request is rejected
+- A single-member container is accepted with a warning: C3 containers are only meaningful with 2 or more members
+- Backs up `project.c3proj`, writes it through a temp file and rename, then reloads the project
+
+### `update_container`
+
+Add or remove object types in an existing container.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `member` | string | Yes | Any object type currently in the container to update |
+| `addMembers` | string[] | No | Object type names to add |
+| `removeMembers` | string[] | No | Object type names to remove |
+
+**Behavior:**
+- `member` identifies the container; an object type in no container is an error
+- `addMembers` runs the same validations as `create_container`
+- A duplicate add or an absent remove warns and is skipped; it is not an error
+- Removing the last member deletes the container and reports `action: "deleted"`
+- When the last container in the project is removed, the `containers` key is dropped from `project.c3proj`
+
+### `delete_container`
+
+Delete the container that includes the named object type. The object types themselves are not deleted.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `member` | string | Yes | Any object type currently in the container to delete |
 
 ### `delete_object`
 

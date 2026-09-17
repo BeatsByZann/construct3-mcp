@@ -288,16 +288,28 @@ export const DEFAULT_INSTANCE_PROPERTIES: Record<string, Record<string, unknown>
 
 // ─── Instance Variable & Behavior Templates ─────────────────
 
+/**
+ * Build an instance-variable definition entry.
+ *
+ * C3 stores the definition as `{ name, type, desc, show, sid }` on the object
+ * type or family; there is no default-value field, so a placed instance's
+ * starting value lives only in that instance's `instanceVariables` dict.
+ *
+ * @param desc  Description shown in the editor (C3 `desc`, default empty)
+ * @param show  Whether the variable appears in the properties bar (C3 `show`)
+ */
 export function createInstanceVariable(
   name: string,
   type: 'number' | 'string' | 'boolean',
   sid: number,
+  desc = '',
+  show = true,
 ): InstanceVariable {
   return {
     name,
     type,
-    desc: '',
-    show: true,
+    desc,
+    show,
     sid,
   };
 }
