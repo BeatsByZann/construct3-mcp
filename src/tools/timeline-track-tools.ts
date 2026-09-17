@@ -196,6 +196,11 @@ export function registerTimelineTrackTools({ server, reader }: MutationToolDeps,
         const times = [...new Set(args.keyframeTimes)].sort((a, b) => a - b);
         const rangeError = checkTimes(data, times);
         if (rangeError) return rangeError;
+        // The sampled audio track (synth-sunset) starts with a keyframe at 0,
+        // and r495.2 moved a lone keyframe written at 1s back to 0.
+        if (times[0] !== 0) {
+          return toolError('An audio track needs its first keyframe at time 0 (Construct moves it there on load). Include 0 in keyframeTimes.');
+        }
 
         const track = createAudioTrack(name, reader.getProject().uniqueId, file.file, args.audioStartOffset, args.audioTag);
         track.keyframes = times.map(t => createPlainMasterKeyframe(t));

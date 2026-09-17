@@ -26,6 +26,7 @@ const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 const KINDS_DIR = join(__dirname, '..', 'fixtures', 'timeline-kinds');
 
 const SOUND = { name: 'Beep.webm', type: 'audio/webm; codecs=opus', sid: 700000000000001, 'file-info': { purpose: 'none' } };
+const SUB_SOUND = { name: 'Blip.webm', type: 'audio/webm; codecs=opus', sid: 700000000000003, 'file-info': { purpose: 'none' } };
 const MUSIC = { name: 'Theme.webm', type: 'audio/webm; codecs=opus', sid: 700000000000002, 'file-info': { purpose: 'none' } };
 
 type Json = any;
@@ -62,6 +63,7 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
     const projectPath = join(tmpDir, 'project.c3proj');
     const project = JSON.parse(await readFile(projectPath, 'utf-8'));
     project.rootFileFolders.sound.items.push(SOUND);
+    project.rootFileFolders.sound.subfolders.push({ items: [SUB_SOUND], subfolders: [], name: 'Sfx' });
     project.rootFileFolders.music.items.push(MUSIC);
     await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
     await boot();
@@ -722,4 +724,23 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
       expect((await onDisk('Legacy')).tracks).toEqual([]);
     });
   });
+  describe('audio paths and keyframes from the live round trip', () => {
+    it('keeps the Sounds subfolder in audioProjectFilePath', async () => {
+      await createMove();
+      await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Blip.webm', name: 'Sfx' });
+      const track = (await onDisk()).tracks.find((t: Json) => t.name === 'Sfx');
+      expect(track.propertyTracks[0].sourceAdapter.audioProjectFilePath).toBe('media/Sfx/Blip.webm');
+    });
+
+    it('requires an audio track keyframe at time 0', async () => {
+      await createMove();
+      await fails('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', keyframeTimes: [1] }, 'first keyframe at time 0');
+      const before = await onDisk();
+      expect(before.tracks.some((t: Json) => t.type === 'audio-track')).toBe(false);
+      await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', keyframeTimes: [0, 1] });
+      const track = (await onDisk()).tracks.find((t: Json) => t.type === 'audio-track');
+      expect(track.keyframes.map((k: Json) => k.time)).toEqual([0, 1]);
+    });
+  });
+
 });

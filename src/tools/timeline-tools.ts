@@ -728,7 +728,7 @@ export function registerTimelineTools(deps: MutationToolDeps) {
       warnings.push(`"${name}" is registered with type "${String(type)}", not an audio type.`);
     }
     const structure = (project as unknown as { properties?: { exportFileStructure?: unknown } }).properties?.exportFileStructure;
-    const path = audioProjectFilePath(name, structure);
+    const path = audioProjectFilePath(name, structure, matches[0].subfolder);
     if (path === undefined) {
       warnings.push(`The project's export file structure is ${structure === undefined ? 'not set' : `"${String(structure)}"`}, for which no sample shows an audioProjectFilePath, so none was written; r495.2 added it when it saved such a project in the W90 check.`);
     }

@@ -1591,14 +1591,16 @@ the track's `sourceAdapter.audioProjectFile` and the folder name becomes
 `audioType`. Only one audio track was sampled, so check the result in the
 editor. The result carries `trackName`.
 
-`sourceAdapter.audioProjectFilePath` follows `audioProjectFile`. A live
-r495.2 save of a project whose `exportFileStructure` was `folders` wrote
-`media/<file name>` for a music file; the r432.3 sample has no such key. The
-tools write `media/<file name>` for every audio file when the project uses
-`folders` (sound files and files in subfolders are assumed to follow the
-same rule) and write no path otherwise, with a warning. `update_track`
-writes the path when `audioFile` changes and removes a path that no longer
-applies.
+`sourceAdapter.audioProjectFilePath` follows `audioProjectFile`. Live r495.2
+saves of a project whose `exportFileStructure` was `folders` wrote
+`media/Theme.webm` for a music file at the root and `media/Sfx/Blip.webm`
+for a sound file in the Sounds subfolder `Sfx`; the r432.3 sample has no such
+key. The tools write `media/[<subfolder>/]<file name>` when the project uses
+`folders`, and no path otherwise, with a warning. `update_track` writes the
+path when `audioFile` changes and removes a path that no longer applies.
+
+The first keyframe must be at time 0: r495.2 moved a lone keyframe written at
+1s back to 0, and the sampled audio track starts at 0.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

@@ -298,14 +298,15 @@ export interface AudioFileRef {
  * "folders") saved `"audioProjectFilePath": "media/Theme.webm"` for a music
  * file at the root of the Music folder, right after `audioProjectFile`. The
  * synth-sunset sample (saved by r432.3, also "folders") has no such key, so
- * the key is newer than r432. Assumed, not sampled: a sound file gets the same
- * `media/` path, and files in Sounds/Music subfolders still export to
- * `media/<file name>`. For "flat" (or a missing setting) no path was sampled
- * (r495.2 converted the flat test project to "folders" when it saved it), so
- * no path is written.
+ * the key is newer than r432. The second W90 round trip saved
+ * `"media/Sfx/Blip.webm"` for a sound file in the Sounds subfolder "Sfx", so
+ * sounds share the `media/` prefix and the Project Bar subfolder path is kept.
+ * For "flat" (or a missing setting) no path was sampled (r495.2 converted the
+ * flat test project to "folders" when it saved it), so no path is written.
  */
-export function audioProjectFilePath(fileName: string, exportFileStructure: unknown): string | undefined {
-  return exportFileStructure === 'folders' ? `media/${fileName}` : undefined;
+export function audioProjectFilePath(fileName: string, exportFileStructure: unknown, subfolder?: string): string | undefined {
+  if (exportFileStructure !== 'folders') return undefined;
+  return `media/${subfolder ? `${subfolder.replace(/^\/+|\/+$/g, '')}/` : ''}${fileName}`;
 }
 
 /** Sampled key order of an audio track's `sourceAdapter`. */
