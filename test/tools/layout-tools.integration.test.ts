@@ -100,3 +100,153 @@ describe('delete_layout (real project on disk)', () => {
     expect(integrity.info.find(i => i.check === 'orphaned-file' && i.entity.includes('Level 2'))).toBeDefined();
   });
 });
+
+/**
+ * Layer nesting, ordering and instance hierarchy through the real reader and
+ * writer: these tools reshape arrays in place and maintain two-sided links, so
+ * the on-disk JSON is the only proof the result is what Construct will load.
+ */
+describe('layer nesting and instance hierarchy (real project on disk)', () => {
+  let tmpDir: string;
+  let reader: Construct3ProjectReader;
+  let writer: Construct3ProjectWriter;
+  let idGen: IdGenerator;
+  let server: MockServer;
+
+  beforeEach(async () => {
+    resetProjectIndex();
+    tmpDir = await mkdtemp(join(tmpdir(), 'c3-layer-int-'));
+    await cp(FIXTURE_DIR, tmpDir, { recursive: true });
+
+    reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
+    await reader.loadProject();
+    idGen = new IdGenerator();
+    writer = new Construct3ProjectWriter(reader, idGen);
+    server = new MockServer();
+    registerLayoutTools({ server, reader, writer, idGen } as any);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+  });
+
+  async function layoutOnDisk(): Promise<any> {
+    return JSON.parse(await readFile(join(tmpDir, 'layouts', 'Layout 1.json'), 'utf-8'));
+  }
+
+  it('nests, reorders and moves layers, and the file stays loadable', async () => {
+    expect(parseResult(await server.callTool('add_layer', { layoutName: 'Layout 1', layerName: 'HUD' })).success).toBe(true);
+    expect(parseResult(await server.callTool('add_layer', {
+      layoutName: 'Layout 1', layerName: 'HUD Back', parentLayer: 'HUD',
+    })).success).toBe(true);
+    expect(parseResult(await server.callTool('add_layer', {
+      layoutName: 'Layout 1', layerName: 'HUD Front', parentLayer: 'HUD',
+    })).success).toBe(true);
+
+    let layout = await layoutOnDisk();
+    expect(layout.layers.map((l: any) => l.name)).toEqual(['Main', 'HUD']);
+    expect(layout.layers[1].subLayers.map((l: any) => l.name)).toEqual(['HUD Back', 'HUD Front']);
+    // The sub-layer carries the full layer template Construct writes
+    expect(layout.layers[1].subLayers[0].sampling).toBe('auto');
+    expect(layout.layers[1].subLayers[0].drawOrder).toBe('z-order');
+
+    expect(parseResult(await server.callTool('reorder_layers', {
+      layoutName: 'Layout 1', layerNames: ['HUD Front', 'HUD Back'], parentLayer: 'HUD',
+    })).success).toBe(true);
+    expect(parseResult(await server.callTool('reorder_layers', {
+      layoutName: 'Layout 1', layerNames: ['HUD', 'Main'],
+    })).success).toBe(true);
+
+    layout = await layoutOnDisk();
+    expect(layout.layers.map((l: any) => l.name)).toEqual(['HUD', 'Main']);
+    expect(layout.layers[0].subLayers.map((l: any) => l.name)).toEqual(['HUD Front', 'HUD Back']);
+
+    // Move a sub-layer out to the top level, then back under another layer
+    expect(parseResult(await server.callTool('move_layer', {
+      layoutName: 'Layout 1', layerName: 'HUD Back', index: 0,
+    })).success).toBe(true);
+    layout = await layoutOnDisk();
+    expect(layout.layers.map((l: any) => l.name)).toEqual(['HUD Back', 'HUD', 'Main']);
+    expect(layout.layers[1].subLayers.map((l: any) => l.name)).toEqual(['HUD Front']);
+
+    expect(parseResult(await server.callTool('move_layer', {
+      layoutName: 'Layout 1', layerName: 'HUD Back', parentLayer: 'Main',
+    })).success).toBe(true);
+    layout = await layoutOnDisk();
+    expect(layout.layers.map((l: any) => l.name)).toEqual(['HUD', 'Main']);
+    expect(layout.layers[1].subLayers.map((l: any) => l.name)).toEqual(['HUD Back']);
+
+    // update_layer reaches a nested layer and update_layout sets view state
+    expect(parseResult(await server.callTool('update_layer', {
+      layoutName: 'Layout 1', layerName: 'HUD Back', sampling: 'nearest', backgroundColor: [0, 0, 0, 1], global: true,
+    })).success).toBe(true);
+    expect(parseResult(await server.callTool('update_layout', {
+      name: 'Layout 1', unboundedScrolling: true, projection: 'orthographic', vpX: 0.25, vpY: 0.75, sampling: 'bilinear',
+    })).success).toBe(true);
+
+    layout = await layoutOnDisk();
+    expect(layout.layers[1].subLayers[0].sampling).toBe('nearest');
+    expect(layout.layers[1].subLayers[0].backgroundColor).toEqual([0, 0, 0, 1]);
+    expect(layout.layers[1].subLayers[0].global).toBe(true);
+    expect(layout.unboundedScrolling).toBe(true);
+    expect(layout.projection).toBe('orthographic');
+    expect(layout.vpX).toBe(0.25);
+    expect(layout.vpY).toBe(0.75);
+    expect(layout.sampling).toBe('bilinear');
+
+    const integrity = await validateProjectIntegrity(reader);
+    expect(integrity.errors).toEqual([]);
+  });
+
+  it('refuses to move a layer into its own sub-layer and leaves the file untouched', async () => {
+    await server.callTool('add_layer', { layoutName: 'Layout 1', layerName: 'HUD' });
+    await server.callTool('add_layer', { layoutName: 'Layout 1', layerName: 'HUD Back', parentLayer: 'HUD' });
+    const before = await readFile(join(tmpDir, 'layouts', 'Layout 1.json'), 'utf-8');
+
+    const result = await server.callTool('move_layer', {
+      layoutName: 'Layout 1', layerName: 'HUD', parentLayer: 'HUD Back',
+    });
+    expect(result.isError).toBe(true);
+    expect(await readFile(join(tmpDir, 'layouts', 'Layout 1.json'), 'utf-8')).toBe(before);
+  });
+
+  it('writes both sides of an instance hierarchy and clears them again', async () => {
+    const added = parseResult(await server.callTool('add_instance_to_layout', {
+      layoutName: 'Layout 1', layerName: 'Main', objectType: 'Sprite', x: 10, y: 20,
+    }));
+    expect(added.success).toBe(true);
+    const childUid = added.generatedUid as number;
+    expect(typeof childUid).toBe('number');
+
+    expect(parseResult(await server.callTool('set_instance_parent', {
+      layoutName: 'Layout 1', childUid, parentUid: 0, flags: { o: true },
+    })).success).toBe(true);
+
+    let layout = await layoutOnDisk();
+    const instances = layout.layers[0].instances as any[];
+    const parent = instances.find(i => i.uid === 0);
+    const child = instances.find(i => i.uid === childUid);
+    expect(parent.sceneGraphData['parent-uid']).toBeNull();
+    expect(parent.sceneGraphData.children).toHaveLength(1);
+    expect(parent.sceneGraphData.children[0].uid).toBe(childUid);
+    // Both sides carry identical flags, as Construct writes them
+    expect(parent.sceneGraphData.children[0].flags).toEqual(child.sceneGraphData.flags);
+    expect(child.sceneGraphData.flags).toEqual({
+      x: true, y: true, z: true, w: true, h: true, d: true, a: true, o: true, v: false, sm: 'normal',
+    });
+    expect(child.sceneGraphData['parent-uid']).toBe(0);
+
+    expect(parseResult(await server.callTool('remove_instance_children', {
+      layoutName: 'Layout 1', parentUid: 0,
+    })).success).toBe(true);
+
+    layout = await layoutOnDisk();
+    const after = layout.layers[0].instances as any[];
+    expect(after.find(i => i.uid === 0).sceneGraphData.children).toBeUndefined();
+    expect(after.find(i => i.uid === childUid).sceneGraphData['parent-uid']).toBeNull();
+
+    const integrity = await validateProjectIntegrity(reader);
+    expect(integrity.errors).toEqual([]);
+  });
+});

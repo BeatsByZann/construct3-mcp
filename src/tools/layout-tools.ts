@@ -1,14 +1,20 @@
 /**
  * Layout tools: create_layout, add_instance_to_layout, delete_layout, update_layout,
- * add_layer, delete_layer, update_layer, delete_instance_from_layout, update_instance.
+ * add_layer, delete_layer, update_layer, reorder_layers, move_layer,
+ * delete_instance_from_layout, update_instance, set_instance_parent,
+ * remove_instance_children.
  */
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { WriteResult, Layout, Layer, Instance } from '../construct3/types.js';
+import type {
+  WriteResult, Layout, Layer, Instance, SceneGraphData, SceneGraphFlags, SceneGraphPreview,
+} from '../construct3/types.js';
 import { validateName, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord } from './shared.js';
 import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
-import { collectInstances } from '../construct3/layout-walk.js';
+import {
+  collectInstances, collectLayers, collectSubLayers, ensureSubLayers, findLayerLocation,
+} from '../construct3/layout-walk.js';
 import {
   DEFAULT_INSTANCE_PROPERTIES,
   createLayout,
@@ -44,6 +50,101 @@ async function definedBehaviorsAndEffects(
     for (const n of names(family.effectTypes)) effects.add(n);
   }
   return { behaviors, effects };
+}
+
+/**
+ * Sampling modes accepted for a layer or layout. Construct 3 r495 projects
+ * write 'auto' (inherit the project setting) at both levels; the other three
+ * are the project-level sampling options Construct documents.
+ */
+const SAMPLING_MODES = ['auto', 'nearest', 'bilinear', 'trilinear'] as const;
+
+/** Layout camera projection. Observed in r495 projects: 'perspective'. */
+const LAYOUT_PROJECTIONS = ['perspective', 'orthographic'] as const;
+
+/** Hierarchy transform-inheritance modes observed in r495: normal, wrap, all. */
+const SCENE_GRAPH_MODES = ['normal', 'wrap', 'all'] as const;
+
+/**
+ * Flag defaults for a newly attached child.
+ *
+ * Reading of the sample (C3-ACE, Construct 3 r495): every one of the 669
+ * `sceneGraphData.children[].flags` records carries exactly the keys
+ * `x, y, z, w, h, d, a, o, v, sm`. `x, y, z, w, h, d, a` are `true` in all
+ * 669; `o` and `v` are `false` in 598 of 669; `sm` is `"normal"` in 665 of
+ * 669 (`"wrap"` in the rest, `"all"` on some root instances). The majority
+ * shape is used as the fresh-child default, so opacity and visibility are NOT
+ * inherited unless the caller asks for them.
+ */
+const DEFAULT_SCENE_GRAPH_FLAGS: SceneGraphFlags = {
+  x: true, y: true, z: true, w: true, h: true, d: true, a: true,
+  o: false, v: false, sm: 'normal',
+};
+
+/** Editor scratch state Construct writes next to every `sceneGraphData`. */
+function createScenePreview(): SceneGraphPreview {
+  return {
+    transformX: 0, transformY: 0, transformZ: 0, transformW: 0,
+    transformH: 0, transformD: 0, transformA: 0,
+    transformSX: 0, transformSY: 0, transformSZ: 0, transformO: 0,
+    previewSceneGraph: false,
+  };
+}
+
+/** World instances of a layout keyed by UID (hierarchy applies to these only). */
+function worldInstancesByUid(layout: Layout): Map<number, Instance> {
+  const map = new Map<number, Instance>();
+  for (const inst of collectInstances(layout)) {
+    if (inst.world) map.set(inst.uid, inst);
+  }
+  return map;
+}
+
+/** The instance's hierarchy record, created in Construct's shape if absent. */
+function ensureSceneGraphData(inst: Instance): SceneGraphData {
+  if (!inst.sceneGraphData) {
+    inst.sceneGraphData = {
+      'parent-uid': null,
+      uid: inst.uid,
+      flags: { ...DEFAULT_SCENE_GRAPH_FLAGS },
+      preview: createScenePreview(),
+    };
+  }
+  return inst.sceneGraphData;
+}
+
+/**
+ * Detach a child from whatever parent currently lists it: clears the child's
+ * `parent-uid` and removes the matching `children` entry on the parent,
+ * dropping an emptied `children` array to match Construct's own shape.
+ * Returns the previous parent UID, or null when it had none.
+ */
+function unlinkFromParent(byUid: Map<number, Instance>, child: Instance): number | null {
+  const sg = child.sceneGraphData;
+  if (!sg) return null;
+  const parentUid = sg['parent-uid'];
+  if (parentUid === null || parentUid === undefined) return null;
+  const parentSg = byUid.get(parentUid)?.sceneGraphData;
+  if (parentSg && Array.isArray(parentSg.children)) {
+    const idx = parentSg.children.findIndex(c => c.uid === child.uid);
+    if (idx !== -1) parentSg.children.splice(idx, 1);
+    if (parentSg.children.length === 0) delete parentSg.children;
+  }
+  sg['parent-uid'] = null;
+  return parentUid;
+}
+
+/** True when walking `startUid` up its `parent-uid` chain reaches `ancestorUid`. */
+function hasAncestor(byUid: Map<number, Instance>, startUid: number, ancestorUid: number): boolean {
+  const seen = new Set<number>();
+  let current: number | null | undefined = startUid;
+  while (current !== null && current !== undefined) {
+    if (current === ancestorUid) return true;
+    if (seen.has(current)) return false; // pre-existing loop in the file
+    seen.add(current);
+    current = byUid.get(current)?.sceneGraphData?.['parent-uid'] ?? null;
+  }
+  return false;
 }
 
 export function registerLayoutTools({ server, reader, writer, idGen }: MutationToolDeps) {
@@ -369,18 +470,27 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'update_layout',
-    'Update layout properties (event sheet binding, dimensions)',
+    'Update layout properties (event sheet binding, dimensions, scrolling, sampling, projection, viewport anchor)',
     {
       name: z.string().max(200).describe('Layout name to update'),
       eventSheet: z.string().max(200).optional().describe('New event sheet binding (validated for existence)'),
       width: z.number().int().positive().optional().describe('New layout width in pixels'),
       height: z.number().int().positive().optional().describe('New layout height in pixels'),
+      unboundedScrolling: z.boolean().optional().describe('Allow scrolling beyond the layout bounds'),
+      sampling: z.enum(SAMPLING_MODES).optional().describe("Layout sampling; 'auto' inherits the project setting"),
+      projection: z.enum(LAYOUT_PROJECTIONS).optional().describe('Camera projection'),
+      vpX: z.number().optional().describe('Viewport anchor X, 0-1 (Construct writes 0.5)'),
+      vpY: z.number().optional().describe('Viewport anchor Y, 0-1 (Construct writes 0.5)'),
     },
     async (args) => {
       try {
         // Check at least one update is provided
-        if (args.eventSheet === undefined && args.width === undefined && args.height === undefined) {
-          return toolError('No updates provided. Specify at least one of: eventSheet, width, height.');
+        const hasLayoutUpdates = args.eventSheet !== undefined || args.width !== undefined ||
+          args.height !== undefined || args.unboundedScrolling !== undefined ||
+          args.sampling !== undefined || args.projection !== undefined ||
+          args.vpX !== undefined || args.vpY !== undefined;
+        if (!hasLayoutUpdates) {
+          return toolError('No updates provided. Specify at least one of: eventSheet, width, height, unboundedScrolling, sampling, projection, vpX, vpY.');
         }
 
         // Read existing layout
@@ -402,9 +512,14 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           layout.eventSheet = args.eventSheet;
         }
 
-        // Apply dimension updates
+        // Apply dimension and view updates
         if (args.width !== undefined) layout.width = args.width;
         if (args.height !== undefined) layout.height = args.height;
+        if (args.unboundedScrolling !== undefined) layout.unboundedScrolling = args.unboundedScrolling;
+        if (args.sampling !== undefined) layout.sampling = args.sampling;
+        if (args.projection !== undefined) layout.projection = args.projection;
+        if (args.vpX !== undefined) layout.vpX = args.vpX;
+        if (args.vpY !== undefined) layout.vpY = args.vpY;
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('layouts', args.name);
@@ -430,11 +545,12 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'add_layer',
-    'Add a new layer to an existing layout',
+    'Add a new layer to an existing layout, optionally as a sub-layer of another layer',
     {
       layoutName: z.string().max(200).describe('Layout to add the layer to'),
-      layerName: z.string().max(200).describe('New layer name (must be unique within the layout)'),
-      index: z.number().int().min(0).optional().describe('Insert at this position (0 = bottom, default: append to top)'),
+      layerName: z.string().max(200).describe('New layer name (must be unique across every layer of the layout, sub-layers included)'),
+      parentLayer: z.string().max(200).optional().describe("Create the layer inside this layer's subLayers (default: top level)"),
+      index: z.number().int().min(0).optional().describe('Insert at this position among its siblings (0 = bottom, default: append to top)'),
       isInitiallyVisible: z.boolean().optional().default(true).describe('Layer starts visible (default: true)'),
       isTransparent: z.boolean().optional().default(true).describe('Layer is transparent (default: true)'),
       parallaxX: z.number().optional().default(1).describe('Horizontal parallax rate (default: 1)'),
@@ -450,9 +566,20 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        // Check for duplicate layer name within this layout
-        if (layout.layers.some(l => l.name === args.layerName)) {
+        // Layer names must be unique across the whole layout, sub-layers included
+        if (collectLayers(layout).some(l => l.name === args.layerName)) {
           return toolError(`Layer "${args.layerName}" already exists in layout "${args.layoutName}".`);
+        }
+
+        // Resolve the sibling list: a parent layer's subLayers, or the top level
+        let siblings: Layer[] = layout.layers;
+        if (args.parentLayer !== undefined) {
+          const parentLocation = findLayerLocation(layout, args.parentLayer);
+          if (!parentLocation) {
+            const available = collectLayers(layout).map(l => l.name).join(', ');
+            return toolError(`Parent layer "${args.parentLayer}" not found in layout "${args.layoutName}". Available layers: ${available}`);
+          }
+          siblings = ensureSubLayers(parentLocation.layer);
         }
 
         const layerSid = await idGen.generateSid(reader);
@@ -466,9 +593,9 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
         };
 
         if (args.index !== undefined) {
-          layout.layers.splice(args.index, 0, newLayer);
+          siblings.splice(args.index, 0, newLayer);
         } else {
-          layout.layers.push(newLayer);
+          siblings.push(newLayer);
         }
 
         const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
@@ -559,10 +686,10 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'update_layer',
-    'Update properties of an existing layer (name, visibility, parallax, blend mode, etc.)',
+    'Update properties of an existing layer, at the top level or nested in another layer (name, visibility, parallax, blend mode, color, sampling, render settings)',
     {
       layoutName: z.string().max(200).describe('Layout name'),
-      layerName: z.string().max(200).describe('Layer name to update'),
+      layerName: z.string().max(200).describe('Layer name to update (searched at every nesting level)'),
       newName: z.string().max(200).optional().describe('Rename the layer'),
       isInitiallyVisible: z.boolean().optional().describe('Change initial visibility'),
       isInitiallyInteractive: z.boolean().optional().describe('Change initial interactivity'),
@@ -572,16 +699,29 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       blendMode: z.enum(['normal', 'additive', 'xor', 'copy', 'destination-over', 'source-in', 'destination-in', 'source-out', 'destination-out', 'source-atop', 'destination-atop']).optional().describe('Blend mode'),
       scaleRate: z.number().optional().describe('Scale rate (parallax zoom)'),
       zElevation: z.number().optional().describe('Z elevation for 3D layering'),
+      color: z.array(z.number().min(0).max(1)).length(4).optional().describe('Layer tint as RGBA [r,g,b,a], values 0-1'),
+      backgroundColor: z.array(z.number().min(0).max(1)).length(4).optional().describe('Background color as RGBA [r,g,b,a], values 0-1 (used when the layer is not transparent)'),
+      global: z.boolean().optional().describe('Make the layer global (shared across layouts)'),
+      isHTMLElementsLayer: z.boolean().optional().describe('Mark the layer as the HTML elements layer'),
+      sampling: z.enum(SAMPLING_MODES).optional().describe('Layer sampling; "auto" inherits the project setting'),
+      renderingMode: z.string().max(50).optional().describe('Rendering mode; Construct 3 r495 projects write "3d"'),
+      forceOwnTexture: z.boolean().optional().describe('Render the layer to its own texture'),
+      useRenderCells: z.boolean().optional().describe('Use render cells for culling'),
+      drawOrder: z.string().max(50).optional().describe('Draw order; Construct 3 r495 projects write "z-order"'),
     },
     async (args) => {
       try {
         const hasUpdates = args.newName !== undefined || args.isInitiallyVisible !== undefined ||
           args.isInitiallyInteractive !== undefined || args.isTransparent !== undefined ||
           args.parallaxX !== undefined || args.parallaxY !== undefined ||
-          args.blendMode !== undefined || args.scaleRate !== undefined || args.zElevation !== undefined;
+          args.blendMode !== undefined || args.scaleRate !== undefined || args.zElevation !== undefined ||
+          args.color !== undefined || args.backgroundColor !== undefined || args.global !== undefined ||
+          args.isHTMLElementsLayer !== undefined || args.sampling !== undefined ||
+          args.renderingMode !== undefined || args.forceOwnTexture !== undefined ||
+          args.useRenderCells !== undefined || args.drawOrder !== undefined;
 
         if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: newName, isInitiallyVisible, isInitiallyInteractive, isTransparent, parallaxX, parallaxY, blendMode, scaleRate, zElevation.');
+          return toolError('No updates provided. Specify at least one of: newName, isInitiallyVisible, isInitiallyInteractive, isTransparent, parallaxX, parallaxY, blendMode, scaleRate, zElevation, color, backgroundColor, global, isHTMLElementsLayer, sampling, renderingMode, forceOwnTexture, useRenderCells, drawOrder.');
         }
 
         let layout: Layout;
@@ -591,15 +731,17 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        const layer = layout.layers.find(l => l.name === args.layerName);
+        // Layers nest through subLayers; search every level.
+        const allLayers = collectLayers(layout);
+        const layer = allLayers.find(l => l.name === args.layerName);
         if (!layer) {
-          const available = layout.layers.map(l => l.name).join(', ');
+          const available = allLayers.map(l => l.name).join(', ');
           return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Available layers: ${available}`);
         }
 
-        // Check new name uniqueness
+        // Check new name uniqueness across every layer, sub-layers included
         if (args.newName !== undefined && args.newName !== args.layerName) {
-          if (layout.layers.some(l => l.name === args.newName)) {
+          if (allLayers.some(l => l.name === args.newName)) {
             return toolError(`Layer "${args.newName}" already exists in layout "${args.layoutName}".`);
           }
           layer.name = args.newName;
@@ -613,6 +755,15 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
         if (args.blendMode !== undefined) layer.blendMode = args.blendMode;
         if (args.scaleRate !== undefined) layer.scaleRate = args.scaleRate;
         if (args.zElevation !== undefined) layer.zElevation = args.zElevation;
+        if (args.color !== undefined) layer.color = args.color;
+        if (args.backgroundColor !== undefined) layer.backgroundColor = args.backgroundColor;
+        if (args.global !== undefined) layer.global = args.global;
+        if (args.isHTMLElementsLayer !== undefined) layer.isHTMLElementsLayer = args.isHTMLElementsLayer;
+        if (args.sampling !== undefined) layer.sampling = args.sampling;
+        if (args.renderingMode !== undefined) layer.renderingMode = args.renderingMode;
+        if (args.forceOwnTexture !== undefined) layer.forceOwnTexture = args.forceOwnTexture;
+        if (args.useRenderCells !== undefined) layer.useRenderCells = args.useRenderCells;
+        if (args.drawOrder !== undefined) layer.drawOrder = args.drawOrder;
 
         const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
         const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
@@ -628,6 +779,157 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       } catch (error) {
         console.error('[update_layer] failed:', error);
         return toolError(`Error updating layer: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── reorder_layers ───────────────────────────────────────
+
+  server.tool(
+    'reorder_layers',
+    'Reorder one nesting level of a layout: pass every sibling name in the new bottom-to-top order',
+    {
+      layoutName: z.string().max(200).describe('Layout name'),
+      layerNames: z.array(z.string().max(200)).min(1).max(500).describe('Every layer at that level, in the new order (index 0 = bottom)'),
+      parentLayer: z.string().max(200).optional().describe('Reorder this layer\'s sub-layers instead of the top-level layers'),
+    },
+    async (args) => {
+      try {
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        let siblings: Layer[] = layout.layers;
+        let scope = `layout "${args.layoutName}"`;
+        if (args.parentLayer !== undefined) {
+          const parentLocation = findLayerLocation(layout, args.parentLayer);
+          if (!parentLocation) {
+            const available = collectLayers(layout).map(l => l.name).join(', ');
+            return toolError(`Parent layer "${args.parentLayer}" not found in layout "${args.layoutName}". Available layers: ${available}`);
+          }
+          siblings = ensureSubLayers(parentLocation.layer);
+          scope = `the sub-layers of "${args.parentLayer}"`;
+        }
+
+        // The new order must be a full permutation of that level: a partial
+        // list would silently drop or duplicate layers on write.
+        const current = siblings.map(l => l.name);
+        const duplicates = args.layerNames.filter((n, i) => args.layerNames.indexOf(n) !== i);
+        if (duplicates.length > 0) {
+          return toolError(`Duplicate layer name(s) in layerNames: ${[...new Set(duplicates)].join(', ')}.`);
+        }
+        const unknown = args.layerNames.filter(n => !current.includes(n));
+        const missing = current.filter(n => !args.layerNames.includes(n));
+        if (unknown.length > 0 || missing.length > 0) {
+          const parts: string[] = [];
+          if (unknown.length > 0) parts.push(`not at this level: ${unknown.join(', ')}`);
+          if (missing.length > 0) parts.push(`missing: ${missing.join(', ')}`);
+          return toolError(
+            `layerNames must list every layer of ${scope} exactly once (${parts.join('; ')}). ` +
+            `Current order: ${current.join(', ')}.`
+          );
+        }
+
+        const reordered = args.layerNames.map(name => siblings.find(l => l.name === name)!);
+        siblings.splice(0, siblings.length, ...reordered);
+
+        const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
+        const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.layoutName,
+          category: 'layout',
+          action: 'updated',
+          backupFile: backupPath,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[reorder_layers] failed:', error);
+        return toolError(`Error reordering layers: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── move_layer ───────────────────────────────────────────
+
+  server.tool(
+    'move_layer',
+    'Move a layer to another nesting level of the same layout (into a layer\'s sub-layers, or back to the top level)',
+    {
+      layoutName: z.string().max(200).describe('Layout name'),
+      layerName: z.string().max(200).describe('Layer to move (searched at every nesting level)'),
+      parentLayer: z.string().max(200).nullable().optional().describe('Destination parent layer; null or omitted moves the layer to the top level'),
+      index: z.number().int().min(0).optional().describe('Position among the destination siblings after removal (default: append to top)'),
+    },
+    async (args) => {
+      try {
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        const location = findLayerLocation(layout, args.layerName);
+        if (!location) {
+          const available = collectLayers(layout).map(l => l.name).join(', ');
+          return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Available layers: ${available}`);
+        }
+
+        const parentName = args.parentLayer ?? undefined;
+
+        if (parentName === args.layerName) {
+          return toolError(`Cannot move layer "${args.layerName}" into itself.`);
+        }
+
+        let target: Layer[];
+        let destination: string;
+        if (parentName === undefined) {
+          target = layout.layers;
+          destination = 'the top level';
+        } else {
+          const parentLocation = findLayerLocation(layout, parentName);
+          if (!parentLocation) {
+            const available = collectLayers(layout).map(l => l.name).join(', ');
+            return toolError(`Parent layer "${parentName}" not found in layout "${args.layoutName}". Available layers: ${available}`);
+          }
+          // A layer cannot become a child of one of its own descendants: that
+          // would detach the whole branch from the layout.
+          if (collectSubLayers(location.layer).some(l => l.name === parentName)) {
+            return toolError(`Cannot move layer "${args.layerName}" into "${parentName}", which is one of its own sub-layers.`);
+          }
+          target = ensureSubLayers(parentLocation.layer);
+          destination = `the sub-layers of "${parentName}"`;
+        }
+
+        // A layout must keep at least one top-level layer.
+        if (location.parent === undefined && parentName !== undefined && layout.layers.length <= 1) {
+          return toolError(`Cannot move layer "${args.layerName}": it is the only top-level layer in layout "${args.layoutName}", and a layout must have at least one.`);
+        }
+
+        location.siblings.splice(location.index, 1);
+        const insertAt = args.index === undefined ? target.length : Math.min(args.index, target.length);
+        target.splice(insertAt, 0, location.layer);
+
+        const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
+        const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.layoutName,
+          category: 'layout',
+          action: 'updated',
+          backupFile: backupPath,
+          warnings: [`Moved layer "${args.layerName}" to ${destination} at index ${insertAt}.`],
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[move_layer] failed:', error);
+        return toolError(`Error moving layer: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
@@ -839,6 +1141,198 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       } catch (error) {
         console.error('[update_instance] failed:', error);
         return toolError(`Error updating instance: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── set_instance_parent ─────────────────────────────────
+
+  server.tool(
+    'set_instance_parent',
+    'Attach a world instance to a hierarchy parent in the same layout, or detach it by passing parentUid: null. Both sides of the link are maintained.',
+    {
+      layoutName: z.string().max(200).describe('Layout name'),
+      childUid: z.number().int().describe('UID of the instance that becomes the child'),
+      parentUid: z.number().int().nullable().describe('UID of the parent instance, or null to detach the child from its current parent'),
+      flags: z.object({
+        x: z.boolean().optional().describe('Inherit X position'),
+        y: z.boolean().optional().describe('Inherit Y position'),
+        z: z.boolean().optional().describe('Inherit Z elevation'),
+        w: z.boolean().optional().describe('Inherit width'),
+        h: z.boolean().optional().describe('Inherit height'),
+        d: z.boolean().optional().describe('Inherit depth'),
+        a: z.boolean().optional().describe('Inherit angle'),
+        o: z.boolean().optional().describe('Inherit opacity (Construct default: false)'),
+        v: z.boolean().optional().describe('Inherit visibility (Construct default: false)'),
+        sm: z.enum(SCENE_GRAPH_MODES).optional().describe('Transform mode written by Construct (default: normal)'),
+      }).strict().optional().describe('Inheritance flags merged over the defaults; unknown keys are rejected'),
+    },
+    async (args) => {
+      try {
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        const byUid = worldInstancesByUid(layout);
+
+        const child = byUid.get(args.childUid);
+        if (!child) {
+          return toolError(`World instance with UID ${args.childUid} not found in layout "${args.layoutName}". Hierarchies only apply to instances placed on a layer; use get_layout_details to see all instance UIDs.`);
+        }
+
+        // Detach
+        if (args.parentUid === null) {
+          const sg = child.sceneGraphData;
+          const previousParent = sg ? unlinkFromParent(byUid, child) : null;
+          if (args.flags !== undefined) {
+            const target = ensureSceneGraphData(child);
+            target.flags = { ...target.flags, ...args.flags };
+          }
+          if (previousParent === null && !sg) {
+            return toolResult({
+              success: true,
+              entity: args.layoutName,
+              category: 'layout',
+              action: 'unchanged',
+              message: `Instance ${args.childUid} has no hierarchy parent; nothing to detach.`,
+            });
+          }
+
+          const detachSubfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
+          const detachBackup = await writer.writeEntityFile('layouts', args.layoutName, layout, detachSubfolder);
+          const detachResult: WriteResult = {
+            success: true,
+            entity: args.layoutName,
+            category: 'layout',
+            action: 'updated',
+            backupFile: detachBackup,
+            warnings: previousParent !== null
+              ? [`Detached instance ${args.childUid} from parent ${previousParent}.`]
+              : undefined,
+          };
+          return toolResult(detachResult);
+        }
+
+        if (args.parentUid === args.childUid) {
+          return toolError(`Instance ${args.childUid} cannot be its own hierarchy parent.`);
+        }
+
+        const parent = byUid.get(args.parentUid);
+        if (!parent) {
+          return toolError(`World instance with UID ${args.parentUid} not found in layout "${args.layoutName}". A hierarchy parent must be a world instance in the same layout.`);
+        }
+
+        // A parent that already descends from the child would close a loop the
+        // editor cannot resolve.
+        if (hasAncestor(byUid, args.parentUid, args.childUid)) {
+          return toolError(`Cannot parent instance ${args.childUid} to ${args.parentUid}: ${args.parentUid} is already a descendant of ${args.childUid}, which would create a hierarchy cycle.`);
+        }
+
+        const childSg = ensureSceneGraphData(child);
+        unlinkFromParent(byUid, child);
+
+        const flags: SceneGraphFlags = { ...DEFAULT_SCENE_GRAPH_FLAGS, ...(args.flags ?? {}) };
+        childSg['parent-uid'] = args.parentUid;
+        childSg.flags = flags;
+
+        const parentSg = ensureSceneGraphData(parent);
+        if (!Array.isArray(parentSg.children)) parentSg.children = [];
+        const existingIdx = parentSg.children.findIndex(c => c.uid === args.childUid);
+        // Construct stores the same flag values on both sides of the link.
+        const entry = { uid: args.childUid, flags: { ...flags } };
+        if (existingIdx === -1) {
+          parentSg.children.push(entry);
+        } else {
+          parentSg.children[existingIdx] = entry;
+        }
+
+        const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
+        const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.layoutName,
+          category: 'layout',
+          action: 'updated',
+          backupFile: backupPath,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[set_instance_parent] failed:', error);
+        return toolError(`Error setting instance parent: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── remove_instance_children ────────────────────────────
+
+  server.tool(
+    'remove_instance_children',
+    'Detach every hierarchy child of a world instance, clearing both the parent\'s children list and each child\'s parent-uid',
+    {
+      layoutName: z.string().max(200).describe('Layout name'),
+      parentUid: z.number().int().describe('UID of the parent instance whose children are detached'),
+    },
+    async (args) => {
+      try {
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        const byUid = worldInstancesByUid(layout);
+        const parent = byUid.get(args.parentUid);
+        if (!parent) {
+          return toolError(`World instance with UID ${args.parentUid} not found in layout "${args.layoutName}". Hierarchies only apply to instances placed on a layer; use get_layout_details to see all instance UIDs.`);
+        }
+
+        const parentSg = parent.sceneGraphData;
+        const children = parentSg && Array.isArray(parentSg.children) ? parentSg.children : [];
+        if (!parentSg || children.length === 0) {
+          return toolResult({
+            success: true,
+            entity: args.layoutName,
+            category: 'layout',
+            action: 'unchanged',
+            message: `Instance ${args.parentUid} has no hierarchy children.`,
+            detached: 0,
+          });
+        }
+
+        const orphanedUids: number[] = [];
+        for (const entry of [...children]) {
+          const childSg = byUid.get(entry.uid)?.sceneGraphData;
+          if (childSg) {
+            childSg['parent-uid'] = null;
+          } else {
+            orphanedUids.push(entry.uid);
+          }
+        }
+        const detached = children.length;
+        delete parentSg.children;
+
+        const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
+        const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.layoutName,
+          category: 'layout',
+          action: 'updated',
+          backupFile: backupPath,
+          warnings: orphanedUids.length > 0
+            ? [`Removed ${detached} child link(s) from instance ${args.parentUid}; UID(s) ${orphanedUids.join(', ')} were listed as children but no matching world instance exists in this layout.`]
+            : [`Detached ${detached} child instance(s) from instance ${args.parentUid}.`],
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[remove_instance_children] failed:', error);
+        return toolError(`Error removing instance children: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );

@@ -144,6 +144,8 @@ export interface ProjectProperties {
   gpuPreference: string;
   scriptsType: string;
   framerateMode: string;
+  /** Present when framerateMode is a fixed rate; absent in some projects. */
+  fixedFramerate?: number;
   sampling: string;
   downscaling: string;
   renderingMode: string;
@@ -396,6 +398,7 @@ export interface Layout {
   width?: number;
   height?: number;
   unboundedScrolling?: boolean;
+  sampling?: string;
   vpX?: number;
   vpY?: number;
   projection?: string;
@@ -410,7 +413,7 @@ export interface Layer {
   sid: number;
   instances: Instance[];
   overriden?: number;
-  subLayers?: unknown[];
+  subLayers?: Layer[];
   effectTypes?: Array<Record<string, unknown>>;
   isInitiallyVisible?: boolean;
   isInitiallyInteractive?: boolean;
@@ -418,6 +421,7 @@ export interface Layer {
   color?: number[];
   backgroundColor?: number[];
   isTransparent?: boolean;
+  sampling?: string;
   parallaxX?: number;
   parallaxY?: number;
   scaleRate?: number;
@@ -428,6 +432,62 @@ export interface Layer {
   blendMode?: string;
   zElevation?: number;
   global?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Hierarchy inheritance flags a child applies to its parent's transform.
+ * Key set observed in Construct 3 r495 project files: x, y, z, w, h, d, a
+ * (booleans), o and v (booleans), and sm (a string mode).
+ */
+export interface SceneGraphFlags {
+  x: boolean;
+  y: boolean;
+  z: boolean;
+  w: boolean;
+  h: boolean;
+  d: boolean;
+  a: boolean;
+  o: boolean;
+  v: boolean;
+  sm: string;
+  [key: string]: unknown;
+}
+
+/** A child entry on a parent instance's `sceneGraphData.children`. */
+export interface SceneGraphChild {
+  uid: number;
+  flags: SceneGraphFlags;
+}
+
+/** Editor scratch state Construct writes alongside every `sceneGraphData`. */
+export interface SceneGraphPreview {
+  transformX: number;
+  transformY: number;
+  transformZ: number;
+  transformW: number;
+  transformH: number;
+  transformD: number;
+  transformA: number;
+  transformSX: number;
+  transformSY: number;
+  transformSZ: number;
+  transformO: number;
+  previewSceneGraph: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Hierarchy state on a world instance. Both sides are stored: the child keeps
+ * `parent-uid` plus its own `flags`, and the parent keeps a `children` entry
+ * carrying the same flag values. `children` is absent when there are none.
+ */
+export interface SceneGraphData {
+  'parent-uid': number | null;
+  uid: number;
+  children?: SceneGraphChild[];
+  flags: SceneGraphFlags;
+  preview?: SceneGraphPreview;
   [key: string]: unknown;
 }
 
@@ -442,6 +502,7 @@ export interface Instance {
   showing?: boolean;
   locked?: boolean;
   instanceFolderItem?: { sid: number; expanded?: boolean };
+  sceneGraphData?: SceneGraphData;
   world?: {
     x: number;
     y: number;

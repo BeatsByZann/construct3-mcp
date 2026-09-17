@@ -70,6 +70,116 @@ describe('update_project_metadata', () => {
   });
 });
 
+// ─── update_project_properties ────────────────────────────
+
+describe('update_project_properties', () => {
+  function withLayout() {
+    return setup({ layouts: new Map([['Level 1', { name: 'Level 1', layers: [], sid: 1 }]]) });
+  }
+
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('update_project_properties')).toBe(true);
+  });
+
+  it('merges allowlisted properties keys', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', {
+      properties: { fullscreenMode: 'letterbox-scale', sampling: 'nearest', zFar: 5000 },
+    });
+    expect(parseResult(result).success).toBe(true);
+    const updates = writer.callsFor('updateProjectProperties')[0].args[0] as Record<string, unknown>;
+    expect(updates).toEqual({ fullscreenMode: 'letterbox-scale', sampling: 'nearest', zFar: 5000 });
+  });
+
+  it('rejects an unknown properties key and lists the valid ones', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', {
+      properties: { notAProperty: 1 },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('notAProperty');
+    expect(result.content[0].text).toContain('fullscreenMode');
+    expect(result.content[0].text).toContain('uidAllocationMode');
+    expect(writer.callsFor('updateProjectProperties')).toHaveLength(0);
+  });
+
+  it('rejects a top-level key smuggled through properties', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', {
+      properties: { name: 'Renamed', firstLayout: 'Level 1' },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('update_project_metadata');
+    expect(writer.callsFor('updateProjectProperties')).toHaveLength(0);
+  });
+
+  it('accepts fixedFramerate, which real r495 projects carry', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', {
+      properties: { framerateMode: 'fixed', fixedFramerate: 30 },
+    });
+    expect(parseResult(result).success).toBe(true);
+    const updates = writer.callsFor('updateProjectProperties')[0].args[0] as Record<string, unknown>;
+    expect(updates.fixedFramerate).toBe(30);
+  });
+
+  it('sets the top-level keys', async () => {
+    const { server, writer } = withLayout();
+    const result = await server.callTool('update_project_properties', {
+      firstLayout: 'Level 1',
+      viewportWidth: 960,
+      viewportHeight: 540,
+      useWorker: 'dom',
+      functionsName: 'Fn',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const updates = writer.callsFor('updateProjectProperties')[0].args[0] as Record<string, unknown>;
+    expect(updates).toEqual({
+      firstLayout: 'Level 1',
+      viewportWidth: 960,
+      viewportHeight: 540,
+      useWorker: 'dom',
+      functionsName: 'Fn',
+    });
+  });
+
+  it('rejects a firstLayout that does not exist', async () => {
+    const { server, writer } = withLayout();
+    const result = await server.callTool('update_project_properties', { firstLayout: 'Ghost' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Layout "Ghost" not found');
+    expect(writer.callsFor('updateProjectProperties')).toHaveLength(0);
+  });
+
+  it('rejects a functionsName that is not an identifier', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', { functionsName: 'my funcs!' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('identifier');
+    expect(writer.callsFor('updateProjectProperties')).toHaveLength(0);
+  });
+
+  it('rejects a non-positive viewport size', async () => {
+    const { server } = setup();
+    await expect(server.callTool('update_project_properties', { viewportWidth: 0 })).rejects.toThrow();
+  });
+
+  it('errors with no updates', async () => {
+    const { server } = setup();
+    const result = await server.callTool('update_project_properties', {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates');
+  });
+
+  it('errors on an empty properties object', async () => {
+    const { server } = setup();
+    const result = await server.callTool('update_project_properties', { properties: {} });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates');
+  });
+});
+
 // ─── list_addons ──────────────────────────────────────────
 
 describe('list_addons', () => {

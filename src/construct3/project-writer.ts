@@ -19,7 +19,9 @@ import { generatePlaceholderPng, getImageFileName } from './png-generator.js';
 const MAX_WRITE_SIZE = 5 * 1024 * 1024;
 
 /** Keys allowed at the project root level (outside properties) */
-const ALLOWED_TOP_LEVEL = new Set(['name']);
+const ALLOWED_TOP_LEVEL = new Set([
+  'name', 'firstLayout', 'viewportWidth', 'viewportHeight', 'useWorker', 'functionsName',
+]);
 
 /**
  * Compile-time enforced map of ProjectProperties keys.
@@ -32,13 +34,19 @@ const PROPERTIES_KEY_MAP: Record<keyof ProjectProperties, true> = {
   fullscreenMode: true, fullscreenQuality: true, viewportFit: true,
   backgroundColor: true, splashColor: true, useThemeColor: true,
   themeColor: true, orientations: true, webgpu: true, multitexturing: true, gpuPreference: true,
-  scriptsType: true, framerateMode: true, sampling: true, downscaling: true,
+  scriptsType: true, framerateMode: true, fixedFramerate: true, sampling: true, downscaling: true,
   renderingMode: true, anisotropicFiltering: true, zNear: true, zFar: true,
   maxSpriteSheetSize: true, loaderStyle: true, preloadSounds: true,
   cordovaiOSScheme: true, cordovaAndroidScheme: true,
   exportFileStructure: true, uidAllocationMode: true,
 };
 const ALLOWED_PROPERTIES = new Set(Object.keys(PROPERTIES_KEY_MAP));
+
+/** Keys `updateProjectProperties` writes into `project.properties`, sorted. */
+export const PROJECT_PROPERTY_KEYS: readonly string[] = [...ALLOWED_PROPERTIES].sort();
+
+/** Keys `updateProjectProperties` writes at the top level of the .c3proj, sorted. */
+export const PROJECT_TOP_LEVEL_KEYS: readonly string[] = [...ALLOWED_TOP_LEVEL].sort();
 
 export class Construct3ProjectWriter {
   private projectLock: Promise<void> = Promise.resolve();
