@@ -358,6 +358,16 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
       expect(listed.eases.map((e: Json) => [e.name, e.usedBy])).toEqual([['Swoop', []]]);
     });
 
+    it('gives a project without a timelines container the nameless eases folder', async () => {
+      const projectPath = join(tmpDir, 'project.c3proj');
+      const project = await projectJson();
+      delete project.timelines;
+      await writeFile(projectPath, JSON.stringify(project, null, '	'), 'utf-8');
+      await boot();
+      await ok('create_timeline', { name: 'Move' });
+      expect((await projectJson()).timelines).toEqual({ items: ['Move'], subfolders: [{ items: [], subfolders: [] }] });
+    });
+
     it('refuses bad ease names and points', async () => {
       await fails('create_ease', { name: 'easeinoutsine', points: POINTS }, "Construct's own ease names");
       await fails('create_ease', { name: 'Bad', points: [{ x: 0, y: 0 }, { x: 0.5, y: 1 }] }, 'last ease point');
