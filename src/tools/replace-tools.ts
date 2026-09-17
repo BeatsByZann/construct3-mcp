@@ -11,16 +11,21 @@
  * behavior (`behaviorType`), the instance variable (`instance-variable`
  * parameter, 315 sample uses), the effect (`effect` parameter holding a
  * quoted name, 15 sample uses) and every `Source.Member` expression member
- * that is a behavior or instance variable. Otherwise the whole event is left
- * alone and reported, so no event ends up half swapped. Layouts are not
- * touched: Replace object is an event-sheet command.
+ * that is a behavior or instance variable. The unit of a swap is a branch (an
+ * event with its sub-events, which share its picked instances): when any event
+ * in it cannot be swapped, the whole branch is left alone and reported, so no
+ * branch ends up half swapped. Layouts are not touched: Replace object is an
+ * event-sheet command.
  *
  * replace_in_expressions is a bulk find-and-replace over condition and action
  * parameter values (the expression text shown in the event sheet), scoped to
- * chosen sheets and parameter keys, with dryRun and per-sheet counts.
+ * chosen sheets and parameter keys, with dryRun and per-sheet counts. Name
+ * and combo parameters are protected by default, zero-length matches are
+ * refused, and matching runs under a time limit.
  */
 
 import { z } from 'zod';
+import vm from 'vm';
 import type { MutationToolDeps } from './shared.js';
 import type { EventSheet, C3Event } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError } from './shared.js';
@@ -31,6 +36,7 @@ import {
   countByKind,
   groupByFile,
   isExpressionIdentifier,
+  OBJECT_NAME_PARAM_KEYS,
   type RefSite,
 } from '../construct3/references.js';
 
@@ -235,9 +241,15 @@ interface SkippedEvent {
 }
 
 /**
- * Scan (and optionally swap) one sheet event by event. Each event is handed
- * to the shared rename scanner on its own (children detached), so the paths
- * and kinds match the rename tools exactly.
+ * Scan (and optionally swap) one sheet. The unit of a swap is a branch: an
+ * event that references the replaced object together with all its
+ * sub-events, because sub-events inherit the parent's picked instances.
+ * Swapping a parent while a sub-event keeps the old object (or the reverse)
+ * would change what the sub-event picks, so when any event in the branch
+ * cannot be swapped, the whole branch is left alone and reported. An event
+ * that does not reference the object passes each sub-event on as its own
+ * branch. Each event is handed to the shared rename scanner on its own
+ * (children detached), so paths and kinds match the rename tools.
  */
 function replaceInSheet(
   file: string,
@@ -251,6 +263,37 @@ function replaceInSheet(
 ): { sites: RefSite[]; skipped: SkippedEvent[] } {
   const sites: RefSite[] = [];
   const skipped: SkippedEvent[] = [];
+  const isOwnedDefinition = (event: Json) => event.eventType === 'custom-ace-block' && event.objectClass === from;
+  const scanOne = (event: Json, path: string) => {
+    const single = { name: sheet.name, events: [{ ...event, children: undefined }] } as unknown as EventSheet;
+    const found = collectObjectNameRefsInSheet(file, single, from, to, false)
+      .map(site => ({ ...site, path: path + site.path.slice('events[0]'.length) }));
+    return { single, found };
+  };
+
+  interface Branch { sites: RefSite[]; singles: EventSheet[]; reasons: string[] }
+  const collectBranch = (event: Json, path: string, rootPath: string, depth: number, branch: Branch) => {
+    const where = path === rootPath ? '' : `sub-event ${path}: `;
+    if (isOwnedDefinition(event)) {
+      branch.reasons.push(`${where}custom action definition owned by ${from}`);
+      return;
+    }
+    const { single, found } = scanOne(event, path);
+    if (found.length > 0) {
+      branch.sites.push(...found);
+      branch.singles.push(single);
+      for (const reason of incompatibilities(event, from, source, target, to, warnings)) {
+        branch.reasons.push(where + reason);
+      }
+    }
+    if (!Array.isArray(event.children) || depth > MAX_DEPTH) return;
+    event.children.forEach((child, i) => {
+      if (child && typeof child === 'object') {
+        collectBranch(child as Json, `${path}.children[${i}]`, rootPath, depth + 1, branch);
+      }
+    });
+  };
+
   const walk = (list: unknown, prefix: string, depth: number) => {
     if (!Array.isArray(list) || depth > MAX_DEPTH) return;
     list.forEach((raw, i) => {
@@ -258,29 +301,130 @@ function replaceInSheet(
       const event = raw as Json;
       const path = `${prefix}[${i}]`;
       const eventSid = typeof event.sid === 'number' ? event.sid : undefined;
-      if (event.eventType === 'custom-ace-block' && event.objectClass === from) {
+      if (isOwnedDefinition(event)) {
         skipped.push({
           file, path, eventSid, references: 1,
           reasons: ['custom action definition: its owner and the events inside it are not replaced'],
         });
         return;
       }
-      const single = { name: sheet.name, events: [{ ...event, children: undefined }] } as unknown as EventSheet;
-      const found = collectObjectNameRefsInSheet(file, single, from, to, false);
-      if (found.length > 0) {
-        const reasons = incompatibilities(event, from, source, target, to, warnings);
-        if (reasons.length > 0) {
-          skipped.push({ file, path, eventSid, references: found.length, reasons: [...new Set(reasons)] });
-        } else {
-          for (const site of found) sites.push({ ...site, path: path + site.path.slice('events[0]'.length) });
-          if (apply) collectObjectNameRefsInSheet(file, single, from, to, true);
-        }
+      if (scanOne(event, path).found.length === 0) {
+        walk(event.children, `${path}.children`, depth + 1);
+        return;
       }
-      walk(event.children, `${path}.children`, depth + 1);
+      const branch: Branch = { sites: [], singles: [], reasons: [] };
+      collectBranch(event, path, path, depth, branch);
+      if (branch.reasons.length > 0) {
+        skipped.push({ file, path, eventSid, references: branch.sites.length, reasons: [...new Set(branch.reasons)] });
+        return;
+      }
+      sites.push(...branch.sites);
+      if (apply) {
+        for (const single of branch.singles) collectObjectNameRefsInSheet(file, single, from, to, true);
+      }
     });
   };
   walk(sheet.events, 'events', 0);
   return { sites, skipped };
+}
+
+// ─── Expression find-and-replace ───────────────────────────
+
+/**
+ * Parameter keys whose value is a name, not an expression. Sample evidence
+ * (22 r495 examples, the template and C3-ACE): `variable` (635 uses),
+ * `instance-variable` (616), `object` (235), `child` (135), `object-to-create`
+ * (49), `timeline` (47), `property` (55, timeline property names), `parent`
+ * (20), `object-class`, `pin-to`, `target`, `function`, `file` and
+ * `audio-file`, plus `instance` and `layout` from the rename scanner. Quoted
+ * names such as animation or layer names are expressions and stay searchable.
+ */
+export const NAME_PARAMETER_KEYS = new Set([
+  ...OBJECT_NAME_PARAM_KEYS,
+  'variable', 'instance-variable', 'layout', 'timeline', 'property',
+  'object-class', 'pin-to', 'target', 'function', 'file', 'audio-file',
+]);
+
+/**
+ * Parameter keys that hold a combo choice (a fixed lower-case ID such as
+ * `enabled`, `easeinsine` or `d-pad-left`) in the samples. `state` also holds
+ * expressions for some addons, so a value under these keys counts as a combo
+ * only when it looks like one.
+ */
+export const COMBO_PARAMETER_KEYS = new Set([
+  'which', 'ease', 'destroy-on-complete', 'loop', 'ping-pong', 'from', 'type',
+  'mode', 'button', 'visibility', 'control', 'deltatimetype', 'pauseresume',
+  'where', 'collisions', 'axis', 'axes', 'mouse-button', 'action', 'match',
+  'width-type', 'height-type', 'input', 'click-type', 'order', 'state',
+]);
+
+const COMBO_VALUE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+
+/** True when a parameter holds a name or a combo choice rather than an expression. */
+export function isProtectedParameter(key: string, value: string): boolean {
+  if (NAME_PARAMETER_KEYS.has(key)) return true;
+  return COMBO_PARAMETER_KEYS.has(key) && COMBO_VALUE.test(value);
+}
+
+/**
+ * Total time one find-and-replace may spend matching. A user regular
+ * expression can backtrack catastrophically, so all matching runs in one `vm`
+ * script with this timeout; V8 enforces it inside regex execution too, and a
+ * bad pattern fails the call instead of hanging the server.
+ */
+export const REGEX_TIME_LIMIT_MS = 2000;
+
+const MATCH_SCRIPT = [
+  'const re = new RegExp(input.source, input.flags);',
+  'const out = [];',
+  'for (const value of input.values) {',
+  '  let count = 0;',
+  '  let empty = false;',
+  '  for (const m of value.matchAll(re)) {',
+  '    count++;',
+  "    if (m[0] === '') { empty = true; break; }",
+  '  }',
+  '  out.push([count, empty, count > 0 && !empty ? value.replace(re, input.replacement) : value]);',
+  '}',
+  'out;',
+].join('\n');
+
+export interface MatchOutcome {
+  count: number;
+  /** The pattern matched zero characters somewhere in this value. */
+  empty: boolean;
+  after: string;
+}
+
+export class RegexTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`The search pattern took longer than ${timeoutMs} ms to run (probably catastrophic backtracking). Simplify the pattern or narrow the sheets.`);
+    this.name = 'RegexTimeoutError';
+  }
+}
+
+/** Match and replace every value within `timeoutMs`; throws RegexTimeoutError past it. */
+export function matchAllBounded(
+  pattern: RegExp,
+  replacement: string,
+  values: string[],
+  timeoutMs = REGEX_TIME_LIMIT_MS,
+): MatchOutcome[] {
+  const input = { source: pattern.source, flags: pattern.flags, replacement, values };
+  let raw: Array<[number, boolean, string]>;
+  try {
+    raw = vm.runInNewContext(MATCH_SCRIPT, { input }, { timeout: timeoutMs }) as Array<[number, boolean, string]>;
+  } catch (e) {
+    if (e && typeof e === 'object' && (e as { code?: unknown }).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+      throw new RegexTimeoutError(timeoutMs);
+    }
+    throw e;
+  }
+  const out: MatchOutcome[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    out.push({ count: Number(raw[i][0]), empty: raw[i][1] === true, after: String(raw[i][2]) });
+  }
+  return out;
 }
 
 // ─── Registration ──────────────────────────────────────────
@@ -375,7 +519,7 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
 
   server.tool(
     'replace_in_expressions',
-    'Find and replace text in condition and action parameter values (the expressions shown in event sheets) across the project or chosen sheets. Comments, scripts, names and variable declarations are not touched. Use dryRun to see every change first.',
+    'Find and replace text in condition and action parameter values (the expressions shown in event sheets) across the project or chosen sheets. Parameters that hold a name (variable, instance-variable, object, layout, timeline, ...) or a combo choice are left alone unless parameterKeys names them. Comments, scripts and variable declarations are not touched. Matching is limited to 2 seconds in total. Use dryRun to see every change first.',
     {
       find: z.string().min(1).max(500).describe('Text to find, or a regular expression when regex is true'),
       replace: z.string().max(2000).describe('Replacement text; with regex, $1-style group references are expanded'),
@@ -384,7 +528,7 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
       wholeWord: z.boolean().optional().default(false).describe('Match whole words only'),
       sheets: z.array(z.string().max(200)).max(500).optional().describe('Limit to these event sheets (default: all)'),
       parameterKeys: z.array(z.string().max(200)).max(100).optional()
-        .describe('Only change parameters with these keys (e.g. ["value", "expression"]); positional custom-action or function arguments use their index ("0", "1", ...)'),
+        .describe('Only change parameters with these keys (e.g. ["value", "expression"]); naming a name or combo key here makes it replaceable. Positional custom-action or function arguments use their index ("0", "1", ...)'),
       dryRun: z.boolean().optional().default(false).describe('Report the changes and write nothing'),
       maxReported: z.number().int().min(0).max(1000).optional().default(100).describe('Maximum individual changes listed in the result (counts are always complete)'),
     },
@@ -398,34 +542,36 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
         } catch (e) {
           return toolError(`Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`);
         }
-        if (new RegExp(pattern.source, pattern.flags.replace('g', '')).test('')) {
-          return toolError('The search pattern matches empty text, which would insert the replacement everywhere. Use a pattern that needs at least one character.');
-        }
-
         const allSheets = await reader.listEventSheets();
-        const scope = args.sheets ?? allSheets;
+        const scope = [...new Set(args.sheets ?? allSheets)];
         const missing = scope.filter(name => !allSheets.includes(name));
         if (missing.length > 0) return toolError(`Event sheet(s) not found: ${missing.join(', ')}. Use list_eventsheets to see all names.`);
         const keyFilter = args.parameterKeys ? new Set(args.parameterKeys) : null;
         // Plain text: a literal replacement, so escape String.replace's $ patterns.
         const replacement = args.regex ? args.replace : args.replace.replace(/\$/g, '$$$$');
-
-        const changes: Array<{ sheet: string; eventSid?: number; path: string; key: string; before: string; after: string }> = [];
-        const perSheet: Array<{ sheet: string; parameters: number; matches: number }> = [];
-        let totalMatches = 0;
-        let totalParameters = 0;
         const warnings: string[] = [];
 
+        // Phase 1: collect every candidate parameter without matching.
+        interface Slot {
+          sheet: number;
+          record: Record<string, unknown>;
+          key: string;
+          value: string;
+          path: string;
+          eventSid?: number;
+          protectedName: boolean;
+        }
+        const sheets: Array<{ name: string; data: EventSheet }> = [];
+        const slots: Slot[] = [];
         for (const name of scope) {
-          let sheet: EventSheet;
+          let data: EventSheet;
           try {
-            sheet = await reader.readEventSheet(name);
+            data = await reader.readEventSheet(name);
           } catch (e) {
             warnings.push(`Event sheet "${name}" could not be read and was not scanned: ${e instanceof Error ? e.message : String(e)}`);
             continue;
           }
-          let sheetMatches = 0;
-          let sheetParameters = 0;
+          const sheetIndex = sheets.push({ name, data }) - 1;
           const walk = (list: unknown, prefix: string, depth: number) => {
             if (!Array.isArray(list) || depth > MAX_DEPTH) return;
             list.forEach((raw, i) => {
@@ -445,33 +591,77 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
                     const value = record[key];
                     if (typeof value !== 'string') continue;
                     if (keyFilter && !keyFilter.has(key)) continue;
-                    pattern.lastIndex = 0;
-                    const count = value.match(pattern)?.length ?? 0;
-                    if (count === 0) continue;
-                    pattern.lastIndex = 0;
-                    const after = value.replace(pattern, replacement);
-                    if (after === value) continue;
-                    sheetMatches += count;
-                    sheetParameters++;
-                    const paramPath = Array.isArray(params) ? `${path}.${listKey}[${j}].parameters[${key}]` : `${path}.${listKey}[${j}].parameters.${key}`;
-                    if (changes.length < args.maxReported) {
-                      changes.push({ sheet: name, eventSid, path: paramPath, key, before: value, after });
-                    }
-                    if (!args.dryRun) record[key] = after;
+                    slots.push({
+                      sheet: sheetIndex, record, key, value, eventSid,
+                      path: Array.isArray(params) ? `${path}.${listKey}[${j}].parameters[${key}]` : `${path}.${listKey}[${j}].parameters.${key}`,
+                      protectedName: !keyFilter && !Array.isArray(params) && isProtectedParameter(key, value),
+                    });
                   }
                 });
               }
               walk(event.children, `${path}.children`, depth + 1);
             });
           };
-          walk(sheet.events as unknown as C3Event[], 'events', 0);
-          if (sheetParameters === 0) continue;
-          perSheet.push({ sheet: name, parameters: sheetParameters, matches: sheetMatches });
-          totalMatches += sheetMatches;
-          totalParameters += sheetParameters;
-          if (!args.dryRun) {
+          walk(data.events as unknown as C3Event[], 'events', 0);
+        }
+
+        // Phase 2: match everything under one time limit. The empty string
+        // goes first so a pattern that matches nothing at all is caught too.
+        let outcomes: MatchOutcome[];
+        try {
+          outcomes = matchAllBounded(pattern, replacement, ['', ...slots.map(slot => slot.value)]);
+        } catch (e) {
+          if (e instanceof RegexTimeoutError) return toolError(e.message);
+          throw e;
+        }
+        const emptyAt = outcomes.findIndex(outcome => outcome.empty);
+        if (emptyAt !== -1) {
+          const where = emptyAt === 0 ? 'on empty text' : `in ${sheets[slots[emptyAt - 1].sheet].name} ${slots[emptyAt - 1].path}`;
+          return toolError(
+            `The search pattern matches zero characters (${where}), which would insert the replacement between characters. ` +
+            'Use a pattern that always consumes at least one character.'
+          );
+        }
+
+        // Phase 3: apply and report.
+        const changes: Array<{ sheet: string; eventSid?: number; path: string; key: string; before: string; after: string }> = [];
+        const perSheet = new Map<number, { sheet: string; parameters: number; matches: number }>();
+        const protectedHits = new Map<string, number>();
+        let totalMatches = 0;
+        let totalParameters = 0;
+        slots.forEach((slot, n) => {
+          const outcome = outcomes[n + 1];
+          if (outcome.count === 0 || outcome.after === slot.value) return;
+          if (slot.protectedName) {
+            protectedHits.set(slot.key, (protectedHits.get(slot.key) ?? 0) + 1);
+            return;
+          }
+          const name = sheets[slot.sheet].name;
+          let entry = perSheet.get(slot.sheet);
+          if (!entry) {
+            entry = { sheet: name, parameters: 0, matches: 0 };
+            perSheet.set(slot.sheet, entry);
+          }
+          entry.parameters++;
+          entry.matches += outcome.count;
+          totalParameters++;
+          totalMatches += outcome.count;
+          if (changes.length < args.maxReported) {
+            changes.push({ sheet: name, eventSid: slot.eventSid, path: slot.path, key: slot.key, before: slot.value, after: outcome.after });
+          }
+          if (!args.dryRun) slot.record[slot.key] = outcome.after;
+        });
+        if (protectedHits.size > 0) {
+          const list = [...protectedHits].map(([key, count]) => `${key} (${count})`).join(', ');
+          warnings.push(`Matches in parameters that hold a name or a combo choice were left unchanged: ${list}. Name those keys in parameterKeys to change them.`);
+        }
+
+        const touched = [...perSheet].sort((x, y) => x[0] - y[0]);
+        if (!args.dryRun) {
+          for (const [index] of touched) {
+            const { name, data } = sheets[index];
             const subfolder = writer.getSubfolderForEntity('eventSheets', name);
-            await writer.writeEntityFile('eventSheets', name, sheet, subfolder);
+            await writer.writeEntityFile('eventSheets', name, data, subfolder);
             resetProjectIndex();
             filesWritten.push(reader.getEntityRelativePath('eventSheets', name));
           }
@@ -482,10 +672,10 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
           action: args.dryRun ? 'dry-run' : 'replaced',
           find: args.find,
           replace: args.replace,
-          sheetsScanned: scope.length,
+          sheetsScanned: sheets.length,
           totalMatches,
           parametersChanged: totalParameters,
-          bySheet: perSheet,
+          bySheet: touched.map(([, entry]) => entry),
           changes,
           changesTruncated: totalParameters > changes.length,
           filesWritten,

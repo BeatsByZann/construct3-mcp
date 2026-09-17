@@ -99,16 +99,54 @@ export function locateInTree(root: TreeFolder, name: string): TreeLocation[] {
   return out;
 }
 
-/** The folder at `path`, or undefined. */
+/**
+ * The subfolder named `part`. Folder names become directory names, and on
+ * Windows two names that differ only by case are the same directory, so a
+ * case-insensitive match counts; an exact match wins when both exist.
+ */
+function findSubfolder(folder: TreeFolder, part: string): TreeFolder | undefined {
+  const named = folder.subfolders.filter(sub => isTree(sub) && typeof sub.name === 'string');
+  return named.find(sub => sub.name === part)
+    ?? named.find(sub => (sub.name as string).toLowerCase() === part.toLowerCase());
+}
+
+/** The folder at `path` (segments matched without case), or undefined. */
 export function findTreeFolder(root: TreeFolder, path: string): TreeFolder | undefined {
   if (!path) return root;
   let current: TreeFolder = root;
   for (const part of path.split('/')) {
-    const next = current.subfolders.find(sub => isTree(sub) && sub.name === part);
+    const next = findSubfolder(current, part);
     if (!next) return undefined;
     current = next;
   }
   return current;
+}
+
+/** `path` spelled with the casing of the folders that already exist. */
+export function canonicalFolderPath(root: TreeFolder, path: string): string {
+  if (!path) return path;
+  const out: string[] = [];
+  let current: TreeFolder | undefined = root;
+  for (const part of path.split('/')) {
+    const next: TreeFolder | undefined = current ? findSubfolder(current, part) : undefined;
+    out.push(next ? String(next.name) : part);
+    current = next;
+  }
+  return out.join('/');
+}
+
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+const WINDOWS_FORBIDDEN = /[<>:"|?*\u0000-\u001f]/;
+
+/** Reject folder segments Windows cannot store as directory names. */
+export function validateFolderSegments(path: string): void {
+  validateSubfolder(path);
+  for (const part of path.split('/')) {
+    if (part.length > 255) throw new Error(`Folder name "${part.slice(0, 20)}..." is too long (max 255 characters)`);
+    if (WINDOWS_FORBIDDEN.test(part)) throw new Error(`Folder name "${part}" contains a character Windows does not allow in folder names (< > : " | ? * or a control character)`);
+    if (/[ .]$/.test(part) || /^ /.test(part)) throw new Error(`Folder name "${part}" must not start with a space or end with a space or a dot`);
+    if (WINDOWS_RESERVED.test(part)) throw new Error(`Folder name "${part}" is reserved on Windows`);
+  }
 }
 
 /** The folder at `path`, created with Construct's `{ items, subfolders, name }` key order where missing. */
@@ -119,7 +157,7 @@ export function ensureTreeFolder(root: TreeFolder, path: string): { folder: Tree
   let walked = '';
   for (const part of path.split('/')) {
     walked = walked ? `${walked}/${part}` : part;
-    let next = current.subfolders.find(sub => isTree(sub) && sub.name === part);
+    let next = findSubfolder(current, part);
     if (!next) {
       next = { items: [], subfolders: [], name: part };
       current.subfolders.push(next);
@@ -433,6 +471,86 @@ async function registerAfter(writer: Writer, key: string, sourceName: string, ne
   return backupPath;
 }
 
+/**
+ * Remove a copy written moments ago. `writer.deleteEntityFile` would first
+ * back the file up, leaving a stray `<name>.json.bak` next to nothing.
+ */
+async function discardNewEntityFile(
+  reader: Reader,
+  idGen: IdGen,
+  category: 'layouts' | 'eventSheets' | 'objectTypes',
+  name: string,
+  subfolder: string | undefined,
+): Promise<void> {
+  try {
+    await unlink(resolveProjectPath(reader.getProjectDir(), category, ...splitPath(subfolder ?? ''), `${name}.json`));
+  } catch { /* best-effort */ }
+  reader.invalidateCaches();
+  resetProjectIndex();
+  idGen.reset();
+}
+
+/** Timeline files (any depth under timelines/) whose tracks address one of `uids`. */
+async function timelinesUsingUids(projectDir: string, uids: Set<number>): Promise<string[]> {
+  const out: string[] = [];
+  const uidKeys = new Set(['worldInstance', 'uid', 'ownerUid']);
+  const uses = (node: unknown, depth: number): boolean => {
+    if (depth > 64 || !node || typeof node !== 'object') return false;
+    if (Array.isArray(node)) return node.some(child => uses(child, depth + 1));
+    for (const [key, value] of Object.entries(node as Json)) {
+      if (uidKeys.has(key) && typeof value === 'number' && uids.has(value)) return true;
+      if (value && typeof value === 'object' && uses(value, depth + 1)) return true;
+    }
+    return false;
+  };
+  const walk = async (relative: string[], depth: number): Promise<void> => {
+    if (depth > 16) return;
+    let entries;
+    try {
+      entries = await readdir(resolveProjectPath(projectDir, ...relative), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const child = [...relative, entry.name];
+      if (entry.isDirectory()) {
+        await walk(child, depth + 1);
+      } else if (entry.name.endsWith('.json') && !entry.name.endsWith('.uistate.json')) {
+        try {
+          if (uses(JSON.parse(await readFile(resolveProjectPath(projectDir, ...child), 'utf-8')), 0)) out.push(rel(child));
+        } catch { /* unreadable timeline: nothing to report */ }
+      }
+    }
+  };
+  await walk(['timelines'], 0);
+  return out.sort();
+}
+
+/**
+ * Sheets with a `unique-id` parameter (pick by unique ID; 262 sample uses)
+ * holding a bare integer that names one of `uids`.
+ */
+async function sheetsPickingUids(reader: Reader, uids: Set<number>): Promise<string[]> {
+  const out: string[] = [];
+  const picks = (node: unknown, depth: number): boolean => {
+    if (depth > 128 || !node || typeof node !== 'object') return false;
+    if (Array.isArray(node)) return node.some(child => picks(child, depth + 1));
+    const record = node as Json;
+    const params = record.parameters as Json | undefined;
+    if (params && typeof params === 'object' && !Array.isArray(params)) {
+      const value = params['unique-id'];
+      if (typeof value === 'string' && /^\s*\d+\s*$/.test(value) && uids.has(Number(value))) return true;
+    }
+    return Object.values(record).some(child => !!child && typeof child === 'object' && picks(child, depth + 1));
+  };
+  for (const name of await reader.listEventSheets()) {
+    try {
+      if (picks((await reader.readEventSheet(name)).events, 0)) out.push(name);
+    } catch { /* unreadable sheet: nothing to report */ }
+  }
+  return out;
+}
+
 function projectTree(reader: Reader, key: string): TreeFolder | undefined {
   const value = (reader.getProject() as unknown as Json)[key];
   return isTree(value) ? value : undefined;
@@ -496,8 +614,8 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
     },
     async (args) => {
       try {
-        const dest = args.folder.trim();
-        if (dest) validateSubfolder(dest);
+        const requested = args.folder;
+        if (requested) validateFolderSegments(requested);
         const projectDir = reader.getProjectDir();
         const warnings: string[] = [];
         const isFile = args.category === 'script' || args.category === 'file';
@@ -543,6 +661,10 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
           );
         }
         const fromPath = found[0].path;
+        const dest = canonicalFolderPath(root, requested);
+        if (dest !== requested) {
+          warnings.push(`Folder "${requested}" matches the existing folder "${dest}" apart from case; the item was moved into "${dest}".`);
+        }
         if (fromPath === dest) {
           return toolError(`${label} "${args.name}" is already in ${describeFolder(dest)}.`);
         }
@@ -574,7 +696,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         const moved = await copyRelocations(projectDir, relocations);
 
         let foldersCreated: string[] = [];
-        let backupPath: string;
+        let backupPath: string | undefined;
         try {
           const outcome = await writer.mutateProjectJson(project => {
             const freshRoot = rootOf(project);
@@ -589,8 +711,13 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
           foldersCreated = outcome.result;
           backupPath = outcome.backupPath;
         } catch (e) {
-          await removeCopies(projectDir, moved);
-          throw e;
+          if (!(e && typeof e === 'object' && (e as { projectCommitted?: unknown }).projectCommitted === true)) {
+            await removeCopies(projectDir, moved);
+            throw e;
+          }
+          // project.c3proj already points at the new location: keep the copies.
+          warnings.push(`project.c3proj was updated but could not be re-read afterwards: ${e instanceof Error ? e.message : String(e)}. Check the project before further edits.`);
+          try { await reader.reloadProject(); } catch { /* reported above */ }
         }
         await removeSources(projectDir, moved, warnings);
         resetProjectIndex();
@@ -672,14 +799,22 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         if (globals.length > 0) {
           warnings.push(`The copy places another instance of global object type(s) ${globals.join(', ')}. Global instances persist across layouts, so running both layouts creates extra instances.`);
         }
-        warnings.push('Timelines that animate the source layout\'s instances still address the original UIDs; they were not duplicated.');
+        const sourceUids = new Set(uidMap.keys());
+        const timelines = await timelinesUsingUids(reader.getProjectDir(), sourceUids);
+        if (timelines.length > 0) {
+          warnings.push(`Timeline(s) ${timelines.join(', ')} animate instances of "${args.layoutName}" by UID; they still address the originals and were not duplicated.`);
+        }
+        const uidPicks = await sheetsPickingUids(reader, sourceUids);
+        if (uidPicks.length > 0) {
+          warnings.push(`Event sheet(s) ${uidPicks.join(', ')} pick instances of "${args.layoutName}" by a fixed UID; those events still pick the originals, not the copies.`);
+        }
 
         await writer.writeEntityFile('layouts', args.newName, copy, subfolder);
         let backupPath: string;
         try {
           backupPath = await registerAfter(writer, 'layouts', args.layoutName, args.newName);
         } catch (e) {
-          await writer.deleteEntityFile('layouts', args.newName, subfolder);
+          await discardNewEntityFile(reader, idGen, 'layouts', args.newName, subfolder);
           throw e;
         }
         resetProjectIndex();
@@ -816,7 +951,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
 
   server.tool(
     'duplicate_event_sheet',
-    'Duplicate an event sheet under a new name in the same Project Bar folder, with fresh SIDs on every event, condition, action and parameter. Refused when the sheet declares functions, custom actions or global variables, whose names must be unique in the project.',
+    'Duplicate an event sheet under a new name in the same Project Bar folder, with fresh SIDs on every event, condition, action and parameter. Refused when the sheet declares groups, functions, custom actions or global variables, whose names must be unique in the project.',
     {
       sheetName: z.string().max(200).describe('Event sheet to copy'),
       newName: newNameSchema,
@@ -840,14 +975,15 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         const copy = deepClone(await reader.readEventSheet(args.sheetName));
         const events = (copy.events ?? []) as unknown as Json[];
         const unique: string[] = [];
-        let groups = 0;
         const walk = (list: Json[], depth: number) => {
           if (depth > 64) return;
           for (const event of list) {
             if (event.eventType === 'function-block') unique.push(`function "${String(event.functionName)}"`);
             if (event.eventType === 'custom-ace-block') unique.push(`custom action "${String(event.aceName)}" on ${String(event.objectClass)}`);
             if (event.eventType === 'variable' && depth === 0) unique.push(`global variable "${String(event.name)}"`);
-            if (event.eventType === 'group') groups++;
+            // Group names are unique project-wide: 508 groups in the samples,
+            // no title repeated within a project.
+            if (event.eventType === 'group') unique.push(`group "${String(event.title)}"`);
             if (Array.isArray(event.children)) walk(event.children as Json[], depth + 1);
           }
         };
@@ -856,7 +992,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
           return toolError(
             `Event sheet "${args.sheetName}" declares ${unique.length} project-wide name(s): ${unique.slice(0, 10).join(', ')}` +
             `${unique.length > 10 ? ', ...' : ''}. A copy would declare them twice, which Construct rejects. ` +
-            'Move those events to another sheet (move_events_between_sheets) before duplicating.'
+            'Move those events to another sheet (move_events_between_sheets) or rename them before duplicating.'
           );
         }
 
@@ -864,9 +1000,6 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         copy.name = args.newName;
 
         const warnings: string[] = [];
-        if (groups > 0) {
-          warnings.push(`The copy repeats ${groups} group title(s); actions that set a group active by name now match groups in both sheets.`);
-        }
         warnings.push('The copy is not attached to any layout and is not included by any sheet.');
 
         await writer.writeEntityFile('eventSheets', args.newName, copy, subfolder);
@@ -874,7 +1007,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         try {
           backupPath = await registerAfter(writer, 'eventSheets', args.sheetName, args.newName);
         } catch (e) {
-          await writer.deleteEntityFile('eventSheets', args.newName, subfolder);
+          await discardNewEntityFile(reader, idGen, 'eventSheets', args.newName, subfolder);
           throw e;
         }
         resetProjectIndex();
@@ -1061,8 +1194,13 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         const copy = JSON.parse(await readFile(sourcePath, 'utf-8')) as Json;
         copy.name = args.newName;
         const tmp = targetPath + '.tmp';
-        await writeFile(tmp, JSON.stringify(copy, null, '\t'), 'utf-8');
-        await rename(tmp, targetPath);
+        try {
+          await writeFile(tmp, JSON.stringify(copy, null, '\t'), 'utf-8');
+          await rename(tmp, targetPath);
+        } catch (e) {
+          try { await unlink(tmp); } catch { /* best-effort */ }
+          throw e;
+        }
 
         let backupPath: string;
         try {

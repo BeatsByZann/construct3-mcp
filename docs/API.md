@@ -1975,9 +1975,20 @@ Move an existing item to another folder, or to the root.
 | `createFolders` | boolean | No | Create a missing destination path (default `true`) |
 
 The files are copied to the new location first, then `project.c3proj` is
-rewritten, then the old files are deleted; a failure before the rewrite
-removes the copies. A move is refused when any destination file already
-exists. The emptied source folder is kept, with a warning. Moving a script
+rewritten, then the old files are deleted. A failure before the rewrite
+removes the copies; a failure after `project.c3proj` was replaced (while
+verifying or re-reading it) keeps them and finishes the move with a warning,
+because the project already points at the new location. An old file that
+cannot be deleted is reported in a warning. A move is refused when any
+destination file already exists. The emptied source folder is kept, with a
+warning.
+
+Folder names become directory names, so they are matched without case: moving
+to `enemies` when `Enemies` exists uses `Enemies` (with a warning), and the
+current folder in another case counts as the same folder. Segments that
+Windows cannot store are refused: a leading space, a trailing space or dot,
+`< > : " | ? *` or control characters, and reserved device names such as
+`CON` or `LPT1`. Moving a script
 warns that module imports naming its path are not rewritten. Timelines cannot
 be moved: no sample project has a timeline in a named folder.
 
@@ -2006,8 +2017,9 @@ the same map, and `instanceFolderItem.sid` and `scene-graphs-folder-root`
 entries follow their instance's new SID. The copy keeps `eventSheet`. Refused
 when an instance is a template (`template.mode: "template"`), because a
 template name exists only once per object type; replicas copy normally. Warns
-when the layout places global object types, and that timelines still animate
-the source instances.
+when the layout places global object types, when a timeline addresses one of
+the source instances by UID (the copy is not animated), and when an event
+picks one of them by a fixed `unique-id` (it still picks the original).
 
 ### `duplicate_layer`
 
@@ -2030,9 +2042,10 @@ template instances, and for hierarchy links to instances on other layers.
 | `sheetName` | string | Yes | Event sheet to copy |
 | `newName` | string | Yes | Name of the copy |
 
-Refused when the sheet declares a function, a custom action or a root-level
-(global) variable anywhere, since the copy would declare the name twice. The
-copy is attached to no layout; a warning notes repeated group titles.
+Refused when the sheet declares a group, a function, a custom action or a
+root-level (global) variable anywhere, since the copy would declare the name
+twice. Group names are unique project-wide: the samples hold 508 groups with no
+title repeated within a project. The copy is attached to no layout.
 
 ### `duplicate_object_type`
 
@@ -2071,8 +2084,11 @@ Construct's event-sheet Replace object.
 
 The references are the rename scanner's: `objectClass`, the bare object-name
 parameters (`object`, `object-to-create`, `parent`, `child`, `instance`) and
-identifier tokens in expressions. Each event is swapped whole or not at all.
-It is skipped when a condition or action on the replaced object uses a
+identifier tokens in expressions. The unit of a swap is a branch: an event
+that references the replaced object together with all its sub-events, which
+share its picked instances. A branch is swapped whole or not at all; the
+reasons of a sub-event are reported as `sub-event <path>: ...` on the branch's
+top event. An event is incompatible when a condition or action on the replaced object uses a
 behavior (`behaviorType`), an instance variable (`instance-variable`) or an
 effect (an `effect` parameter holding a quoted name) that the replacement
 lacks (object types inherit their families' behaviors, variables and
@@ -2097,8 +2113,20 @@ result has `references` (as in the rename tools), `skippedEvents`
 | `maxReported` | number | No | Individual changes listed (default 100); counts are always complete |
 
 Only condition and action parameter strings are changed, never comments,
-scripts, names or variable declarations. A pattern that matches empty text is
-refused. The result has `totalMatches`, `parametersChanged`, `bySheet`,
+scripts or variable declarations. Parameters that hold a name are skipped
+unless `parameterKeys` names their key: `variable`, `instance-variable`,
+`object`, `object-to-create`, `parent`, `child`, `instance`, `layout`,
+`timeline`, `property`, `object-class`, `pin-to`, `target`, `function`,
+`file` and `audio-file` (keys whose sample values are names). So are combo
+choices (a bare lower-case ID such as `enabled` under keys like `state`,
+`mode`, `ease` or `visibility`). Matches in skipped parameters are counted in
+a warning. Repeated `sheets` entries are scanned once.
+
+A pattern that matches zero characters anywhere (for example `a?` with
+`wholeWord`) is refused before anything is written. All matching for one call
+runs in a `vm` script limited to 2000 ms in total; V8 enforces the limit inside
+regular expression execution, so a catastrophically backtracking pattern
+fails the call instead of hanging the server. The result has `totalMatches`, `parametersChanged`, `bySheet`,
 `changes` (`[{ sheet, eventSid, path, key, before, after }]`) and
 `filesWritten`.
 

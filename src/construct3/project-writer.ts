@@ -401,6 +401,10 @@ export class Construct3ProjectWriter {
    * `mutate` to the parsed JSON, validate, write atomically, verify, reload
    * and invalidate every cache. `mutate` may throw to abort before anything is
    * written. Key order is whatever the parsed JSON already had.
+   *
+   * An error thrown after the new file replaced the old one (verification or
+   * reload) carries `projectCommitted: true`: the edit is on disk, so a caller
+   * must not undo the work that depends on it.
    */
   async mutateProjectJson<T>(
     mutate: (project: Record<string, unknown>) => T | Promise<T>,
@@ -413,8 +417,15 @@ export class Construct3ProjectWriter {
       const json = this.validateJsonData(project, 'project.c3proj');
       const backupPath = await this.createBackup(projectPath);
       await this.atomicWrite(projectPath, json);
-      await this.verifyWrittenFile(projectPath, 'project.c3proj');
-      await this.reader.reloadProject();
+      try {
+        await this.verifyWrittenFile(projectPath, 'project.c3proj');
+        await this.reader.reloadProject();
+      } catch (e) {
+        this.invalidateAll();
+        const error = e instanceof Error ? e : new Error(String(e));
+        (error as Error & { projectCommitted?: boolean }).projectCommitted = true;
+        throw error;
+      }
       this.invalidateAll();
       return { result, backupPath };
     });

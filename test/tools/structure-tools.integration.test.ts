@@ -11,7 +11,20 @@
  * `scene-graphs-folder-root` items address hierarchy roots by instance SID.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Lets a test make one fs unlink fail (a locked file) without touching the rest.
+const fsControl = vi.hoisted(() => ({ failUnlink: null as null | ((path: string) => boolean) }));
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  const unlink = async (path: Parameters<typeof actual.unlink>[0]) => {
+    if (fsControl.failUnlink?.(String(path))) {
+      throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+    }
+    return actual.unlink(path);
+  };
+  return { ...actual, default: { ...actual, unlink }, unlink };
+});
 import { mkdtemp, cp, rm, readFile, writeFile, stat, mkdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -28,6 +41,7 @@ const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'rename-project');
 
 let tmpDir: string;
 let reader: Construct3ProjectReader;
+let writer: Construct3ProjectWriter;
 let server: MockServer;
 
 function parse(result: { content: Array<{ type: string; text: string }>; isError?: boolean }) {
@@ -97,7 +111,7 @@ beforeEach(async () => {
   reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
   await reader.loadProject();
   const idGen = new IdGenerator();
-  const writer = new Construct3ProjectWriter(reader, idGen);
+  writer = new Construct3ProjectWriter(reader, idGen);
   server = new MockServer();
   const deps = { server, reader, writer, idGen } as any;
   registerStructureTools(deps);
@@ -105,6 +119,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  fsControl.failUnlink = null;
   await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -288,6 +304,25 @@ describe('duplicate_layout', () => {
     // The source is untouched and the copy is registered right after it.
     expect(await readJson('layouts', 'Level 1.json')).toEqual(source);
     expect((await readJson('project.c3proj')).layouts.items).toEqual(['Level 1', 'Level 1 Copy']);
+  });
+
+  it('allocates UIDs above sub-layer instances when duplicating twice', async () => {
+    // Every instance of Level 2 sits on a sub-layer and holds the highest UID.
+    await editJson(['layouts', 'Extra', 'Level 2.json'], l => {
+      l.layers = [{ ...l.layers[0], name: 'Top', sid: 631000000000001, instances: [], subLayers: [{ ...l.layers[0], instances: l.layers[0].instances.map((i: any, n: number) => ({ ...i, uid: 900 + n })) }] }];
+    });
+    const first = await server.callTool('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy A' });
+    const second = await server.callTool('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy B' });
+    expect(first.isError).not.toBe(true);
+    expect(second.isError).not.toBe(true);
+    const uids = [
+      ...allInstances(await readJson('layouts', 'Level 1.json')),
+      ...allInstances(await readJson('layouts', 'Extra', 'Level 2.json')),
+      ...allInstances(await readJson('layouts', 'Copy A.json')),
+      ...allInstances(await readJson('layouts', 'Copy B.json')),
+    ].map(i => i.uid);
+    expect(new Set(uids).size).toBe(uids.length);
+    expect(Math.min(...allInstances(await readJson('layouts', 'Copy A.json')).map(i => i.uid))).toBeGreaterThan(900);
   });
 
   it('keeps the copy in the source folder', async () => {
@@ -549,5 +584,188 @@ describe('move_event_block_items with copy', () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('cannot be copied');
+  });
+});
+
+// ─── Review follow-ups ─────────────────────────────────────
+
+describe('move_project_item folder names and failures', () => {
+  it('reuses an existing folder that differs only by case', async () => {
+    const result = await server.callTool('move_project_item', { category: 'objectType', name: 'Tiles', folder: 'actors/Sub' });
+    expect(result.isError).not.toBe(true);
+    const data = parse(result);
+    expect(data.to).toBe('Actors/Sub');
+    expect(data.foldersCreated).toEqual(['Actors/Sub']);
+    expect(data.warnings.join(' ')).toContain('"actors/Sub" matches the existing folder "Actors/Sub"');
+    const project = await readJson('project.c3proj');
+    expect(project.objectTypes.subfolders.map((f: any) => f.name)).toEqual(['Actors']);
+    expect(project.objectTypes.subfolders[0].subfolders).toEqual([{ items: ['Tiles'], subfolders: [], name: 'Sub' }]);
+    expect(await exists('objectTypes', 'Actors', 'Sub', 'Tiles.json')).toBe(true);
+  });
+
+  it('treats a case-only difference from the current folder as the same folder', async () => {
+    const result = await server.callTool('move_project_item', { category: 'objectType', name: 'Player', folder: 'ACTORS' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already in "Actors"');
+  });
+
+  it.each([
+    ['Enemies.', 'end with a space or a dot'],
+    ['Enemies ', 'end with a space or a dot'],
+    [' Enemies', 'must not start with a space'],
+    ['a:b', 'does not allow'],
+    ['what?', 'does not allow'],
+    ['tab\there', 'does not allow'],
+    ['CON', 'reserved on Windows'],
+    ['Lpt1.txt', 'reserved on Windows'],
+    ['x/nul', 'reserved on Windows'],
+  ])('rejects the folder name %j', async (folder, message) => {
+    const before = await readFile(join(tmpDir, 'project.c3proj'), 'utf-8');
+    const result = await server.callTool('move_project_item', { category: 'layout', name: 'Level 1', folder });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(message);
+    expect(await readFile(join(tmpDir, 'project.c3proj'), 'utf-8')).toBe(before);
+    expect(await exists('layouts', 'Level 1.json')).toBe(true);
+  });
+
+  it('removes the copies when the project update fails', async () => {
+    await writeFile(join(tmpDir, 'layouts', 'Level 1.uistate.json'), '{}');
+    const before = await readFile(join(tmpDir, 'project.c3proj'), 'utf-8');
+    vi.spyOn(writer, 'mutateProjectJson').mockRejectedValueOnce(new Error('disk full'));
+    const result = await server.callTool('move_project_item', { category: 'layout', name: 'Level 1', folder: 'Maps' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('disk full');
+    expect(await exists('layouts', 'Maps', 'Level 1.json')).toBe(false);
+    expect(await exists('layouts', 'Maps', 'Level 1.uistate.json')).toBe(false);
+    expect(await exists('layouts', 'Level 1.json')).toBe(true);
+    expect(await exists('layouts', 'Level 1.uistate.json')).toBe(true);
+    expect(await readFile(join(tmpDir, 'project.c3proj'), 'utf-8')).toBe(before);
+  });
+
+  it('keeps the moved files when project.c3proj was written but could not be re-read', async () => {
+    const reload = reader.reloadProject.bind(reader);
+    vi.spyOn(reader, 'reloadProject')
+      .mockRejectedValueOnce(new Error('reload failed'))
+      .mockImplementation(reload);
+    const result = await server.callTool('move_project_item', { category: 'layout', name: 'Level 1', folder: 'Maps' });
+    expect(result.isError).not.toBe(true);
+    expect(parse(result).warnings.join(' ')).toContain('reload failed');
+    expect(await exists('layouts', 'Maps', 'Level 1.json')).toBe(true);
+    expect(await exists('layouts', 'Level 1.json')).toBe(false);
+    expect((await readJson('project.c3proj')).layouts.subfolders[1]).toEqual({ items: ['Level 1'], subfolders: [], name: 'Maps' });
+  });
+
+  it('warns when an old file cannot be deleted after the move', async () => {
+    fsControl.failUnlink = path => path.replace(/\\/g, '/').endsWith('layouts/Level 1.json');
+    const result = await server.callTool('move_project_item', { category: 'layout', name: 'Level 1', folder: 'Maps' });
+    fsControl.failUnlink = null;
+    expect(result.isError).not.toBe(true);
+    expect(parse(result).warnings.join(' ')).toContain('Could not delete the old file layouts/Level 1.json');
+    expect(await exists('layouts', 'Maps', 'Level 1.json')).toBe(true);
+    expect(await exists('layouts', 'Level 1.json')).toBe(true);
+  });
+});
+
+describe('duplicate rollbacks and warnings', () => {
+  it('removes a layout copy without leaving a backup when registration fails', async () => {
+    vi.spyOn(writer, 'mutateProjectJson').mockRejectedValueOnce(new Error('disk full'));
+    const result = await server.callTool('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy' });
+    expect(result.isError).toBe(true);
+    expect(await exists('layouts', 'Copy.json')).toBe(false);
+    expect(await exists('layouts', 'Copy.json.bak')).toBe(false);
+  });
+
+  it('removes an event sheet copy without leaving a backup when registration fails', async () => {
+    await editJson(['eventSheets', 'Shared', 'Helpers.json'], s => {
+      s.events = s.events.filter((e: any) => e.eventType !== 'variable');
+    });
+    vi.spyOn(writer, 'mutateProjectJson').mockRejectedValueOnce(new Error('disk full'));
+    const result = await server.callTool('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Helpers2' });
+    expect(result.isError).toBe(true);
+    expect(await exists('eventSheets', 'Shared', 'Helpers2.json')).toBe(false);
+    expect(await exists('eventSheets', 'Shared', 'Helpers2.json.bak')).toBe(false);
+  });
+
+  it('leaves no files behind when an object type copy cannot be registered', async () => {
+    vi.spyOn(writer, 'mutateProjectJson').mockRejectedValueOnce(new Error('disk full'));
+    const result = await server.callTool('duplicate_object_type', { objectName: 'Tiles', newName: 'Tiles2' });
+    expect(result.isError).toBe(true);
+    expect(await exists('objectTypes', 'Tiles2.json')).toBe(false);
+    expect(await exists('objectTypes', 'Tiles2.json.bak')).toBe(false);
+    expect(await exists('images', 'tiles2.png')).toBe(false);
+    expect(await exists('tilemapBrushes', 'objectTypes', 'Tiles2.brush.json')).toBe(false);
+  });
+
+  it('warns about timelines and fixed-UID picks only when they target the source layout', async () => {
+    await editJson(['eventSheets', 'Main.json'], s => {
+      s.events.push({
+        eventType: 'block', sid: 700000000000070,
+        conditions: [{ id: 'pick-by-unique-id', objectClass: 'Player', sid: 700000000000071, parameters: { 'unique-id': '1' } }],
+        actions: [],
+      });
+    });
+    const level1 = parse(await server.callTool('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy 1' }));
+    expect(level1.warnings.join(' ')).toContain('timelines/Intro.json');
+    expect(level1.warnings.join(' ')).toContain('Event sheet(s) Main pick instances');
+    // The first copy's instances have fresh UIDs that nothing addresses.
+    const level2 = parse(await server.callTool('duplicate_layout', { layoutName: 'Copy 1', newName: 'Copy 2' }));
+    expect((level2.warnings ?? []).join(' ')).not.toContain('Timeline');
+    expect((level2.warnings ?? []).join(' ')).not.toContain('fixed UID');
+  });
+
+  it('refuses a sheet that declares a function or a group', async () => {
+    await editJson(['eventSheets', 'Shared', 'Helpers.json'], s => {
+      s.events = s.events.filter((e: any) => e.eventType !== 'variable');
+      s.events.push({ eventType: 'function-block', functionName: 'Heal', functionReturnType: 'none', sid: 700000000000080, conditions: [], actions: [] });
+      s.events.push({ eventType: 'group', title: 'Helpers group', disabled: false, sid: 700000000000081, children: [] });
+    });
+    const result = await server.callTool('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Helpers2' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('function "Heal"');
+    expect(result.content[0].text).toContain('group "Helpers group"');
+    expect(await exists('eventSheets', 'Shared', 'Helpers2.json')).toBe(false);
+  });
+
+  it('refuses a timeline that sits in a named folder', async () => {
+    await writeFile(join(tmpDir, 'timelines', 'Deep.json'), JSON.stringify({ name: 'Deep', tracks: [] }));
+    await editJson(['project.c3proj'], p => { p.timelines.subfolders.push({ items: ['Deep'], subfolders: [], name: 'Folder' }); });
+    await reload();
+    const result = await server.callTool('duplicate_timeline', { timelineName: 'Deep', newName: 'Deep2' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('is in folder "Folder"');
+    expect(await exists('timelines', 'Deep2.json')).toBe(false);
+  });
+});
+
+describe('move_event_block_items copy limits', () => {
+  it('refuses to copy a condition to index 0 of an else block', async () => {
+    await editJson(['eventSheets', 'Main.json'], s => {
+      s.events.push({ eventType: 'block', sid: 700000000000090, conditions: [{ id: 'else', objectClass: 'System', sid: 700000000000091 }], actions: [] });
+    });
+    const result = await server.callTool('move_event_block_items', {
+      sheetName: 'Main', sourceBlockSid: 610000000000015, targetBlockSid: 700000000000090,
+      itemType: 'conditions', indices: [0], targetIndex: 0, copy: true,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('else condition must stay first');
+  });
+
+  it('refuses a copy that would exceed the block item limit, including within one block', async () => {
+    await editJson(['eventSheets', 'Main.json'], s => {
+      s.events.push({
+        eventType: 'block', sid: 700000000000095, conditions: [],
+        actions: Array.from({ length: 100 }, (_, n) => ({ id: 'destroy', objectClass: 'Player', sid: 700000000001000 + n })),
+      });
+    });
+    const before = await readFile(join(tmpDir, 'eventSheets', 'Main.json'), 'utf-8');
+    for (const source of [610000000000015, 700000000000095]) {
+      const result = await server.callTool('move_event_block_items', {
+        sheetName: 'Main', sourceBlockSid: source, targetBlockSid: 700000000000095,
+        itemType: 'actions', indices: [0], targetIndex: 0, copy: true,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('maximum');
+    }
+    expect(await readFile(join(tmpDir, 'eventSheets', 'Main.json'), 'utf-8')).toBe(before);
   });
 });
