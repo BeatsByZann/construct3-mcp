@@ -2,8 +2,8 @@
  * Animation tools: add_animation_to_sprite, update_animation_properties,
  * delete_animation, rename_animation, add_frame_to_animation,
  * delete_frame_from_animation, update_frame, replace_sprite_image,
- * reorder_frames, reverse_frames, duplicate_frame, create_animation_folder,
- * move_animation_to_folder.
+ * replace_object_image, reorder_frames, reverse_frames, duplicate_frame,
+ * create_animation_folder, move_animation_to_folder.
  */
 
 import { z } from 'zod';
@@ -21,6 +21,17 @@ import { toolResult, toolError, notFoundError, validateSubfolder } from './share
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
 import { getImageFileName } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
+
+/** Width and height from a PNG's IHDR chunk, or undefined when the data is not a PNG. */
+export function readPngSize(png: Buffer): { width: number; height: number } | undefined {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (png.length < 24 || signature.some((byte, i) => png[i] !== byte)) return undefined;
+  if (png.toString('ascii', 12, 16) !== 'IHDR') return undefined;
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  if (width === 0 || height === 0) return undefined;
+  return { width, height };
+}
 
 // ─── Shared animation helpers ────────────────────────────
 
@@ -1022,6 +1033,84 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
       } catch (error) {
         console.error('[replace_sprite_image] failed:', error);
         return toolError(`Error replacing sprite image: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── replace_object_image ──────────────────────────────
+
+  server.tool(
+    'replace_object_image',
+    'Replace the single image of a Tiled Background, 9-patch, Particles, Sprite Font or Tilemap object type with real PNG data (base64). The image size is read from the PNG and written to the object type.',
+    {
+      objectName: z.string().max(200).describe('Object type that has one image (not a Sprite; use replace_sprite_image for Sprite frames)'),
+      pngBase64: z.string().max(10_000_000).describe('Base64-encoded PNG image data'),
+    },
+    async (args) => {
+      try {
+        let obj: ObjectType;
+        try {
+          obj = await reader.readObjectType(args.objectName);
+        } catch {
+          return notFoundError('Object', args.objectName, reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        }
+        const image = (obj as Record<string, unknown>).image as Record<string, unknown> | undefined;
+        if (!image || typeof image !== 'object') {
+          return toolError(obj['plugin-id'] === 'Sprite'
+            ? `Object "${args.objectName}" is a Sprite; its images belong to animation frames. Use replace_sprite_image.`
+            : `Object "${args.objectName}" (${obj['plugin-id']}) has no editable image.`);
+        }
+
+        const png = Buffer.from(args.pngBase64, 'base64');
+        const size = readPngSize(png);
+        if (!size) {
+          return toolError('Decoded data is not a valid PNG (bad signature or header).');
+        }
+
+        const warnings: string[] = [];
+        const oldWidth = image.width;
+        const oldHeight = image.height;
+        if ((oldWidth !== size.width || oldHeight !== size.height) && obj['plugin-id'] === 'Tilemap') {
+          warnings.push(`The tileset changed size from ${String(oldWidth)}x${String(oldHeight)} to ${size.width}x${size.height}. Tile numbers count across and down the image, so placed tiles and per-tile collision polygons may now point at different tiles; check the Tilemap with get_tilemap_data.`);
+        }
+
+        // Every single-image object in the r495 examples and C3-ACE stores its
+        // image as images/<lowercased object name>.png.
+        const filePath = resolveProjectPath(reader.getProjectDir(), 'images', `${args.objectName.toLowerCase()}.png`);
+        const { mkdir, writeFile } = await import('fs/promises');
+        const { dirname } = await import('path');
+        await mkdir(dirname(filePath), { recursive: true });
+        const previous = await readFile(filePath).catch(() => undefined);
+        await writeFile(filePath, png);
+
+        image.width = size.width;
+        image.height = size.height;
+        if ('fileType' in image) image.fileType = 'image/png';
+
+        let backupPath: string | undefined;
+        try {
+          const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+          backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+        } catch (error) {
+          // Keep the image and the object type in step.
+          if (previous) await writeFile(filePath, previous);
+          else await unlink(filePath).catch(() => undefined);
+          throw error;
+        }
+
+        warnings.push(`Image written to ${filePath} (${size.width}x${size.height}).`);
+        const result: WriteResult = {
+          success: true,
+          entity: args.objectName,
+          category: 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          warnings,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[replace_object_image] failed:', error);
+        return toolError(`Error replacing object image: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );

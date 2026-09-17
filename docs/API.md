@@ -251,15 +251,48 @@ Update an existing object's instance variables and behaviors.
 | `removeVariables` | string[] | No | Variable names to remove |
 | `addBehaviors` | array | No | `[{ behaviorId: "Tween"\|"Sin"\|etc., name }]` |
 | `removeBehaviors` | string[] | No | Behavior names to remove |
+| `force` | boolean | No | Remove behaviors even when events still use them (default false) |
+| `globalInstanceProperties` | object | No | Settings of a single-global object (Keyboard, Touch, Audio, Gamepad, LocalStorage...) merged into `singleglobal-inst.properties` |
+| `globalInstanceTags` | string | No | Tags of the single-global instance |
 
 **Notes:**
 - Reads the full existing object and preserves all fields not being modified
+- `removeBehaviors` is refused with `action: "update_blocked"` and the event references while a condition or action still uses the behavior; `force: true` removes it anyway and leaves those events unchanged. Placed instances (every layer depth and non-world) lose their settings for removed behaviors
+- `globalInstanceProperties` and `globalInstanceTags` are refused for objects without `singleglobal-inst`; property keys not already stored produce a warning
 - Validates behavior addon registration (auto-adds known Scirra behaviors)
 - Generates unique SIDs for each new variable and behavior
 - Warns on duplicate variable/behavior names (skips them)
 - `description` sets C3's `desc` field and `showInPropertiesBar` sets `show` (defaults `""` and `true`). `update_family`'s `addVariables` accepts the same two options
 - There is no `initialValue` parameter: a C3 instance-variable definition has no default-value field. A placed instance's starting value lives in that instance's own `instanceVariables` dict, set with `add_instance_to_layout` / `update_instance`
 - To rename, retype or re-describe an existing variable, use `update_instance_variable`
+
+### `update_family`
+
+Update a family's members, shared instance variables and shared behaviors.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Family name |
+| `addMembers`, `removeMembers` | string[] | No | Object type names |
+| `addVariables` | array | No | `[{ name, type, description?, showInPropertiesBar? }]` |
+| `removeVariables` | string[] | No | Variable names |
+| `addBehaviors` | array | No | `[{ behaviorId, name }]` added to `behaviorTypes`; the addon is registered if needed |
+| `removeBehaviors` | string[] | No | Family behavior names |
+| `force` | boolean | No | Remove behaviors even when events still use them (default false) |
+
+**Notes:**
+- A new behavior name must not match a behavior of any member or of another family sharing a member
+- Removal checks event references through the family and every member; it is refused with `action: "update_blocked"` unless `force` is true
+- Member instances on every layer depth get a `behaviors` dict; removed behaviors, and all family behaviors on removed members, are deleted from those instances
+
+### `reorder_behaviors`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` or `familyName` | string | One of them | Owner of the behaviors |
+| `order` | string[] | Yes | Every behavior name exactly once, in the new order |
+
+Returns `action: "unchanged"` when the order already matches.
 
 ### `update_instance_variable`
 
@@ -762,6 +795,9 @@ Update a placed instance on a layout. Instances are found by UID in any layer, n
 | `layoutName` | string | Yes | Layout name |
 | `uid` | number | Yes | UID of the instance |
 | `x`, `y`, `width`, `height`, `angle`, `zElevation`, `color` | number / number[4] | No | World transform and tint (ignored, with a warning, on non-world instances) |
+| `originX`, `originY` | number | No | Origin as a fraction of the instance size |
+| `blendMode` | string | No | `normal` (removes the stored key), `additive`, `xor`, `copy`, `destination-over`, `source-in`, `destination-in`, `source-out`, `destination-out`, `source-atop`, `destination-atop` |
+| `depth` | number | No | 3D Shape depth (`world.depth`, written after the Z key); other plugins get a warning |
 | `showing`, `locked`, `tags` | boolean / string | No | Editor visibility, lock, and tags |
 | `instanceVariables` | object | No | Instance variable values to merge |
 | `properties` | object | No | Plugin property values to merge, keyed by property ID (Text `text`, iframe `url`, Tilemap `tile-width`, ...) |
@@ -771,6 +807,21 @@ Update a placed instance on a layout. Instances are found by UID in any layer, n
 **Notes:**
 - Behavior names not defined on the object type or one of its families produce a warning; effect names not defined there are rejected, because Construct fails to load an instance with an unknown effect key. Attach the effect first with `add_effect`.
 - Property keys are not validated against the plugin; use the IDs Construct writes into the layout file.
+- `zElevation` is written to `world.zElevation` when the instance already stores that key (projects saved by older releases) and to `world.z` otherwise.
+
+### `move_instance`
+
+Move a world instance to another layer and/or change its Z order. A layer's `instances` array is stored bottom to top.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | World instance UID |
+| `toLayer` | string | No | Destination layer at any depth (default: current layer) |
+| `position` | `"top"` / `"bottom"` / number | No | Z position in the destination layer, index counted from the bottom (default: top when changing layer) |
+| `aboveUid`, `belowUid` | number | No | Place directly above or below an instance on the destination layer |
+
+Give at most one of `position`, `aboveUid` and `belowUid`. Non-world instances are refused. The result reports `fromLayer`, `fromIndex`, `toLayer` and `toIndex`; `action: "unchanged"` when nothing moved.
 
 ### `update_layout`
 
@@ -1003,6 +1054,17 @@ At least one updatable property must be provided.
   frame, so its length must be even and at least 6 (three points). Values
   outside 0-1 are accepted with a warning, because a polygon point may sit
   beyond the frame edge.
+
+### `replace_object_image`
+
+Replace the image of an object type that has a single `image` (Tiled Background, 9-patch, Particles, Sprite Font, Tilemap).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Object type name (Sprites are refused; use `replace_sprite_image`) |
+| `pngBase64` | string | Yes | Base64 PNG data |
+
+Writes `images/<lowercased name>.png`, the naming every single-image object uses in the r495 examples, and sets `image.width`/`image.height` from the PNG header (and `fileType` to `image/png` when the key is present). A Tilemap whose tileset changes size gets a warning, because tile numbers count across the image. If the object type write fails, the previous image is restored.
 
 ### `reorder_frames`
 

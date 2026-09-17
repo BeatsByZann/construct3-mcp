@@ -6,6 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
+- Objects and instances: `update_instance` sets `originX`, `originY`, `blendMode` and `depth`; `move_instance` moves a world instance between layers (any depth) and changes its Z order; `update_object_properties` edits a single-global object's settings (`globalInstanceProperties`, `globalInstanceTags`); `update_family` adds and removes family behaviors; `reorder_behaviors` reorders the behaviors of an object type or family; `replace_object_image` replaces the image of Tiled Background, 9-patch, Particles, Sprite Font and Tilemap objects.
 - Read-only usage queries: `get_project_properties` (the full settings bag and top-level settings), `search_project` (text or regex across event sheets, script files and layout instance values), `find_behavior_usage`, `find_effect_usage`, `find_instance_variable_references` and `get_instance_counts`.
 - Event-sheet authoring that matches what the editor stores: action comments (`{ type: "comment", text, textColor, backgroundColor }`), function calls (`{ callFunction, parameters: [...] }`) and custom action calls (`{ customAction, objectClass, customActionObjectClass, parameters: [...] }`) in `add_event_block` and `update_event_block`; `update_event_block` also edits comment text and colors, call arguments, condition `disabled` and the block's `isOrBlock`; `add_event_block` takes `isOrBlock` and `disabled` conditions.
 - `update_function` edits and renames custom action definitions (`custom-ace-block`) as well as functions, rewriting the calls that resolve to the definition (qualified family calls, calls on the family, and unqualified calls on members without their own override), and has a `dryRun` that lists call sites.
@@ -177,8 +178,14 @@ All notable changes to the Construct3 MCP Server are documented here.
 - `createLayer` now emits `sampling: "auto"`, which every layer in a real r495
   project carries.
 
+### Changed
+
+- `update_object_properties` refuses to remove a behavior that event conditions or actions still use unless `force` is true, and removes the removed behaviors' settings from placed instances.
+
 ### Fixed
 
+- `update_instance` wrote `zElevation` to `world.z` even on instances that store `world.zElevation` (projects saved by older releases), leaving two Z keys.
+- `delete_instance_from_layout` did not find instances on sub-layers, and `update_object_properties` did not give sub-layer instances their `behaviors`/`instanceVariables` dicts.
 - `update_event_block` upgrades a block written with the legacy `isElse`/`isOr` keys before checking condition indexes, so the added else condition no longer shifts updates, removals and insertions.
 - `move_event_block_items` refuses to move an else condition; `update_event_block_action` refuses keyed parameters on calls, comments and script rows and accepts custom action bodies.
 - Renaming a custom action is refused when it would change which definition a plain call reaches (a family action renamed onto a name a member defines, or a member action renamed onto a family action name its plain calls use).

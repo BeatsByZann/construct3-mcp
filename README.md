@@ -111,7 +111,10 @@ node dist/index.js /path/to/your/project.c3proj
 | Tool | Description |
 |------|-------------|
 | `create_object` | Create a new object type (Sprite, Text, TiledBg, global plugins, etc.) |
-| `update_object_properties` | Add/remove instance variables and behaviors on an object |
+| `update_object_properties` | Add/remove instance variables and behaviors on an object, and edit a single-global object's settings |
+| `reorder_behaviors` | Reorder the behaviors of an object type or family |
+| `replace_object_image` | Replace the image of a Tiled Background, 9-patch, Particles, Sprite Font or Tilemap object |
+| `move_instance` | Move a placed instance to another layer or change its Z order |
 | `delete_object` | Delete an object (with reference checking and optional force) |
 | `create_event_sheet` | Create a new event sheet with optional includes |
 | `add_event_to_sheet` | Add a group, function, variable, include, or comment to a sheet |

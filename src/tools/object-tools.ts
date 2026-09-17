@@ -1,6 +1,6 @@
 /**
  * Object type tools: create_object, update_object_properties, delete_object,
- * create_family, update_family, delete_family.
+ * create_family, update_family, reorder_behaviors, delete_family.
  */
 
 import { z } from 'zod';
@@ -8,7 +8,7 @@ import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, ObjectType, Instance, Layer, Layout } from '../construct3/types.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
 import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
-import { validateName, validateSubfolder, toolResult, toolError, notFoundError, orphanedFileError } from './shared.js';
+import { validateName, validateSubfolder, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord } from './shared.js';
 import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
   GLOBAL_PLUGINS,
@@ -139,13 +139,18 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         behaviorId: z.string().describe('Behavior plugin ID (e.g., "Tween", "Sin", "Timer")'),
         name: z.string().describe('Behavior instance name'),
       })).optional().describe('Behaviors to add'),
-      removeBehaviors: z.array(z.string()).optional().describe('Behavior names to remove'),
+      removeBehaviors: z.array(z.string()).optional().describe('Behavior names to remove; refused while events still use them unless force is true'),
+      force: z.boolean().optional().default(false).describe('Remove behaviors even when event conditions or actions still use them (those events are left as they are)'),
+      globalInstanceProperties: boundedRecord(100, 4).optional()
+        .describe('Plugin property values to merge into a single-global object\'s settings (Keyboard, Touch, Audio, Gamepad, LocalStorage...), e.g. { "use-mouse-input": true }; keys are the plugin\'s property IDs'),
+      globalInstanceTags: z.string().max(500).optional().describe('Tags of a single-global object\'s instance'),
     },
     async (args) => {
       try {
         // Check at least one update is provided
-        if (args.isGlobal === undefined && !args.addVariables?.length && !args.removeVariables?.length && !args.addBehaviors?.length && !args.removeBehaviors?.length) {
-          return toolError('No updates provided. Specify at least one of: isGlobal, addVariables, removeVariables, addBehaviors, removeBehaviors.');
+        if (args.isGlobal === undefined && !args.addVariables?.length && !args.removeVariables?.length && !args.addBehaviors?.length && !args.removeBehaviors?.length &&
+            args.globalInstanceProperties === undefined && args.globalInstanceTags === undefined) {
+          return toolError('No updates provided. Specify at least one of: isGlobal, addVariables, removeVariables, addBehaviors, removeBehaviors, globalInstanceProperties, globalInstanceTags.');
         }
 
         // Read existing object — preserves ALL original fields
@@ -157,6 +162,41 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         }
 
         const warnings: string[] = [];
+
+        // Single-global settings live on the object type, not in a layout.
+        if (args.globalInstanceProperties !== undefined || args.globalInstanceTags !== undefined) {
+          const sgi = (obj as Record<string, unknown>)['singleglobal-inst'] as Record<string, unknown> | undefined;
+          if (!sgi || typeof sgi !== 'object') {
+            return toolError(`Object "${args.name}" (${obj['plugin-id']}) is not a single-global object, so it has no global instance settings. Use update_instance for placed instances.`);
+          }
+          if (args.globalInstanceProperties !== undefined) {
+            const current = sgi.properties && typeof sgi.properties === 'object' ? sgi.properties as Record<string, unknown> : {};
+            const unknownKeys = Object.keys(args.globalInstanceProperties).filter(k => !(k in current));
+            if (unknownKeys.length > 0) {
+              warnings.push(`Propert${unknownKeys.length === 1 ? 'y' : 'ies'} ${unknownKeys.map(k => `"${k}"`).join(', ')} not present on "${args.name}" before; check the plugin's property IDs. Present: ${Object.keys(current).join(', ') || '(none)'}.`);
+            }
+            sgi.properties = { ...current, ...args.globalInstanceProperties };
+          }
+          if (args.globalInstanceTags !== undefined) sgi.tags = args.globalInstanceTags;
+        }
+
+        // Removing a behavior that events still use leaves broken events.
+        if (args.removeBehaviors?.length && !args.force) {
+          const index = await getProjectIndex(reader);
+          const blocked = args.removeBehaviors
+            .map(b => ({ behavior: b, references: index.behaviorReferences.get(`${args.name}::${b}`) ?? [] }))
+            .filter(r => r.references.length > 0);
+          if (blocked.length > 0) {
+            return toolResult({
+              success: false,
+              entity: args.name,
+              category: 'object',
+              action: 'update_blocked',
+              message: 'Events still use these behaviors. Remove or change those events first, or pass force: true.',
+              references: blocked.map(r => ({ behavior: r.behavior, count: r.references.length, sample: r.references.slice(0, 20) })),
+            });
+          }
+        }
 
         // Update global status
         if (args.isGlobal !== undefined) {
@@ -235,9 +275,10 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         const backupPath = await writer.writeEntityFile('objectTypes', args.name, obj, subfolder);
 
         // Sync layout instances: ensure all instances of this object have
-        // behaviors/instanceVariables dicts so C3 can resolve them on load.
+        // behaviors/instanceVariables dicts so C3 can resolve them on load,
+        // and drop the per-instance settings of removed behaviors.
         if (args.addBehaviors?.length || args.removeBehaviors?.length || args.addVariables?.length || args.removeVariables?.length) {
-          const syncedLayouts = await syncLayoutInstances(reader, writer, args.name);
+          const syncedLayouts = await syncLayoutInstances(reader, writer, new Set([args.name]), args.removeBehaviors ?? []);
           if (syncedLayouts.length > 0) {
             warnings.push(`Updated instances in layout(s): ${syncedLayouts.join(', ')}`);
           }
@@ -595,7 +636,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'update_family',
-    'Update a family: add/remove members, add/remove shared instance variables or behaviors',
+    'Update a family: add/remove members, shared instance variables and shared behaviors',
     {
       name: z.string().max(200).describe('Family name to update'),
       addMembers: z.array(z.string().max(200)).optional().describe('Object type names to add to the family'),
@@ -607,13 +648,21 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         showInPropertiesBar: z.boolean().optional().describe('Show the variable in the properties bar (C3 "show"; default true)'),
       })).optional().describe('Instance variables to add to all family members'),
       removeVariables: z.array(z.string()).optional().describe('Instance variable names to remove'),
+      addBehaviors: z.array(z.object({
+        behaviorId: z.string().max(100).describe('Behavior addon ID (e.g. "Bullet", "Sin", "Platform")'),
+        name: z.string().max(200).describe('Behavior name, unique across the family and each member\'s own behaviors'),
+      })).max(50).optional().describe('Behaviors every member gets through the family'),
+      removeBehaviors: z.array(z.string().max(200)).max(50).optional()
+        .describe('Family behavior names to remove; refused while events still use them unless force is true'),
+      force: z.boolean().optional().default(false).describe('Remove behaviors even when events still use them (those events are left as they are)'),
     },
     async (args) => {
       try {
         const hasUpdates = (args.addMembers?.length ?? 0) > 0 || (args.removeMembers?.length ?? 0) > 0 ||
-          (args.addVariables?.length ?? 0) > 0 || (args.removeVariables?.length ?? 0) > 0;
+          (args.addVariables?.length ?? 0) > 0 || (args.removeVariables?.length ?? 0) > 0 ||
+          (args.addBehaviors?.length ?? 0) > 0 || (args.removeBehaviors?.length ?? 0) > 0;
         if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: addMembers, removeMembers, addVariables, removeVariables.');
+          return toolError('No updates provided. Specify at least one of: addMembers, removeMembers, addVariables, removeVariables, addBehaviors, removeBehaviors.');
         }
 
         let family: Record<string, unknown>;
@@ -628,6 +677,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         // Manage members
         if (!Array.isArray(family.members)) family.members = [];
         const members = family.members as string[];
+        const originalMembers = [...members];
 
         if (args.addMembers) {
           for (const m of args.addMembers) {
@@ -676,8 +726,94 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           }
         }
 
+        // Manage behaviors. A family behavior is used in events through the
+        // family or any member, and every member instance carries its settings.
+        if (!Array.isArray(family.behaviorTypes)) family.behaviorTypes = [];
+        const familyBehaviors = family.behaviorTypes as Array<Record<string, unknown>>;
+        const removedBehaviors: string[] = [];
+        if (args.removeBehaviors?.length) {
+          const missing = args.removeBehaviors.filter(b => !familyBehaviors.some(e => e.name === b));
+          for (const b of missing) warnings.push(`Behavior "${b}" not found on the family, skipping`);
+          const toRemove = args.removeBehaviors.filter(b => !missing.includes(b));
+          if (toRemove.length > 0 && !args.force) {
+            const index = await getProjectIndex(reader);
+            const users = [args.name, ...new Set([...originalMembers, ...members])];
+            const blocked = toRemove
+              .map(b => ({ behavior: b, references: users.flatMap(u => index.behaviorReferences.get(`${u}::${b}`) ?? []) }))
+              .filter(r => r.references.length > 0);
+            if (blocked.length > 0) {
+              return toolResult({
+                success: false,
+                entity: args.name,
+                category: 'family',
+                action: 'update_blocked',
+                message: 'Events still use these family behaviors (through the family or a member). Remove or change those events first, or pass force: true.',
+                references: blocked.map(r => ({ behavior: r.behavior, count: r.references.length, sample: r.references.slice(0, 20) })),
+              });
+            }
+          }
+          for (const b of toRemove) {
+            familyBehaviors.splice(familyBehaviors.findIndex(e => e.name === b), 1);
+            removedBehaviors.push(b);
+          }
+        }
+        if (args.addBehaviors?.length) {
+          // Names taken by the members' own behaviors or their other families.
+          const taken = new Map<string, string>();
+          for (const m of members) {
+            try {
+              const obj = await reader.readObjectType(m);
+              for (const b of (obj.behaviorTypes ?? []) as Array<{ name?: string }>) {
+                if (typeof b.name === 'string') taken.set(b.name, `object type "${m}"`);
+              }
+            } catch {
+              // Unknown member: nothing to collide with.
+            }
+          }
+          for (const [otherName, other] of await reader.readAllFamilies()) {
+            if (otherName === args.name) continue;
+            const otherMembers = Array.isArray(other.members) ? other.members as string[] : [];
+            if (!otherMembers.some(m => members.includes(m))) continue;
+            for (const b of (Array.isArray(other.behaviorTypes) ? other.behaviorTypes : []) as Array<{ name?: string }>) {
+              if (typeof b.name === 'string') taken.set(b.name, `family "${otherName}"`);
+            }
+          }
+          for (const b of args.addBehaviors) {
+            validateName(b.name);
+            if (familyBehaviors.some(e => e.name === b.name)) {
+              warnings.push(`Behavior "${b.name}" already exists on the family, skipping`);
+              continue;
+            }
+            const owner = taken.get(b.name);
+            if (owner) {
+              return toolError(`Behavior name "${b.name}" is already used by ${owner}, which shares members with "${args.name}". Construct needs each behavior name to be unique on an object type; choose another name.`);
+            }
+            const bWarning = await writer.ensureAddonRegistered('behavior', b.behaviorId);
+            if (bWarning) warnings.push(bWarning);
+            familyBehaviors.push(createBehavior(b.behaviorId, b.name, await idGen.generateSid(reader)));
+          }
+        }
+
         const subfolder = writer.getSubfolderForEntity('families', args.name);
         const backupPath = await writer.writeEntityFile('families', args.name, family, subfolder);
+
+        if (args.addBehaviors?.length || removedBehaviors.length > 0 || args.addMembers?.length) {
+          const syncedLayouts = await syncLayoutInstances(reader, writer, new Set(members), removedBehaviors);
+          if (syncedLayouts.length > 0) {
+            warnings.push(`Updated member instances in layout(s): ${syncedLayouts.join(', ')}`);
+          }
+        }
+        const formerMembers = originalMembers.filter(m => !members.includes(m));
+        if (formerMembers.length > 0) {
+          // Former members no longer get any of the family's behaviors.
+          const familyBehaviorNames = [...familyBehaviors.map(e => String(e.name)), ...removedBehaviors];
+          if (familyBehaviorNames.length > 0) {
+            const cleaned = await syncLayoutInstances(reader, writer, new Set(formerMembers), familyBehaviorNames);
+            if (cleaned.length > 0) {
+              warnings.push(`Removed family behavior settings from former member instances in layout(s): ${cleaned.join(', ')}`);
+            }
+          }
+        }
 
         const result: WriteResult = {
           success: true,
@@ -691,6 +827,67 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
       } catch (error) {
         console.error('[update_family] failed:', error);
         return toolError(`Error updating family: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── reorder_behaviors ────────────────────────────────────
+
+  server.tool(
+    'reorder_behaviors',
+    'Reorder the behaviors of an object type or a family, as dragging them in the editor\'s Behaviors dialog does. The order is saved in the object type or family file.',
+    {
+      objectName: z.string().max(200).optional().describe('Object type whose behaviors to reorder'),
+      familyName: z.string().max(200).optional().describe('Family whose behaviors to reorder'),
+      order: z.array(z.string().max(200)).min(1).max(100).describe('Every behavior name exactly once, in the new order'),
+    },
+    async (args) => {
+      try {
+        if ((args.objectName === undefined) === (args.familyName === undefined)) {
+          return toolError('Give exactly one of objectName and familyName.');
+        }
+        const isFamily = args.familyName !== undefined;
+        const name = (args.objectName ?? args.familyName)!;
+        let holder: Record<string, unknown>;
+        try {
+          holder = isFamily
+            ? await reader.readFamily(name)
+            : await reader.readObjectType(name) as unknown as Record<string, unknown>;
+        } catch {
+          return isFamily
+            ? toolError(`Family "${name}" not found. Use list_families to see available families.`)
+            : notFoundError('Object', name, reader.findNearestName(name, 'objects'), 'list_objects');
+        }
+
+        const behaviors = Array.isArray(holder.behaviorTypes) ? holder.behaviorTypes as Array<Record<string, unknown>> : [];
+        const current = behaviors.map(b => String(b.name));
+        const sameSet = args.order.length === current.length
+          && new Set(args.order).size === args.order.length
+          && args.order.every(n => current.includes(n));
+        if (!sameSet) {
+          return toolError(`order must list every behavior of "${name}" exactly once. Current order: ${current.join(', ') || '(no behaviors)'}.`);
+        }
+        if (args.order.every((n, i) => n === current[i])) {
+          return toolResult({ success: true, entity: name, category: isFamily ? 'family' : 'object', action: 'unchanged', order: current });
+        }
+
+        holder.behaviorTypes = args.order.map(n => behaviors.find(b => b.name === n)!);
+        const folder = isFamily ? 'families' : 'objectTypes';
+        const subfolder = writer.getSubfolderForEntity(folder, name);
+        const backupPath = await writer.writeEntityFile(folder, name, holder, subfolder);
+
+        const result: WriteResult = {
+          success: true,
+          entity: name,
+          category: isFamily ? 'family' : 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          warnings: [`Behavior order: ${args.order.join(', ')}.`],
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[reorder_behaviors] failed:', error);
+        return toolError(`Error reordering behaviors: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
@@ -752,7 +949,8 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 async function syncLayoutInstances(
   reader: Construct3ProjectReader,
   writer: Construct3ProjectWriter,
-  objectName: string,
+  objectNames: Set<string>,
+  removedBehaviors: string[] = [],
 ): Promise<string[]> {
   const layouts = await reader.readAllLayouts();
   const modifiedLayouts: string[] = [];
@@ -760,23 +958,18 @@ async function syncLayoutInstances(
   for (const [layoutName, layout] of layouts) {
     let modified = false;
 
-    for (const layer of layout.layers) {
-      for (const instance of layer.instances) {
-        if (instance.type === objectName) {
-          modified = ensureInstanceFields(instance) || modified;
+    // Every layer depth plus non-world instances.
+    forEachLayoutInstance(layout, (instance) => {
+      if (!objectNames.has(instance.type)) return;
+      if (ensureInstanceFields(instance)) modified = true;
+      const behaviors = instance.behaviors as Record<string, unknown>;
+      for (const name of removedBehaviors) {
+        if (Object.prototype.hasOwnProperty.call(behaviors, name)) {
+          delete behaviors[name];
+          modified = true;
         }
       }
-    }
-
-    // Also check nonworld-instances
-    const nonworld = (layout as Record<string, unknown>)['nonworld-instances'] as Instance[] | undefined;
-    if (Array.isArray(nonworld)) {
-      for (const instance of nonworld) {
-        if (instance.type === objectName) {
-          modified = ensureInstanceFields(instance) || modified;
-        }
-      }
-    }
+    });
 
     if (modified) {
       const subfolder = writer.getSubfolderForEntity('layouts', layoutName);

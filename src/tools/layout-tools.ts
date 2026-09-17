@@ -1,7 +1,7 @@
 /**
  * Layout tools: create_layout, add_instance_to_layout, delete_layout, update_layout,
  * add_layer, delete_layer, update_layer, reorder_layers, move_layer,
- * delete_instance_from_layout, update_instance, set_instance_parent,
+ * delete_instance_from_layout, update_instance, move_instance, set_instance_parent,
  * remove_instance_children.
  */
 
@@ -58,6 +58,40 @@ async function definedBehaviorsAndEffects(
  * are the project-level sampling options Construct documents.
  */
 const SAMPLING_MODES = ['auto', 'nearest', 'bilinear', 'trilinear'] as const;
+
+/**
+ * Blend modes accepted for a placed instance: the same list add_layer offers.
+ * r495 omits the key for "normal" (27 instances in 5 example packages carry
+ * "additive"; none carry "normal").
+ */
+const INSTANCE_BLEND_MODES = [
+  'normal', 'additive', 'xor', 'copy', 'destination-over', 'source-in', 'destination-in',
+  'source-out', 'destination-out', 'source-atop', 'destination-atop',
+] as const;
+
+/**
+ * Copy of `record` with `key` inserted right after the first of `afterKeys`
+ * it holds (or at the end), so a new key lands where Construct writes it.
+ */
+function insertKeyAfter(record: Record<string, unknown>, key: string, value: unknown, afterKeys: string[]): Record<string, unknown> {
+  const anchor = afterKeys.find(k => k in record);
+  if (anchor === undefined) return { ...record, [key]: value };
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(record)) {
+    out[k] = v;
+    if (k === anchor) out[key] = value;
+  }
+  return out;
+}
+
+/** The plugin id of an object type, or undefined when it cannot be read. */
+async function pluginOf(reader: MutationToolDeps['reader'], objectType: string): Promise<string | undefined> {
+  try {
+    return (await reader.readObjectType(objectType))['plugin-id'];
+  } catch {
+    return undefined;
+  }
+}
 
 /** Layout camera projection. Observed in r495 projects: 'perspective'. */
 const LAYOUT_PROJECTIONS = ['perspective', 'orthographic'] as const;
@@ -952,11 +986,12 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        // Search layers
+        // Search every layer, sub-layers included
         let found = false;
         let removedType: string | undefined;
 
-        for (const layer of layout.layers) {
+        for (const layer of collectLayers(layout)) {
+          if (!Array.isArray(layer.instances)) continue;
           const idx = layer.instances.findIndex(inst => inst.uid === args.uid);
           if (idx !== -1) {
             removedType = layer.instances[idx].type;
@@ -1017,6 +1052,10 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       angle: z.number().optional().describe('New rotation angle in radians'),
       zElevation: z.number().optional().describe('New Z elevation'),
       color: z.array(z.number().min(0).max(1)).length(4).optional().describe('New RGBA tint [r,g,b,a] values 0-1'),
+      originX: z.number().min(-100).max(100).optional().describe('Instance origin X as a fraction of its width (0 = left, 0.5 = center, 1 = right)'),
+      originY: z.number().min(-100).max(100).optional().describe('Instance origin Y as a fraction of its height (0 = top, 0.5 = center, 1 = bottom)'),
+      blendMode: z.enum(INSTANCE_BLEND_MODES).optional().describe('Instance blend mode; "normal" removes the stored value, as Construct does'),
+      depth: z.number().min(0).optional().describe('3D depth of the instance (3D Shape); written as world.depth'),
       showing: z.boolean().optional().describe('Initial visibility'),
       locked: z.boolean().optional().describe('Locked in editor'),
       tags: z.string().max(500).optional().describe('Comma-separated tags'),
@@ -1036,7 +1075,9 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       try {
         const hasUpdates = args.x !== undefined || args.y !== undefined || args.width !== undefined ||
           args.height !== undefined || args.angle !== undefined || args.zElevation !== undefined ||
-          args.color !== undefined || args.showing !== undefined || args.locked !== undefined ||
+          args.color !== undefined || args.originX !== undefined || args.originY !== undefined ||
+          args.blendMode !== undefined || args.depth !== undefined ||
+          args.showing !== undefined || args.locked !== undefined ||
           args.tags !== undefined || args.instanceVariables !== undefined ||
           args.properties !== undefined || args.behaviors !== undefined || args.effects !== undefined;
 
@@ -1085,12 +1126,38 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           if (args.width !== undefined) inst.world.width = args.width;
           if (args.height !== undefined) inst.world.height = args.height;
           if (args.angle !== undefined) inst.world.angle = args.angle;
-          if (args.zElevation !== undefined) inst.world.z = args.zElevation;
+          if (args.zElevation !== undefined) {
+            // Older saves store the value as zElevation (the r424 examples),
+            // newer ones as z (r476 and r495). Keep whichever key the
+            // instance already has.
+            if ('zElevation' in inst.world && !('z' in inst.world)) inst.world.zElevation = args.zElevation;
+            else inst.world.z = args.zElevation;
+          }
           if (args.color !== undefined) inst.world.color = args.color;
+          if (args.originX !== undefined) inst.world.originX = args.originX;
+          if (args.originY !== undefined) inst.world.originY = args.originY;
+          if (args.depth !== undefined) {
+            if (!('depth' in inst.world)) {
+              inst.world = insertKeyAfter(inst.world, 'depth', args.depth, ['zElevation', 'z']) as typeof inst.world;
+            } else {
+              inst.world.depth = args.depth;
+            }
+            const plugin = await pluginOf(reader, inst.type);
+            if (plugin !== undefined && plugin !== 'Shape3D') {
+              warnings.push(`Depth is a 3D Shape property; "${inst.type}" uses the ${plugin} plugin, which may ignore it.`);
+            }
+          }
+          if (args.blendMode !== undefined) {
+            if (args.blendMode === 'normal') delete inst.world.blendMode;
+            else inst.world.blendMode = args.blendMode;
+          }
         } else {
-          const ignoredWorldProps = [args.x, args.y, args.width, args.height, args.angle, args.zElevation, args.color].filter(v => v !== undefined);
+          const ignoredWorldProps = [
+            args.x, args.y, args.width, args.height, args.angle, args.zElevation, args.color,
+            args.originX, args.originY, args.blendMode, args.depth,
+          ].filter(v => v !== undefined);
           if (ignoredWorldProps.length > 0) {
-            warnings.push(`Instance ${args.uid} is a non-world instance; position, size, angle, Z elevation and color were ignored.`);
+            warnings.push(`Instance ${args.uid} is a non-world instance; position, size, angle, Z elevation, color, origin, blend mode and depth were ignored.`);
           }
         }
         if (args.showing !== undefined) inst.showing = args.showing;
@@ -1141,6 +1208,118 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       } catch (error) {
         console.error('[update_instance] failed:', error);
         return toolError(`Error updating instance: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── move_instance ───────────────────────────────────────
+
+  server.tool(
+    'move_instance',
+    'Move a placed world instance to another layer and/or change its Z order within its layer (the editor\'s "Move to layer", "Move to top/bottom" and Z Order Bar drag). A layer\'s instances are stored bottom to top.',
+    {
+      layoutName: z.string().max(200).describe('Layout name'),
+      uid: z.number().int().describe('UID of the world instance to move'),
+      toLayer: z.string().max(200).optional().describe('Destination layer (any depth); default: the instance\'s current layer'),
+      position: z.union([z.enum(['top', 'bottom']), z.number().int().min(0)]).optional()
+        .describe('Z position in the destination layer: "top", "bottom", or a 0-based index counted from the bottom. Default: top when changing layer'),
+      aboveUid: z.number().int().optional().describe('Place the instance directly above this instance (same destination layer)'),
+      belowUid: z.number().int().optional().describe('Place the instance directly below this instance (same destination layer)'),
+    },
+    async (args) => {
+      try {
+        const placements = [args.position !== undefined, args.aboveUid !== undefined, args.belowUid !== undefined].filter(Boolean).length;
+        if (placements > 1) {
+          return toolError('Give at most one of position, aboveUid and belowUid.');
+        }
+        if (placements === 0 && args.toLayer === undefined) {
+          return toolError('Nothing to do. Give toLayer, position, aboveUid or belowUid.');
+        }
+        if (args.aboveUid === args.uid || args.belowUid === args.uid) {
+          return toolError('An instance cannot be placed relative to itself.');
+        }
+
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        const layers = collectLayers(layout);
+        const source = layers.find(l => Array.isArray(l.instances) && l.instances.some(i => i.uid === args.uid));
+        if (!source) {
+          const nonworld = collectInstances(layout).some(i => i.uid === args.uid);
+          return toolError(nonworld
+            ? `Instance ${args.uid} is a non-world instance; it has no layer or Z order.`
+            : `World instance with UID ${args.uid} not found in layout "${args.layoutName}". Use get_layout_details to see all instance UIDs.`);
+        }
+
+        let target = source;
+        if (args.toLayer !== undefined) {
+          const found = layers.find(l => l.name === args.toLayer);
+          if (!found) {
+            return toolError(`Layer "${args.toLayer}" not found in layout "${args.layoutName}". Layers: ${layers.map(l => l.name).join(', ')}`);
+          }
+          target = found;
+        }
+
+        const fromIndex = source.instances.findIndex(i => i.uid === args.uid);
+        const [inst] = source.instances.splice(fromIndex, 1);
+        if (!Array.isArray(target.instances)) target.instances = [];
+
+        let toIndex: number;
+        const relative = args.aboveUid ?? args.belowUid;
+        if (relative !== undefined) {
+          const anchor = target.instances.findIndex(i => i.uid === relative);
+          if (anchor === -1) {
+            return toolError(`Instance ${relative} is not on layer "${target.name}". aboveUid and belowUid must name an instance on the destination layer.`);
+          }
+          toIndex = args.aboveUid !== undefined ? anchor + 1 : anchor;
+        } else if (args.position === 'bottom') {
+          toIndex = 0;
+        } else if (typeof args.position === 'number') {
+          if (args.position > target.instances.length) {
+            return toolError(`position ${args.position} is out of range: layer "${target.name}" would hold ${target.instances.length + 1} instance(s), so the highest index is ${target.instances.length}.`);
+          }
+          toIndex = args.position;
+        } else if (args.position === 'top' || target !== source) {
+          toIndex = target.instances.length;
+        } else {
+          toIndex = fromIndex;
+        }
+        target.instances.splice(toIndex, 0, inst);
+
+        const unchanged = target === source && toIndex === fromIndex;
+        if (unchanged) {
+          return toolResult({
+            success: true,
+            entity: args.layoutName,
+            category: 'layout',
+            action: 'unchanged',
+            message: `Instance ${args.uid} is already at index ${fromIndex} of layer "${source.name}".`,
+          });
+        }
+
+        const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
+        const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
+
+        return toolResult({
+          success: true,
+          entity: args.layoutName,
+          category: 'layout',
+          action: 'updated',
+          backupFile: backupPath,
+          uid: args.uid,
+          fromLayer: source.name,
+          fromIndex,
+          toLayer: target.name,
+          toIndex,
+          layerInstanceCount: target.instances.length,
+        });
+      } catch (error) {
+        console.error('[move_instance] failed:', error);
+        return toolError(`Error moving instance: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
