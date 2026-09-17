@@ -308,7 +308,7 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
         items: [offsetY], subfolders: [], ownerId: 'behavior', ownerUid: 'Owned',
       });
       expect(Object.keys(track.propertyTracksRoot.subfolders[0])).toEqual(Object.keys(shapes.propertyTracksRootWithFolder.subfolders[0]));
-      await writeFile(path, JSON.stringify(data, null, '	'), 'utf-8');
+      await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
 
       const listed = await ok('list_timeline_tracks', { timelineName: 'Move' });
       expect(listed.tracks[0].propertyTracks.map((pt: Json) => [pt.property, pt.folder])).toEqual([['offsetX', ''], ['offsetY', 'Owned']]);
@@ -362,7 +362,7 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
       const projectPath = join(tmpDir, 'project.c3proj');
       const project = await projectJson();
       delete project.timelines;
-      await writeFile(projectPath, JSON.stringify(project, null, '	'), 'utf-8');
+      await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
       await boot();
       await ok('create_timeline', { name: 'Move' });
       expect((await projectJson()).timelines).toEqual({ items: ['Move'], subfolders: [{ items: [], subfolders: [] }] });
@@ -448,6 +448,171 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
 
   // ─── untyped (legacy) tracks ──────────────────────────────
 
+  describe('review follow-ups: folders, audio and eases', () => {
+    const POINTS = [{ x: 0, y: 0 }, { x: 1, y: 1 }];
+
+    async function patchTimeline(patch: (data: Json) => void, name = 'Move') {
+      const path = join(tmpDir, 'timelines', `${name}.json`);
+      const data = await onDisk(name);
+      patch(data);
+      await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
+    }
+
+    async function rawTimeline(name = 'Move') {
+      return readFile(join(tmpDir, 'timelines', `${name}.json`), 'utf-8');
+    }
+
+    it('refuses to move a subfolder up over a same-named folder, and moves nested contents to a non-root parent', async () => {
+      await createMove();
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'A' });
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'C' });
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'B', parentFolder: 'A' });
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'C', parentFolder: 'A' });
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'D', parentFolder: 'A/B' });
+      await ok('add_value_track', { timelineName: 'Move', name: 'Inner', folder: 'A/B' });
+
+      const before = await rawTimeline();
+      await fails('delete_timeline_folder', { timelineName: 'Move', folder: 'A' }, 'already has a folder of that name');
+      expect(await rawTimeline()).toBe(before);
+
+      await ok('delete_timeline_folder', { timelineName: 'Move', folder: 'A/B' });
+      const data = await onDisk();
+      expect(data.tracks).toEqual([]);
+      const a = data.tracksRoot.subfolders.find((f: Json) => f.name === 'A');
+      expect(a.items.map((t: Json) => t.name)).toEqual(['Inner']);
+      expect(a.subfolders.map((f: Json) => f.name)).toEqual(['C', 'D']);
+    });
+
+    it('refuses a rename onto a sibling folder name', async () => {
+      await createMove();
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'One' });
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'Two' });
+      await fails('rename_timeline_folder', { timelineName: 'Move', folder: 'Two', newName: 'One' }, 'already exists');
+      expect((await onDisk()).tracksRoot.subfolders.map((f: Json) => f.name)).toEqual(['One', 'Two']);
+    });
+
+    it('moves a value track out of a folder to the root', async () => {
+      await createMove();
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'Group' });
+      await ok('add_value_track', { timelineName: 'Move', name: 'Zoom', folder: 'Group' });
+      await ok('move_timeline_track', { timelineName: 'Move', trackName: 'Zoom', folder: '' });
+      const data = await onDisk();
+      expect(data.tracks.map((t: Json) => t.name)).toEqual(['Zoom']);
+      expect(data.tracksRoot.subfolders[0].items).toEqual([]);
+      await fails('move_timeline_track', { timelineName: 'Move', trackName: 'Zoom', folder: '' }, 'already in the root');
+    });
+
+    it('writes nothing when a value track names a missing folder', async () => {
+      await createMove();
+      const before = await rawTimeline();
+      await fails('add_value_track', { timelineName: 'Move', name: 'Zoom', folder: 'Nowhere' }, 'No track folder "Nowhere"');
+      expect(await rawTimeline()).toBe(before);
+    });
+
+    it('refuses value computations under a folder with a non-default result mode', async () => {
+      await createMove();
+      await ok('add_timeline_track', { timelineName: 'Move', layoutName: 'Layout 1', instanceUid: 0 });
+      await ok('add_timeline_folder', { timelineName: 'Move', name: 'Group' });
+      await ok('move_timeline_track', { timelineName: 'Move', instanceUid: 0, folder: 'Group' });
+      await patchTimeline(data => { data.tracksRoot.subfolders[0].resultMode = 'absolute'; });
+      const before = await rawTimeline();
+
+      await fails('set_keyframe', { timelineName: 'Move', instanceUid: 0, time: 1, values: { offsetX: { absolute: 5 } } }, 'result mode "absolute"');
+      await fails('add_property_track', { timelineName: 'Move', instanceUid: 0, property: 'offsetAngle' }, 'result mode "absolute"');
+      await fails('update_track', { timelineName: 'Move', instanceUid: 0, resultMode: 'relative' }, 'result mode "absolute"');
+      await fails('update_timeline', { name: 'Move', resultMode: 'absolute' }, 'result mode "absolute"');
+      await fails('move_timeline_track', { timelineName: 'Move', instanceUid: 0, folder: '' }, 'result mode "absolute"');
+      expect(await rawTimeline()).toBe(before);
+
+      await patchTimeline(data => {
+        data.tracksRoot.subfolders[0].items = [];
+        data.tracksRoot.resultMode = 'relative';
+      });
+      await fails('add_timeline_track', { timelineName: 'Move', layoutName: 'Layout 1', instanceUid: 0 }, 'result mode "relative"');
+    });
+
+    it('asks which folder to use when sound and music both hold the file, and validates the name', async () => {
+      const projectPath = join(tmpDir, 'project.c3proj');
+      const project = await projectJson();
+      project.rootFileFolders.music.items.push({ ...SOUND, sid: 700000000000003 });
+      await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
+      await boot();
+      await createMove();
+
+      await fails('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm' }, 'registered more than once');
+      await fails('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', audioFolder: 'music', name: 'Bad/Name' }, 'Name must start');
+      await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', audioFolder: 'music' });
+      expect((await onDisk()).tracks[0].propertyTracks[0].sourceAdapter).toMatchObject({ audioType: 'music', audioProjectFile: { sid: 700000000000003 } });
+    });
+
+    it('matches built-in ease names exactly', async () => {
+      await ok('create_ease', { name: 'EaseOutSoft', points: POINTS });
+      await fails('create_ease', { name: 'EASEOUTBACK', points: POINTS }, "Construct's own ease names");
+      await createMove();
+      const typo = await ok('update_timeline', { name: 'Move', ease: 'easeinsinee' });
+      expect(typo.warnings.join(' ')).toContain('easeinsinee');
+      const known = await ok('update_timeline', { name: 'Move', ease: 'easeinoutquint' });
+      expect(known.warnings).toBeUndefined();
+    });
+
+    it('leaves timelines that do not use an ease byte-identical when it changes', async () => {
+      await ok('create_ease', { name: 'Swoop', points: POINTS });
+      await createMove();
+      await ok('create_timeline', { name: 'Other' });
+      await ok('update_timeline', { name: 'Move', ease: 'Swoop' });
+      const other = await rawTimeline('Other');
+      const result = await ok('update_ease', { name: 'Swoop', linear: true });
+      expect(result.timelinesRefreshed).toEqual(['Move']);
+      expect(await rawTimeline('Other')).toBe(other);
+      await expect(stat(join(tmpDir, 'timelines', 'Other.json.bak'))).rejects.toThrow();
+    });
+
+    it('refuses to delete an ease named in an event sheet or script unless forced', async () => {
+      await ok('create_ease', { name: 'Swoop', points: POINTS });
+      const sheetPath = join(tmpDir, 'eventSheets', 'MainSheet.json');
+      const sheet = JSON.parse(await readFile(sheetPath, 'utf-8'));
+      sheet.events[0].actions[0].parameters.ease = 'Swoop';
+      await writeFile(sheetPath, JSON.stringify(sheet, null, '\t'), 'utf-8');
+      await boot();
+
+      await fails('delete_ease', { name: 'Swoop' }, 'event sheet "MainSheet"');
+      expect((await projectJson()).timelines.subfolders[0].items).toEqual(['Swoop']);
+
+      sheet.events[0].actions[0].parameters.ease = 'Swooper';
+      await writeFile(sheetPath, JSON.stringify(sheet, null, '\t'), 'utf-8');
+      const projectPath = join(tmpDir, 'project.c3proj');
+      const project = await projectJson();
+      project.rootFileFolders.script.items.push({ name: 'tween.js', type: 'application/javascript', sid: 700000000000009, 'script-info': { purpose: 'import' } });
+      await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
+      await mkdir(join(tmpDir, 'scripts'), { recursive: true });
+      await writeFile(join(tmpDir, 'scripts', 'tween.js'), 'tween.ease = "Swoop";\n', 'utf-8');
+      await boot();
+
+      await fails('delete_ease', { name: 'Swoop' }, 'script "scripts/tween.js"');
+      const forced = await ok('delete_ease', { name: 'Swoop', force: true });
+      expect(forced.warnings.join(' ')).toContain('force');
+      expect((await projectJson()).timelines.subfolders[0].items).toEqual([]);
+    });
+
+    it('refuses to delete an ease while a registered timeline cannot be opened', async () => {
+      await ok('create_ease', { name: 'Swoop', points: POINTS });
+      await createMove();
+      await writeFile(join(tmpDir, 'timelines', 'Move.json'), '{ not json', 'utf-8');
+      await fails('delete_ease', { name: 'Swoop' }, 'Move could not be opened');
+      await expect(stat(join(tmpDir, 'timelines', 'transitions', 'Swoop.json'))).resolves.toBeTruthy();
+    });
+
+    it('deregisters an ease before touching its file', async () => {
+      await ok('create_ease', { name: 'Swoop', points: POINTS });
+      const file = join(tmpDir, 'timelines', 'transitions', 'Swoop.json');
+      await rm(file);
+      await mkdir(file);
+      const result = await call('delete_ease', { name: 'Swoop' });
+      expect(result.isError).toBe(true);
+      expect((await projectJson()).timelines.subfolders[0].items).toEqual([]);
+    });
+  });
+
   describe('untyped tracks from older releases', () => {
     async function withLegacy() {
       await mkdir(join(tmpDir, 'timelines'), { recursive: true });
@@ -481,6 +646,21 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
       await fails('add_property_track', { timelineName: 'Legacy', instanceUid: 0, property: 'offsetY' }, 'older Construct release');
       await fails('update_track', { timelineName: 'Legacy', instanceUid: 0, resultMode: 'absolute' }, 'untyped (older) track');
       expect(await readFile(join(tmpDir, 'timelines', 'Legacy.json'), 'utf-8')).toBe(before);
+    });
+
+    it('changes the timeline result mode only when untyped tracks set their own', async () => {
+      const before = JSON.parse(await withLegacy());
+      await ok('update_timeline', { name: 'Legacy', resultMode: 'absolute' });
+      expect((await onDisk('Legacy')).tracks).toEqual(before.tracks);
+
+      const path = join(tmpDir, 'timelines', 'Legacy.json');
+      const data = await onDisk('Legacy');
+      data.tracks[0].resultMode = 'default';
+      data.tracks[0].propertyTracks[0].resultMode = 'default';
+      await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
+      const raw = await readFile(path, 'utf-8');
+      await fails('update_timeline', { name: 'Legacy', resultMode: 'relative' }, 'instance UID 0');
+      expect(await readFile(path, 'utf-8')).toBe(raw);
     });
 
     it('still flags, moves and removes an untyped track without touching its values', async () => {

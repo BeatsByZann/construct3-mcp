@@ -12,6 +12,8 @@ import {
   referencedEases,
   syncTransitionsData,
   isBuiltinEaseName,
+  clashesWithBuiltinEase,
+  folderChainResultMode,
   timelineFolder,
   type CustomEase,
 } from '../../src/construct3/timeline-model.js';
@@ -94,8 +96,19 @@ describe('custom eases', () => {
   });
 
   it('recognizes built-in ease names', () => {
-    for (const name of ['default', 'noease', 'linear', 'easeinoutsine', 'easeOutBack']) expect(isBuiltinEaseName(name)).toBe(true);
-    for (const name of ['Swoop', 'LightOutBack', 'ease']) expect(isBuiltinEaseName(name)).toBe(false);
+    for (const name of ['default', 'noease', 'linear', 'easeinoutsine', 'easeinoutquad', 'easeoutbounce', 'easeoutelastic']) expect(isBuiltinEaseName(name)).toBe(true);
+    for (const name of ['Swoop', 'LightOutBack', 'ease', 'easeOutBack', 'easeinsinee', 'EaseOutSoft']) expect(isBuiltinEaseName(name)).toBe(false);
+    expect(clashesWithBuiltinEase('EaseOutBack')).toBe(true);
+    expect(clashesWithBuiltinEase('EaseOutSoft')).toBe(false);
+  });
+
+  it('finds a non-default result mode on a folder chain', () => {
+    const inner = { ...timelineFolder('B'), resultMode: 'relative' };
+    const root = { ...timelineFolder('Track Folder'), subfolders: [{ ...timelineFolder('A'), subfolders: [inner] }] };
+    expect(folderChainResultMode(root, 'A')).toBeUndefined();
+    expect(folderChainResultMode(root, 'A/B')).toBe('relative');
+    expect(folderChainResultMode({ ...root, resultMode: 'absolute' }, '')).toBe('absolute');
+    expect(folderChainResultMode(undefined, 'A')).toBeUndefined();
   });
 
   it('collects ease names outside transitionsData', () => {

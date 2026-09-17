@@ -24,6 +24,8 @@ import {
   splitFolderPath,
   findTrackByName,
   summarizeTracks,
+  trackKind,
+  folderChainResultMode,
   createValueTrack,
   createValueKeyframe,
   createAudioTrack,
@@ -182,6 +184,7 @@ export function registerTimelineTrackTools({ server, reader }: MutationToolDeps,
         if (!file.ok) return file.error;
 
         let name = args.name;
+        if (name !== undefined) validateName(name);
         if (name === undefined) {
           let n = 1;
           while (findTrackByName(data, `Audio Track ${n}`)) n++;
@@ -361,6 +364,14 @@ export function registerTimelineTrackTools({ server, reader }: MutationToolDeps,
         const destination = splitFolderPath(args.folder).join('/');
         if (loc.folderPath === destination && (destination !== '' || loc.list === data.tracks)) {
           return toolError(`The track is already in ${destination ? `track folder "${destination}"` : 'the root'}.`);
+        }
+
+        // A folder's result mode could change which stored value is in force; none was sampled.
+        if (trackKind(loc.track) !== 'value-track') {
+          const mode = folderChainResultMode(data.tracksRoot, loc.folderPath) ?? folderChainResultMode(data.tracksRoot, destination);
+          if (mode) {
+            return toolError(`A track folder on the way has result mode "${mode}". No sampled folder had a non-default result mode, so moving this track could change its values in ways the tools cannot check; move it in the Construct 3 editor.`);
+          }
         }
 
         let list: unknown[];

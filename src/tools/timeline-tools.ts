@@ -61,6 +61,8 @@ import {
   createAudioSourceAdapter,
   syncTransitionsData,
   isBuiltinEaseName,
+  folderChainResultMode,
+  trackFolderResultMode,
   type AnyTrack,
   type TrackKind,
   type TrackLocation,
@@ -511,6 +513,34 @@ function findInstanceAnywhere(
   return undefined;
 }
 
+/**
+ * Why a stored-value computation must not run: a folder with a non-default
+ * result mode governs the track (never sampled, so its effect is unknown).
+ */
+function folderModeError(data: Timeline, loc: TrackLocation): string | null {
+  const mode = trackFolderResultMode(data, loc.track, loc.folderPath);
+  if (!mode) return null;
+  return `A track or property-track folder holding this track has result mode "${mode}". No sampled folder had a non-default result mode, so the values Construct would store are unknown; set the folder back to "default" in the Construct 3 editor first.`;
+}
+
+/**
+ * Untyped (older) tracks whose values follow the timeline's result mode:
+ * neither the track nor a property track sets its own mode. Every sampled
+ * untyped track set "relative" or "absolute" on the track and its property
+ * tracks, so a timeline-level change leaves those values valid.
+ */
+function legacyTracksFollowingTimeline(data: Timeline): number[] {
+  const uids: number[] = [];
+  for (const { track } of listTracks(data)) {
+    if (trackKind(track) !== 'legacy-instance-track') continue;
+    const follows = listPropertyTracks(track).some(({ propertyTrack }) =>
+      effectiveResultMode(propertyTrack.resultMode, track.resultMode) === 'default'
+      || (propertyTrack.propertyKeyframes ?? []).some(kf => effectiveResultMode(kf.resultMode, propertyTrack.resultMode, track.resultMode) === 'default'));
+    if (follows) uids.push(track.worldInstance as number);
+  }
+  return uids;
+}
+
 // ─── Shared toolkit for the timeline tool files ────────────
 
 type ErrorResult = ReturnType<typeof toolError>;
@@ -534,7 +564,8 @@ export interface TimelineToolkit {
   writeResult(timelineName: string, action: string, backupPath: string, warnings?: string[]): WriteResult;
   selectTrack(data: Timeline, timelineName: string, args: TrackSelectorArgs, allowLegacy: boolean): TrackSelection;
   loadEases(): Promise<Map<string, CustomEase>>;
-  allTimelines(): Promise<Array<{ name: string; filePath: string; data: Timeline }>>;
+  /** Every registered timeline that opens, and the names of those that do not. */
+  allTimelines(): Promise<{ timelines: Array<{ name: string; filePath: string; data: Timeline }>; unreadable: string[] }>;
   timelineNames(): string[];
   easeFilePath(name: string): string;
   projectContainer(): ContainerFolder | undefined;
@@ -663,13 +694,15 @@ export function registerTimelineTools(deps: MutationToolDeps) {
     return { ok: true, loc, kind: trackKind(loc.track) };
   }
 
-  async function allTimelines(): Promise<Array<{ name: string; filePath: string; data: Timeline }>> {
-    const out: Array<{ name: string; filePath: string; data: Timeline }> = [];
+  async function allTimelines() {
+    const timelines: Array<{ name: string; filePath: string; data: Timeline }> = [];
+    const unreadable: string[] = [];
     for (const name of collectTimelineNames(timelinesContainer())) {
       const opened = await openTimeline(name);
-      if (opened.ok) out.push({ name, filePath: opened.filePath, data: opened.data });
+      if (opened.ok) timelines.push({ name, filePath: opened.filePath, data: opened.data });
+      else unreadable.push(name);
     }
-    return out;
+    return { timelines, unreadable };
   }
 
   function findAudioFile(name: string, folder?: 'sound' | 'music') {
@@ -861,6 +894,18 @@ export function registerTimelineTools(deps: MutationToolDeps) {
         if (!opened.ok) return opened.error;
         const { filePath, data } = opened;
 
+        if (args.resultMode !== undefined && args.resultMode !== data.resultMode) {
+          const legacy = legacyTracksFollowingTimeline(data);
+          if (legacy.length > 0) {
+            return toolError(`The untyped (older) track(s) for instance UID ${legacy.join(', ')} take their result mode from the timeline, and changing it would leave their stored values stale. Open and save the timeline in the Construct 3 editor first.`);
+          }
+          for (const loc of listTracks(data)) {
+            if (trackKind(loc.track) !== 'instance-track') continue;
+            const problem = folderModeError(data, loc);
+            if (problem) return toolError(problem);
+          }
+        }
+
         if (args.totalTime !== undefined) data.totalTime = args.totalTime;
         if (args.loop !== undefined) data.loop = args.loop;
         if (args.pingPong !== undefined) data.pingPong = args.pingPong;
@@ -1040,6 +1085,11 @@ export function registerTimelineTools(deps: MutationToolDeps) {
           return toolError(`Instance UID ${args.instanceUid} already has${legacy} in timeline "${args.timelineName}"${where}. Extend it with add_property_track or set_keyframe.`);
         }
 
+        const rootMode = folderChainResultMode(data.tracksRoot, '');
+        if (rootMode) {
+          return toolError(`The timeline's track root folder has result mode "${rootMode}". No sampled folder had a non-default result mode, so the values Construct would store are unknown; set it back to "default" in the Construct 3 editor first.`);
+        }
+
         const instanceType = await readObjectTypeSafe(instance.type);
         const resolved = resolveNewProperties(args.properties, instance, instanceType);
         if (!resolved.ok) return resolved.error;
@@ -1125,6 +1175,9 @@ export function registerTimelineTools(deps: MutationToolDeps) {
         const found = selectTrack(data, args.timelineName, { instanceUid: args.instanceUid }, false);
         if (!found.ok) return found.error;
         const track = found.loc.track as unknown as TimelineInstanceTrack;
+
+        const folderProblem = folderModeError(data, found.loc);
+        if (folderProblem) return toolError(folderProblem);
 
         const located = await requireWorldInstance(args.instanceUid);
         if (!located.ok) return located.error;
@@ -1309,6 +1362,8 @@ export function registerTimelineTools(deps: MutationToolDeps) {
         }
         const instanceTrack = track as unknown as TimelineInstanceTrack;
         const uid = instanceTrack.worldInstance;
+        const folderProblem = folderModeError(data, found.loc);
+        if (folderProblem) return toolError(folderProblem);
 
         let located: { instance: Instance; objectType?: ObjectType } | undefined;
         if (entries.length > 0) {
@@ -1521,6 +1576,10 @@ export function registerTimelineTools(deps: MutationToolDeps) {
           return toolError(kind === 'value-track'
             ? 'A value track has no result mode.'
             : 'Changing the result mode of an untyped (older) track would leave its stored values stale; open and save the timeline in the Construct 3 editor first.');
+        }
+        if (args.resultMode !== undefined && kind === 'instance-track') {
+          const folderProblem = folderModeError(data, found.loc);
+          if (folderProblem) return toolError(folderProblem);
         }
         if (args.pathMode !== undefined && named) return toolError(`A ${kind} has no path mode.`);
         if (args.name !== undefined && !named) return toolError('Only value and audio tracks have a name.');
