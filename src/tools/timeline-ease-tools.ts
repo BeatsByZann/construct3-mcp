@@ -26,6 +26,8 @@ import {
   type CustomEase,
 } from '../construct3/timeline-model.js';
 import { atomicWriteJson, backupFile, type TimelineToolkit } from './timeline-tools.js';
+import { easeParameterName, easeParameterValue, forEachEaseParameter, EASE_PARAMETER_KEY } from '../construct3/ease-params.js';
+import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
 
 const handleSchema = z.object({
   x: z.number().min(-10).max(10),
@@ -41,7 +43,7 @@ const pointsSchema = z.array(z.object({
 
 type ContainerFolder = { name?: string; items: string[]; subfolders: unknown[] };
 
-export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, kit: TimelineToolkit) {
+export function registerTimelineEaseTools({ server, reader, writer }: MutationToolDeps, kit: TimelineToolkit) {
   async function readJson<T>(filePath: string): Promise<T> {
     return JSON.parse(await readFile(filePath, 'utf-8')) as T;
   }
@@ -94,6 +96,34 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
     return { hits, unreadable };
   }
 
+  /**
+   * Event sheets whose ACE `ease` parameters name `name`, as a bare string or
+   * as the object Construct saves for a custom ease, with the parsed sheets.
+   */
+  async function eventSheetUsers(name: string): Promise<{ sheets: Array<{ sheet: string; data: unknown; embedded: number; bare: number }>; unreadable: string[] }> {
+    const sheets: Array<{ sheet: string; data: unknown; embedded: number; bare: number }> = [];
+    const unreadable: string[] = [];
+    for (const sheet of await reader.listEventSheets()) {
+      let data: unknown;
+      try {
+        data = await reader.readEventSheet(sheet);
+      } catch {
+        unreadable.push(sheet);
+        continue;
+      }
+      let embedded = 0;
+      let bare = 0;
+      forEachEaseParameter(data, params => {
+        const value = params[EASE_PARAMETER_KEY];
+        if (easeParameterName(value) !== name) return;
+        if (typeof value === 'string') bare++;
+        else embedded++;
+      });
+      if (embedded + bare > 0) sheets.push({ sheet, data, embedded, bare });
+    }
+    return { sheets, unreadable };
+  }
+
   function easeNames(): string[] {
     return easesFolder(kit.projectContainer())?.items.slice() ?? [];
   }
@@ -112,7 +142,7 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
 
   server.tool(
     'list_eases',
-    'List the project\'s custom eases with their points and the timelines that use them',
+    'List the project\'s custom eases with their points, the timelines that use them, and the event sheets whose ACE ease parameters (e.g. Tween) name them',
     {},
     async () => {
       try {
@@ -131,6 +161,7 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
             ...(ease ? { linear: ease.linear, purpose: ease.purpose, points: ease.transitionKeyframes } : {}),
             ...(error ? { error } : {}),
             usedBy: timelines.filter(t => referencedEases(t.data).has(name)).map(t => t.name),
+            usedByEventSheets: (await eventSheetUsers(name)).sheets.map(s => s.sheet),
           });
         }
         return toolResult({ eases, count: eases.length, ...(unreadable.length > 0 ? { unreadableTimelines: unreadable } : {}) });
@@ -186,7 +217,7 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
 
   server.tool(
     'update_ease',
-    'Change a custom ease\'s points or linear flag, and refresh the copy of it in every timeline that uses it',
+    'Change a custom ease\'s points or linear flag, and refresh the copy of it in every timeline that uses it and in every event-sheet ease parameter that embeds it',
     {
       name: z.string().max(200).describe('Ease name'),
       points: pointsSchema.optional().describe('New curve points from (0,0) to (1,1)'),
@@ -228,7 +259,24 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
         if (all.unreadable.length > 0) {
           warnings.push(`Timeline(s) ${all.unreadable.join(', ')} could not be opened, so any copy of the ease they hold was not refreshed.`);
         }
-        return result(args.name, 'updated', backupPath, { timelinesRefreshed: refreshed }, warnings);
+
+        // Event parameters embed a copy of the ease; bare names are embedded by the editor on load.
+        const users = await eventSheetUsers(args.name);
+        const sheetsRefreshed: string[] = [];
+        for (const { sheet, data, embedded } of users.sheets) {
+          if (embedded === 0) continue;
+          forEachEaseParameter(data, params => {
+            const value = params[EASE_PARAMETER_KEY];
+            if (typeof value !== 'string' && easeParameterName(value) === args.name) params[EASE_PARAMETER_KEY] = easeParameterValue(ease);
+          });
+          await writer.writeEntityFile('eventSheets', sheet, data as never, writer.getSubfolderForEntity('eventSheets', sheet));
+          sheetsRefreshed.push(sheet);
+        }
+        if (sheetsRefreshed.length > 0) resetProjectIndex();
+        if (users.unreadable.length > 0) {
+          warnings.push(`Event sheet(s) ${users.unreadable.join(', ')} could not be read, so any copy of the ease they hold was not refreshed.`);
+        }
+        return result(args.name, 'updated', backupPath, { timelinesRefreshed: refreshed, eventSheetsRefreshed: sheetsRefreshed }, warnings);
       } catch (error) {
         console.error('[update_ease] failed:', error);
         return toolError(`Error updating ease: ${error instanceof Error ? error.message : String(error)}`);
@@ -269,6 +317,10 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
             return toolError(`Custom ease "${args.name}" was not deleted: ${parts.join('; ')}. Check those uses, then pass force: true to delete anyway.`);
           }
           warnings.push(`Deleted with force although ${parts.join('; ')}.`);
+          const embedded = (await eventSheetUsers(args.name)).sheets.filter(s => s.embedded > 0).map(s => s.sheet);
+          if (embedded.length > 0) {
+            warnings.push(`Event sheet(s) ${embedded.join(', ')} still hold an embedded copy of "${args.name}" in ease parameters; what Construct does with the copy of a deleted ease was not sampled, so change those ease parameters.`);
+          }
         }
 
         // Deregister first: a failed file delete then leaves an unregistered

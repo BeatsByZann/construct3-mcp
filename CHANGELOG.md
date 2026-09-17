@@ -194,6 +194,8 @@ All notable changes to the Construct3 MCP Server are documented here.
 - Comment text lost runs of spaces; it now stores them as `&nbsp;` sequences the way the editor does.
 - `delete_ease` now also refuses while a registered timeline cannot be opened or, unless `force` is set, while an event sheet or script file names the ease, and it removes the registration before the file.
 - Built-in ease names are matched against Construct's exact list, so names such as `EaseOutSoft` are allowed as custom eases and misspellings such as `easeinsinee` draw a warning.
+- An event `ease` parameter naming a custom ease is now written as the object Construct saves (`{ name, json: [{ folders: [], json: <ease> }] }`) by `add_event_block`, `update_event_block` and `update_event_block_action`; `update_ease` refreshes those copies, `list_eases` reports the event sheets that use an ease, and a forced `delete_ease` warns about copies left behind.
+- Audio tracks now carry `sourceAdapter.audioProjectFilePath` (`media/<file>`) when the project exports with the `folders` structure, as the r495.2 editor saves it; `update_track` keeps the adapter key order.
 - `add_audio_track` now validates the track name; `update_timeline` refuses a result-mode change that would leave untyped (older) track values stale; value computations refuse tracks under a folder with a non-default result mode, which no sample shows.
 
 - `update_event_block` upgrades a block written with the legacy `isElse`/`isOr` keys before checking condition indexes, so the added else condition no longer shifts updates, removals and insertions.

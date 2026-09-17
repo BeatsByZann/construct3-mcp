@@ -1,5 +1,5 @@
 {
-	"source": "Shapes (key order and leaf types, arrays reduced to their first element) of Construct r495.2 example packages, extracted 2026-09-17 by the W90 probe; no values are copied.",
+	"source": "Shapes (key order and leaf types, arrays reduced to their first element) of Construct r495.2 example packages, extracted 2026-09-17 by the W90 probe; no values are copied. audioTrackRoundtrip and easeParameterRoundtrip come from the W90 live r495.2 round trip (inbox/w90-roundtrip.c3p, exportFileStructure folders).",
 	"tracksRootWithFolder": {
 		"enabled": "boolean",
 		"interpolationMode": "string",
@@ -418,5 +418,87 @@
 			"items": [],
 			"subfolders": []
 		}
+	},
+	"audioTrackRoundtrip": {
+		"type": "string",
+		"name": "string",
+		"project": "string",
+		"enabled": "boolean",
+		"interpolationMode": "string",
+		"resultMode": "string",
+		"ease": "string",
+		"initialVisibility": "boolean",
+		"id": "string",
+		"keyframes": [
+			{
+				"time": "number",
+				"tags": "string",
+				"enabled": "boolean",
+				"ease": "string"
+			}
+		],
+		"propertyTracks": [
+			{
+				"property": "string",
+				"source": {
+					"type": "string",
+					"uid": "string"
+				},
+				"enabled": "boolean",
+				"propertyKeyframes": [],
+				"sourceAdapter": {
+					"audioProjectFile": {
+						"name": "string",
+						"type": "string",
+						"sid": "number",
+						"file-info": {
+							"purpose": "string"
+						}
+					},
+					"audioProjectFilePath": "string",
+					"audioStartOffset": "number",
+					"audioTag": "string",
+					"audioType": "string"
+				}
+			}
+		],
+		"propertyTracksRoot": {
+			"enabled": "boolean",
+			"interpolationMode": "string",
+			"resultMode": "string",
+			"ease": "string",
+			"pathMode": "string",
+			"resizeMode": "string",
+			"expanded": "boolean",
+			"name": "string",
+			"items": [],
+			"subfolders": []
+		}
+	},
+	"easeParameterRoundtrip": {
+		"name": "string",
+		"json": [
+			{
+				"folders": [],
+				"json": {
+					"name": "string",
+					"linear": "boolean",
+					"purpose": "string",
+					"transitionKeyframes": [
+						{
+							"x": "number",
+							"y": "number",
+							"sax": "number",
+							"say": "number",
+							"eax": "number",
+							"eay": "number",
+							"se": "boolean",
+							"ee": "boolean",
+							"sm": "string"
+						}
+					]
+				}
+			}
+		]
 	}
 }

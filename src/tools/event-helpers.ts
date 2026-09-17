@@ -10,6 +10,7 @@ import type { IdGenerator } from '../construct3/id-generator.js';
 import type { Condition, Action, BlockEvent } from '../construct3/types.js';
 import { createBlockEvent } from '../construct3/templates.js';
 import { boundedRecord } from './shared.js';
+import { loadCustomEases, embedCustomEase, needsEaseLookup } from '../construct3/ease-params.js';
 
 // ─── Zod Schemas ────────────────────────────────────────────
 
@@ -89,6 +90,22 @@ export function toScriptLines(script: string | string[]): string[] {
   return Array.isArray(script) ? script : script.split(/\r?\n/);
 }
 
+/**
+ * Store a bare custom ease name in `parameters.ease` the way Construct saves
+ * it: as an object embedding the ease (see ../construct3/ease-params.ts).
+ * Built-in names and names matching no custom ease are left as they are.
+ * Returns the embedded ease name, if any.
+ */
+export async function applyCustomEaseParameter(
+  reader: Pick<Construct3ProjectReader, 'getProjectDir' | 'getProject'>,
+  parameters: unknown,
+): Promise<string | undefined> {
+  if (!needsEaseLookup(parameters)) return undefined;
+  const project = reader.getProject() as unknown as { timelines?: { subfolders?: unknown[] } };
+  const eases = await loadCustomEases(reader.getProjectDir(), project.timelines);
+  return embedCustomEase(parameters, eases);
+}
+
 /** Build a condition and mint its globally unique SID. */
 export async function buildCondition(
   reader: Construct3ProjectReader,
@@ -102,7 +119,10 @@ export async function buildCondition(
     sid,
   };
   if (input.behaviorType) condition.behaviorType = input.behaviorType;
-  if (input.parameters) condition.parameters = input.parameters;
+  if (input.parameters) {
+    condition.parameters = { ...input.parameters };
+    await applyCustomEaseParameter(reader, condition.parameters);
+  }
   if (input.isInverted) condition.isInverted = true;
   if (input.disabled) condition.disabled = true;
   return condition;
@@ -163,7 +183,10 @@ export async function buildAction(
     sid,
   };
   if (input.behaviorType) action.behaviorType = input.behaviorType;
-  if (input.parameters) action.parameters = input.parameters;
+  if (input.parameters) {
+    action.parameters = { ...input.parameters };
+    await applyCustomEaseParameter(reader, action.parameters);
+  }
   if (input.disabled) action.disabled = true;
   return action;
 }

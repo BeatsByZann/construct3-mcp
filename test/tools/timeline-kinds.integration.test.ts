@@ -188,16 +188,64 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
       const result = await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', keyframeTimes: [0, 1.5] });
       expect(result.trackName).toBe('Audio Track 1');
       const track = (await onDisk()).tracks[0];
-      expectShape(track, shapes.audioTrack);
+      expectShape(track, shapes.audioTrackRoundtrip);
       expect(track.keyframes.map((k: Json) => k.time)).toEqual([0, 1.5]);
       const audio = track.propertyTracks[0];
       expect(audio.source).toEqual({ type: 'audio', uid: 'audio' });
       expect(audio.propertyKeyframes).toEqual([]);
-      expect(audio.sourceAdapter).toEqual({ audioProjectFile: SOUND, audioStartOffset: 0, audioTag: '', audioType: 'sound' });
+      expect(audio.sourceAdapter).toEqual({ audioProjectFile: SOUND, audioProjectFilePath: 'media/Beep.webm', audioStartOffset: 0, audioTag: '', audioType: 'sound' });
 
       const second = await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Theme.webm', audioTag: 'bgm' });
       expect(second.trackName).toBe('Audio Track 2');
       expect((await onDisk()).tracks[1].propertyTracks[0].sourceAdapter).toMatchObject({ audioType: 'music', audioTag: 'bgm', audioProjectFile: MUSIC });
+    });
+
+    it('matches the r432 sample apart from the path key the r495 round trip added', async () => {
+      const withoutPath = structuredClone(shapes.audioTrackRoundtrip);
+      delete withoutPath.propertyTracks[0].sourceAdapter.audioProjectFilePath;
+      expect(JSON.stringify(withoutPath)).toBe(JSON.stringify(shapes.audioTrack));
+    });
+
+    it('writes no file path for a project without the folders export structure', async () => {
+      const projectPath = join(tmpDir, 'project.c3proj');
+      const project = await projectJson();
+      project.properties.exportFileStructure = 'flat';
+      await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
+      await boot();
+      await createMove();
+      const added = await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', name: 'Sfx' });
+      expect(added.warnings.join(' ')).toContain('"flat"');
+      const adapter = (await onDisk()).tracks[0].propertyTracks[0].sourceAdapter;
+      expect(Object.keys(adapter)).toEqual(['audioProjectFile', 'audioStartOffset', 'audioTag', 'audioType']);
+    });
+
+    it('replaces a stale file path and keeps the adapter key order on partial updates', async () => {
+      await createMove();
+      await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', name: 'Sfx' });
+      // An adapter saved before the path key existed, with the keys out of order.
+      const path = join(tmpDir, 'timelines', 'Move.json');
+      const data = await onDisk();
+      data.tracks[0].propertyTracks[0].sourceAdapter = { audioTag: 'x', audioType: 'sound', audioProjectFile: SOUND, audioStartOffset: 0 };
+      await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
+
+      await ok('update_track', { timelineName: 'Move', trackName: 'Sfx', audioTag: 'y' });
+      let adapter = (await onDisk()).tracks[0].propertyTracks[0].sourceAdapter;
+      expect(Object.keys(adapter)).toEqual(['audioProjectFile', 'audioStartOffset', 'audioTag', 'audioType']);
+      expect(adapter.audioTag).toBe('y');
+
+      await ok('update_track', { timelineName: 'Move', trackName: 'Sfx', audioFile: 'Theme.webm' });
+      adapter = (await onDisk()).tracks[0].propertyTracks[0].sourceAdapter;
+      expect(adapter).toEqual({ audioProjectFile: MUSIC, audioProjectFilePath: 'media/Theme.webm', audioStartOffset: 0, audioTag: 'y', audioType: 'music' });
+      expect(Object.keys(adapter)).toEqual(['audioProjectFile', 'audioProjectFilePath', 'audioStartOffset', 'audioTag', 'audioType']);
+
+      const projectPath = join(tmpDir, 'project.c3proj');
+      const project = await projectJson();
+      project.properties.exportFileStructure = 'flat';
+      await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
+      await boot();
+      await ok('update_track', { timelineName: 'Move', trackName: 'Sfx', audioFile: 'Beep.webm' });
+      adapter = (await onDisk()).tracks[0].propertyTracks[0].sourceAdapter;
+      expect('audioProjectFilePath' in adapter).toBe(false);
     });
 
     it('requires the audio file to be registered in the project', async () => {
@@ -212,9 +260,9 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
       await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', name: 'Sfx' });
       await ok('update_track', { timelineName: 'Move', trackName: 'Sfx', audioFile: 'Theme.webm', audioStartOffset: 2, resultMode: 'absolute' });
       const track = (await onDisk()).tracks[0];
-      expectShape(track, shapes.audioTrack);
+      expectShape(track, shapes.audioTrackRoundtrip);
       expect(track.resultMode).toBe('absolute');
-      expect(track.propertyTracks[0].sourceAdapter).toEqual({ audioProjectFile: MUSIC, audioStartOffset: 2, audioTag: '', audioType: 'music' });
+      expect(track.propertyTracks[0].sourceAdapter).toEqual({ audioProjectFile: MUSIC, audioProjectFilePath: 'media/Theme.webm', audioStartOffset: 2, audioTag: '', audioType: 'music' });
 
       await fails('set_keyframe', { timelineName: 'Move', trackName: 'Sfx', time: 1, values: { value: { absolute: 1 } } }, 'master keyframes only');
       await ok('set_keyframe', { timelineName: 'Move', trackName: 'Sfx', time: 3 });
