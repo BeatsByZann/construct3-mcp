@@ -550,3 +550,346 @@ describe('delete_family', () => {
     expect(result.isError).toBe(true);
   });
 });
+
+// ─── Instance variable definition editing ──────────────────
+
+function heroObject(vars: Array<Record<string, unknown>> = []) {
+  return { name: 'Hero', 'plugin-id': 'Sprite', sid: 1, instanceVariables: vars, behaviorTypes: [] };
+}
+
+function layoutWith(instances: Array<Record<string, unknown>>, nonworld: Array<Record<string, unknown>> = []) {
+  return {
+    name: 'Layout 1',
+    sid: 9,
+    layers: [{ name: 'Layer 0', sid: 10, instances }],
+    'nonworld-instances': nonworld,
+  };
+}
+
+function writtenData(writer: any, category: string, name: string): any {
+  const call = writer.callsFor('writeEntityFile').find(
+    (c: any) => c.args[0] === category && c.args[1] === name,
+  );
+  return call?.args[2];
+}
+
+describe('update_object_properties variable metadata', () => {
+  it('stores description and showInPropertiesBar as C3 desc/show', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', heroObject()]]) });
+    await server.callTool('update_object_properties', {
+      name: 'Hero',
+      addVariables: [{ name: 'hp', type: 'number', description: 'Hit points', showInPropertiesBar: false }],
+    });
+    const written = writtenData(writer, 'objectTypes', 'Hero');
+    expect(written.instanceVariables[0]).toMatchObject({ name: 'hp', type: 'number', desc: 'Hit points', show: false });
+  });
+
+  it('defaults desc to empty and show to true when not supplied', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', heroObject()]]) });
+    await server.callTool('update_object_properties', {
+      name: 'Hero',
+      addVariables: [{ name: 'hp', type: 'number' }],
+    });
+    const written = writtenData(writer, 'objectTypes', 'Hero');
+    expect(written.instanceVariables[0]).toMatchObject({ desc: '', show: true });
+  });
+});
+
+describe('update_family variable metadata', () => {
+  it('stores description and showInPropertiesBar on family variables', async () => {
+    const families = new Map([['fAgents', { name: 'fAgents', members: ['Hero'], instanceVariables: [] }]]);
+    const { server, writer } = setup({ families });
+    await server.callTool('update_family', {
+      name: 'fAgents',
+      addVariables: [{ name: 'state', type: 'string', description: 'FSM state', showInPropertiesBar: false }],
+    });
+    const written = writtenData(writer, 'families', 'fAgents');
+    expect(written.instanceVariables[0]).toMatchObject({ name: 'state', type: 'string', desc: 'FSM state', show: false });
+  });
+});
+
+describe('update_instance_variable', () => {
+  function objectSetup(opts: {
+    vars?: Array<Record<string, unknown>>;
+    instances?: Array<Record<string, unknown>>;
+    nonworld?: Array<Record<string, unknown>>;
+    sheets?: Map<string, Record<string, unknown>>;
+  } = {}) {
+    const vars = opts.vars ?? [{ name: 'hp', type: 'number', desc: '', show: true, sid: 111 }];
+    const instances = opts.instances ?? [
+      { type: 'Hero', uid: 1, sid: 2, properties: {}, instanceVariables: { hp: 7 }, behaviors: {} },
+    ];
+    return setup({
+      objects: new Map([['Hero', heroObject(vars)]]),
+      layouts: new Map([['Layout 1', layoutWith(instances, opts.nonworld ?? [])]]),
+      eventSheets: opts.sheets ?? new Map(),
+    });
+  }
+
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('update_instance_variable')).toBe(true);
+  });
+
+  it('requires exactly one of objectName or familyName', async () => {
+    const { server } = objectSetup();
+    const both = await server.callTool('update_instance_variable', {
+      objectName: 'Hero', familyName: 'fAgents', variableName: 'hp', newName: 'health',
+    });
+    expect(both.isError).toBe(true);
+    expect(both.content[0].text).toContain('exactly one');
+
+    const neither = await server.callTool('update_instance_variable', { variableName: 'hp', newName: 'health' });
+    expect(neither.isError).toBe(true);
+  });
+
+  it('requires at least one update', async () => {
+    const { server } = objectSetup();
+    const result = await server.callTool('update_instance_variable', { objectName: 'Hero', variableName: 'hp' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates provided');
+  });
+
+  it('errors when the object does not exist', async () => {
+    const { server } = objectSetup();
+    const result = await server.callTool('update_instance_variable', {
+      objectName: 'Ghost', variableName: 'hp', newName: 'health',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Ghost');
+  });
+
+  it('errors when the variable does not exist and lists the available ones', async () => {
+    const { server } = objectSetup();
+    const result = await server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'mana', newName: 'mp',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('mana');
+    expect(result.content[0].text).toContain('hp');
+  });
+
+  it('refuses a rename that collides with an existing variable', async () => {
+    const { server } = objectSetup({
+      vars: [
+        { name: 'hp', type: 'number', desc: '', show: true, sid: 111 },
+        { name: 'health', type: 'number', desc: '', show: true, sid: 112 },
+      ],
+    });
+    const result = await server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', newName: 'health',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already has an instance variable');
+  });
+
+  it('renames the definition and the stored key on every placed instance', async () => {
+    const { server, writer } = objectSetup({
+      instances: [
+        { type: 'Hero', uid: 1, sid: 2, properties: {}, instanceVariables: { hp: 7, mana: 3 }, behaviors: {} },
+        { type: 'Villain', uid: 2, sid: 3, properties: {}, instanceVariables: { hp: 1 }, behaviors: {} },
+      ],
+      nonworld: [
+        { type: 'Hero', uid: 3, sid: 4, properties: {}, instanceVariables: { hp: 99 } },
+      ],
+    });
+    const result = parseResult(await server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', newName: 'health',
+    }));
+    expect(result.success).toBe(true);
+    expect(result.entity).toBe('Hero.health');
+
+    const obj = writtenData(writer, 'objectTypes', 'Hero');
+    expect(obj.instanceVariables[0].name).toBe('health');
+
+    const layout = writtenData(writer, 'layouts', 'Layout 1');
+    const placed = layout.layers[0].instances;
+    // Renamed on the Hero instance, key order preserved, Villain untouched
+    expect(Object.keys(placed[0].instanceVariables)).toEqual(['health', 'mana']);
+    expect(placed[0].instanceVariables.health).toBe(7);
+    expect(placed[1].instanceVariables).toEqual({ hp: 1 });
+    // Non-world instances are covered too
+    expect(layout['nonworld-instances'][0].instanceVariables).toEqual({ health: 99 });
+  });
+
+  it('renames the stored key on instances in nested sub-layers', async () => {
+    const { server, writer } = setup({
+      objects: new Map([['Hero', heroObject([{ name: 'hp', type: 'number', desc: '', show: true, sid: 111 }])]]),
+      layouts: new Map([['Layout 1', {
+        name: 'Layout 1',
+        sid: 9,
+        layers: [{
+          name: 'Layer 0',
+          sid: 10,
+          instances: [],
+          subLayers: [{
+            name: 'Sub',
+            sid: 11,
+            instances: [{ type: 'Hero', uid: 5, sid: 6, properties: {}, instanceVariables: { hp: 4 }, behaviors: {} }],
+          }],
+        }],
+      }]]),
+    });
+    await server.callTool('update_instance_variable', { objectName: 'Hero', variableName: 'hp', newName: 'health' });
+    const layout = writtenData(writer, 'layouts', 'Layout 1');
+    expect(layout.layers[0].subLayers[0].instances[0].instanceVariables).toEqual({ health: 4 });
+  });
+
+  it('coerces stored values when the type changes', async () => {
+    const { server, writer } = objectSetup({
+      vars: [{ name: 'label', type: 'string', desc: '', show: true, sid: 111 }],
+      instances: [
+        { type: 'Hero', uid: 1, sid: 2, properties: {}, instanceVariables: { label: '42' }, behaviors: {} },
+        { type: 'Hero', uid: 2, sid: 3, properties: {}, instanceVariables: { label: 'abc' }, behaviors: {} },
+      ],
+    });
+    const result = parseResult(await server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'label', newType: 'number',
+    }));
+    expect(result.success).toBe(true);
+    expect(writtenData(writer, 'objectTypes', 'Hero').instanceVariables[0].type).toBe('number');
+    const placed = writtenData(writer, 'layouts', 'Layout 1').layers[0].instances;
+    expect(placed[0].instanceVariables.label).toBe(42);
+    expect(placed[1].instanceVariables.label).toBe(0);
+  });
+
+  it('coerces numbers to strings and anything to boolean truthiness', async () => {
+    const toString = objectSetup({
+      instances: [{ type: 'Hero', uid: 1, sid: 2, properties: {}, instanceVariables: { hp: 7 }, behaviors: {} }],
+    });
+    await toString.server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', newType: 'string',
+    });
+    expect(writtenData(toString.writer, 'layouts', 'Layout 1').layers[0].instances[0].instanceVariables.hp).toBe('7');
+
+    const toBool = objectSetup({
+      instances: [
+        { type: 'Hero', uid: 1, sid: 2, properties: {}, instanceVariables: { hp: 0 }, behaviors: {} },
+        { type: 'Hero', uid: 2, sid: 3, properties: {}, instanceVariables: { hp: 3 }, behaviors: {} },
+      ],
+    });
+    await toBool.server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', newType: 'boolean',
+    });
+    const placed = writtenData(toBool.writer, 'layouts', 'Layout 1').layers[0].instances;
+    expect(placed[0].instanceVariables.hp).toBe(false);
+    expect(placed[1].instanceVariables.hp).toBe(true);
+  });
+
+  it('updates description and properties-bar visibility without touching layouts', async () => {
+    const { server, writer } = objectSetup();
+    const result = parseResult(await server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', description: 'Hit points', showInPropertiesBar: false,
+    }));
+    expect(result.success).toBe(true);
+    expect(writtenData(writer, 'objectTypes', 'Hero').instanceVariables[0]).toMatchObject({
+      desc: 'Hit points', show: false, type: 'number', name: 'hp',
+    });
+    expect(writtenData(writer, 'layouts', 'Layout 1')).toBeUndefined();
+  });
+
+  function sheetWithReferences() {
+    return new Map([['MainSheet', {
+      name: 'MainSheet',
+      events: [{
+        eventType: 'block',
+        conditions: [
+          { id: 'compare-instvar', objectClass: 'Hero', parameters: { 'instance-variable': 'hp', comparison: 0, value: '0' } },
+        ],
+        actions: [
+          { id: 'set-instvar-value', objectClass: 'Hero', parameters: { 'instance-variable': 'hp', value: 'Hero.hp + 1' } },
+          { id: 'set-instvar-value', objectClass: 'Villain', parameters: { 'instance-variable': 'hp', value: '5' } },
+        ],
+      }],
+    }]]);
+  }
+
+  it('refuses a rename while event-sheet references exist', async () => {
+    const { server, writer } = objectSetup({ sheets: sheetWithReferences() });
+    const result = await server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', newName: 'health',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('MainSheet (3)');
+    expect(result.content[0].text).toContain('renameReferences');
+    // Nothing was written: the refusal happens before any file is touched
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('rewrites parameter and expression references when renameReferences is true', async () => {
+    const { server, writer } = objectSetup({ sheets: sheetWithReferences() });
+    const result = parseResult(await server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', newName: 'health', renameReferences: true,
+    }));
+    expect(result.success).toBe(true);
+
+    const sheet = writtenData(writer, 'eventSheets', 'MainSheet');
+    const block = sheet.events[0];
+    expect(block.conditions[0].parameters['instance-variable']).toBe('health');
+    expect(block.actions[0].parameters['instance-variable']).toBe('health');
+    expect(block.actions[0].parameters.value).toBe('Hero.health + 1');
+    // A different object's identically named variable is left alone
+    expect(block.actions[1].parameters['instance-variable']).toBe('hp');
+  });
+
+  it('renames a family variable on the family and on every member instance', async () => {
+    const families = new Map([['fAgents', {
+      name: 'fAgents',
+      members: ['Hero', 'Sidekick'],
+      instanceVariables: [{ name: 'state', type: 'string', desc: '', show: true, sid: 200 }],
+    }]]);
+    const objects = new Map<string, Record<string, unknown>>([
+      ['Hero', heroObject()],
+      ['Sidekick', { name: 'Sidekick', 'plugin-id': 'Sprite', sid: 2, instanceVariables: [] }],
+    ]);
+    const layouts = new Map([['Layout 1', layoutWith([
+      { type: 'Hero', uid: 1, sid: 2, properties: {}, instanceVariables: { state: 'idle' }, behaviors: {} },
+      { type: 'Sidekick', uid: 2, sid: 3, properties: {}, instanceVariables: { state: 'follow' }, behaviors: {} },
+    ])]]);
+    const eventSheets = new Map([['MainSheet', {
+      name: 'MainSheet',
+      events: [{
+        eventType: 'block',
+        conditions: [],
+        actions: [
+          { id: 'set-instvar-value', objectClass: 'fAgents', parameters: { 'instance-variable': 'state', value: '"run"' } },
+          { id: 'set-text', objectClass: 'Text', parameters: { text: 'Hero.state' } },
+        ],
+      }],
+    }]]);
+
+    const { server, writer } = setup({ objects, families, layouts, eventSheets });
+    const result = parseResult(await server.callTool('update_instance_variable', {
+      familyName: 'fAgents', variableName: 'state', newName: 'agentState', renameReferences: true,
+    }));
+    expect(result.success).toBe(true);
+    expect(result.category).toBe('family');
+
+    expect(writtenData(writer, 'families', 'fAgents').instanceVariables[0].name).toBe('agentState');
+    const placed = writtenData(writer, 'layouts', 'Layout 1').layers[0].instances;
+    expect(placed[0].instanceVariables).toEqual({ agentState: 'idle' });
+    expect(placed[1].instanceVariables).toEqual({ agentState: 'follow' });
+
+    const actions = writtenData(writer, 'eventSheets', 'MainSheet').events[0].actions;
+    expect(actions[0].parameters['instance-variable']).toBe('agentState');
+    // A member name also reaches a family variable in expression text
+    expect(actions[1].parameters.text).toBe('Hero.agentState');
+  });
+
+  it('refuses a family rename that collides with a member variable', async () => {
+    const families = new Map([['fAgents', {
+      name: 'fAgents',
+      members: ['Hero'],
+      instanceVariables: [{ name: 'state', type: 'string', desc: '', show: true, sid: 200 }],
+    }]]);
+    const objects = new Map<string, Record<string, unknown>>([
+      ['Hero', heroObject([{ name: 'mood', type: 'string', desc: '', show: true, sid: 201 }])],
+    ]);
+    const { server } = setup({ objects, families, layouts: new Map() });
+    const result = await server.callTool('update_instance_variable', {
+      familyName: 'fAgents', variableName: 'state', newName: 'mood',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Family member "Hero"');
+  });
+});

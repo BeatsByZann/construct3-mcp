@@ -55,6 +55,27 @@ All notable changes to the Construct3 MCP Server are documented here.
 - Fake-CDP integration coverage for discovery, direct endpoints, readiness,
   persistence, all bridge commands, rapid calls, errors, timeouts, disconnect,
   missing targets, runtime condition waits, and exact input event sequences.
+- `list_containers`, `create_container`, `update_container`, and
+  `delete_container`: read and edit the `containers` array in
+  `project.c3proj`, which groups object types so C3 creates, picks and
+  destroys them together. A container is identified by any one of its
+  members; membership is validated against the registered object types,
+  families are rejected, an object type is held by at most one container,
+  a one-member container warns, and removing the last member deletes the
+  container.
+- `update_instance_variable`: rename, retype, re-describe or hide an
+  existing instance variable on an object type or family. A rename also
+  renames the stored key on every placed instance (all layers, nested
+  sub-layers and non-world instances, and every family member), and either
+  rewrites event-sheet references (`instance-variable` ACE parameters and
+  `<Object>.<variable>` expression text) or refuses the rename while
+  references exist. A retype coerces stored values: to string via
+  `String()`, to number via `Number()` falling back to 0, to boolean via
+  truthiness.
+- `update_object_properties.addVariables` and `update_family.addVariables`
+  accept `description` (C3 `desc`) and `showInPropertiesBar` (C3 `show`).
+  There is no `initialValue`: a C3 instance-variable definition carries no
+  default-value field, so a starting value only exists per placed instance.
 
 ## [1.8.2] - 2026-09-10
 

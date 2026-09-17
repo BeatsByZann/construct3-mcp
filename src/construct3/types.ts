@@ -32,8 +32,20 @@ export interface Construct3Project {
   firstLayout: string;
   functionsName?: string;
   autosaveData?: unknown;
-  containers?: unknown[];
+  containers?: ObjectContainer[];
   flowcharts?: FlowchartsContainer;
+}
+
+/**
+ * An object container: a set of object types that C3 creates, picks and
+ * destroys together. `project.c3proj` stores them as a flat
+ * `containers: [{ "members": ["TypeA", "TypeB"] }]` array at the project root.
+ * Members are object type names (never families), and an object type may
+ * belong to at most one container.
+ */
+export interface ObjectContainer {
+  members: string[];
+  [key: string]: unknown;
 }
 
 export interface Addon {
