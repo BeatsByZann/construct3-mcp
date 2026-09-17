@@ -373,7 +373,11 @@ Add a structural event to an existing event sheet.
 | `initialValue` | string | For variables | Initial value |
 | `includeSheet` | string | For includes | Sheet to include (validated) |
 | `commentText` | string | For comments | Comment text |
+| `groupPath` | string | No | Insert inside a group by title path (e.g., `"Movement > Collision"`) |
+| `parentSid` | number | No | Insert inside this group, block, or function-block SID |
 | `position` | enum | No | `"start"` \| `"end"` (default: end) |
+
+Use at most one of `groupPath` or `parentSid`; with neither, the event is added at the event-sheet root (the original behavior). A nested `include` is rejected, because Construct only serializes includes at the sheet root.
 
 ### `add_event_block`
 
@@ -508,6 +512,132 @@ At least one update parameter must be provided.
 - Duplicate removal indices are automatically deduplicated
 - Adding, inserting, or replacing conditions on an else block is rejected because Construct ignores them
 - Warns when all conditions are removed (block becomes unconditional)
+
+### `add_custom_action`
+
+Add a custom action definition — the `custom-ace-block` event Construct writes for an object type's or family's custom action.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Target event sheet |
+| `objectClass` | string | Yes | Object type or family that owns the custom action |
+| `aceName` | string | Yes | Name as it appears in the editor; spaces and punctuation are allowed |
+| `description` | string | No | `functionDescription` |
+| `category` | string | No | `functionCategory` — the editor grouping, e.g. `"_Validate Behavior"` |
+| `returnType` | enum | No | `"none"` \| `"number"` \| `"string"` \| `"any"` (default: none) |
+| `isAsync` | boolean | No | `functionIsAsync` (default: false) |
+| `copyPicked` | boolean | No | `functionCopyPicked` (default: false) |
+| `parameters` | array | No | `[{ name, type, initialValue?, comment? }]` in call order; each gets a fresh SID |
+| `groupPath` | string | No | Insert inside a group by title path |
+| `parentSid` | number | No | Insert inside this group, block, or function-block SID |
+| `siblingSid` | number | No | Insert beside this event SID; requires `position` `"before"` or `"after"` |
+| `position` | enum | No | `"start"` \| `"end"` \| `"before"` \| `"after"` (default: end) |
+
+**Format:** the emitted event matches a real project's definitions — `aceType`, `aceName`, `objectClass`, `functionDescription`, `functionCategory`, `functionReturnType`, `functionCopyPicked`, `functionIsAsync`, `functionParameters`, `eventType: "custom-ace-block"`, `conditions`, `actions`, `sid`, `children`. Every definition observed in that project uses `aceType: "action"`, so that is the only form written; the condition and expression forms are deliberately not invented.
+
+**Notes:**
+- `objectClass` must be an existing object type or family. `System` is rejected — it has no custom ACEs.
+- A duplicate `objectClass` plus `aceName` anywhere in the project is rejected.
+- The definition is created empty. Add its conditions and actions with `update_event_block` using the returned `generatedSid`, and nest sub-events with `add_event_block` and `parentSid`.
+
+### `move_event_block`
+
+Move an existing event to another container in the same event sheet. The event keeps its SID, its conditions and actions with their SIDs, and every descendant.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet containing the event |
+| `sid` | number | Yes | SID of the event to move |
+| `groupPath` | string | No | Move inside a group by title path (e.g., `"Movement > Collision"`) |
+| `parentSid` | number | No | Move inside this group, block, or function-block SID |
+| `siblingSid` | number | No | Move beside this event SID; requires `position` `"before"` or `"after"` |
+| `position` | enum | No | `"start"` \| `"end"` for root/group/parent destinations; `"before"` \| `"after"` with `siblingSid` (default: end) |
+
+Use at most one destination locator. Without a locator the event moves to the event-sheet root.
+
+**Behavior:**
+- Works on any event the SID index can find: `block`, `group`, `variable`, `function-block`, `custom-ace-block`. Construct does not write a `sid` on `comment` or `include` events, so those cannot be addressed here — the not-found error says so.
+- Refuses a destination inside the moved event's own subtree (`parentSid`, `groupPath` or `siblingSid` resolving to the event itself or one of its descendants), which would detach the branch from the sheet.
+- Refuses `siblingSid` or `parentSid` equal to `sid`.
+- The destination is resolved before anything is detached, so a rejected move leaves the file untouched.
+- A move within one container is correct for `before`/`after`: the sibling's index is read after the event has been detached.
+- A destination container with no `children` array gets one only after every check has passed.
+- Cross-sheet moves are **not** supported here; use `move_events_between_sheets`, which copies or moves top-level events between two sheets.
+
+### `update_event_group`
+
+Update a group event in place. Children are untouched.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet containing the group |
+| `sid` | number | Yes | SID of the group event |
+| `title` | string | No | New group title |
+| `description` | string | No | New group description |
+| `isActiveOnStart` | boolean | No | Whether the group is active when the layout starts |
+| `disabled` | boolean | No | Disable or enable the group |
+| `backgroundColor` | number[4] | No | Written as the `background-color` key; RGBA as four 0-1 numbers |
+| `textColor` | number[4] | No | Written as the `text-color` key; RGBA as four 0-1 numbers |
+
+At least one update parameter must be provided.
+
+**Notes:**
+- `background-color` and `text-color` are the only color keys Construct serializes on a group; both are optional and are written only when supplied.
+- A new `title` is rejected when a sibling group in the same container already uses it, because group paths resolve one title per container. A duplicate title in a *different* container is allowed and reported as a warning.
+
+### `update_comment`
+
+Update a comment event. Construct does not write a `sid` on comments, so a comment is normally addressed by its position.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet containing the comment |
+| `sid` | number | No* | SID of the comment, for the rare comment that carries one |
+| `index` | number | No* | 0-based index of the comment among its container's events |
+| `groupPath` | string | No | With `index`: the container group by title path |
+| `parentSid` | number | No | With `index`: the container group, block, or function-block SID |
+| `text` | string | No | New comment text |
+| `backgroundColor` | number[4] | No | Written as the `background-color` key |
+| `textColor` | number[4] | No | Written as the `text-color` key |
+
+*Exactly one of `sid` or `index` must be provided. `groupPath` and `parentSid` apply to `index` addressing only; with neither, `index` counts the event-sheet root.
+
+**Notes:**
+- `index` counts **every** event in the container, not only the comments. Addressing a non-comment is rejected and names the event type found.
+- At least one of `text`, `backgroundColor`, `textColor` must be provided.
+
+### `update_function`
+
+Update a function-block definition and, on request, every action that calls it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet containing the function |
+| `sid` | number | Yes | SID of the function-block |
+| `functionName` | string | No | New function name |
+| `renameCallers` | boolean | No | Rewrite every `callFunction` action targeting the old name (default: false) |
+| `description` | string | No | New `functionDescription` |
+| `category` | string | No | New `functionCategory` |
+| `returnType` | enum | No | `"none"` \| `"number"` \| `"string"` \| `"any"` |
+| `isAsync` | boolean | No | New `functionIsAsync` |
+| `copyPicked` | boolean | No | New `functionCopyPicked` |
+| `addParameters` | array | No | `[{ name, type, initialValue?, comment? }]` appended to the end of the list; each gets a fresh SID |
+| `removeParameters` | string[] | No | Parameter names to remove |
+| `renameParameters` | array | No | `[{ from, to }]` — rename in place, keeping the position and SID |
+
+At least one update parameter must be provided.
+
+**Caller handling:**
+- A call site is a non-script action carrying `callFunction`, the same rule `get_function_map` and the project index use. All sheets are scanned.
+- Renaming with callers present is **refused** unless `renameCallers=true`; the error names the caller count and the sheets. With `renameCallers=true` every matching `callFunction` is rewritten and each affected sheet is written with its own backup.
+- Expression references of the form `Functions.<oldName>` are **not** rewritten; matches are counted and reported as a warning.
+- `removeParameters` is **refused** while any caller exists: a `callFunction` action stores its arguments as a positional `parameters` array, so dropping a parameter would silently shift every later argument. Update or delete the callers first.
+- `renameParameters` keeps each parameter's position, so callers keep working. A parameter is referenced by bare name inside the function body; those references are counted and reported as a warning rather than rewritten.
+- `addParameters` appends, which leaves existing callers valid — they fall back to the declared `initialValue`. A warning reports how many callers do not pass the new parameter.
+
+**Notes:**
+- A new `functionName` is validated as a C3 identifier and rejected if another function in the project already uses it.
+- Renaming, adding, removing and renaming parameters are all preflighted before anything is written, so a rejected call leaves every file untouched.
 
 ### `create_layout`
 

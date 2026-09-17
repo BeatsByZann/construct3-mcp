@@ -100,6 +100,41 @@ All notable changes to the Construct3 MCP Server are documented here.
   each Project File family actually stores files in (`files/`, `sounds/`,
   `music/`, `videos/`, `fonts/`) instead of copying every family into `files/`,
   where C3 would not find them.
+- `move_event_block`: move an existing event (block, group, variable,
+  function-block, custom-ace-block) to another container in the same sheet by
+  `groupPath`, `parentSid` or `siblingSid`, preserving its SID, its condition
+  and action SIDs, and every descendant. Refuses a destination inside the
+  moved event's own subtree and resolves the destination before detaching
+  anything, so a rejected move leaves the file untouched.
+- `update_event_group`: edit a group in place — `title`, `description`,
+  `isActiveOnStart`, `disabled`, and the two color keys Construct serializes
+  (`background-color`, `text-color`). A new title that collides with a sibling
+  group is rejected so group paths stay unambiguous; a collision in another
+  container is reported as a warning.
+- `update_comment`: edit a comment's `text` and color keys. Comments carry no
+  SID in Construct, so a comment is addressed by its 0-based `index` among its
+  container's events (optionally with `groupPath` or `parentSid`); `sid` is
+  accepted for the rare comment that has one.
+- `update_function`: edit a function-block's name, description, category,
+  return type, async and copy-picked flags, and its parameter list. Renaming
+  rewrites every `callFunction` action across all sheets when
+  `renameCallers=true` and is refused otherwise; `removeParameters` is refused
+  while callers exist, because a `callFunction` action stores its arguments as
+  a positional array. Expression references (`Functions.<name>` and bare
+  parameter names) are counted and warned about rather than rewritten.
+- `add_event_to_sheet` now accepts `groupPath` and `parentSid`, so a local
+  variable, comment, group or function can be inserted inside a group or a
+  block's `children` using the same locator rules as `add_event_block`.
+  Callers that pass neither keep the original root-insertion behavior; a
+  nested `include` is rejected because Construct only serializes includes at
+  the sheet root.
+- `add_custom_action`: add a custom action definition (`custom-ace-block`) for
+  an object type or family, with description, category, return type, async and
+  copy-picked flags, and parameters with fresh SIDs. The emitted key set and
+  defaults follow a real project's definitions; every definition observed there
+  uses `aceType: "action"`, so only that form is written and the condition and
+  expression forms are not invented. `System` and duplicate object-class plus
+  name pairs are rejected.
 
 ## [1.8.2] - 2026-09-10
 

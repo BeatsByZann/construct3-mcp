@@ -15,6 +15,7 @@ import type {
   VariableEvent,
   GroupEvent,
   FunctionBlockEvent,
+  CustomActionBlockEvent,
   IncludeEvent,
   CommentEvent,
   BlockEvent,
@@ -397,6 +398,49 @@ export function createFunctionEvent(
     conditions: [],
     actions: [],
     sid,
+  };
+}
+
+/**
+ * Build a custom action definition. Key order and defaults follow a real
+ * project's custom-ace-block events; only aceType "action" was observed, so
+ * that is the only form produced here.
+ */
+export function createCustomActionEvent(
+  aceName: string,
+  objectClass: string,
+  sid: number,
+  params?: Array<{ name: string; type: string; initialValue?: string; comment?: string; sid: number }>,
+  options?: { description?: string; category?: string; returnType?: string; isAsync?: boolean; copyPicked?: boolean },
+): CustomActionBlockEvent {
+  const functionParameters: Array<{ name: string; type: string; initialValue: string; comment: string; sid: number }> = [];
+  if (params) {
+    for (const p of params) {
+      functionParameters.push({
+        name: p.name,
+        type: p.type,
+        initialValue: p.initialValue ?? (p.type === 'number' ? '0' : p.type === 'boolean' ? 'false' : ''),
+        comment: p.comment ?? '',
+        sid: p.sid, // caller must supply a real SID from IdGenerator
+      });
+    }
+  }
+
+  return {
+    aceType: 'action',
+    aceName,
+    objectClass,
+    functionDescription: options?.description ?? '',
+    functionCategory: options?.category ?? '',
+    functionReturnType: options?.returnType ?? 'none',
+    functionCopyPicked: options?.copyPicked ?? false,
+    functionIsAsync: options?.isAsync ?? false,
+    functionParameters,
+    eventType: 'custom-ace-block',
+    conditions: [],
+    actions: [],
+    sid,
+    children: [],
   };
 }
 

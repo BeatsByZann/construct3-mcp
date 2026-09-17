@@ -20,7 +20,15 @@ import {
   countDescendants,
   summarizeEvents,
   toScriptLines,
+  validateLocator,
+  resolveContainer,
+  commitContainer,
+  insertIntoContainer,
+  collectSubtree,
   MAX_ITEMS_PER_BLOCK,
+  MAX_SEARCH_DEPTH,
+  MAX_SEARCH_NODES,
+  type ResolvedContainer,
 } from './event-helpers.js';
 import { getProjectIndex, resetProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
@@ -30,30 +38,40 @@ import {
   createFunctionEvent,
   createIncludeEvent,
   createCommentEvent,
+  createCustomActionEvent,
 } from '../construct3/templates.js';
 
-/** Resolve a group path without creating missing children arrays. */
-function resolveGroupContainer(
+/** RGBA color as C3 serializes it on groups and comments: four 0-1 numbers. */
+const colorSchema = z.array(z.number().min(0).max(1)).length(4);
+
+/**
+ * Visit an event and every descendant, iteratively, with the same node and
+ * depth guards findEventBySid uses.
+ */
+function walkEvents(
   events: Record<string, unknown>[],
-  groupPath: string,
-): { owner: Record<string, unknown>; children: Record<string, unknown>[] } | null {
-  const segments = groupPath.split('>').map(segment => segment.trim());
-  let current = events;
-  let owner: Record<string, unknown> | undefined;
-  for (const segment of segments) {
-    const group = current.find(event => event.eventType === 'group' && event.title === segment);
-    if (!group) return null;
-    owner = group;
-    if (!Array.isArray(group.children)) {
-      current = [];
-    } else {
-      current = group.children as Record<string, unknown>[];
+  visit: (event: Record<string, unknown>) => void,
+): void {
+  const stack: Array<{ events: Record<string, unknown>[]; depth: number }> = [{ events, depth: 0 }];
+  let nodeCount = 0;
+  while (stack.length > 0) {
+    const { events: current, depth } = stack.pop()!;
+    if (depth > MAX_SEARCH_DEPTH) continue;
+    for (const event of current) {
+      if (++nodeCount > MAX_SEARCH_NODES) {
+        throw new Error(`Event walk exceeded ${MAX_SEARCH_NODES} nodes`);
+      }
+      visit(event);
+      if (Array.isArray(event.children)) {
+        stack.push({ events: event.children as Record<string, unknown>[], depth: depth + 1 });
+      }
     }
   }
-  return owner ? {
-    owner,
-    children: Array.isArray(owner.children) ? owner.children as Record<string, unknown>[] : [],
-  } : null;
+}
+
+/** Escape a name for safe use inside a RegExp literal. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function registerEventTools({ server, reader, writer, idGen }: MutationToolDeps) {
@@ -139,10 +157,19 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
       initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
       includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
       commentText: z.string().max(2000).optional().describe('For comments: comment text'),
+      groupPath: z.string().max(500).optional().describe('Insert inside a group by title path (e.g., "Movement > Collision")'),
+      parentSid: z.number().int().positive().optional().describe('Insert inside this group, block, or function-block SID'),
       position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert the event'),
     },
     async (args) => {
       try {
+        const locatorError = validateLocator({
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          position: args.position,
+        });
+        if (locatorError) return toolError(locatorError);
+
         // Read existing sheet — preserves ALL original events and fields
         let sheet: EventSheet;
         try {
@@ -150,6 +177,23 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         } catch {
           return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
         }
+
+        const hasLocator = args.groupPath !== undefined || args.parentSid !== undefined;
+        // C3 only ever serializes includes at the sheet root (verified against
+        // a real project: 15 root includes, 0 nested), so refuse a nested one.
+        if (hasLocator && args.eventType === 'include') {
+          return toolError('Include events can only be added at the event-sheet root; omit groupPath and parentSid.');
+        }
+
+        // Resolve the destination before minting any SIDs so an invalid
+        // locator leaves the sheet untouched.
+        const resolution = resolveContainer(sheet.events as Record<string, unknown>[], args.sheetName, {
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          position: args.position,
+        });
+        if ('error' in resolution) return toolError(resolution.error);
+        const container = resolution.container;
 
         let event: C3Event;
 
@@ -203,11 +247,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           }
         }
 
-        if (args.position === 'start') {
-          sheet.events.unshift(event);
-        } else {
-          sheet.events.push(event);
-        }
+        commitContainer(container);
+        insertIntoContainer(container, args.position, event as unknown as Record<string, unknown>);
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
@@ -246,20 +287,13 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
     },
     async (args) => {
       try {
-        const locatorCount = [args.groupPath, args.parentSid, args.siblingSid]
-          .filter(value => value !== undefined).length;
-        if (locatorCount > 1) {
-          return toolError('Specify at most one of: groupPath, parentSid, siblingSid.');
-        }
-        if (args.siblingSid === undefined && (args.position === 'before' || args.position === 'after')) {
-          return toolError('position before/after requires siblingSid.');
-        }
-        if (args.siblingSid !== undefined && args.position !== 'before' && args.position !== 'after') {
-          return toolError('siblingSid requires position before or after.');
-        }
-        if (args.parentSid !== undefined && (args.position === 'before' || args.position === 'after')) {
-          return toolError('parentSid requires position start or end.');
-        }
+        const locatorError = validateLocator({
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          siblingSid: args.siblingSid,
+          position: args.position,
+        });
+        if (locatorError) return toolError(locatorError);
         // Validate: non-else blocks must have at least one condition
         if (!args.isElse && args.conditions.length === 0) {
           return toolError('At least one condition is required (unless isElse is true).');
@@ -277,40 +311,14 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // locators side-effect free and supports root, group, parent-SID, and
         // sibling-SID insertion with one consistent target array.
         const events = sheet.events as Record<string, unknown>[];
-        let targetEvents: Record<string, unknown>[];
-        let siblingIndex: number | undefined;
-        let targetOwner: Record<string, unknown> | undefined;
-        if (args.groupPath) {
-          const resolved = resolveGroupContainer(events, args.groupPath);
-          if (!resolved) {
-            const topGroups = events
-              .filter(e => e.eventType === 'group')
-              .map(e => e.title as string);
-            const hint = topGroups.length > 0
-              ? `\nAvailable top-level groups: ${topGroups.join(', ')}`
-              : '\nNo groups found in this event sheet.';
-            return toolError(`Group path "${args.groupPath}" not found in "${args.sheetName}".${hint}`);
-          }
-          targetEvents = resolved.children;
-          targetOwner = resolved.owner;
-        } else if (args.parentSid !== undefined) {
-          const parent = findEventBySid(events, args.parentSid);
-          if (!parent) return toolError(`Parent event with SID ${args.parentSid} not found in sheet "${args.sheetName}".`);
-          if (parent.event.eventType !== 'group' && parent.event.eventType !== 'block' && parent.event.eventType !== 'function-block') {
-            return toolError(`Event with SID ${args.parentSid} is a "${parent.event.eventType}" and cannot contain sub-events.`);
-          }
-          targetOwner = parent.event;
-          targetEvents = Array.isArray(parent.event.children)
-            ? parent.event.children as Record<string, unknown>[]
-            : [];
-        } else if (args.siblingSid !== undefined) {
-          const sibling = findEventBySid(events, args.siblingSid);
-          if (!sibling) return toolError(`Sibling event with SID ${args.siblingSid} not found in sheet "${args.sheetName}".`);
-          targetEvents = sibling.parentArray;
-          siblingIndex = sibling.index;
-        } else {
-          targetEvents = events;
-        }
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          siblingSid: args.siblingSid,
+          position: args.position,
+        });
+        if ('error' in resolution) return toolError(resolution.error);
+        const container = resolution.container;
 
         // Collect all objectClass references from entire tree (parent + descendants)
         const allRefs: Array<{ objectClass: string; behaviorType?: string }> = [];
@@ -346,20 +354,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         // Commit deferred children-array creation only after all validation and
         // block construction have succeeded.
-        if (targetOwner && !Array.isArray(targetOwner.children)) {
-          targetOwner.children = targetEvents;
-        }
-
-        // Insert at position
-        if (args.position === 'before' && siblingIndex !== undefined) {
-          targetEvents.splice(siblingIndex, 0, blockEvent);
-        } else if (args.position === 'after' && siblingIndex !== undefined) {
-          targetEvents.splice(siblingIndex + 1, 0, blockEvent);
-        } else if (args.position === 'start') {
-          targetEvents.unshift(blockEvent);
-        } else {
-          targetEvents.push(blockEvent);
-        }
+        commitContainer(container);
+        insertIntoContainer(container, args.position, blockEvent as unknown as Record<string, unknown>);
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
@@ -1364,6 +1360,687 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
       } catch (error) {
         console.error('[update_event_block] failed:', error);
         return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── add_custom_action ──────────────────────────────────────
+
+  server.tool(
+    'add_custom_action',
+    'Add a custom action definition (eventType "custom-ace-block") to an event sheet. A custom action belongs to an object type or family, not to System. Conditions and actions are added afterwards with update_event_block using the returned SID.',
+    {
+      sheetName: z.string().max(200).describe('Target event sheet'),
+      objectClass: z.string().max(200).describe('Object type or family that owns the custom action'),
+      aceName: z.string().max(200).describe('Custom action name as it appears in the editor (spaces and punctuation allowed)'),
+      description: z.string().max(2000).optional().describe('functionDescription'),
+      category: z.string().max(200).optional().describe('functionCategory — the editor grouping, e.g. "_AI_Behavior Tree"'),
+      returnType: z.enum(['none', 'number', 'string', 'any']).optional().describe('functionReturnType (default: none)'),
+      isAsync: z.boolean().optional().describe('functionIsAsync (default: false)'),
+      copyPicked: z.boolean().optional().describe('functionCopyPicked (default: false)'),
+      parameters: z.array(z.object({
+        name: z.string().max(200).describe('Parameter name'),
+        type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+        initialValue: z.string().max(500).optional().describe('Default value (defaults by type)'),
+        comment: z.string().max(500).optional().describe('Parameter comment'),
+      })).optional().describe('Parameter definitions, in call order'),
+      groupPath: z.string().max(500).optional().describe('Insert inside a group by title path (e.g., "Movement > Collision")'),
+      parentSid: z.number().int().positive().optional().describe('Insert inside this group, block, or function-block SID'),
+      siblingSid: z.number().int().positive().optional().describe('Insert beside this event SID; requires position before or after'),
+      position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('Where to insert the definition'),
+    },
+    async (args) => {
+      try {
+        const locatorError = validateLocator({
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          siblingSid: args.siblingSid,
+          position: args.position,
+        });
+        if (locatorError) return toolError(locatorError);
+        if (args.aceName.trim().length === 0) {
+          return toolError('aceName cannot be empty.');
+        }
+
+        // A custom ACE hangs off an object type or family; "System" has no
+        // custom actions, so validateObjectClasses' System allowance is too
+        // permissive here.
+        const objects = await reader.listObjectTypes();
+        const families = await reader.listFamilies();
+        if (!objects.includes(args.objectClass) && !families.includes(args.objectClass)) {
+          const suggestions = reader.findNearestName(args.objectClass, 'objects');
+          const hint = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(', ')}?` : '';
+          return toolError(`Unknown objectClass "${args.objectClass}". A custom action must belong to an object type or family, not System.${hint}`);
+        }
+
+        const parameterNames = (args.parameters ?? []).map(p => p.name);
+        if (new Set(parameterNames).size !== parameterNames.length) {
+          return toolError('Parameter names must be unique.');
+        }
+        if (parameterNames.some(name => name.trim().length === 0)) {
+          return toolError('Parameter name cannot be empty.');
+        }
+        if (parameterNames.length > MAX_ITEMS_PER_BLOCK) {
+          return toolError(`Custom action has ${parameterNames.length} parameters (max ${MAX_ITEMS_PER_BLOCK}).`);
+        }
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+
+        // The editor keys a custom ACE by object class plus name, so refuse a
+        // duplicate anywhere in the project.
+        for (const name of await reader.listEventSheets()) {
+          const data = name === args.sheetName ? sheet : await reader.readEventSheet(name).catch(() => null);
+          if (!data) continue;
+          let clash = false;
+          walkEvents(data.events as Record<string, unknown>[], event => {
+            if (event.eventType === 'custom-ace-block'
+              && event.objectClass === args.objectClass
+              && event.aceName === args.aceName) {
+              clash = true;
+            }
+          });
+          if (clash) {
+            return toolError(`"${args.objectClass}" already defines a custom action named "${args.aceName}" (in sheet "${name}").`);
+          }
+        }
+
+        const events = sheet.events as Record<string, unknown>[];
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          siblingSid: args.siblingSid,
+          position: args.position,
+        });
+        if ('error' in resolution) return toolError(resolution.error);
+        const container = resolution.container;
+
+        const sid = await idGen.generateSid(reader);
+        const paramsWithSids = args.parameters
+          ? await Promise.all(args.parameters.map(async (p) => ({
+              ...p,
+              sid: await idGen.generateSid(reader),
+            })))
+          : undefined;
+        const event = createCustomActionEvent(args.aceName, args.objectClass, sid, paramsWithSids, {
+          description: args.description,
+          category: args.category,
+          returnType: args.returnType,
+          isAsync: args.isAsync,
+          copyPicked: args.copyPicked,
+        });
+
+        commitContainer(container);
+        insertIntoContainer(container, args.position, event as unknown as Record<string, unknown>);
+
+        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
+        resetProjectIndex();
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.sheetName,
+          category: 'eventsheet',
+          action: 'updated',
+          generatedSid: sid,
+          backupFile: backupPath,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[add_custom_action] failed:', error);
+        return toolError(`Error adding custom action: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── move_event_block ───────────────────────────────────────
+
+  server.tool(
+    'move_event_block',
+    'Move an existing event (block, group, variable, comment, function-block, custom-ace-block) to another container in the same event sheet. The event keeps its SID and every descendant. Use move_events_between_sheets to move top-level events across sheets.',
+    {
+      sheetName: z.string().max(200).describe('Event sheet containing the event'),
+      sid: z.number().int().positive().describe('SID of the event to move'),
+      groupPath: z.string().max(500).optional().describe('Move inside a group by title path (e.g., "Movement > Collision")'),
+      parentSid: z.number().int().positive().optional().describe('Move inside this group, block, or function-block SID'),
+      siblingSid: z.number().int().positive().optional().describe('Move beside this event SID; requires position before or after'),
+      position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('Where to place the moved event'),
+    },
+    async (args) => {
+      try {
+        const locatorError = validateLocator({
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          siblingSid: args.siblingSid,
+          position: args.position,
+        });
+        if (locatorError) return toolError(locatorError);
+        if (args.siblingSid !== undefined && args.siblingSid === args.sid) {
+          return toolError(`siblingSid ${args.sid} is the event being moved; an event cannot be placed beside itself.`);
+        }
+        if (args.parentSid !== undefined && args.parentSid === args.sid) {
+          return toolError(`parentSid ${args.sid} is the event being moved; an event cannot be placed inside itself.`);
+        }
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+
+        const events = sheet.events as Record<string, unknown>[];
+        const found = findEventBySid(events, args.sid);
+        if (!found) {
+          const summary = summarizeEvents(events);
+          return toolError(
+            `Event with SID ${args.sid} not found in sheet "${args.sheetName}".\n\n` +
+            `Sheet "${args.sheetName}" contains ${events.length} top-level events:\n${summary}\n\n` +
+            `Comments and includes carry no SID in C3 and cannot be moved with this tool. ` +
+            `Use get_eventsheet_details to see the full event tree with SIDs.`,
+          );
+        }
+
+        const moving = found.event;
+        const movedType = moving.eventType as string;
+
+        // Resolve the destination before detaching anything, so an invalid
+        // locator leaves the sheet exactly as it was.
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath,
+          parentSid: args.parentSid,
+          siblingSid: args.siblingSid,
+          position: args.position,
+        });
+        if ('error' in resolution) return toolError(resolution.error);
+        const container: ResolvedContainer = resolution.container;
+
+        // A destination inside the moved event's own subtree would detach the
+        // whole branch from the sheet. Check the owner, the sibling, and the
+        // target array itself by object identity.
+        const subtree = collectSubtree(moving);
+        const ownerInSubtree = container.owner !== undefined && subtree.events.has(container.owner);
+        const siblingInSubtree = container.siblingEvent !== undefined && subtree.events.has(container.siblingEvent);
+        if (ownerInSubtree || siblingInSubtree || subtree.childArrays.has(container.targetEvents)) {
+          return toolError(
+            `Cannot move event SID ${args.sid} into its own descendants — the destination is inside the event being moved.`,
+          );
+        }
+
+        const childCount = countDescendants(moving);
+
+        // Detach first, then insert. insertIntoContainer reads the sibling
+        // index at insert time, so a move within one array still lands beside
+        // the intended sibling after the removal shifted it.
+        found.parentArray.splice(found.index, 1);
+        commitContainer(container);
+        insertIntoContainer(container, args.position, moving);
+
+        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
+        resetProjectIndex();
+
+        return toolResult({
+          success: true,
+          entity: args.sheetName,
+          category: 'eventsheet',
+          action: 'updated',
+          movedSid: args.sid,
+          movedType,
+          childrenMoved: childCount,
+          destination: args.groupPath !== undefined
+            ? { groupPath: args.groupPath, position: args.position }
+            : args.parentSid !== undefined
+              ? { parentSid: args.parentSid, position: args.position }
+              : args.siblingSid !== undefined
+                ? { siblingSid: args.siblingSid, position: args.position }
+                : { root: true, position: args.position },
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[move_event_block] failed:', error);
+        return toolError(`Error moving event: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── update_event_group ─────────────────────────────────────
+
+  server.tool(
+    'update_event_group',
+    'Update a group event in place — title, description, active-on-start, disabled state, and the group colors C3 serializes (background-color, text-color). Children are untouched.',
+    {
+      sheetName: z.string().max(200).describe('Event sheet containing the group'),
+      sid: z.number().int().positive().describe('SID of the group event to update'),
+      title: z.string().max(500).optional().describe('New group title; must be unique among sibling groups so group paths stay unambiguous'),
+      description: z.string().max(2000).optional().describe('New group description'),
+      isActiveOnStart: z.boolean().optional().describe('Whether the group is active when the layout starts'),
+      disabled: z.boolean().optional().describe('Disable or enable the group in the editor'),
+      backgroundColor: colorSchema.optional().describe('Group background color, written as the "background-color" key'),
+      textColor: colorSchema.optional().describe('Group text color, written as the "text-color" key'),
+    },
+    async (args) => {
+      try {
+        const hasUpdate = args.title !== undefined || args.description !== undefined
+          || args.isActiveOnStart !== undefined || args.disabled !== undefined
+          || args.backgroundColor !== undefined || args.textColor !== undefined;
+        if (!hasUpdate) {
+          return toolError('No updates provided. Specify at least one of: title, description, isActiveOnStart, disabled, backgroundColor, textColor.');
+        }
+        if (args.title !== undefined && args.title.trim().length === 0) {
+          return toolError('title cannot be empty.');
+        }
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+
+        const events = sheet.events as Record<string, unknown>[];
+        const found = findEventBySid(events, args.sid);
+        if (!found) {
+          const summary = summarizeEvents(events);
+          return toolError(
+            `Event with SID ${args.sid} not found in sheet "${args.sheetName}".\n\n` +
+            `Sheet "${args.sheetName}" contains ${events.length} top-level events:\n${summary}`,
+          );
+        }
+        const group = found.event;
+        if (group.eventType !== 'group') {
+          return toolError(`Event with SID ${args.sid} is a "${group.eventType}", not a group.`);
+        }
+
+        const warnings: string[] = [];
+        if (args.title !== undefined && args.title !== group.title) {
+          // findGroupByPath resolves one title per container, so a duplicate
+          // sibling title would make "A > B" paths ambiguous.
+          const siblingClash = found.parentArray.some(
+            e => e !== group && e.eventType === 'group' && e.title === args.title,
+          );
+          if (siblingClash) {
+            return toolError(`A sibling group titled "${args.title}" already exists in the same container of "${args.sheetName}"; group paths would be ambiguous.`);
+          }
+          let elsewhere = 0;
+          walkEvents(events, e => {
+            if (e !== group && e.eventType === 'group' && e.title === args.title) elsewhere++;
+          });
+          if (elsewhere > 0) {
+            warnings.push(`${elsewhere} other group(s) in "${args.sheetName}" already use the title "${args.title}" in a different container.`);
+          }
+          group.title = args.title;
+        }
+
+        if (args.description !== undefined) group.description = args.description;
+        if (args.isActiveOnStart !== undefined) group.isActiveOnStart = args.isActiveOnStart;
+        if (args.disabled !== undefined) group.disabled = args.disabled;
+        if (args.backgroundColor !== undefined) group['background-color'] = args.backgroundColor;
+        if (args.textColor !== undefined) group['text-color'] = args.textColor;
+
+        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
+        resetProjectIndex();
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.sheetName,
+          category: 'eventsheet',
+          action: 'updated',
+          warnings: warnings.length > 0 ? warnings : undefined,
+          backupFile: backupPath,
+        };
+        return toolResult({ ...result, updatedSid: args.sid, title: group.title });
+      } catch (error) {
+        console.error('[update_event_group] failed:', error);
+        return toolError(`Error updating event group: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── update_comment ─────────────────────────────────────────
+
+  server.tool(
+    'update_comment',
+    'Update a comment event. C3 does not give comments a SID, so address one by its 0-based index among its container\'s events (optionally with groupPath or parentSid); sid is accepted for the rare comment that carries one.',
+    {
+      sheetName: z.string().max(200).describe('Event sheet containing the comment'),
+      sid: z.number().int().positive().optional().describe('SID of the comment, when it has one'),
+      index: z.number().int().min(0).optional().describe('0-based index of the comment among its container\'s events'),
+      groupPath: z.string().max(500).optional().describe('With index: the container group by title path (e.g., "Movement > Collision")'),
+      parentSid: z.number().int().positive().optional().describe('With index: the container group, block, or function-block SID'),
+      text: z.string().max(2000).optional().describe('New comment text'),
+      backgroundColor: colorSchema.optional().describe('Comment background color, written as the "background-color" key'),
+      textColor: colorSchema.optional().describe('Comment text color, written as the "text-color" key'),
+    },
+    async (args) => {
+      try {
+        if ((args.sid === undefined) === (args.index === undefined)) {
+          return toolError('Specify exactly one of: sid, or index (optionally with groupPath or parentSid).');
+        }
+        if (args.sid !== undefined && (args.groupPath !== undefined || args.parentSid !== undefined)) {
+          return toolError('groupPath and parentSid apply to index addressing only; omit them when using sid.');
+        }
+        if (args.text === undefined && args.backgroundColor === undefined && args.textColor === undefined) {
+          return toolError('No updates provided. Specify at least one of: text, backgroundColor, textColor.');
+        }
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+
+        const events = sheet.events as Record<string, unknown>[];
+        let comment: Record<string, unknown>;
+
+        if (args.sid !== undefined) {
+          const found = findEventBySid(events, args.sid);
+          if (!found) {
+            return toolError(`Event with SID ${args.sid} not found in sheet "${args.sheetName}". Comments usually carry no SID — address one by index instead.`);
+          }
+          if (found.event.eventType !== 'comment') {
+            return toolError(`Event with SID ${args.sid} is a "${found.event.eventType}", not a comment.`);
+          }
+          comment = found.event;
+        } else {
+          const locatorError = validateLocator({
+            groupPath: args.groupPath,
+            parentSid: args.parentSid,
+            position: 'end',
+          });
+          if (locatorError) return toolError(locatorError);
+          const resolution = resolveContainer(events, args.sheetName, {
+            groupPath: args.groupPath,
+            parentSid: args.parentSid,
+            position: 'end',
+          });
+          if ('error' in resolution) return toolError(resolution.error);
+          const target = resolution.container.targetEvents;
+          const index = args.index!;
+          if (index >= target.length) {
+            return toolError(`Index ${index} is out of range (the container holds ${target.length} event(s), indices 0-${Math.max(0, target.length - 1)}).`);
+          }
+          const candidate = target[index];
+          if (candidate.eventType !== 'comment') {
+            return toolError(`Event at index ${index} is a "${candidate.eventType}", not a comment. Indices count every event in the container, not only comments.`);
+          }
+          comment = candidate;
+        }
+
+        if (args.text !== undefined) comment.text = args.text;
+        if (args.backgroundColor !== undefined) comment['background-color'] = args.backgroundColor;
+        if (args.textColor !== undefined) comment['text-color'] = args.textColor;
+
+        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
+        resetProjectIndex();
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.sheetName,
+          category: 'eventsheet',
+          action: 'updated',
+          backupFile: backupPath,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[update_comment] failed:', error);
+        return toolError(`Error updating comment: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── update_function ────────────────────────────────────────
+
+  server.tool(
+    'update_function',
+    'Update a function-block definition — name, description, category, return type, async/copy-picked flags, and its parameter list. Renaming the function rewrites every callFunction action across all sheets when renameCallers is true, and is refused otherwise.',
+    {
+      sheetName: z.string().max(200).describe('Event sheet containing the function'),
+      sid: z.number().int().positive().describe('SID of the function-block to update'),
+      functionName: z.string().max(200).optional().describe('New function name'),
+      renameCallers: z.boolean().optional().default(false).describe('Rewrite every callFunction action that targets the old name; without it a rename with callers is refused'),
+      description: z.string().max(2000).optional().describe('New functionDescription'),
+      category: z.string().max(200).optional().describe('New functionCategory'),
+      returnType: z.enum(['none', 'number', 'string', 'any']).optional().describe('New functionReturnType'),
+      isAsync: z.boolean().optional().describe('New functionIsAsync'),
+      copyPicked: z.boolean().optional().describe('New functionCopyPicked'),
+      addParameters: z.array(z.object({
+        name: z.string().max(200).describe('Parameter name'),
+        type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+        initialValue: z.string().max(500).optional().describe('Default value (defaults by type)'),
+        comment: z.string().max(500).optional().describe('Parameter comment'),
+      })).optional().describe('Parameters appended to the end of the list; existing callers keep passing their current arguments'),
+      removeParameters: z.array(z.string().max(200)).optional().describe('Parameter names to remove; refused while callers exist because callers pass arguments positionally'),
+      renameParameters: z.array(z.object({
+        from: z.string().max(200).describe('Current parameter name'),
+        to: z.string().max(200).describe('New parameter name'),
+      })).optional().describe('Rename parameters in place; the position is unchanged so callers keep working'),
+    },
+    async (args) => {
+      try {
+        const hasUpdate = args.functionName !== undefined || args.description !== undefined
+          || args.category !== undefined || args.returnType !== undefined
+          || args.isAsync !== undefined || args.copyPicked !== undefined
+          || (args.addParameters?.length ?? 0) > 0
+          || (args.removeParameters?.length ?? 0) > 0
+          || (args.renameParameters?.length ?? 0) > 0;
+        if (!hasUpdate) {
+          return toolError('No updates provided. Specify at least one of: functionName, description, category, returnType, isAsync, copyPicked, addParameters, removeParameters, renameParameters.');
+        }
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+
+        const events = sheet.events as Record<string, unknown>[];
+        const found = findEventBySid(events, args.sid);
+        if (!found) {
+          const summary = summarizeEvents(events);
+          return toolError(
+            `Event with SID ${args.sid} not found in sheet "${args.sheetName}".\n\n` +
+            `Sheet "${args.sheetName}" contains ${events.length} top-level events:\n${summary}`,
+          );
+        }
+        const func = found.event;
+        if (func.eventType !== 'function-block') {
+          return toolError(`Event with SID ${args.sid} is a "${func.eventType}", not a function-block.`);
+        }
+        const oldName = func.functionName as string;
+
+        // Load every sheet once: the same pass finds duplicate function names
+        // and the call sites, using index-builder's rule that a call site is a
+        // non-script action carrying callFunction.
+        const sheetNames = await reader.listEventSheets();
+        const loaded = new Map<string, EventSheet>([[args.sheetName, sheet]]);
+        for (const name of sheetNames) {
+          if (loaded.has(name)) continue;
+          try {
+            loaded.set(name, await reader.readEventSheet(name));
+          } catch {
+            // A sheet that cannot be read holds no rewritable call site; the
+            // rename reports it rather than silently claiming full coverage.
+            loaded.set(name, { name, events: [], sid: 0 } as unknown as EventSheet);
+          }
+        }
+
+        const callSites: Array<{ sheet: string; action: Record<string, unknown> }> = [];
+        const otherFunctionNames = new Set<string>();
+        for (const [name, data] of loaded) {
+          walkEvents(data.events as Record<string, unknown>[], event => {
+            if (event.eventType === 'function-block' && event !== func && typeof event.functionName === 'string') {
+              otherFunctionNames.add(event.functionName);
+            }
+            if (!Array.isArray(event.actions)) return;
+            for (const action of event.actions as Record<string, unknown>[]) {
+              if (action.type === 'script') continue;
+              if (action.callFunction === oldName) callSites.push({ sheet: name, action });
+            }
+          });
+        }
+
+        const warnings: string[] = [];
+        const parameters = Array.isArray(func.functionParameters)
+          ? func.functionParameters as Array<Record<string, unknown>>
+          : [];
+
+        // ── Preflight the rename ──
+        if (args.functionName !== undefined && args.functionName !== oldName) {
+          try {
+            validateName(args.functionName);
+          } catch (error) {
+            return toolError(`Invalid functionName: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          if (otherFunctionNames.has(args.functionName)) {
+            return toolError(`A function named "${args.functionName}" already exists in this project.`);
+          }
+          if (callSites.length > 0 && !args.renameCallers) {
+            const bySheet = [...new Set(callSites.map(c => c.sheet))];
+            return toolError(
+              `Function "${oldName}" is called by ${callSites.length} action(s) in: ${bySheet.join(', ')}. ` +
+              `Set renameCallers=true to rewrite every callFunction action, or remove the callers first.`,
+            );
+          }
+        }
+
+        // ── Preflight the parameter edits ──
+        const paramNames = parameters.map(p => p.name as string);
+        for (const name of args.removeParameters ?? []) {
+          if (!paramNames.includes(name)) {
+            return toolError(`Function "${oldName}" has no parameter named "${name}". Parameters: ${paramNames.join(', ') || '(none)'}.`);
+          }
+        }
+        if ((args.removeParameters?.length ?? 0) > 0 && callSites.length > 0) {
+          const bySheet = [...new Set(callSites.map(c => c.sheet))];
+          return toolError(
+            `Cannot remove parameters from "${oldName}": ${callSites.length} caller action(s) in ${bySheet.join(', ')} pass arguments positionally ` +
+            `(callFunction actions store a "parameters" array indexed by position), so dropping a parameter would silently shift every later argument. ` +
+            `Update or delete the callers first.`,
+          );
+        }
+        const projectedNames = paramNames.filter(n => !(args.removeParameters ?? []).includes(n));
+        for (const rename of args.renameParameters ?? []) {
+          const at = projectedNames.indexOf(rename.from);
+          if (at === -1) {
+            return toolError(`Function "${oldName}" has no parameter named "${rename.from}" to rename. Parameters: ${projectedNames.join(', ') || '(none)'}.`);
+          }
+          if (rename.to.trim().length === 0) {
+            return toolError('Parameter rename target cannot be empty.');
+          }
+          if (projectedNames.includes(rename.to) && rename.to !== rename.from) {
+            return toolError(`Function "${oldName}" already has a parameter named "${rename.to}".`);
+          }
+          projectedNames[at] = rename.to;
+        }
+        for (const added of args.addParameters ?? []) {
+          if (added.name.trim().length === 0) {
+            return toolError('Parameter name cannot be empty.');
+          }
+          if (projectedNames.includes(added.name)) {
+            return toolError(`Function "${oldName}" already has a parameter named "${added.name}".`);
+          }
+          projectedNames.push(added.name);
+        }
+        if (projectedNames.length > MAX_ITEMS_PER_BLOCK) {
+          return toolError(`Function would have ${projectedNames.length} parameters (max ${MAX_ITEMS_PER_BLOCK}).`);
+        }
+
+        // ── Apply ──
+        const modifiedSheets = new Set<string>([args.sheetName]);
+        let renamedCallers = 0;
+        if (args.functionName !== undefined && args.functionName !== oldName) {
+          for (const site of callSites) {
+            site.action.callFunction = args.functionName;
+            renamedCallers++;
+            modifiedSheets.add(site.sheet);
+          }
+          func.functionName = args.functionName;
+          // Expression references such as Functions.oldName(...) live inside
+          // parameter strings and are not rewritten here.
+          const expression = new RegExp(`Functions\\.${escapeRegExp(oldName)}\\b`, 'g');
+          let expressionRefs = 0;
+          for (const data of loaded.values()) {
+            expressionRefs += (JSON.stringify(data.events).match(expression) ?? []).length;
+          }
+          if (expressionRefs > 0) {
+            warnings.push(`${expressionRefs} expression reference(s) to "Functions.${oldName}" were left unchanged; update them by hand.`);
+          }
+        }
+
+        if (args.description !== undefined) func.functionDescription = args.description;
+        if (args.category !== undefined) func.functionCategory = args.category;
+        if (args.returnType !== undefined) func.functionReturnType = args.returnType;
+        if (args.isAsync !== undefined) func.functionIsAsync = args.isAsync;
+        if (args.copyPicked !== undefined) func.functionCopyPicked = args.copyPicked;
+
+        let nextParameters = parameters;
+        if ((args.removeParameters?.length ?? 0) > 0) {
+          const drop = new Set(args.removeParameters);
+          nextParameters = nextParameters.filter(p => !drop.has(p.name as string));
+        }
+        for (const rename of args.renameParameters ?? []) {
+          const target = nextParameters.find(p => p.name === rename.from);
+          if (target) {
+            target.name = rename.to;
+            // A parameter is referenced by bare name inside the function body,
+            // so report the hits rather than rewriting expressions blindly.
+            const bare = new RegExp(`\\b${escapeRegExp(rename.from)}\\b`, 'g');
+            const hits = (JSON.stringify(func.conditions ?? []).match(bare) ?? []).length
+              + (JSON.stringify(func.actions ?? []).match(bare) ?? []).length
+              + (JSON.stringify(func.children ?? []).match(bare) ?? []).length;
+            if (hits > 0) {
+              warnings.push(`${hits} expression reference(s) to parameter "${rename.from}" remain inside "${func.functionName}"; update them by hand.`);
+            }
+          }
+        }
+        for (const added of args.addParameters ?? []) {
+          nextParameters.push({
+            name: added.name,
+            type: added.type,
+            initialValue: added.initialValue ?? (added.type === 'number' ? '0' : added.type === 'boolean' ? 'false' : ''),
+            comment: added.comment ?? '',
+            sid: await idGen.generateSid(reader),
+          });
+        }
+        if ((args.addParameters?.length ?? 0) > 0 && callSites.length > 0) {
+          warnings.push(`${callSites.length} existing caller action(s) do not pass the newly added parameter(s); they fall back to the declared initial values.`);
+        }
+        func.functionParameters = nextParameters;
+
+        const backupFiles: string[] = [];
+        for (const name of modifiedSheets) {
+          const data = loaded.get(name)!;
+          const subfolder = writer.getSubfolderForEntity('eventSheets', name);
+          backupFiles.push(await writer.writeEntityFile('eventSheets', name, data, subfolder));
+        }
+        resetProjectIndex();
+
+        return toolResult({
+          success: true,
+          entity: args.sheetName,
+          category: 'eventsheet',
+          action: 'updated',
+          updatedSid: args.sid,
+          functionName: func.functionName,
+          previousFunctionName: oldName,
+          renamedCallers,
+          updatedSheets: [...modifiedSheets],
+          parameters: (func.functionParameters as Array<Record<string, unknown>>).map(p => p.name),
+          warnings: warnings.length > 0 ? warnings : undefined,
+          backupFiles,
+        });
+      } catch (error) {
+        console.error('[update_function] failed:', error);
+        return toolError(`Error updating function: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
