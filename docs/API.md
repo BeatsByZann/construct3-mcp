@@ -199,6 +199,21 @@ The orphan-file scan covers objectTypes, eventSheets, layouts, and families recu
 
 A registered file that does not exist on disk is a `file-existence` error; a file that exists but exceeds the read cap is an `unscanned-file` warning, not an error.
 
+### Usage queries
+
+All read-only.
+
+| Tool | Parameters | Returns |
+|------|------------|---------|
+| `get_project_properties` | none | `topLevel` (every top-level `project.c3proj` key except entity trees) and `properties` (the full settings bag) |
+| `search_project` | `query`, `regex?`, `caseSensitive?`, `wholeWord?`, `scopes?` (`events`, `scripts`, `layouts`; default events and scripts), `sheets?`, `maxResults?` (default 200, max 1000) | `hits[]` of `{ where, file, eventSid?, path, field, text }`, `totalHits`, `truncated`. Event hits cover every string in the sheet (parameters and expressions, comments, names, titles, script lines) except the `eventType`, `type` and `language` keys; script hits give the line number |
+| `find_behavior_usage` | `behaviorName?`, `behaviorId?` (at least one) | `declarations` on object types and families, `eventReferences` (conditions and actions with that `behaviorType` on the owner, a family member, or the family), `instanceSettings` (placed instances with their own behavior properties) |
+| `find_effect_usage` | `effectId?`, `effectName?` (at least one) | `uses` on object types, families, layouts and layers, and `instanceStates` (per-instance `effects` entries) |
+| `find_instance_variable_references` | `objectName` or `familyName`, `variableName` | `references` (`instance-variable` ACE parameters and `<Object>.<variable>` expressions, including positional call arguments) with the nearest event SID, and `storedValues` on placed instances. Uses the same rules as `update_instance_variable` |
+| `get_instance_counts` | `objectName?`, `layoutName?` | `objectTypes[]` of `{ objectType, total, byLayout }` sorted by count, `notPlaced`, `totalInstances` |
+
+References inside script actions, script files, and names built by string concatenation are not detected by the usage tools; `search_project` finds them as text.
+
 ---
 
 ## Mutation Tools
@@ -366,7 +381,7 @@ Add a structural event to an existing event sheet.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet |
-| `eventType` | enum | Yes | `"group"` \| `"function"` \| `"variable"` \| `"include"` \| `"comment"` |
+| `eventType` | enum | Yes | `"group"` \| `"function"` \| `"variable"` \| `"include"` \| `"comment"` \| `"script"` |
 | `title` | string | For groups | Group title |
 | `functionName` | string | For functions | Function name |
 | `functionParams` | array | For functions | `[{ name, type }]` |
@@ -376,6 +391,9 @@ Add a structural event to an existing event sheet.
 | `variableName` | string | For variables | Variable name |
 | `variableType` | enum | For variables | `"number"` \| `"string"` \| `"boolean"` |
 | `initialValue` | string | For variables | Initial value |
+| `variableComment` | string | For variables | Declaration comment |
+| `variableIsStatic` / `variableIsConstant` | boolean | For variables | Static and constant flags |
+| `script` | string \| string[] | For script blocks | JavaScript; stored as `{ eventType: "script", language: "javascript", script: [lines] }` with no SID, as r495 does |
 | `includeSheet` | string | For includes | Sheet to include (validated) |
 | `commentText` | string | For comments | Comment text |
 | `groupPath` | string | No | Insert inside a group by title path (e.g., `"Movement > Collision"`) |
@@ -386,33 +404,45 @@ Use at most one of `groupPath` or `parentSid`; with neither, the event is added 
 
 ### `add_event_block`
 
-Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Supports sub-events, else blocks, OR conditions, and per-action disabling.
+Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Supports sub-events, else blocks, OR blocks, disabled conditions and actions, function and custom action calls, action comments, and script actions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet |
-| `conditions` | array | No* | Conditions. Each: `{ id, objectClass, behaviorType?, parameters?, isInverted?, isOr? }`. *Required (min 1) unless `isElse` is true. |
-| `actions` | array | No | Actions (default: `[]`). Standard: `{ id, objectClass, behaviorType?, parameters?, callFunction?, disabled? }`. Script: `{ type: "script", script, disabled? }` where `script` is a string (split on newlines) or an array of lines; serialized as `{ type, language: "javascript", script: [lines] }`, the shape the C3 editor renders |
+| `conditions` | array | No* | Conditions. Each: `{ id, objectClass, behaviorType?, parameters?, isInverted?, disabled?, isOr? }`. *Required (min 1) unless `isElse` is true. |
+| `actions` | array | No | Actions (default: `[]`); see **Action kinds** below |
 | `groupPath` | string | No | Insert inside group by title path (e.g., `"Movement > Collision"`) |
 | `parentSid` | number | No | Insert as a child of this group, block, or function-block SID |
 | `siblingSid` | number | No | Insert beside this event SID; requires `position` `"before"` or `"after"` |
 | `position` | enum | No | `"start"` \| `"end"` for root/group/parent insertion; `"before"` \| `"after"` with `siblingSid` (default: end) |
 | `disabled` | boolean | No | Create the block disabled (default: false) |
-| `isElse` | boolean | No | Mark as an else block — conditions become optional (default: false) |
-| `children` | array | No | Sub-events nested inside this block (recursive). Each child has the same shape: `{ conditions?, actions?, disabled?, isElse?, children? }` |
+| `isElse` | boolean | No | Make an else block (default: false). Written as a leading `{ id: "else", objectClass: "System" }` condition; further conditions make an else-if |
+| `isOrBlock` | boolean | No | Make an OR block: true when any condition is true (default: false) |
+| `children` | array | No | Sub-events nested inside this block (recursive). Each child has the same shape: `{ conditions?, actions?, disabled?, isElse?, isOrBlock?, children? }` |
 
 Use at most one insertion locator: `groupPath`, `parentSid`, or `siblingSid`. Without a locator, the block is inserted at the event-sheet root.
 
 **Condition fields:**
-- `isOr` — OR-combine with the previous condition (default is AND). The first condition's `isOr` is ignored by C3.
 - `isInverted` — Negate the condition.
+- `disabled` — Disable the condition.
+- `isOr` — Legacy. Construct r495 has no per-condition OR; OR is the block-level `isOrBlock` key. A condition with `isOr` makes the whole block an OR block, with a warning.
 
-**Action fields:**
-- `disabled` — Disable an individual action (the action exists but won't run).
+**Action kinds** (each may carry `disabled` except comments):
+
+| Kind | Input | Written as |
+|------|-------|------------|
+| Standard | `{ id, objectClass, behaviorType?, parameters? }` | `{ id, objectClass, sid, behaviorType?, parameters? }` |
+| Function call | `{ callFunction, parameters?: [args] }` | `{ callFunction, sid, parameters?: [args] }`. The older `{ id, objectClass, callFunction, parameters: {...} }` input is converted to this shape (values in key order) with a warning |
+| Custom action call | `{ customAction, objectClass, customActionObjectClass?, parameters?: [args] }` | Same keys plus `sid`. `customActionObjectClass` names the family that defines the action when it is called on a member object type |
+| Action comment | `{ type: "comment", text, textColor?, backgroundColor? }` | `{ type: "comment", text, text-color?, background-color? }` with no SID |
+| Script | `{ type: "script", script }` (string split on newlines, or lines) | `{ type: "script", language: "javascript", script: [lines] }` with no SID |
+
+Call arguments are positional expression strings.
 
 **Sub-events (`children`):**
 - Each child is a full block event with its own conditions, actions, and children.
 - Children with `isElse: true` act as "Else" branches and don't require conditions.
+- Else and OR follow the r495 file format: a leading System `else` condition and a block-level `isOrBlock`. No `isElse` or condition-level `isOr` key is written.
 - Max nesting depth: 5 levels. Max total events (parent + all descendants): 50.
 
 **Validation:**
@@ -425,8 +455,8 @@ Use at most one insertion locator: `groupPath`, `parentSid`, or `siblingSid`. Wi
 1. Reads the target event sheet
 2. Validates all `objectClass` references across the entire event tree
 3. Recursively generates SIDs for each block, condition, and standard action
-4. Builds condition/action objects with optional fields (`behaviorType`, `parameters`, `isInverted`, `isOr`, `callFunction`, `disabled`)
-5. Recursively builds child sub-events with `isElse` support
+4. Builds condition and action objects in the shapes above
+5. Recursively builds child sub-events with else and OR support
 6. Resolves the optional group, parent SID, or sibling SID destination before mutating the event tree
 7. Inserts at the requested start/end or before/after position
 8. Writes sheet back with backup
@@ -484,19 +514,20 @@ Cross-block moves enforce the 100-item block limit. Conditions cannot move into 
 
 ### `update_event_block`
 
-Update an existing block event — modify action parameters, add/remove actions or conditions, toggle disabled state.
+Update an existing block, function-block or custom action body — modify action parameters, call arguments and comment rows, add/remove actions or conditions, toggle disabled state and OR mode.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet |
-| `sid` | number | Yes | SID of the block event to update |
+| `sid` | number | Yes | SID of the `block`, `function-block` or `custom-ace-block` to update |
 | `disabled` | boolean | No | Enable or disable the entire block |
-| `updateActions` | array | No | `[{ index, parameters?, disabled? }]` — update actions by index (merge semantics) |
-| `updateConditions` | array | No | `[{ index, parameters?, isInverted? }]` — update conditions by index |
+| `isOrBlock` | boolean | No | Make the block an OR block (`true`) or an AND block (`false`) |
+| `updateActions` | array | No | `[{ index, parameters?, arguments?, text?, textColor?, backgroundColor?, disabled? }]`. `parameters` merges into a standard action; `arguments` replaces a call's positional arguments; `text` and colors edit an action comment. A field that does not fit the action kind is rejected |
+| `updateConditions` | array | No | `[{ index, parameters?, isInverted?, disabled? }]` — update conditions by index |
 | `insertActions` | array | No | `[{ index, action }]` — insert at unique indexes measured after removals |
 | `insertConditions` | array | No | `[{ index, condition }]` — insert at unique indexes measured after removals |
 | `replaceConditions` | array | No | `[{ index, condition }]` — replace a condition in place and mint a fresh SID |
-| `addActions` | array | No | Append new actions (standard or script; script actions take the same shape as in `add_event_block`) |
+| `addActions` | array | No | Append new actions of any kind listed under `add_event_block` |
 | `addConditions` | array | No | Append new conditions |
 | `removeActionIndices` | number[] | No | Remove actions by 0-based index |
 | `removeConditionIndices` | number[] | No | Remove conditions by 0-based index |
@@ -511,12 +542,13 @@ At least one update parameter must be provided.
 5. Final state checks warn if all conditions were removed.
 
 **Notes:**
-- Only works on `block` or `function-block` events (not groups, variables, etc.)
-- New standard actions/conditions get fresh SIDs via the ID generator (script actions carry no SID, matching C3)
-- `objectClass` is validated on new conditions/actions
+- Works on `block`, `function-block` and `custom-ace-block` events (not groups, variables, etc.)
+- New conditions, standard actions and calls get fresh SIDs via the ID generator (script actions and comments carry no SID, matching C3)
+- `objectClass` and `customActionObjectClass` are validated on new conditions and actions
 - Duplicate removal indices are automatically deduplicated
-- Adding, inserting, or replacing conditions on an else block is rejected because Construct ignores them
-- Warns when all conditions are removed (block becomes unconditional)
+- In an else block the `else` condition stays first: inserting at index 0 is rejected, and replacing or removing it warns that the block becomes an ordinary block. Conditions after it (else-if) are allowed
+- A block written by an older build with an `isElse` key or condition-level `isOr` is rewritten to the r495 shape, with a warning
+- Warns when all conditions are removed from a block (it becomes unconditional), and when an OR block has fewer than two conditions
 
 ### `add_custom_action`
 
@@ -611,16 +643,31 @@ Update a comment event. Construct does not write a `sid` on comments, so a comme
 - `index` counts **every** event in the container, not only the comments. Addressing a non-comment is rejected and names the event type found.
 - At least one of `text`, `backgroundColor`, `textColor` must be provided.
 
-### `update_function`
+### `update_script_event`
 
-Update a function-block definition and, on request, every action that calls it.
+Replace the JavaScript of a standalone script block, or remove it. Script blocks carry no SID, so they are addressed like comments.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet containing the function |
-| `sid` | number | Yes | SID of the function-block |
-| `functionName` | string | No | New function name |
-| `renameCallers` | boolean | No | Rewrite every `callFunction` action targeting the old name (default: false) |
+| `sheetName` | string | Yes | Event sheet containing the script block |
+| `index` | number | Yes | 0-based index among the container's events |
+| `groupPath` / `parentSid` | string / number | No | The container (default: the sheet root) |
+| `script` | string \| string[] | No* | New JavaScript |
+| `remove` | boolean | No* | Remove the block |
+
+*Exactly one of `script` or `remove: true`. An index that points at another event type is rejected.
+
+### `update_function`
+
+Update a function-block or a custom action definition (`custom-ace-block`) and, on request, every action that calls it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet containing the definition |
+| `sid` | number | Yes | SID of the function-block or custom-ace-block |
+| `functionName` | string | No | New name (the `aceName` for a custom action) |
+| `renameCallers` | boolean | No | Rewrite every call targeting the old name (default: false) |
+| `dryRun` | boolean | No | Report the definition's call sites (and, with other parameters, what would change) without writing |
 | `description` | string | No | New `functionDescription` |
 | `category` | string | No | New `functionCategory` |
 | `returnType` | enum | No | `"none"` \| `"number"` \| `"string"` \| `"any"` |
@@ -630,7 +677,9 @@ Update a function-block definition and, on request, every action that calls it.
 | `removeParameters` | string[] | No | Parameter names to remove |
 | `renameParameters` | array | No | `[{ from, to }]` — rename in place, keeping the position and SID |
 
-At least one update parameter must be provided.
+At least one update parameter must be provided, unless `dryRun` is set.
+
+**Custom actions:** a call resolves to a custom action definition on `owner` when its `customActionObjectClass` is the owner, or it has none and its `objectClass` is the owner, or the owner is a family, the call is on a member, and that member does not define its own action of the same name. Only those calls are renamed; member overrides are reported and left unchanged. A duplicate name on the same owner is rejected.
 
 **Caller handling:**
 - A call site is a non-script action carrying `callFunction`, the same rule `get_function_map` and the project index use. All sheets are scanned.

@@ -99,6 +99,12 @@ node dist/index.js /path/to/your/project.c3proj
 | `get_asset_usage` | Track sound, image, font, and video asset usage |
 | `analyze_performance` | Heuristic performance audit with categorized issues |
 | `validate_project` | Integrity checks: file existence, duplicate SIDs/UIDs, broken references, orphaned files; `complete` says whether every object type, event sheet and layout was scanned |
+| `get_project_properties` | Every project setting: the full `properties` bag and top-level settings such as `bundleAddons` |
+| `search_project` | Find text or a regular expression across event sheets, script files and layout instance values |
+| `find_behavior_usage` | Declarations, event references and per-instance settings of a behavior |
+| `find_effect_usage` | Object types, families, layouts, layers and instances that use an effect |
+| `find_instance_variable_references` | Event references (ACE parameters, expressions, call arguments) and stored values of an instance variable |
+| `get_instance_counts` | Placed instances per object type and layout, including sub-layers and non-world instances |
 
 ### Mutation Tools (Safe Write Operations)
 

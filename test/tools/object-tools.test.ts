@@ -832,6 +832,33 @@ describe('update_instance_variable', () => {
     expect(block.actions[1].parameters['instance-variable']).toBe('hp');
   });
 
+  it('counts and rewrites expressions inside function and custom action call arguments', async () => {
+    const sheets = new Map([['MainSheet', {
+      name: 'MainSheet',
+      events: [{
+        eventType: 'block',
+        conditions: [{ id: 'every-tick', objectClass: 'System' }],
+        actions: [
+          { callFunction: 'Heal', sid: 50, parameters: ['Hero.hp', '"x"'] },
+          { customAction: 'Boost', objectClass: 'Hero', sid: 51, parameters: ['Hero.hp * 2'] },
+        ],
+      }],
+    }]]);
+    const refused = await objectSetup({ sheets }).server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', newName: 'health',
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain('MainSheet (2)');
+
+    const { server, writer } = objectSetup({ sheets });
+    await server.callTool('update_instance_variable', {
+      objectName: 'Hero', variableName: 'hp', newName: 'health', renameReferences: true,
+    });
+    const actions = writtenData(writer, 'eventSheets', 'MainSheet').events[0].actions;
+    expect(actions[0].parameters).toEqual(['Hero.health', '"x"']);
+    expect(actions[1].parameters).toEqual(['Hero.health * 2']);
+  });
+
   it('renames a family variable on the family and on every member instance', async () => {
     const families = new Map([['fAgents', {
       name: 'fAgents',

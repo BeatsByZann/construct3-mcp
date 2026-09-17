@@ -6,6 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
+- Read-only usage queries: `get_project_properties` (the full settings bag and top-level settings), `search_project` (text or regex across event sheets, script files and layout instance values), `find_behavior_usage`, `find_effect_usage`, `find_instance_variable_references` and `get_instance_counts`.
 - Event-sheet authoring that matches what the editor stores: action comments (`{ type: "comment", text, textColor, backgroundColor }`), function calls (`{ callFunction, parameters: [...] }`) and custom action calls (`{ customAction, objectClass, customActionObjectClass, parameters: [...] }`) in `add_event_block` and `update_event_block`; `update_event_block` also edits comment text and colors, call arguments, condition `disabled` and the block's `isOrBlock`; `add_event_block` takes `isOrBlock` and `disabled` conditions.
 - `update_function` edits and renames custom action definitions (`custom-ace-block`) as well as functions, rewriting the calls that resolve to the definition (qualified family calls, calls on the family, and unqualified calls on members without their own override), and has a `dryRun` that lists call sites.
 - `add_event_to_sheet` adds standalone script blocks (`eventType: "script"`) and sets variable comments and static/constant flags; `update_script_event` edits or removes a script block by index; `update_event_variable` sets the variable comment.
@@ -178,6 +179,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Fixed
 
+- `update_instance_variable` counts and renames `<Object>.<variable>` expressions inside function and custom action call arguments, which are stored as positional arrays.
 - OR blocks are written with Construct's block-level `isOrBlock` key. Earlier builds wrote a condition-level `isOr` that r495 does not use (48 OR blocks in Construct's examples, none with `isOr`); a condition input with `isOr` now makes the whole block an OR block, with a warning.
 - Else blocks are written as a leading System `else` condition, the way r495 stores them (172 samples), instead of an unknown block-level `isElse` key. Conditions after the else condition are allowed (else-if); the else condition is kept first. `update_event_block` rewrites blocks that older builds wrote with `isElse` or `isOr`.
 - Function calls are written as `{ callFunction, sid, parameters: [args] }` like Construct, without `id`/`objectClass`; the older keyed-parameter input is converted to positional arguments with a warning.

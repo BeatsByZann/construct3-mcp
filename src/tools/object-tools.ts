@@ -949,6 +949,10 @@ function escapeRegExp(value: string): string {
  * Build the pattern matching `<ReferringName>.<variableName>` inside event
  * parameter expressions (e.g. "fAgents.vEntityBlackboardUID").
  */
+export function buildInstanceVariablePattern(referringNames: Set<string>, variableName: string): RegExp {
+  return buildExpressionPattern(referringNames, variableName);
+}
+
 function buildExpressionPattern(referringNames: Set<string>, variableName: string): RegExp {
   const names = Array.from(referringNames).map(escapeRegExp).join('|');
   return new RegExp(`\\b(${names})\\s*\\.\\s*${escapeRegExp(variableName)}\\b`, 'g');
@@ -982,7 +986,19 @@ function scanSheetNode(node: unknown, ctx: SheetScanContext, objectClass: string
   let modified = false;
 
   const params = record.parameters;
-  if (params && typeof params === 'object' && !Array.isArray(params)) {
+  if (Array.isArray(params)) {
+    for (let i = 0; i < params.length; i++) {
+      const value = params[i];
+      if (typeof value !== 'string') continue;
+      const matches = value.match(ctx.expressionPattern);
+      if (!matches) continue;
+      ctx.count += matches.length;
+      if (ctx.apply) {
+        params[i] = value.replace(ctx.expressionPattern, (_full, prefix: string) => `${prefix}.${ctx.newName}`);
+        modified = true;
+      }
+    }
+  } else if (params && typeof params === 'object') {
     const dict = params as Record<string, unknown>;
     for (const [key, value] of Object.entries(dict)) {
       if (typeof value !== 'string') continue;
