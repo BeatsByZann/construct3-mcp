@@ -249,8 +249,14 @@ All notable changes to the Construct3 MCP Server are documented here.
   mirrors the object type's subfolder. Grid dimensions are validated per type
   (`auto16` 4x4, `auto47` 6x8, `patch` `width` by `height`), as is every cell
   (tile index, `null`, or weighted `{ index, probability }` alternatives).
-  Tilemap tile data is deliberately not implemented: no sample of its
-  serialization exists to work from.
+- `get_tilemap_data`, `set_tilemap_tiles` and `set_tilemap_data`: read and
+  write a placed Tilemap instance's `ownData.tilemapData` as rows of `null`
+  (empty), a tile index, or `{ tile, flipX, flipY, flipDiagonal }`. The
+  codec follows samples saved by the r495.2 editor: cells are stored column by
+  column as tile index plus 1 (`0` is empty), with `h`/`v`/`d` flip suffixes
+  and `Nx` runs. Reads over 10,000 cells need a region; a tile index past the
+  tileset's size is a warning. `set_tilemap_data` resizes the instance to the
+  grid by default.
 - `rename_object_type` now rewrites `tracks[].objectType` in every timeline
   file. An instance track stores its object type by name, and Construct r495.2
   refuses to open a packed project whose track names a type that no longer

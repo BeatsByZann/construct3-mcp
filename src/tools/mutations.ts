@@ -20,6 +20,7 @@ import { registerContainerTools } from './container-tools.js';
 import { registerRenameTools } from './rename-tools.js';
 import { registerTemplateTools } from './template-tools.js';
 import { registerTilemapBrushTools } from './tilemap-brush-tools.js';
+import { registerTilemapDataTools } from './tilemap-data-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -41,4 +42,5 @@ export function registerMutationTools(
   registerRenameTools(deps);
   registerTemplateTools(deps);
   registerTilemapBrushTools(deps);
+  registerTilemapDataTools(deps);
 }

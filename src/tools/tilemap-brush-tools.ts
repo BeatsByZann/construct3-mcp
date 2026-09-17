@@ -22,10 +22,8 @@
  * end of an `auto47` grid), or — in a `patch` — an array of weighted
  * alternatives `{ index, probability }` that Construct picks between.
  *
- * NOT implemented: a Tilemap instance's tile data. No sample of the tile-data
- * serialization exists in the reference project (its Tilemap instances carry
- * no tile payload), so the shape would have to be invented. Use the Construct
- * editor for tile data.
+ * A placed Tilemap instance's tile data is handled separately by
+ * `tilemap-data-tools.ts`.
  */
 
 import { z } from 'zod';
