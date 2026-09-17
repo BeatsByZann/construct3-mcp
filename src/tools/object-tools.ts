@@ -20,6 +20,7 @@ import {
   createGenericObject,
   createInstanceVariable,
   createBehavior,
+  KNOWN_SCIRRA_BEHAVIORS,
 } from '../construct3/templates.js';
 
 export function registerObjectTools({ server, reader, writer, idGen }: MutationToolDeps) {
@@ -183,9 +184,12 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         // Removing a behavior that events still use leaves broken events.
         if (args.removeBehaviors?.length && !args.force) {
           const index = await getProjectIndex(reader);
-          const blocked = args.removeBehaviors
-            .map(b => ({ behavior: b, references: index.behaviorReferences.get(`${args.name}::${b}`) ?? [] }))
-            .filter(r => r.references.length > 0);
+          const blocked = [];
+          for (const b of args.removeBehaviors) {
+            const references = index.behaviorReferences.get(`${args.name}::${b}`) ?? [];
+            const expressions = await findBehaviorExpressionReferences(reader, new Set([args.name]), b);
+            if (references.length > 0 || expressions.length > 0) blocked.push({ behavior: b, references, expressions });
+          }
           if (blocked.length > 0) {
             return toolResult({
               success: false,
@@ -193,8 +197,28 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
               category: 'object',
               action: 'update_blocked',
               message: 'Events still use these behaviors. Remove or change those events first, or pass force: true.',
-              references: blocked.map(r => ({ behavior: r.behavior, count: r.references.length, sample: r.references.slice(0, 20) })),
+              references: blocked.map(r => ({
+                behavior: r.behavior,
+                count: r.references.length + r.expressions.length,
+                sample: r.references.slice(0, 20),
+                expressions: r.expressions.slice(0, 20),
+              })),
             });
+          }
+        }
+
+        // A new behavior name must not match one the object already gets from a family.
+        if (args.addBehaviors?.length) {
+          const unknownAddons = unregistrableBehaviors(reader, args.addBehaviors.map(b => b.behaviorId));
+          if (unknownAddons.length > 0) {
+            return toolError(`Behavior addon(s) ${unknownAddons.map(id => `"${id}"`).join(', ')} are not in the project's usedAddons and are not known built-in Scirra behaviors. Add them in the Construct 3 editor first.`);
+          }
+          const inherited = await behaviorNamesOf(reader, args.name, await reader.readAllFamilies());
+          for (const b of args.addBehaviors) {
+            const owner = inherited.get(b.name);
+            if (owner && owner.startsWith('family')) {
+              return toolError(`Behavior name "${b.name}" is already given to "${args.name}" by ${owner}. Construct needs each behavior name to be unique on an object type; choose another name.`);
+            }
           }
         }
 
@@ -278,7 +302,12 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         // behaviors/instanceVariables dicts so C3 can resolve them on load,
         // and drop the per-instance settings of removed behaviors.
         if (args.addBehaviors?.length || args.removeBehaviors?.length || args.addVariables?.length || args.removeVariables?.length) {
-          const syncedLayouts = await syncLayoutInstances(reader, writer, new Set([args.name]), args.removeBehaviors ?? []);
+          const syncedLayouts: string[] = [];
+          try {
+            await syncLayoutInstances(reader, writer, new Set([args.name]), args.removeBehaviors ?? [], syncedLayouts);
+          } catch (error) {
+            return partialWriteResult(args.name, 'object', backupPath, syncedLayouts, error);
+          }
           if (syncedLayouts.length > 0) {
             warnings.push(`Updated instances in layout(s): ${syncedLayouts.join(', ')}`);
           }
@@ -737,10 +766,13 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           const toRemove = args.removeBehaviors.filter(b => !missing.includes(b));
           if (toRemove.length > 0 && !args.force) {
             const index = await getProjectIndex(reader);
-            const users = [args.name, ...new Set([...originalMembers, ...members])];
-            const blocked = toRemove
-              .map(b => ({ behavior: b, references: users.flatMap(u => index.behaviorReferences.get(`${u}::${b}`) ?? []) }))
-              .filter(r => r.references.length > 0);
+            const users = new Set([args.name, ...originalMembers, ...members]);
+            const blocked = [];
+            for (const b of toRemove) {
+              const references = [...users].flatMap(u => index.behaviorReferences.get(`${u}::${b}`) ?? []);
+              const expressions = await findBehaviorExpressionReferences(reader, users, b);
+              if (references.length > 0 || expressions.length > 0) blocked.push({ behavior: b, references, expressions });
+            }
             if (blocked.length > 0) {
               return toolResult({
                 success: false,
@@ -748,7 +780,12 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
                 category: 'family',
                 action: 'update_blocked',
                 message: 'Events still use these family behaviors (through the family or a member). Remove or change those events first, or pass force: true.',
-                references: blocked.map(r => ({ behavior: r.behavior, count: r.references.length, sample: r.references.slice(0, 20) })),
+                references: blocked.map(r => ({
+                  behavior: r.behavior,
+                  count: r.references.length + r.expressions.length,
+                  sample: r.references.slice(0, 20),
+                  expressions: r.expressions.slice(0, 20),
+                })),
               });
             }
           }
@@ -757,62 +794,72 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
             removedBehaviors.push(b);
           }
         }
-        if (args.addBehaviors?.length) {
-          // Names taken by the members' own behaviors or their other families.
-          const taken = new Map<string, string>();
+
+        // Validate every new behavior before anything is registered or written.
+        const newBehaviors: Array<{ behaviorId: string; name: string }> = [];
+        for (const b of args.addBehaviors ?? []) {
+          if (!BEHAVIOR_NAME.test(b.name)) {
+            return toolError(`Behavior name "${b.name}" is not valid: use letters, digits, underscores and spaces.`);
+          }
+          if (familyBehaviors.some(e => e.name === b.name) || newBehaviors.some(e => e.name === b.name)) {
+            warnings.push(`Behavior "${b.name}" already exists on the family, skipping`);
+            continue;
+          }
+          newBehaviors.push(b);
+        }
+
+        const unknownAddons = unregistrableBehaviors(reader, newBehaviors.map(b => b.behaviorId));
+        if (unknownAddons.length > 0) {
+          return toolError(`Behavior addon(s) ${unknownAddons.map(id => `"${id}"`).join(', ')} are not in the project's usedAddons and are not known built-in Scirra behaviors. Add them in the Construct 3 editor first.`);
+        }
+
+        // Every member must be able to carry every family behavior name: check
+        // new members against all family behaviors, and new behaviors against all members.
+        if (newBehaviors.length > 0 || (args.addMembers?.length ?? 0) > 0) {
+          const addedMembers = new Set(members.filter(m => !originalMembers.includes(m)));
+          const newNames = new Set(newBehaviors.map(b => b.name));
+          const allNames = [...familyBehaviors.map(e => String(e.name)), ...newNames];
+          const families = await reader.readAllFamilies();
           for (const m of members) {
-            try {
-              const obj = await reader.readObjectType(m);
-              for (const b of (obj.behaviorTypes ?? []) as Array<{ name?: string }>) {
-                if (typeof b.name === 'string') taken.set(b.name, `object type "${m}"`);
+            const owners = await behaviorNamesOf(reader, m, families, args.name);
+            for (const n of allNames) {
+              const owner = owners.get(n);
+              if (owner && (addedMembers.has(m) || newNames.has(n))) {
+                return toolError(`Behavior name "${n}" would appear twice on "${m}": the family "${args.name}" and ${owner} both define it. Construct needs each behavior name to be unique on an object type; rename one of them first.`);
               }
-            } catch {
-              // Unknown member: nothing to collide with.
             }
           }
-          for (const [otherName, other] of await reader.readAllFamilies()) {
-            if (otherName === args.name) continue;
-            const otherMembers = Array.isArray(other.members) ? other.members as string[] : [];
-            if (!otherMembers.some(m => members.includes(m))) continue;
-            for (const b of (Array.isArray(other.behaviorTypes) ? other.behaviorTypes : []) as Array<{ name?: string }>) {
-              if (typeof b.name === 'string') taken.set(b.name, `family "${otherName}"`);
-            }
-          }
-          for (const b of args.addBehaviors) {
-            validateName(b.name);
-            if (familyBehaviors.some(e => e.name === b.name)) {
-              warnings.push(`Behavior "${b.name}" already exists on the family, skipping`);
-              continue;
-            }
-            const owner = taken.get(b.name);
-            if (owner) {
-              return toolError(`Behavior name "${b.name}" is already used by ${owner}, which shares members with "${args.name}". Construct needs each behavior name to be unique on an object type; choose another name.`);
-            }
-            const bWarning = await writer.ensureAddonRegistered('behavior', b.behaviorId);
-            if (bWarning) warnings.push(bWarning);
-            familyBehaviors.push(createBehavior(b.behaviorId, b.name, await idGen.generateSid(reader)));
-          }
+        }
+
+        for (const b of newBehaviors) {
+          const bWarning = await writer.ensureAddonRegistered('behavior', b.behaviorId);
+          if (bWarning) warnings.push(bWarning);
+          familyBehaviors.push(createBehavior(b.behaviorId, b.name, await idGen.generateSid(reader)));
         }
 
         const subfolder = writer.getSubfolderForEntity('families', args.name);
         const backupPath = await writer.writeEntityFile('families', args.name, family, subfolder);
 
-        if (args.addBehaviors?.length || removedBehaviors.length > 0 || args.addMembers?.length) {
-          const syncedLayouts = await syncLayoutInstances(reader, writer, new Set(members), removedBehaviors);
-          if (syncedLayouts.length > 0) {
-            warnings.push(`Updated member instances in layout(s): ${syncedLayouts.join(', ')}`);
+        const syncedLayouts: string[] = [];
+        const cleanedLayouts: string[] = [];
+        try {
+          if (newBehaviors.length > 0 || removedBehaviors.length > 0 || args.addMembers?.length) {
+            await syncLayoutInstances(reader, writer, new Set(members), removedBehaviors, syncedLayouts);
           }
-        }
-        const formerMembers = originalMembers.filter(m => !members.includes(m));
-        if (formerMembers.length > 0) {
+          const formerMembers = originalMembers.filter(m => !members.includes(m));
           // Former members no longer get any of the family's behaviors.
           const familyBehaviorNames = [...familyBehaviors.map(e => String(e.name)), ...removedBehaviors];
-          if (familyBehaviorNames.length > 0) {
-            const cleaned = await syncLayoutInstances(reader, writer, new Set(formerMembers), familyBehaviorNames);
-            if (cleaned.length > 0) {
-              warnings.push(`Removed family behavior settings from former member instances in layout(s): ${cleaned.join(', ')}`);
-            }
+          if (formerMembers.length > 0 && familyBehaviorNames.length > 0) {
+            await syncLayoutInstances(reader, writer, new Set(formerMembers), familyBehaviorNames, cleanedLayouts);
           }
+        } catch (error) {
+          return partialWriteResult(args.name, 'family', backupPath, [...new Set([...syncedLayouts, ...cleanedLayouts])], error);
+        }
+        if (syncedLayouts.length > 0) {
+          warnings.push(`Updated member instances in layout(s): ${syncedLayouts.join(', ')}`);
+        }
+        if (cleanedLayouts.length > 0) {
+          warnings.push(`Removed family behavior settings from former member instances in layout(s): ${cleanedLayouts.join(', ')}`);
         }
 
         const result: WriteResult = {
@@ -951,9 +998,9 @@ async function syncLayoutInstances(
   writer: Construct3ProjectWriter,
   objectNames: Set<string>,
   removedBehaviors: string[] = [],
+  modifiedLayouts: string[] = [],
 ): Promise<string[]> {
   const layouts = await reader.readAllLayouts();
-  const modifiedLayouts: string[] = [];
 
   for (const [layoutName, layout] of layouts) {
     let modified = false;
@@ -979,6 +1026,110 @@ async function syncLayoutInstances(
   }
 
   return modifiedLayouts;
+}
+
+/** Construct behavior names: the default for 8 Direction is "8Direction". */
+const BEHAVIOR_NAME = /^[A-Za-z0-9_][A-Za-z0-9_ ]*$/;
+
+/** Where an event sheet uses a behavior through an expression such as `Player.Platform.VectorX`. */
+interface BehaviorExpressionReference {
+  eventSheet: string;
+  eventSid?: number;
+  text: string;
+}
+
+/**
+ * Expression references to `<name>.<behavior>.` for any of `names`, in every
+ * string parameter of every event sheet. The usage index only records a
+ * condition's or action's `behaviorType`, so these need their own scan.
+ */
+async function findBehaviorExpressionReferences(
+  reader: Construct3ProjectReader,
+  names: Set<string>,
+  behavior: string,
+): Promise<BehaviorExpressionReference[]> {
+  const pattern = new RegExp(
+    `\\b(?:${Array.from(names).map(escapeRegExp).join('|')})\\s*\\.\\s*${escapeRegExp(behavior)}\\s*\\.`,
+  );
+  const found: BehaviorExpressionReference[] = [];
+  const visit = (node: unknown, sheet: string, sid: number | undefined): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, sheet, sid);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    const record = node as Record<string, unknown>;
+    const ownSid = typeof record.eventType === 'string' && typeof record.sid === 'number' ? record.sid : sid;
+    const params = record.parameters;
+    const values = Array.isArray(params) ? params : params && typeof params === 'object' ? Object.values(params) : [];
+    for (const value of values) {
+      if (typeof value === 'string' && pattern.test(value)) found.push({ eventSheet: sheet, eventSid: ownSid, text: value });
+    }
+    for (const [key, value] of Object.entries(record)) {
+      if (key !== 'parameters' && value && typeof value === 'object') visit(value, sheet, ownSid);
+    }
+  };
+  for (const [sheetName, sheet] of await reader.readAllEventSheets()) visit(sheet, sheetName, undefined);
+  return found;
+}
+
+/**
+ * Behavior names an object type already carries, with where each comes from:
+ * its own behaviors and those of its families, optionally skipping one family.
+ */
+async function behaviorNamesOf(
+  reader: Construct3ProjectReader,
+  objectName: string,
+  families: Map<string, Record<string, unknown>>,
+  skipFamily?: string,
+): Promise<Map<string, string>> {
+  const owners = new Map<string, string>();
+  try {
+    const obj = await reader.readObjectType(objectName);
+    for (const b of (obj.behaviorTypes ?? []) as Array<{ name?: string }>) {
+      if (typeof b.name === 'string') owners.set(b.name, `object type "${objectName}"`);
+    }
+  } catch {
+    // Unknown object type: nothing to collide with.
+  }
+  for (const [familyName, family] of families) {
+    if (familyName === skipFamily) continue;
+    if (!(Array.isArray(family.members) && (family.members as string[]).includes(objectName))) continue;
+    for (const b of (Array.isArray(family.behaviorTypes) ? family.behaviorTypes : []) as Array<{ name?: string }>) {
+      if (typeof b.name === 'string') owners.set(b.name, `family "${familyName}"`);
+    }
+  }
+  return owners;
+}
+
+/**
+ * The behavior addons in `ids` that ensureAddonRegistered would refuse: not in
+ * usedAddons and not a known Scirra behavior. Checked up front so a refused
+ * addon cannot leave earlier ones registered.
+ */
+function unregistrableBehaviors(reader: Construct3ProjectReader, ids: string[]): string[] {
+  const used = reader.getUsedAddons();
+  return [...new Set(ids)].filter(id =>
+    !used.some(a => a.type === 'behavior' && a.id === id) && !(id in KNOWN_SCIRRA_BEHAVIORS));
+}
+
+/** A layout sync failed after the entity file was written; report exactly what changed. */
+function partialWriteResult(
+  entity: string,
+  category: 'object' | 'family',
+  backupFile: string | undefined,
+  writtenLayouts: string[],
+  error: unknown,
+) {
+  return toolResult({
+    success: false,
+    entity,
+    category,
+    action: 'partially_updated',
+    message: `The ${category === 'family' ? 'family' : 'object type'} file was written, but updating placed instances failed: ${error instanceof Error ? error.message : String(error)}. Layouts already written: ${writtenLayouts.join(', ') || '(none)'}. Restore the backup and the listed layouts' backups, then retry.`,
+    backupFile,
+    writtenLayouts,
+  });
 }
 
 /**

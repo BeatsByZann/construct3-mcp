@@ -185,6 +185,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 ### Fixed
 
 - `update_instance` wrote `zElevation` to `world.z` even on instances that store `world.zElevation` (projects saved by older releases), leaving two Z keys.
+- `delete_instance_from_layout` left hierarchy links to a deleted instance (its parent's `children` entry and its children's `parent-uid`); it now detaches both sides and reports the detached children.
 - `delete_instance_from_layout` did not find instances on sub-layers, and `update_object_properties` did not give sub-layer instances their `behaviors`/`instanceVariables` dicts.
 - `update_event_block` upgrades a block written with the legacy `isElse`/`isOr` keys before checking condition indexes, so the added else condition no longer shifts updates, removals and insertions.
 - `move_event_block_items` refuses to move an else condition; `update_event_block_action` refuses keyed parameters on calls, comments and script rows and accepts custom action bodies.

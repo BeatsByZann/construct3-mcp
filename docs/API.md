@@ -257,8 +257,10 @@ Update an existing object's instance variables and behaviors.
 
 **Notes:**
 - Reads the full existing object and preserves all fields not being modified
-- `removeBehaviors` is refused with `action: "update_blocked"` and the event references while a condition or action still uses the behavior; `force: true` removes it anyway and leaves those events unchanged. Placed instances (every layer depth and non-world) lose their settings for removed behaviors
+- `removeBehaviors` is refused with `action: "update_blocked"` and the event references while a condition or action uses the behavior, or an expression names it (`Player.Platform.VectorX`); `force: true` removes it anyway and leaves those events unchanged. Placed instances (every layer depth and non-world) lose their settings for removed behaviors
 - `globalInstanceProperties` and `globalInstanceTags` are refused for objects without `singleglobal-inst`; property keys not already stored produce a warning
+- A new behavior is refused when a family already gives the object a behavior of that name, or when its addon is neither in `usedAddons` nor a known Scirra behavior (checked before anything is registered)
+- If placed instances cannot be updated after the object file is written, the result is `success: false`, `action: "partially_updated"`, with `backupFile` and `writtenLayouts`
 - Validates behavior addon registration (auto-adds known Scirra behaviors)
 - Generates unique SIDs for each new variable and behavior
 - Warns on duplicate variable/behavior names (skips them)
@@ -281,9 +283,10 @@ Update a family's members, shared instance variables and shared behaviors.
 | `force` | boolean | No | Remove behaviors even when events still use them (default false) |
 
 **Notes:**
-- A new behavior name must not match a behavior of any member or of another family sharing a member
-- Removal checks event references through the family and every member; it is refused with `action: "update_blocked"` unless `force` is true
-- Member instances on every layer depth get a `behaviors` dict; removed behaviors, and all family behaviors on removed members, are deleted from those instances
+- Behavior names may use letters, digits (including a leading digit, as in `8Direction`), underscores and spaces
+- Every member must be able to carry every family behavior name: a new behavior may not match a behavior of any member or of another family of a member, and a new member may not bring a behavior whose name the family already uses. All checks run before any addon is registered or file written
+- Removal checks event references and expressions (`Member.Behavior.`) through the family and every member; it is refused with `action: "update_blocked"` unless `force` is true
+- Member instances on every layer depth get a `behaviors` dict; removed behaviors, and all family behaviors on removed members, are deleted from those instances. A failed layout update after the family file is written returns `action: "partially_updated"` with `writtenLayouts`
 
 ### `reorder_behaviors`
 

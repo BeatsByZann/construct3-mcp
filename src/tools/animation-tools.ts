@@ -1093,9 +1093,14 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
         } catch (error) {
           // Keep the image and the object type in step.
-          if (previous) await writeFile(filePath, previous);
-          else await unlink(filePath).catch(() => undefined);
-          throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          try {
+            if (previous) await writeFile(filePath, previous);
+            else await unlink(filePath).catch(() => undefined);
+          } catch (rollbackError) {
+            throw new Error(`${message}; restoring the previous image at ${filePath} also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+          }
+          throw new Error(`${message} (the previous image was restored)`);
         }
 
         warnings.push(`Image written to ${filePath} (${size.width}x${size.height}).`);

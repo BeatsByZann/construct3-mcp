@@ -986,6 +986,22 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
+        // Hierarchy links point at UIDs; detach the instance from its parent
+        // and its children from it before it goes.
+        const byUidBefore = worldInstancesByUid(layout);
+        const target = byUidBefore.get(args.uid);
+        const detachedChildren: number[] = [];
+        if (target) {
+          unlinkFromParent(byUidBefore, target);
+          for (const child of target.sceneGraphData?.children ?? []) {
+            const childInst = byUidBefore.get(child.uid);
+            if (childInst?.sceneGraphData && childInst.sceneGraphData['parent-uid'] === args.uid) {
+              childInst.sceneGraphData['parent-uid'] = null;
+              detachedChildren.push(child.uid);
+            }
+          }
+        }
+
         // Search every layer, sub-layers included
         let found = false;
         let removedType: string | undefined;
@@ -1027,7 +1043,12 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           category: 'layout',
           action: 'updated',
           backupFile: backupPath,
-          warnings: removedType ? [`Removed instance of "${removedType}" (UID ${args.uid}).`] : undefined,
+          warnings: removedType
+            ? [
+              `Removed instance of "${removedType}" (UID ${args.uid}).`,
+              ...(detachedChildren.length > 0 ? [`Detached its hierarchy children: ${detachedChildren.join(', ')}.`] : []),
+            ]
+            : undefined,
         };
         return toolResult(result);
       } catch (error) {
