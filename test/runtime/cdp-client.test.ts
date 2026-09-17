@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
+import { RuntimeConnectionManager } from "../../src/runtime/cdp-client.js";
 import { registerRuntimeTools, type RuntimeToolController } from "../../src/tools/runtime-tools.js";
 import { MockServer } from "../mocks/mock-server.js";
 
@@ -12,6 +13,8 @@ interface FakeCdpOptions {
   commandValues?: Record<string, unknown[]>;
   expressionValues?: unknown[];
   includePageTarget?: boolean;
+  canvasGeometry?: Record<string, number> | null;
+  resultResponseDelayMs?: number;
 }
 
 interface FakeCdp {
@@ -87,6 +90,8 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
         const expressionValue = values[Math.min(expressionChecks, values.length - 1)];
         expressionChecks++;
         value = JSON.stringify({ value: expressionValue });
+      } else if (expression.includes("getBoundingClientRect")) {
+        value = JSON.stringify(options.canvasGeometry === undefined ? null : options.canvasGeometry);
       } else if (expression.includes("bridge.getState")) {
         stateChecks++;
         const ready = stateChecks > (options.bridgeReadyAfter ?? 0);
@@ -127,7 +132,7 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
         value = JSON.stringify(null);
       }
 
-      socket.send(JSON.stringify({
+      const response = JSON.stringify({
         id: request.id,
         result: {
           result: {
@@ -135,7 +140,14 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
             value,
           },
         },
-      }));
+      });
+      if (expression.includes("bridge.getResult") && options.resultResponseDelayMs) {
+        setTimeout(() => {
+          if (socket.readyState === socket.OPEN) socket.send(response);
+        }, options.resultResponseDelayMs);
+      } else {
+        socket.send(response);
+      }
     });
   });
 
@@ -398,6 +410,28 @@ describe("call_bridge", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("timed out after 120ms");
+  });
+
+  it("reports the command timeout when a poll expires at the deadline", async () => {
+    const fake = await startFakeCdp({ resultResponseDelayMs: 1_000 });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    const result = await server.callTool("call_bridge", {
+      connectionId: connected.connectionId,
+      command: "ping",
+      pollIntervalMs: 10,
+      timeoutMs: 120,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      "Failed to call runtime bridge: Runtime bridge command timed out after 120ms",
+    );
   });
 
   it("rejects a closed connection ID", async () => {
@@ -814,5 +848,108 @@ describe("simulate_input", () => {
       "touchStart",
       "touchEnd",
     ]);
+  });
+
+  it("maps canvas coordinates through the live canvas offset and reports canvas geometry", async () => {
+    const geometry = {
+      left: 40,
+      top: 25.5,
+      cssWidth: 320,
+      cssHeight: 240,
+      backingWidth: 640,
+      backingHeight: 480,
+      devicePixelRatio: 2,
+      viewportWidth: 400,
+      viewportHeight: 300,
+    };
+    const fake = await startFakeCdp({ canvasGeometry: geometry });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    expect(parseToolResult(await server.callTool("get_canvas_size", {
+      connectionId: connected.connectionId,
+    }))).toEqual(geometry);
+
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "click", x: 10, y: 20 },
+      coordinateSpace: "canvas",
+    }));
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "touch", x: 0, y: 0, gesture: "swipe", endX: 320, endY: 240 },
+      coordinateSpace: "canvas",
+    }));
+    const commands = fake.cdpCommands();
+    expect(commands[0].params).toMatchObject({ type: "mousePressed", x: 50, y: 45.5 });
+    expect(commands[1].params).toMatchObject({ type: "mouseReleased", x: 50, y: 45.5 });
+    expect(commands[3].params).toMatchObject({
+      type: "touchStart",
+      touchPoints: [{ x: 40, y: 25.5 }],
+    });
+    expect(commands[11].params).toMatchObject({
+      type: "touchMove",
+      touchPoints: [{ x: 360, y: 265.5 }],
+    });
+
+    const dispatched = fake.cdpCommands().length;
+    const outside = await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "click", x: 321, y: 20 },
+      coordinateSpace: "canvas",
+    });
+    expect(outside.isError).toBe(true);
+    expect(outside.content[0].text).toContain("outside the 320x240 CSS-pixel canvas");
+    expect(fake.cdpCommands()).toHaveLength(dispatched);
+
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "click", x: 10, y: 20 },
+    }));
+    expect(fake.cdpCommands().at(-1)!.params).toMatchObject({ x: 10, y: 20 });
+  });
+
+  it("reports a missing canvas without dispatching input", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    const size = await server.callTool("get_canvas_size", { connectionId: connected.connectionId });
+    expect(size.isError).toBe(true);
+    expect(size.content[0].text).toContain("No canvas element");
+    const click = await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "click", x: 1, y: 1 },
+      coordinateSpace: "canvas",
+    });
+    expect(click.isError).toBe(true);
+    expect(fake.cdpCommands()).toEqual([]);
+  });
+
+  it("rejects an incomplete swipe before dispatching a touch", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const manager = new RuntimeConnectionManager();
+    try {
+      const connected = await manager.connect({ cdpEndpoint: fake.endpoint, timeoutMs: 500 });
+      await expect(manager.simulateInput({
+        connectionId: connected.connectionId,
+        action: { type: "touch", x: 10, y: 20, gesture: "swipe", endX: 30 },
+        delayMs: 0,
+      })).rejects.toThrow(/require endX and endY/u);
+      expect(fake.cdpCommands()).toEqual([]);
+    } finally {
+      await manager.closeAll();
+    }
   });
 });

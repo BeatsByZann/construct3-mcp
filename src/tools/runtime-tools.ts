@@ -421,24 +421,45 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
 
   server.tool(
     'simulate_input',
-    'Send mouse, touch, keyboard, or text input to a connected game through the Chrome DevTools Protocol Input domain. Coordinates are CSS pixels relative to the page viewport; callers must account for any canvas offset or scaling.',
+    'Send mouse, touch, keyboard, or text input to a connected game through the Chrome DevTools Protocol Input domain. Coordinates are CSS pixels relative to the page viewport by default; with coordinateSpace "canvas" they are CSS pixels relative to the game canvas top-left and are offset by the canvas position. Use get_canvas_size to read the canvas geometry.',
     {
       connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
       action: inputActionSchema.describe('Input action to dispatch'),
       delayMs: z.number().int().min(0).max(60_000).optional().default(0)
         .describe('Delay before dispatching the input action'),
+      coordinateSpace: z.enum(['viewport', 'canvas']).optional().default('viewport')
+        .describe('Whether x/y (and endX/endY) are page-viewport or game-canvas CSS pixels'),
     },
-    async ({ connectionId, action, delayMs }) => {
+    async ({ connectionId, action, delayMs, coordinateSpace }) => {
       try {
         const result = await connections.simulateInput({
           connectionId,
           action: action as SimulatedInputAction,
           delayMs,
+          coordinateSpace,
         });
         return toolResult(result);
       } catch (error) {
         console.error('[simulate_input] failed:', error);
         return toolError(`Failed to simulate input: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  // ── get_canvas_size ──────────────────────────────────────
+
+  server.tool(
+    'get_canvas_size',
+    'Read the connected game canvas geometry: its CSS-pixel position and size in the page viewport, its backing-store pixel size, the device pixel ratio, and the viewport size. Use it to choose coordinates for simulate_input.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+    },
+    async ({ connectionId }) => {
+      try {
+        return toolResult(await connections.getCanvasGeometry(connectionId));
+      } catch (error) {
+        console.error('[get_canvas_size] failed:', error);
+        return toolError(`Failed to read canvas size: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
   );

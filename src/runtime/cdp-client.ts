@@ -129,10 +129,25 @@ export type SimulatedInputAction =
     y: number;
   };
 
+export type InputCoordinateSpace = "viewport" | "canvas";
+
 export interface SimulateInputOptions {
   connectionId: string;
   action: SimulatedInputAction;
   delayMs: number;
+  coordinateSpace?: InputCoordinateSpace;
+}
+
+export interface CanvasGeometry {
+  left: number;
+  top: number;
+  cssWidth: number;
+  cssHeight: number;
+  backingWidth: number;
+  backingHeight: number;
+  devicePixelRatio: number;
+  viewportWidth: number;
+  viewportHeight: number;
 }
 
 export interface SimulateInputResult {
@@ -249,6 +264,31 @@ function modifierMask(modifiers: InputModifier[]): number {
     if (modifier === "Meta") return mask | 4;
     return mask | 8;
   }, 0);
+}
+
+function toViewportAction(action: SimulatedInputAction, canvas: CanvasGeometry): SimulatedInputAction {
+  const toViewport = (x: number, y: number, label: string) => {
+    if (x > canvas.cssWidth || y > canvas.cssHeight) {
+      throw new Error(
+        `${label} (${x}, ${y}) is outside the ${canvas.cssWidth}x${canvas.cssHeight} CSS-pixel canvas`,
+      );
+    }
+    return { x: canvas.left + x, y: canvas.top + y };
+  };
+  switch (action.type) {
+    case "click":
+    case "mouseMove":
+      return { ...action, ...toViewport(action.x, action.y, "Canvas point") };
+    case "touch": {
+      const start = toViewport(action.x, action.y, "Canvas point");
+      if (action.endX === undefined || action.endY === undefined) return { ...action, ...start };
+      const end = toViewport(action.endX, action.endY, "Canvas end point");
+      return { ...action, ...start, endX: end.x, endY: end.y };
+    }
+    case "key":
+    case "type":
+      return action;
+  }
 }
 
 interface KeyDescriptor {
@@ -645,10 +685,28 @@ export class RuntimeConnectionManager {
 
     while (Date.now() - startedAt < options.timeoutMs) {
       const remaining = options.timeoutMs - (Date.now() - startedAt);
-      const polled = await connection.evaluateJson<{
+      let polled: {
         bridgeError?: string;
         bridgeResult?: { ok?: boolean; value?: unknown; error?: unknown } | null;
-      }>(pollExpression, Math.max(1, Math.min(CDP_CALL_TIMEOUT_MS, remaining)));
+      };
+      try {
+        polled = await connection.evaluateJson(
+          pollExpression,
+          Math.max(1, Math.min(CDP_CALL_TIMEOUT_MS, remaining)),
+        );
+      } catch (error) {
+        // A poll clamped to the remaining budget can expire at the deadline;
+        // report the command timeout rather than the internal CDP timeout.
+        if (
+          connection.isOpen()
+          && Date.now() - startedAt >= options.timeoutMs
+          && error instanceof Error
+          && error.message.startsWith("CDP Runtime.evaluate timed out")
+        ) {
+          break;
+        }
+        throw error;
+      }
 
       if (polled.bridgeError) throw new Error(polled.bridgeError);
       if (polled.bridgeResult !== null && polled.bridgeResult !== undefined) {
@@ -723,18 +781,52 @@ export class RuntimeConnectionManager {
     }
   }
 
+  async getCanvasGeometry(connectionId: string): Promise<CanvasGeometry> {
+    const connection = this.getConnection(connectionId);
+    const expression = `(() => {
+      const canvas = document.querySelector("canvas");
+      if (!canvas) return JSON.stringify(null);
+      const rect = canvas.getBoundingClientRect();
+      return JSON.stringify({
+        left: rect.left,
+        top: rect.top,
+        cssWidth: rect.width,
+        cssHeight: rect.height,
+        backingWidth: canvas.width,
+        backingHeight: canvas.height,
+        devicePixelRatio: globalThis.devicePixelRatio,
+        viewportWidth: globalThis.innerWidth,
+        viewportHeight: globalThis.innerHeight,
+      });
+    })()`;
+    const geometry = await connection.evaluateJson<CanvasGeometry | null>(expression);
+    if (!geometry) throw new Error("No canvas element was found in the connected page");
+    return geometry;
+  }
+
   async simulateInput(options: SimulateInputOptions): Promise<SimulateInputResult> {
     const connection = this.getConnection(options.connectionId);
+    if (
+      options.action.type === "touch"
+      && options.action.gesture === "swipe"
+      && (options.action.endX === undefined || options.action.endY === undefined)
+    ) {
+      throw new Error("Swipe gestures require endX and endY");
+    }
     if (options.delayMs > 0) await delay(options.delayMs);
 
-    switch (options.action.type) {
+    const action = options.coordinateSpace === "canvas"
+      ? toViewportAction(options.action, await this.getCanvasGeometry(options.connectionId))
+      : options.action;
+
+    switch (action.type) {
       case "click": {
-        const buttons = mouseButtonMask(options.action.button);
+        const buttons = mouseButtonMask(action.button);
         const common = {
-          x: options.action.x,
-          y: options.action.y,
-          button: options.action.button,
-          clickCount: options.action.clickCount,
+          x: action.x,
+          y: action.y,
+          button: action.button,
+          clickCount: action.clickCount,
         };
         await connection.command("Input.dispatchMouseEvent", {
           type: "mousePressed",
@@ -751,8 +843,8 @@ export class RuntimeConnectionManager {
       case "mouseMove":
         await connection.command("Input.dispatchMouseEvent", {
           type: "mouseMoved",
-          x: options.action.x,
-          y: options.action.y,
+          x: action.x,
+          y: action.y,
           button: "none",
           buttons: 0,
         });
@@ -762,11 +854,11 @@ export class RuntimeConnectionManager {
           enabled: true,
           maxTouchPoints: 5,
         });
-        await this.dispatchTouch(connection, options.action);
+        await this.dispatchTouch(connection, action);
         break;
       case "key": {
-        const modifiers = modifierMask(options.action.modifiers);
-        const descriptor = keyDescriptor(options.action.key);
+        const modifiers = modifierMask(action.modifiers);
+        const descriptor = keyDescriptor(action.key);
         const { text, ...identity } = descriptor;
         await connection.command("Input.dispatchKeyEvent", {
           type: "keyDown",
@@ -782,13 +874,13 @@ export class RuntimeConnectionManager {
         break;
       }
       case "type":
-        for (const character of options.action.text) {
+        for (const character of action.text) {
           await connection.command("Input.insertText", { text: character });
         }
         break;
     }
 
-    return { success: true, action: options.action.type };
+    return { success: true, action: action.type };
   }
 
   async closeAll(): Promise<void> {

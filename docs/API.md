@@ -672,6 +672,7 @@ command for the action succeeds.
 | `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
 | `action` | object | Yes | One of the action shapes below |
 | `delayMs` | integer | No | Delay before dispatch, 0 to 60000 ms (default: 0) |
+| `coordinateSpace` | string | No | `viewport` (default) or `canvas` |
 
 Action shapes:
 
@@ -685,11 +686,24 @@ Action shapes:
   a time and is limited to 1,000 characters per call.
 - Mouse move: `{ type: "mouseMove", x, y }`.
 
-Coordinates are CSS pixels relative to the page viewport, which is also the
-coordinate system used by CDP. If the Construct canvas is offset, letterboxed,
-or scaled within the page, the caller must transform game/canvas coordinates
-to viewport coordinates before calling this tool. Long press holds for 500 ms;
-swipe interpolates eight move events from the start to the end point.
+With the default `viewport` space, coordinates are CSS pixels relative to the
+page viewport, which is also the coordinate system used by CDP. With `canvas`,
+coordinates are CSS pixels relative to the top-left corner of the page's first
+`canvas` element; the tool reads the canvas bounding rectangle immediately
+before dispatch, adds its offset, and rejects points beyond the canvas CSS
+width or height. Neither space converts Construct layout or layer
+coordinates; a caller that starts from layout positions must convert them to
+canvas CSS pixels first. Long press holds for 500 ms; swipe interpolates eight
+move events from the start to the end point. A swipe without both end
+coordinates is rejected before any event is dispatched.
+
+### `get_canvas_size`
+
+Read the geometry of the connected page's first `canvas` element. Parameter:
+`connectionId` (required UUID). Returns `left` and `top` (CSS pixels in the
+viewport), `cssWidth` and `cssHeight`, `backingWidth` and `backingHeight`
+(canvas pixel buffer), `devicePixelRatio`, and `viewportWidth` and
+`viewportHeight`. The tool returns an error when the page has no canvas.
 
 ### `disconnect_from_game`
 

@@ -137,7 +137,8 @@ node dist/index.js /path/to/your/project.c3proj
 | `disconnect_from_game` | Close a persistent game connection |
 | `call_bridge` | Execute any supported bridge command over a persistent game connection |
 | `wait_for_condition` | Poll a global variable, object property, layout, or page expression until a condition is met |
-| `simulate_input` | Send mouse, touch, keyboard, and text input through CDP |
+| `simulate_input` | Send mouse, touch, keyboard, and text input through CDP, in viewport or canvas coordinates |
+| `get_canvas_size` | Read the game canvas position, CSS size, backing size, and device pixel ratio |
 | `generate_bridge_eval_script` | Generate a curl/python script to execute a bridge command via browser remote debugging |
 | `export_for_preview` | Pre-flight checks (worker mode, bridge injection) for preview testing |
 | `clone_project` | Deep-copy the project with optional bridge injection |

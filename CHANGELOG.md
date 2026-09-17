@@ -18,7 +18,11 @@ All notable changes to the Construct3 MCP Server are documented here.
   observed value.
 - `simulate_input`: delayed mouse clicks and movement, touch tap/long-press/
   swipe gestures, key combinations, and character-by-character text insertion
-  through the retained connection's CDP Input domain.
+  through the retained connection's CDP Input domain, with an optional
+  `canvas` coordinate space that offsets points by the canvas position and
+  rejects points beyond the canvas.
+- `get_canvas_size`: canvas CSS position and size, backing-store size, device
+  pixel ratio, and viewport size for choosing input coordinates.
 - Fake-CDP integration coverage for discovery, direct endpoints, readiness,
   persistence, all bridge commands, rapid calls, errors, timeouts, disconnect,
   missing targets, runtime condition waits, and exact input event sequences.
