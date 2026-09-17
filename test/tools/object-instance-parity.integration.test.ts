@@ -48,7 +48,7 @@ beforeEach(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), 'c3-w90-objects-'));
   await cp(FIXTURE_DIR, tmpDir, { recursive: true });
   await editJson('objectTypes/Keyboard.json', o => {
-    o['singleglobal-inst'] = { type: 'Keyboard', properties: {}, uid: 4, sid: 660000000000099, tags: '' };
+    o['singleglobal-inst'] = { type: 'Keyboard', properties: { 'kept-setting': true }, uid: 4, sid: 660000000000099, tags: '' };
   });
   await editJson('layouts/Level 1.json', l => {
     // A second world instance on Game, and an old-format instance using zElevation.
@@ -171,7 +171,7 @@ describe('single-global settings (X8)', () => {
     expect(r.success).toBe(true);
     expect(r.warnings[0]).toContain('not present');
     const sgi = (await readJson('objectTypes/Keyboard.json'))['singleglobal-inst'];
-    expect(sgi).toEqual({ type: 'Keyboard', properties: { 'some-setting': 3 }, uid: 4, sid: 660000000000099, tags: 'input' });
+    expect(sgi).toEqual({ type: 'Keyboard', properties: { 'kept-setting': true, 'some-setting': 3 }, uid: 4, sid: 660000000000099, tags: 'input' });
   });
 
   it('refuses an object that is not single-global', async () => {
