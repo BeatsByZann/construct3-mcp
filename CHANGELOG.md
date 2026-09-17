@@ -135,6 +135,35 @@ All notable changes to the Construct3 MCP Server are documented here.
   uses `aceType: "action"`, so only that form is written and the condition and
   expression forms are not invented. `System` and duplicate object-class plus
   name pairs are rejected.
+- `update_layer` completed and made nesting-aware: it now finds a layer at any
+  depth and sets `color`, `backgroundColor`, `global`, `isHTMLElementsLayer`,
+  `sampling`, `renderingMode`, `forceOwnTexture`, `useRenderCells` and
+  `drawOrder`, with rename uniqueness checked across every layer of the layout.
+- `add_layer` takes `parentLayer`, creating the layer inside that layer's
+  `subLayers` with `index` relative to its new siblings.
+- `reorder_layers`: reorder the top-level layers or one layer's sub-layers by
+  passing the full sibling list; a partial, duplicated or foreign name list is
+  rejected instead of silently dropping layers.
+- `move_layer`: move a layer between nesting levels, refusing a move into the
+  layer itself or into one of its own sub-layers, and refusing to nest a
+  layout's last top-level layer.
+- `update_layout` completed with `unboundedScrolling`, `sampling`,
+  `projection`, `vpX` and `vpY`.
+- `update_project_properties`: update any allowlisted key of
+  `project.properties` plus the top-level `firstLayout` (validated for
+  existence), `viewportWidth`, `viewportHeight`, `useWorker` and
+  `functionsName`; unknown keys are rejected with the valid key list, and
+  `update_project_metadata` is unchanged. The writer allowlist gained those
+  five top-level keys and the `fixedFramerate` property that real r495
+  projects carry.
+- `set_instance_parent` and `remove_instance_children`: maintain both sides of
+  a layout's instance hierarchy (`sceneGraphData["parent-uid"]` on the child
+  and the `{ uid, flags }` entry on the parent), with the flag defaults
+  Construct writes for a fresh child (`x, y, z, w, h, d, a` true, `o` and `v`
+  false, `sm: "normal"`), self-parenting and cycle guards, and a world-instance
+  check on both sides.
+- `createLayer` now emits `sampling: "auto"`, which every layer in a real r495
+  project carries.
 
 ## [1.8.2] - 2026-09-10
 

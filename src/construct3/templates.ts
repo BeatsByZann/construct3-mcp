@@ -572,6 +572,7 @@ export function createLayer(name: string, sid: number): Layer {
     color: [1, 1, 1, 1],
     backgroundColor: [1, 1, 1, 1],
     isTransparent: true,
+    sampling: 'auto',
     parallaxX: 1,
     parallaxY: 1,
     scaleRate: 1,

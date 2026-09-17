@@ -720,7 +720,7 @@ Update a placed instance on a layout. Instances are found by UID in any layer, n
 
 ### `update_layout`
 
-Update layout properties (event sheet binding, dimensions).
+Update layout properties (event sheet binding, dimensions, scrolling, sampling, projection, viewport anchor).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -728,8 +728,119 @@ Update layout properties (event sheet binding, dimensions).
 | `eventSheet` | string | No | New event sheet binding (validated for existence) |
 | `width` | number | No | New layout width in pixels |
 | `height` | number | No | New layout height in pixels |
+| `unboundedScrolling` | boolean | No | Allow scrolling beyond the layout bounds |
+| `sampling` | string | No | `auto` (inherit the project setting), `nearest`, `bilinear`, `trilinear` |
+| `projection` | string | No | `perspective` or `orthographic` |
+| `vpX` | number | No | Viewport anchor X, 0-1 (Construct writes 0.5) |
+| `vpY` | number | No | Viewport anchor Y, 0-1 (Construct writes 0.5) |
 
-At least one parameter must be provided.
+At least one parameter must be provided. Renaming a layout is not done here.
+
+### `add_layer`
+
+Add a layer to a layout, at the top level or inside another layer's `subLayers`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout to add the layer to |
+| `layerName` | string | Yes | New layer name (unique across every layer of the layout, sub-layers included) |
+| `parentLayer` | string | No | Create the layer inside this layer's `subLayers` (default: top level) |
+| `index` | number | No | Position among its siblings, 0 = bottom (default: append to top) |
+| `isInitiallyVisible` | boolean | No | Layer starts visible (default: true) |
+| `isTransparent` | boolean | No | Layer is transparent (default: true) |
+| `parallaxX`, `parallaxY` | number | No | Parallax rates (default: 1) |
+| `blendMode` | string | No | Blend mode (default: `normal`) |
+
+**Notes:**
+- The parent layer is found at any nesting level; a parent with no `subLayers` array gets one.
+- Layer names must be unique across the whole layout, so a name already used by a nested layer is rejected.
+
+### `update_layer`
+
+Update an existing layer, at the top level or nested in another layer.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `layerName` | string | Yes | Layer to update (searched at every nesting level) |
+| `newName` | string | No | Rename the layer (unique across every layer of the layout) |
+| `isInitiallyVisible`, `isInitiallyInteractive`, `isTransparent` | boolean | No | Initial visibility, interactivity, transparency |
+| `parallaxX`, `parallaxY`, `scaleRate`, `zElevation` | number | No | Parallax rates, scale rate, Z elevation |
+| `blendMode` | string | No | Blend mode |
+| `color` | number[4] | No | Layer tint as `[r, g, b, a]`, values 0-1 |
+| `backgroundColor` | number[4] | No | Background color as `[r, g, b, a]`, values 0-1 (used when the layer is not transparent) |
+| `global` | boolean | No | Make the layer global (shared across layouts) |
+| `isHTMLElementsLayer` | boolean | No | Mark the layer as the HTML elements layer |
+| `sampling` | string | No | `auto` (inherit the project setting), `nearest`, `bilinear`, `trilinear` |
+| `renderingMode` | string | No | Free-form; Construct 3 r495 writes `3d` |
+| `forceOwnTexture` | boolean | No | Render the layer to its own texture |
+| `useRenderCells` | boolean | No | Use render cells for culling |
+| `drawOrder` | string | No | Free-form; Construct 3 r495 writes `z-order` |
+
+At least one parameter must be provided. `sampling` is validated against the list above; `renderingMode` and `drawOrder` are accepted as bounded strings because only one value of each was observed in a real r495 project.
+
+### `reorder_layers`
+
+Reorder one nesting level of a layout.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `layerNames` | string[] | Yes | Every layer at that level, in the new order (index 0 = bottom) |
+| `parentLayer` | string | No | Reorder this layer's sub-layers instead of the top-level layers |
+
+**Notes:**
+- `layerNames` must be a full permutation of that level. A missing name, a duplicate, or a name from another level is rejected and nothing is written — a partial list would silently drop layers and the instances on them.
+
+### `move_layer`
+
+Move a layer between nesting levels of the same layout.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `layerName` | string | Yes | Layer to move (searched at every nesting level) |
+| `parentLayer` | string / null | No | Destination parent layer; `null` or omitted moves the layer to the top level |
+| `index` | number | No | Position among the destination siblings *after* the layer is removed from its old position (default: append to top; larger values are clamped) |
+
+**Notes:**
+- Moving a layer into itself, or into one of its own sub-layers, is refused: it would detach the whole branch from the layout.
+- The layout's last remaining top-level layer cannot be nested.
+- Sub-layers move with the layer.
+
+### `set_instance_parent`
+
+Attach a world instance to a hierarchy parent in the same layout, or detach it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `childUid` | number | Yes | UID of the instance that becomes the child |
+| `parentUid` | number / null | Yes | UID of the parent instance, or `null` to detach the child from its current parent |
+| `flags` | object | No | Inheritance flags merged over the defaults; unknown keys are rejected |
+
+**Flags** (the key set Construct 3 r495 writes): `x`, `y`, `z`, `w`, `h`, `d`, `a`, `o`, `v` are booleans and `sm` is one of `normal`, `wrap`, `all`. Defaults for a fresh child are `x, y, z, w, h, d, a: true`, `o: false`, `v: false`, `sm: "normal"` — the shape carried by 598 of the 669 child records in the reference project (opacity and visibility are not inherited unless asked for).
+
+**Notes:**
+- Both instances must be world instances (placed on a layer) in the same layout; non-world instances have no hierarchy.
+- Both sides of the link are maintained: the child's `sceneGraphData["parent-uid"]` and its own `flags`, and a `{ uid, flags }` entry with the same values on the parent's `sceneGraphData.children`. A record is created in Construct's shape (including the `preview` block) when the instance has none.
+- Re-parenting removes the entry from the previous parent, and an emptied `children` array is dropped, matching how Construct writes childless instances.
+- Self-parenting is refused, as is a parent that already descends from the child (a hierarchy cycle).
+- Detaching an instance that has no hierarchy record returns `action: "unchanged"` and writes nothing.
+
+### `remove_instance_children`
+
+Detach every hierarchy child of a world instance.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `parentUid` | number | Yes | UID of the parent instance whose children are detached |
+
+**Notes:**
+- Clears each child's `parent-uid` and removes the parent's `children` array.
+- A parent with no children returns `action: "unchanged"` with `detached: 0` and writes nothing.
+- A listed child UID with no matching world instance in the layout is reported as a warning; the stale link is still removed.
 
 ### `update_project_metadata`
 
@@ -742,7 +853,29 @@ Update project-level metadata.
 | `author` | string | No | Author name |
 | `description` | string | No | Project description |
 
+At least one parameter must be provided. Every other project setting, including the startup layout and viewport size, is handled by `update_project_properties`.
+
+### `update_project_properties`
+
+Update project settings beyond the four metadata fields: any key of `project.properties`, plus the top-level startup layout, viewport size, worker mode and functions name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `properties` | object | No | Values merged into `project.properties`, keyed by Construct property name (max 60 keys, depth 3) |
+| `firstLayout` | string | No | Startup layout name (validated for existence) |
+| `viewportWidth` | number | No | Project viewport width in pixels |
+| `viewportHeight` | number | No | Project viewport height in pixels |
+| `useWorker` | string | No | Worker mode; Construct writes values such as `dom` or `auto` |
+| `functionsName` | string | No | Script-interface name for functions (must be a JavaScript identifier, e.g. `Fn`) |
+
 At least one parameter must be provided.
+
+**Valid `properties` keys** (the writer's allowlist, compile-checked against the `ProjectProperties` type): `anisotropicFiltering`, `appId`, `author`, `authorEmail`, `authorWebsite`, `autoIncrementVersion`, `backgroundColor`, `cordovaAndroidScheme`, `cordovaiOSScheme`, `description`, `downscaling`, `exportFileStructure`, `fixedFramerate`, `fov`, `framerateMode`, `fullscreenMode`, `fullscreenQuality`, `gpuPreference`, `loaderStyle`, `maxSpriteSheetSize`, `multitexturing`, `orientations`, `pixelRounding`, `preloadSounds`, `renderingMode`, `sampling`, `scriptsType`, `splashColor`, `themeColor`, `uidAllocationMode`, `useLoaderLayout`, `useThemeColor`, `version`, `viewportFit`, `webgpu`, `zAxisScale`, `zFar`, `zNear`.
+
+**Notes:**
+- An unknown key is rejected with the full valid-key list and nothing is written.
+- Top-level keys (`name`, `firstLayout`, `viewportWidth`, `viewportHeight`, `useWorker`, `functionsName`) cannot be smuggled through `properties`; use the parameters above, or `update_project_metadata` for `name`.
+- `name`, `version`, `author` and `description` remain available through `update_project_metadata`, which is unchanged.
 
 ### `add_animation_to_sprite`
 
