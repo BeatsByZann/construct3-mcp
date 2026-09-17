@@ -13,6 +13,8 @@ import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
   GLOBAL_PLUGINS,
   NONWORLD_GLOBAL_PLUGINS,
+  SINGLE_IMAGE_PLUGINS,
+  ANIMATION_PLUGINS,
   createSpriteObject,
   createTextObject,
   createTiledBgObject,
@@ -59,7 +61,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           uid = await idGen.generateUid(reader);
           const sgiSid = await idGen.generateSid(reader);
           data = createGlobalObject(args.name, args.pluginId, sid, uid, sgiSid);
-        } else if (args.pluginId === 'Sprite') {
+        } else if (ANIMATION_PLUGINS.has(args.pluginId)) {
           const animSid = await idGen.generateSid(reader);
           const imageSpriteId = await idGen.generateImageSpriteId(reader);
 
@@ -68,15 +70,23 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
             objectName: args.name,
             animationName: 'Animation 1',
             frameIndex: 0,
-            pluginId: 'Sprite',
+            pluginId: args.pluginId,
             width: 1,
             height: 1,
           }]);
 
           data = createSpriteObject(args.name, sid, animSid, imageSpriteId);
+          data['plugin-id'] = args.pluginId;
+          if (args.pluginId !== 'Sprite') {
+            // All 42 sampled 3D Shape frames omit collisionPoly, which only
+            // Sprite frames carry.
+            for (const item of data.animations?.items ?? []) {
+              for (const frame of item.frames ?? []) delete (frame as unknown as Record<string, unknown>).collisionPoly;
+            }
+          }
         } else if (args.pluginId === 'Text') {
           data = createTextObject(args.name, sid);
-        } else if (args.pluginId === 'TiledBg') {
+        } else if (SINGLE_IMAGE_PLUGINS.has(args.pluginId)) {
           const imageSpriteId = await idGen.generateImageSpriteId(reader);
 
           // Write placeholder PNG before JSON — abort if image fails
@@ -84,12 +94,18 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
             objectName: args.name,
             animationName: '',
             frameIndex: 0,
-            pluginId: 'TiledBg',
+            pluginId: args.pluginId,
             width: 1,
             height: 1,
           }]);
 
           data = createTiledBgObject(args.name, sid, imageSpriteId);
+          data['plugin-id'] = args.pluginId;
+          if (args.pluginId === 'Tilemap') {
+            // Sampled tilemaps carry this key last, empty when no tile has a
+            // collision polygon.
+            (data as unknown as Record<string, unknown>)['tile-collision-polys'] = {};
+          }
         } else {
           data = createGenericObject(args.name, args.pluginId, sid);
           // Nonworld-global plugins (Arr, Json, Dictionary) are isGlobal but not singleglobal-inst

@@ -3,10 +3,13 @@
  * Produces valid transparent PNGs without any image library dependencies.
  *
  * C3 image filename conventions (verified from real projects):
- * - Sprites: `images/{objectname lowercase}-{animation name}-{frameIndex padded to 3}.png`
- * - TiledBg: `images/{objectname lowercase}.png`
+ * - Animation objects (Sprite, 3D Shape):
+ *   `images/{objectname lowercase}-{animation name}-{frameIndex padded to 3}.png`
+ * - Single-image objects (Tiled Background, Particles, Sprite Font, Tilemap,
+ *   9-patch): `images/{objectname lowercase}.png`
  */
 
+import { SINGLE_IMAGE_PLUGINS } from './templates.js';
 import { deflateSync } from 'zlib';
 
 /** PNG file signature (magic bytes) */
@@ -95,7 +98,9 @@ export function getImageFileName(
 ): string {
   const lowerName = objectName.toLowerCase();
 
-  if (pluginId === 'TiledBg') {
+  // Every single-image object type in the sampled r495.2 projects stores its
+  // PNG as images/<lowercase name>.png, not only Tiled Background.
+  if (pluginId !== undefined && SINGLE_IMAGE_PLUGINS.has(pluginId)) {
     return `${lowerName}.png`;
   }
 

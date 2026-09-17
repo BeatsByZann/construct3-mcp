@@ -11,6 +11,8 @@ import type { Construct3ProjectReader } from '../project-reader.js';
 import type { C3Event, Construct3Project, Layout, ObjectType, EventSheet } from '../types.js';
 import { getProjectIndex } from './index-builder.js';
 import { findOrphanedObjects } from './object-deps.js';
+import { SINGLE_IMAGE_PLUGINS, ANIMATION_PLUGINS } from '../templates.js';
+import { getImageFileName } from '../png-generator.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -87,6 +89,7 @@ export async function validateProjectIntegrity(
   checkRequiredFieldsLayouts(layouts, errors);
   checkNameConsistency(objects, eventSheets, layouts, errors);
   checkSubfolderStructure(project, errors);
+  await checkObjectImages(objects, reader, errors, warnings);
 
   // Warning checks
   checkDuplicateSids(objects, eventSheets, layouts, families, warnings);
@@ -101,7 +104,7 @@ export async function validateProjectIntegrity(
   await checkBackupFiles(reader, info);
   await checkOrphanedObjects(reader, info);
 
-  const checksRun = 13;
+  const checksRun = 14;
 
   return {
     valid: errors.length === 0,
@@ -685,6 +688,118 @@ function walkEventsForIncludes(
 
     if ('children' in event && Array.isArray(event.children)) {
       stack.push(...event.children);
+    }
+  }
+}
+
+// ─── Check 8b: Object Images ─────────────────────────────────
+
+/**
+ * An image-bearing object type should have its image record and the PNG on
+ * disk. Severity follows the evidence rather than the suspicion:
+ *
+ * - A single-image object type with no `image` record is an ERROR. r495.2
+ *   refuses the whole project ("Failed to open project. Check it is a valid
+ *   Construct 3 single-file (.c3p) project.") and names no object, observed on
+ *   a package holding one Sprite Font object and isolated against a package
+ *   that opens normally.
+ * - Everything else here is a WARNING, because it is inferred from the 30
+ *   sampled r495.2 projects rather than tested in the editor: all 384
+ *   animation object types carry frames and all 505 image-bearing types have
+ *   their PNG, but no failing package was built for those shapes.
+ *
+ * The on-disk half is skipped when the project has no `images` directory,
+ * which a partially materialised fixture or an in-memory project has; that
+ * absence says nothing about what Construct would do.
+ */
+async function checkObjectImages(
+  objects: Map<string, ObjectType>,
+  reader: Construct3ProjectReader,
+  errors: IntegrityIssue[],
+  warnings: IntegrityIssue[]
+): Promise<void> {
+  const imagesDir = join(reader.getProjectDir(), 'images');
+  let haveImagesDir = false;
+  try {
+    haveImagesDir = (await lstat(imagesDir)).isDirectory();
+  } catch {
+    haveImagesDir = false;
+  }
+
+  const missingFile = async (fileName: string): Promise<boolean> => {
+    if (!haveImagesDir) return false;
+    try {
+      await lstat(join(imagesDir, fileName));
+      return false;
+    } catch {
+      return true;
+    }
+  };
+
+  for (const [name, obj] of objects) {
+    const pluginId = obj['plugin-id'];
+    if (!pluginId) continue;
+
+    if (SINGLE_IMAGE_PLUGINS.has(pluginId)) {
+      const image = (obj as unknown as Record<string, unknown>).image;
+      if (!image || typeof image !== 'object') {
+        errors.push({
+          check: 'object-image',
+          entity: `objectTypes/${name}`,
+          message: `A ${pluginId} object type has no "image" record, which stops Construct opening the project`,
+          suggestion: `Recreate the object with create_object, or add the image record and its PNG`,
+        });
+        continue;
+      }
+      const fileName = getImageFileName(name, '', 0, pluginId);
+      if (await missingFile(fileName)) {
+        warnings.push({
+          check: 'object-image',
+          entity: `objectTypes/${name}`,
+          message: `A ${pluginId} object type declares an image but images/${fileName} is missing, which stops Construct opening the project`,
+          suggestion: `Restore the file, or replace the image with replace_object_image`,
+        });
+      }
+      continue;
+    }
+
+    if (!ANIMATION_PLUGINS.has(pluginId)) continue;
+
+    const animations = (obj as unknown as Record<string, unknown>).animations as
+      | { items?: Array<{ name?: string; frames?: unknown[] }> }
+      | undefined;
+    const items = animations?.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      warnings.push({
+        check: 'object-image',
+        entity: `objectTypes/${name}`,
+        message: `A ${pluginId} object type has no animation frames, which stops Construct opening the project`,
+        suggestion: `Recreate the object with create_object, or add an animation with at least one frame`,
+      });
+      continue;
+    }
+    for (const item of items) {
+      const frames = Array.isArray(item.frames) ? item.frames : [];
+      if (frames.length === 0) {
+        warnings.push({
+          check: 'object-image',
+          entity: `objectTypes/${name}/animation:${item.name ?? ''}`,
+          message: `Animation "${item.name ?? ''}" has no frames, which stops Construct opening the project`,
+          suggestion: `Add a frame with add_frame_to_animation, or delete the animation`,
+        });
+        continue;
+      }
+      for (let i = 0; i < frames.length; i++) {
+        const fileName = getImageFileName(name, item.name ?? '', i, pluginId);
+        if (await missingFile(fileName)) {
+          warnings.push({
+            check: 'object-image',
+            entity: `objectTypes/${name}/animation:${item.name ?? ''}`,
+            message: `Frame ${i} declares images/${fileName}, which is missing, and Construct will not open the project`,
+            suggestion: `Restore the file, or replace the frame image with replace_sprite_image`,
+          });
+        }
+      }
     }
   }
 }

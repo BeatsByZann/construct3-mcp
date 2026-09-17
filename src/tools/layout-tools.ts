@@ -98,6 +98,32 @@ const ORIGIN_GRID: Record<string, [number, number]> = {
   'bottom-left': [0, 1], bottom: [0.5, 1], 'bottom-right': [1, 1],
 };
 
+/**
+ * Plugins whose instances always carry an `origin` property. In the 30 r495.2
+ * packages every one of the 165 instances of these plugins has the key
+ * (TiledBg 85, Text 46, Spritefont2 13, NinePatch 12, SVGPicture 8,
+ * DrawingCanvas 1), and none of the 1,148 instances of the others ever does
+ * (Sprite 1078, Particles 36, Shape3D 27, Tilemap 6, Button 1). The editor
+ * therefore never writes such an instance without one, so neither do we.
+ */
+const ORIGIN_PROPERTY_PLUGINS = new Set(['TiledBg', 'Text', 'Spritefont2', 'NinePatch', 'SVGPicture', 'DrawingCanvas']);
+
+/**
+ * The origin r495.2 itself writes for a new instance, harvested by placing one
+ * with no origin set and reading the editor's own save. Only what has actually
+ * been observed belongs here; usage frequency in existing projects is not a
+ * default, because authors change it.
+ */
+const EDITOR_DEFAULT_ORIGIN: Record<string, string> = {
+  DrawingCanvas: 'top-left',
+};
+
+/** The modal origin of each of those plugins in the same sample. */
+const SAMPLED_ORIGIN: Record<string, string> = {
+  TiledBg: 'top-left (70 of 85)', Text: 'center (21 of 46)', Spritefont2: 'center (8 of 13)',
+  NinePatch: 'top-left (4 of 12)', SVGPicture: 'center (8 of 8)', DrawingCanvas: 'top-left (1 of 1)',
+};
+
 function originGridName(x: number, y: number): string | undefined {
   return Object.keys(ORIGIN_GRID).find(name => ORIGIN_GRID[name][0] === x && ORIGIN_GRID[name][1] === y);
 }
@@ -127,7 +153,7 @@ function resolveInstanceOrigin(
   props: Record<string, unknown>,
   requested: { x?: number; y?: number },
   current: { x: number; y: number },
-): { x: number; y: number; property?: string } | { error: string } {
+): { x: number; y: number; property?: string; warning?: string } | { error: string } {
   if (pluginId === 'Sprite') {
     const frame = spriteFrameOrigin(obj, props);
     if (requested.x !== undefined || requested.y !== undefined) {
@@ -139,16 +165,31 @@ function resolveInstanceOrigin(
     }
     return frame ? { x: frame[0], y: frame[1] } : { x: current.x, y: current.y };
   }
-  if (typeof props.origin === 'string' && props.origin in ORIGIN_GRID) {
-    if (requested.x === undefined && requested.y === undefined) {
-      const [x, y] = ORIGIN_GRID[props.origin];
-      return { x, y };
-    }
+  const hasOriginProperty = typeof props.origin === 'string' && props.origin in ORIGIN_GRID;
+  if (hasOriginProperty && requested.x === undefined && requested.y === undefined) {
+    const [x, y] = ORIGIN_GRID[props.origin as string];
+    return { x, y };
+  }
+  if (hasOriginProperty || (pluginId !== undefined && ORIGIN_PROPERTY_PLUGINS.has(pluginId))) {
     const x = requested.x ?? current.x;
     const y = requested.y ?? current.y;
     const name = originGridName(x, y);
     if (!name) {
       return { error: `This object's origin is the "origin" property, which only takes the nine grid points (${Object.entries(ORIGIN_GRID).map(([n, [gx, gy]]) => `${n} = ${gx},${gy}`).join('; ')}).` };
+    }
+    // An instance of one of these plugins with no origin property is a shape
+    // the editor never saves, so one is always written.
+    const unstated = !hasOriginProperty && requested.x === undefined && requested.y === undefined;
+    if (unstated && pluginId !== undefined) {
+      // Where the editor's own default has been harvested, use it.
+      const harvested = EDITOR_DEFAULT_ORIGIN[pluginId];
+      if (harvested) {
+        const [hx, hy] = ORIGIN_GRID[harvested];
+        return { x: hx, y: hy, property: harvested };
+      }
+      // Otherwise write the name matching the origin already stored and say
+      // that the editor's default is unknown, rather than guess it.
+      return { x, y, property: name, warning: `No origin given, so "${name}" was written to match the default ${x},${y}. The editor's own default for a new ${pluginId} instance is unsampled; the most common value in the sampled projects is ${SAMPLED_ORIGIN[pluginId] ?? 'unknown'}. Pass originX and originY to choose, or harvest the default from the editor.` };
     }
     return { x, y, property: name };
   }
@@ -468,6 +509,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
             instance.world.originX = origin.x;
             instance.world.originY = origin.y;
             if (origin.property) instance.properties = { ...instance.properties, origin: origin.property };
+            if (origin.warning) warnings.push(origin.warning);
           }
 
           targetLayer.instances.push(instance);
@@ -1259,6 +1301,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
             inst.world.originX = origin.x;
             inst.world.originY = origin.y;
             if (origin.property) inst.properties = { ...(inst.properties ?? {}), origin: origin.property };
+            if (origin.warning) warnings.push(origin.warning);
           }
           if (args.depth !== undefined) {
             if (!('depth' in inst.world)) {

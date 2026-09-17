@@ -31,13 +31,39 @@ import type {
 
 // ─── Object Templates ──────────────────────────────────────
 
-/** Plugins that use singleglobal-inst (no layout placement) */
+/**
+ * Plugins that use singleglobal-inst (no layout placement). Corrected against
+ * r495.2: `Camera3D` (1 sample) and `gamepad` (8) are single-global and were
+ * missing, and `Cryptography` was removed because r495.2 rewrote such an
+ * object as an ordinary type with no `singleglobal-inst` at all, observed live
+ * rather than in the corpus, which has no Cryptography object.
+ * `NWjs` and `XMLParser` are unverified here: both are legacy SDK v1 and
+ * absent from r495.2, so an object of either raises a missing-addon dialog
+ * whatever this list says.
+ */
 export const GLOBAL_PLUGINS = new Set([
   'Audio', 'AJAX', 'Mouse', 'Touch', 'Keyboard', 'Browser',
   'Geolocation', 'NWjs', 'Clipboard', 'PlatformInfo',
   'LocalStorage', 'XMLParser', 'Multiplayer',
-  'Facebook', 'IAP', 'Greenworks', 'Cryptography', 'Timeline',
+  'Facebook', 'IAP', 'Greenworks', 'Timeline',
+  'Camera3D', 'gamepad',
 ]);
+
+/**
+ * Plugins whose object type carries a single `image` block, and those whose
+ * object type carries `animations`. Both come from the 30 r495.2 packages: all
+ * 121 single-image object types (TiledBg 68, Particles 30, Spritefont2 12,
+ * Tilemap 6, NinePatch 5) share the same nine object-type keys and the same
+ * eleven image keys, and all 384 animation object types (Sprite 342,
+ * Shape3D 42) share one shape. Every one of them also has its PNG on disk.
+ * An object of any of these written without its image makes a project r495.2
+ * refuses to open, while `validate_project` still reports no errors.
+ */
+export const SINGLE_IMAGE_PLUGINS = new Set([
+  'TiledBg', 'Particles', 'Spritefont2', 'Tilemap', 'NinePatch',
+]);
+
+export const ANIMATION_PLUGINS = new Set(['Sprite', 'Shape3D']);
 
 /** Plugins that are isGlobal but NOT singleglobal-inst (placed as nonworld instances) */
 export const NONWORLD_GLOBAL_PLUGINS = new Set([
@@ -56,6 +82,7 @@ export const RESERVED_NAMES = new Set([
 export const KNOWN_SCIRRA_PLUGINS: Record<string, string> = {
   AJAX: 'AJAX',
   Arr: 'Array',
+  Camera3D: '3D camera',
   Audio: 'Audio',
   Browser: 'Browser',
   Button: 'Button',
@@ -81,15 +108,19 @@ export const KNOWN_SCIRRA_PLUGINS: Record<string, string> = {
   PlatformInfo: 'Platform info',
   ProgressBar: 'Progress bar',
   'Shadow Light': 'Shadow light',
+  SVGPicture: 'SVG Picture',
+  Shape3D: '3D shape',
   Sprite: 'Sprite',
   Spritefont2: 'Sprite font',
   Text: 'Text',
   TextBox: 'Text input',
   TiledBg: 'Tiled Background',
+  Tilemap: 'Tilemap',
   Timeline: 'Timeline controller',
   Touch: 'Touch',
   Video: 'Video',
   XMLParser: 'XML',
+  gamepad: 'Gamepad',
   sliderbar: 'Slider bar',
 };
 
