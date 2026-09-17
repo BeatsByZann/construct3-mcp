@@ -67,10 +67,23 @@ async function main() {
     registerMutationTools(server, reader, writer, idGen);
 
     // Runtime Control (for live game testing via browser automation)
-    registerRuntimeTools({ server, reader, writer });
+    const runtimeTools = registerRuntimeTools({ server, reader, writer });
 
     // Start transport
     const transport = new StdioServerTransport();
+    server.server.onclose = () => {
+      void runtimeTools.close();
+    };
+    process.stdin.once('end', () => {
+      void server.close();
+    });
+    const stopForSignal = () => {
+      void runtimeTools.close()
+        .then(() => server.close())
+        .finally(() => process.exit(0));
+    };
+    process.once('SIGINT', stopForSignal);
+    process.once('SIGTERM', stopForSignal);
     await server.connect(transport);
 
     console.error('Construct3 MCP Server ready');

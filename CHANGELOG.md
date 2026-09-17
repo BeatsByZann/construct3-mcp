@@ -2,6 +2,27 @@
 
 All notable changes to the Construct3 MCP Server are documented here.
 
+## [Unreleased]
+
+### Added
+
+- `connect_to_game` and `disconnect_from_game`: persistent Chrome DevTools
+  Protocol connections, page-target discovery, bridge readiness checks,
+  multiple retained connections, and server-shutdown cleanup.
+- `call_bridge`: execute all 11 injected runtime bridge commands with bounded
+  polling, explicit timeouts, structured bridge errors, and collision-safe
+  concurrent CDP requests.
+- `wait_for_condition`: bounded check-first polling for global variables,
+  object properties, layouts, and caller-supplied page expressions, with seven
+  comparison operators and non-error timeout results that retain the last
+  observed value.
+- `simulate_input`: delayed mouse clicks and movement, touch tap/long-press/
+  swipe gestures, key combinations, and character-by-character text insertion
+  through the retained connection's CDP Input domain.
+- Fake-CDP integration coverage for discovery, direct endpoints, readiness,
+  persistence, all bridge commands, rapid calls, errors, timeouts, disconnect,
+  missing targets, runtime condition waits, and exact input event sequences.
+
 ## [1.8.2] - 2026-09-10
 
 ### Source-verified defects from a live-project mutation evaluation

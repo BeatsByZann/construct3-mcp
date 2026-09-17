@@ -21,6 +21,8 @@ import { join, dirname, relative } from 'node:path';
 import { existsSync } from 'node:fs';
 import { toolResult, toolError, boundedRecord } from './shared.js';
 import { writeZip } from '../runtime/zip-writer.js';
+import { RuntimeConnectionManager } from '../runtime/cdp-client.js';
+import type { RuntimeCondition, SimulatedInputAction } from '../runtime/cdp-client.js';
 
 const BRIDGE_FILENAME = 'c3-runtime-bridge.js';
 
@@ -29,6 +31,101 @@ interface RuntimeToolDeps {
   reader: Construct3ProjectReader;
   writer: Construct3ProjectWriter;
 }
+
+export interface RuntimeToolController {
+  close(): Promise<void>;
+}
+
+const BRIDGE_COMMANDS = [
+  'callFunction',
+  'getGlobalVar',
+  'setGlobalVar',
+  'getObjectState',
+  'getAllInstances',
+  'getLayout',
+  'goToLayout',
+  'evaluateExpression',
+  'listObjects',
+  'listGlobalVars',
+  'ping',
+] as const;
+
+const conditionOperatorSchema = z.enum(['eq', 'neq', 'gt', 'lt', 'gte', 'lte', 'contains']);
+const runtimeConditionSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('globalVar'),
+    name: z.string().min(1).max(200),
+    operator: conditionOperatorSchema,
+    value: z.unknown(),
+  }),
+  z.object({
+    type: z.literal('objectProperty'),
+    objectType: z.string().min(1).max(200),
+    property: z.string().min(1).max(200),
+    operator: conditionOperatorSchema,
+    value: z.unknown(),
+  }),
+  z.object({
+    type: z.literal('layout'),
+    name: z.string().min(1).max(200),
+  }),
+  z.object({
+    type: z.literal('expression'),
+    expr: z.string().min(1).max(10_000),
+    operator: conditionOperatorSchema,
+    value: z.unknown(),
+  }),
+]).superRefine((condition, ctx) => {
+  if (condition.type !== 'layout' && !Object.hasOwn(condition, 'value')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['value'],
+      message: 'value is required for this condition type',
+    });
+  }
+});
+
+const inputCoordinateSchema = z.number().finite().min(0).max(100_000);
+const inputActionSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('click'),
+    x: inputCoordinateSchema,
+    y: inputCoordinateSchema,
+    button: z.enum(['left', 'right', 'middle']).optional().default('left'),
+    clickCount: z.union([z.literal(1), z.literal(2)]).optional().default(1),
+  }),
+  z.object({
+    type: z.literal('touch'),
+    x: inputCoordinateSchema,
+    y: inputCoordinateSchema,
+    gesture: z.enum(['tap', 'longPress', 'swipe']),
+    endX: inputCoordinateSchema.optional(),
+    endY: inputCoordinateSchema.optional(),
+  }),
+  z.object({
+    type: z.literal('key'),
+    key: z.string().min(1).max(100),
+    modifiers: z.array(z.enum(['Alt', 'Control', 'Meta', 'Shift'])).max(4).optional().default([]),
+  }),
+  z.object({
+    type: z.literal('type'),
+    text: z.string().min(1).max(1_000),
+  }),
+  z.object({
+    type: z.literal('mouseMove'),
+    x: inputCoordinateSchema,
+    y: inputCoordinateSchema,
+  }),
+]).superRefine((action, ctx) => {
+  if (action.type === 'touch' && action.gesture === 'swipe'
+    && (action.endX === undefined || action.endY === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['endX'],
+      message: 'swipe gestures require endX and endY',
+    });
+  }
+});
 
 /**
  * C3 projects register scripts in rootFileFolders.script.items[].
@@ -63,7 +160,8 @@ async function ensureBridgeFiles(reader: Construct3ProjectReader, writer: Constr
   return registration;
 }
 
-export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps) {
+export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps): RuntimeToolController {
+  const connections = new RuntimeConnectionManager();
 
   // ── inject_runtime_bridge ─────────────────────────────────
 
@@ -149,7 +247,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
 
   server.tool(
     'get_bridge_commands',
-    'List all commands supported by the C3 runtime bridge. Use this to understand what you can do with call_bridge_command.',
+    'List all commands supported by the C3 runtime bridge. Use this to understand what you can do with call_bridge.',
     {},
     async () => {
       const commands = {
@@ -206,6 +304,142 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
       };
 
       return toolResult(commands);
+    },
+  );
+
+  // ── connect_to_game ──────────────────────────────────────
+
+  server.tool(
+    'connect_to_game',
+    'Connect to a running Construct game over Chrome DevTools Protocol. Provide a page WebSocket endpoint directly, or a host and debugging port to discover the first page target. The tool waits for globalThis.__c3bridge to become ready and keeps the connection for later runtime calls.',
+    {
+      cdpEndpoint: z.string().url().refine(
+        (value) => value.startsWith('ws://') || value.startsWith('wss://'),
+        'cdpEndpoint must use ws:// or wss://',
+      ).optional().describe('Direct CDP page WebSocket endpoint'),
+      host: z.string().min(1).max(255).optional().describe('CDP discovery host (default: localhost)'),
+      port: z.number().int().min(1).max(65535).optional().describe('CDP discovery port (default: 9222)'),
+      timeoutMs: z.number().int().min(100).max(60_000).optional().default(10_000)
+        .describe('Maximum time to connect and wait for the runtime bridge'),
+    },
+    async ({ cdpEndpoint, host, port, timeoutMs }) => {
+      try {
+        const connected = await connections.connect({ cdpEndpoint, host, port, timeoutMs });
+        return toolResult(connected);
+      } catch (error) {
+        console.error('[connect_to_game] failed:', error);
+        return toolError(`Failed to connect to game: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  // ── disconnect_from_game ─────────────────────────────────
+
+  server.tool(
+    'disconnect_from_game',
+    'Close a persistent game connection created by connect_to_game.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+    },
+    async ({ connectionId }) => {
+      try {
+        const stopped = await connections.disconnect(connectionId);
+        if (!stopped) return toolError(`Unknown or closed connection: ${connectionId}`);
+        return toolResult({ connectionId, disconnected: true });
+      } catch (error) {
+        console.error('[disconnect_from_game] failed:', error);
+        return toolError(`Failed to disconnect from game: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  // ── call_bridge ──────────────────────────────────────────
+
+  server.tool(
+    'call_bridge',
+    'Execute a command through the injected Construct runtime bridge using a persistent CDP connection. The tool submits the command, polls for its result, and returns the command ID, value, and elapsed time.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+      command: z.enum(BRIDGE_COMMANDS).describe('Runtime bridge command to execute'),
+      args: boundedRecord().optional().describe('Command-specific arguments (max 100 keys, depth 6)'),
+      pollIntervalMs: z.number().int().min(10).max(1_000).optional().default(50)
+        .describe('Delay between bridge result polls'),
+      timeoutMs: z.number().int().min(100).max(60_000).optional().default(5_000)
+        .describe('Maximum time for the bridge command'),
+    },
+    async ({ connectionId, command, args, pollIntervalMs, timeoutMs }) => {
+      try {
+        const result = await connections.callBridge({
+          connectionId,
+          command,
+          args: args ?? {},
+          pollIntervalMs,
+          timeoutMs,
+        });
+        return toolResult(result);
+      } catch (error) {
+        console.error('[call_bridge] failed:', error);
+        return toolError(`Failed to call runtime bridge: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  // ── wait_for_condition ───────────────────────────────────
+
+  server.tool(
+    'wait_for_condition',
+    'Poll a running game until a global variable, object property, layout name, or browser expression matches a target. Checks immediately, returns the last value on timeout, and does not throw merely because the condition was not met. Expression conditions execute caller-supplied JavaScript in the connected page.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+      condition: runtimeConditionSchema.describe('Condition to evaluate on each poll'),
+      pollIntervalMs: z.number().int().min(10).max(5_000).optional().default(100)
+        .describe('Delay between condition checks'),
+      timeoutMs: z.number().int().min(100).max(120_000).optional().default(30_000)
+        .describe('Maximum time to wait before returning met: false'),
+    },
+    async ({ connectionId, condition, pollIntervalMs, timeoutMs }) => {
+      try {
+        const result = await connections.waitForCondition({
+          connectionId,
+          condition: condition as RuntimeCondition,
+          pollIntervalMs,
+          timeoutMs,
+        });
+        return toolResult({
+          met: result.met,
+          elapsed_ms: result.elapsedMs,
+          final_value: result.finalValue,
+        });
+      } catch (error) {
+        console.error('[wait_for_condition] failed:', error);
+        return toolError(`Failed to wait for condition: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  // ── simulate_input ───────────────────────────────────────
+
+  server.tool(
+    'simulate_input',
+    'Send mouse, touch, keyboard, or text input to a connected game through the Chrome DevTools Protocol Input domain. Coordinates are CSS pixels relative to the page viewport; callers must account for any canvas offset or scaling.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+      action: inputActionSchema.describe('Input action to dispatch'),
+      delayMs: z.number().int().min(0).max(60_000).optional().default(0)
+        .describe('Delay before dispatching the input action'),
+    },
+    async ({ connectionId, action, delayMs }) => {
+      try {
+        const result = await connections.simulateInput({
+          connectionId,
+          action: action as SimulatedInputAction,
+          delayMs,
+        });
+        return toolResult(result);
+      } catch (error) {
+        console.error('[simulate_input] failed:', error);
+        return toolError(`Failed to simulate input: ${error instanceof Error ? error.message : String(error)}`);
+      }
     },
   );
 
@@ -439,6 +673,10 @@ print(json.dumps({
       }
     },
   );
+
+  return {
+    close: () => connections.closeAll(),
+  };
 }
 
 

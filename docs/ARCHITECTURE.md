@@ -182,6 +182,7 @@ The cross-reference index (`ProjectIndex`) is cached and reset when writes occur
 | Query Tools | `tools/query.ts` | 9 | List, search, get details |
 | Analysis Tools | `tools/analysis.ts` | 6 | Deep analysis and visualization |
 | Mutation Tools | `tools/mutations.ts` | 14 | Safe create, update, delete |
+| Runtime Tools | `tools/runtime-tools.ts`, `runtime/cdp-client.ts` | 12 | Bridge injection, persistent CDP connections, live game calls, condition waits, and input dispatch |
 | Prompts | `prompts/workflows.ts` | 6 | Workflow templates |
 
 ## Data Flow
@@ -239,6 +240,16 @@ Uses `StdioServerTransport` from MCP SDK:
 - **Input**: JSON-RPC 2.0 messages on stdin
 - **Output**: JSON-RPC 2.0 responses on stdout
 - **Logging**: stderr for debug/error messages
+
+Live runtime tools maintain separate outbound CDP WebSocket connections. The
+server discovers page targets from `/json/list` or accepts a direct page
+endpoint, evaluates only the bridge submit/get-result protocol, and terminates
+all retained sockets when the MCP transport or process closes. Condition waits
+reuse those connections, polling bridge values or an explicitly requested page
+expression until a comparison succeeds or the bounded timeout returns the last
+observed value. Input simulation uses the same retained page socket to send
+CDP `Input` and touch-emulation commands without adding a browser-automation
+dependency.
 
 ## Error Handling
 

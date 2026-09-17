@@ -133,14 +133,20 @@ node dist/index.js /path/to/your/project.c3proj
 | `inject_runtime_bridge` | Inject a bridge script into the C3 project that exposes the runtime via `globalThis.__c3bridge` |
 | `remove_runtime_bridge` | Remove the bridge script and clean up the project |
 | `get_bridge_commands` | List all commands the bridge supports (callFunction, getGlobalVar, getObjectState, etc.) |
+| `connect_to_game` | Open a persistent CDP connection to a running game and wait for its injected bridge |
+| `disconnect_from_game` | Close a persistent game connection |
+| `call_bridge` | Execute any supported bridge command over a persistent game connection |
+| `wait_for_condition` | Poll a global variable, object property, layout, or page expression until a condition is met |
+| `simulate_input` | Send mouse, touch, keyboard, and text input through CDP |
 | `generate_bridge_eval_script` | Generate a curl/python script to execute a bridge command via browser remote debugging |
 | `export_for_preview` | Pre-flight checks (worker mode, bridge injection) for preview testing |
 | `clone_project` | Deep-copy the project with optional bridge injection |
+| `pack_project` | Pack the folder-format project as a `.c3p` archive |
 
-The runtime bridge enables external tools (Playwright, browser console, curl) to control a running C3 game. Once injected and the game is previewed, you can:
+The runtime bridge enables the built-in CDP tools or external tools (Playwright, browser console, curl) to control a running C3 game. Once injected and the game is previewed, you can:
 
 ```javascript
-// From the browser console or any CDP-capable automation tool
+// From the browser console, or use connect_to_game + call_bridge through MCP
 globalThis.__c3bridge.submit("callFunction", { name: "StartGame", params: [] });
 globalThis.__c3bridge.submit("getGlobalVar", { name: "Score" });
 globalThis.__c3bridge.submit("getObjectState", { objectName: "Player" });
@@ -329,7 +335,9 @@ construct3-mcp/
 │   │   ├── project.ts              # MCP resources
 │   │   └── docs.ts                 # Construct 3 documentation access
 │   ├── runtime/
-│   │   └── bridge.ts               # Injectable C3 runtime bridge script generator
+│   │   ├── bridge.ts               # Injectable C3 runtime bridge script generator
+│   │   ├── cdp-client.ts           # Persistent CDP connections and bridge calls
+│   │   └── zip-writer.ts           # Dependency-free .c3p archive writer
 │   ├── tools/
 │   │   ├── query.ts                # 9 query tools
 │   │   ├── analysis.ts             # 6 analysis tools
@@ -340,7 +348,7 @@ construct3-mcp/
 │   │   ├── object-tools.ts         # Object mutation tools
 │   │   ├── animation-tools.ts      # Animation mutation tools
 │   │   ├── project-tools.ts        # Project metadata tools
-│   │   └── runtime-tools.ts        # 6 runtime control tools
+│   │   └── runtime-tools.ts        # 12 runtime control tools
 │   └── prompts/
 │       └── workflows.ts            # 6 workflow prompts
 ├── dist/                           # Compiled JavaScript (generated)
@@ -433,6 +441,10 @@ We welcome contributions! Here's how to get started:
 - [x] Project cloning with bridge injection
 - [x] Export-for-preview pre-flight checks (worker mode, bridge registration)
 - [x] Bridge eval script generation (curl/python for browser CDP)
+- [x] Persistent CDP connection discovery and cleanup
+- [x] Direct runtime bridge command execution with bounded polling
+- [x] Runtime condition waits with bounded polling and graceful timeout results
+- [x] Mouse, touch, keyboard, and text input simulation over CDP
 
 ### Phase 7: Advanced Features
 - [ ] Support for .c3p (zipped) projects
@@ -444,7 +456,7 @@ We welcome contributions! Here's how to get started:
 
 - **Folder Format Only**: Works with .c3proj folder projects, not .c3p ZIP files
 - **No Rename Refactoring**: Renaming objects/sheets does not update cross-references (planned for Phase 5)
-- **Runtime Bridge Requires Browser Automation**: The runtime tools inject a bridge script but need an external tool (Playwright, curl, or any CDP-capable tool) to drive the browser and interact with the running game
+- **Runtime Browser Must Expose CDP**: Start Chrome or another compatible browser with a remote debugging port, then use `connect_to_game`. Browser launch and preview hosting are not yet built in.
 - **No ACE Validation**: Event block conditions/actions are not validated against plugin schemas (the AI caller is expected to know valid ACE IDs)
 
 ## License

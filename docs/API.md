@@ -8,6 +8,7 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Query Tools](#query-tools)
 - [Analysis Tools](#analysis-tools)
 - [Mutation Tools](#mutation-tools)
+- [Runtime Connection Tools](#runtime-connection-tools)
 - [Prompts](#prompts)
 - [Error Handling](#error-handling)
 - [Type Definitions](#type-definitions)
@@ -591,6 +592,113 @@ Remove a Project File registration and its corresponding file under `files/`.
 
 ---
 
+## Runtime Connection Tools
+
+These tools use the Chrome DevTools Protocol (CDP) to communicate with a
+running game whose injected `globalThis.__c3bridge` is active. Start the
+browser with a remote debugging port and keep the game in DOM mode.
+
+### `connect_to_game`
+
+Open and retain a CDP WebSocket connection. Supply either a direct page
+WebSocket endpoint or discovery host/port. The tool waits for the runtime
+bridge to report `ready: true` before returning.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cdpEndpoint` | string | No* | Direct `ws://` or `wss://` page endpoint |
+| `host` | string | No* | CDP discovery host (default: `localhost`) |
+| `port` | integer | No* | CDP discovery port (default: `9222`) |
+| `timeoutMs` | integer | No | Connect and bridge-ready timeout, 100 to 60000 ms (default: 10000) |
+
+*Use `cdpEndpoint` alone, or `host`/`port`; do not combine the two routes.
+
+The result contains `connectionId`, `bridgeReady`, `gameState`, and, for a
+discovered connection, the selected page target metadata.
+
+### `call_bridge`
+
+Submit one of the 11 commands listed by `get_bridge_commands`, poll the bridge
+for its result, and return `commandId`, `result`, and `elapsedMs`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
+| `command` | enum | Yes | A command listed by `get_bridge_commands` |
+| `args` | object | No | Command-specific arguments |
+| `pollIntervalMs` | integer | No | Poll interval, 10 to 1000 ms (default: 50) |
+| `timeoutMs` | integer | No | Command timeout, 100 to 60000 ms (default: 5000) |
+
+### `wait_for_condition`
+
+Poll the connected game until a global variable, object property, layout name,
+or page expression matches the requested condition. The first check is
+immediate. A timeout is a successful tool response with `met: false`, not a
+tool error; the response always includes `elapsed_ms` and the last
+`final_value` observed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
+| `condition` | object | Yes | One of the condition shapes below |
+| `pollIntervalMs` | integer | No | Poll interval, 10 to 5000 ms (default: 100) |
+| `timeoutMs` | integer | No | Wait timeout, 100 to 120000 ms (default: 30000) |
+
+Condition shapes:
+
+- Global variable: `{ type: "globalVar", name, operator, value }`
+- Object property: `{ type: "objectProperty", objectType, property, operator, value }`
+- Layout: `{ type: "layout", name }`
+- Page expression: `{ type: "expression", expr, operator, value }`
+
+Operators are `eq`, `neq`, `gt`, `lt`, `gte`, `lte`, and `contains`.
+Ordered comparisons require two numbers or two strings. `contains` supports a
+string containing a string or an array containing a value. Object properties
+are resolved first from the bridge's object-state result and then from its
+`_instVars` object.
+
+Expression conditions execute caller-supplied JavaScript in the connected
+page through CDP. Use them only with trusted expressions and pages; they have
+the same authority as code entered in that page's DevTools console.
+
+### `simulate_input`
+
+Send a mouse, touch, keyboard, or text action through the connected page's CDP
+Input domain. The result is `{ success: true, action }` after every protocol
+command for the action succeeds.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
+| `action` | object | Yes | One of the action shapes below |
+| `delayMs` | integer | No | Delay before dispatch, 0 to 60000 ms (default: 0) |
+
+Action shapes:
+
+- Click: `{ type: "click", x, y, button?, clickCount? }`; `button` defaults
+  to `left`, and `clickCount` is `1` or `2` with default `1`.
+- Touch: `{ type: "touch", x, y, gesture, endX?, endY? }`; `gesture` is
+  `tap`, `longPress`, or `swipe`, and a swipe requires both end coordinates.
+- Key: `{ type: "key", key, modifiers? }`; modifiers are `Alt`, `Control`,
+  `Meta`, and `Shift`.
+- Text: `{ type: "type", text }`; text is inserted one Unicode character at
+  a time and is limited to 1,000 characters per call.
+- Mouse move: `{ type: "mouseMove", x, y }`.
+
+Coordinates are CSS pixels relative to the page viewport, which is also the
+coordinate system used by CDP. If the Construct canvas is offset, letterboxed,
+or scaled within the page, the caller must transform game/canvas coordinates
+to viewport coordinates before calling this tool. Long press holds for 500 ms;
+swipe interpolates eight move events from the start to the end point.
+
+### `disconnect_from_game`
+
+Close a persistent connection. Parameter: `connectionId` (required UUID).
+All remaining connections are terminated when the MCP transport closes or the
+server receives SIGINT/SIGTERM.
+
+---
+
 ## Prompts
 
 ### `analyze_project`
@@ -706,4 +814,4 @@ interface ReferenceCheckResult {
 
 ---
 
-**Last Updated**: 2026-09-10
+**Last Updated**: 2026-09-16

@@ -1,0 +1,818 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, describe, expect, it } from "vitest";
+import { WebSocketServer, type WebSocket } from "ws";
+import { registerRuntimeTools, type RuntimeToolController } from "../../src/tools/runtime-tools.js";
+import { MockServer } from "../mocks/mock-server.js";
+
+interface FakeCdpOptions {
+  bridgeReadyAfter?: number;
+  resultAfter?: number;
+  bridgeResult?: { ok: boolean; value?: unknown; error?: string };
+  commandValues?: Record<string, unknown[]>;
+  expressionValues?: unknown[];
+  includePageTarget?: boolean;
+}
+
+interface FakeCdp {
+  endpoint: string;
+  port: number;
+  connectionCount: () => number;
+  activeConnectionCount: () => number;
+  commandCount: (command: string) => number;
+  cdpCommands: () => Array<{ method: string; params: Record<string, unknown> }>;
+  close(): Promise<void>;
+}
+
+async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
+  let port = 0;
+  let stateChecks = 0;
+  let expressionChecks = 0;
+  let nextCommandId = 17;
+  const resultChecks = new Map<number, number>();
+  const submittedResults = new Map<number, { ok: boolean; value?: unknown; error?: string }>();
+  const commandCounts = new Map<string, number>();
+  const cdpCommands: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let connectionCount = 0;
+  const sockets = new Set<WebSocket>();
+  const webSockets = new WebSocketServer({ noServer: true });
+  const httpServer = createServer((request, response) => {
+    if (request.url !== "/json/list") {
+      response.writeHead(404).end();
+      return;
+    }
+    const targets = options.includePageTarget === false
+      ? [{ id: "worker-1", type: "worker", title: "Worker" }]
+      : [{
+        id: "page-1",
+        type: "page",
+        title: "Construct Preview",
+        url: "http://localhost/game",
+        webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/page-1`,
+      }];
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(targets));
+  });
+
+  httpServer.on("upgrade", (request, socket, head) => {
+    if (request.url !== "/devtools/page/page-1") {
+      socket.destroy();
+      return;
+    }
+    webSockets.handleUpgrade(request, socket, head, (webSocket) => {
+      webSockets.emit("connection", webSocket, request);
+    });
+  });
+
+  webSockets.on("connection", (socket) => {
+    connectionCount++;
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("message", (raw) => {
+      const request = JSON.parse(raw.toString()) as {
+        id: number;
+        method: string;
+        params?: Record<string, unknown> & { expression?: string };
+      };
+      if (request.method !== "Runtime.evaluate") {
+        cdpCommands.push({ method: request.method, params: request.params ?? {} });
+        socket.send(JSON.stringify({ id: request.id, result: {} }));
+        return;
+      }
+
+      const expression = request.params?.expression ?? "";
+      let value: string;
+      if (expression.includes("(0, eval)")) {
+        const values = options.expressionValues ?? [null];
+        const expressionValue = values[Math.min(expressionChecks, values.length - 1)];
+        expressionChecks++;
+        value = JSON.stringify({ value: expressionValue });
+      } else if (expression.includes("bridge.getState")) {
+        stateChecks++;
+        const ready = stateChecks > (options.bridgeReadyAfter ?? 0);
+        value = JSON.stringify(ready ? {
+          ready: true,
+          layoutName: "Game",
+          tickCount: 42,
+          gameTime: 1.5,
+          dt: 1 / 60,
+          objectCount: 7,
+        } : null);
+      } else if (expression.includes("bridge.submit")) {
+        const commandLiteral = expression.match(/bridge\.submit\(("(?:\\.|[^"\\])*")/u)?.[1];
+        const command = commandLiteral ? JSON.parse(commandLiteral) as string : "unknown";
+        const commandIndex = commandCounts.get(command) ?? 0;
+        commandCounts.set(command, commandIndex + 1);
+        const values = options.commandValues?.[command];
+        const commandValue = values && values.length > 0
+          ? values[Math.min(commandIndex, values.length - 1)]
+          : { pong: true };
+        const commandId = nextCommandId++;
+        submittedResults.set(
+          commandId,
+          options.bridgeResult ?? { ok: true, value: commandValue },
+        );
+        value = JSON.stringify({ id: commandId });
+      } else if (expression.includes("bridge.getResult")) {
+        const commandId = Number(expression.match(/bridge\.getResult\((\d+)\)/u)?.[1]);
+        const checks = (resultChecks.get(commandId) ?? 0) + 1;
+        resultChecks.set(commandId, checks);
+        const ready = checks > (options.resultAfter ?? 0);
+        value = JSON.stringify({
+          bridgeResult: ready
+            ? submittedResults.get(commandId)
+            : null,
+        });
+      } else {
+        value = JSON.stringify(null);
+      }
+
+      socket.send(JSON.stringify({
+        id: request.id,
+        result: {
+          result: {
+            type: "string",
+            value,
+          },
+        },
+      }));
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.listen(0, "127.0.0.1", () => {
+      httpServer.off("error", reject);
+      resolve();
+    });
+  });
+  port = (httpServer.address() as AddressInfo).port;
+
+  return {
+    endpoint: `ws://127.0.0.1:${port}/devtools/page/page-1`,
+    port,
+    connectionCount: () => connectionCount,
+    activeConnectionCount: () => sockets.size,
+    commandCount: (command) => commandCounts.get(command) ?? 0,
+    cdpCommands: () => cdpCommands.map((command) => ({
+      method: command.method,
+      params: { ...command.params },
+    })),
+    async close() {
+      for (const socket of sockets) socket.terminate();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      await new Promise<void>((resolve, reject) => {
+        httpServer.close((error) => error ? reject(error) : resolve());
+      });
+    },
+  };
+}
+
+function parseToolResult(result: {
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+}): Record<string, any> {
+  expect(result.isError).toBeUndefined();
+  return JSON.parse(result.content[0].text) as Record<string, any>;
+}
+
+function registerConnectionTools(): {
+  server: MockServer;
+  controller: RuntimeToolController;
+} {
+  const server = new MockServer();
+  const controller = registerRuntimeTools({
+    server,
+    reader: {} as any,
+    writer: {} as any,
+  });
+  return { server, controller };
+}
+
+const openFakes: FakeCdp[] = [];
+const openControllers: RuntimeToolController[] = [];
+
+afterEach(async () => {
+  while (openControllers.length > 0) await openControllers.pop()!.close();
+  while (openFakes.length > 0) await openFakes.pop()!.close();
+});
+
+describe("connect_to_game", () => {
+  it("discovers a page target, waits for the bridge, and keeps the connection", async () => {
+    const fake = await startFakeCdp({ bridgeReadyAfter: 1, resultAfter: 1 });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      host: "127.0.0.1",
+      port: fake.port,
+      timeoutMs: 1_000,
+    }));
+    expect(connected.connectionId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(connected.bridgeReady).toBe(true);
+    expect(connected.gameState).toMatchObject({
+      ready: true,
+      layoutName: "Game",
+      tickCount: 42,
+      objectCount: 7,
+    });
+    expect(connected.target).toEqual({
+      id: "page-1",
+      title: "Construct Preview",
+      url: "http://localhost/game",
+    });
+
+    const called = parseToolResult(await server.callTool("call_bridge", {
+      connectionId: connected.connectionId,
+      command: "ping",
+      pollIntervalMs: 10,
+      timeoutMs: 500,
+    }));
+    expect(called.commandId).toBe(17);
+    expect(called.result).toEqual({ pong: true });
+    expect(called.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(fake.connectionCount()).toBe(1);
+
+    const disconnected = parseToolResult(await server.callTool("disconnect_from_game", {
+      connectionId: connected.connectionId,
+    }));
+    expect(disconnected).toEqual({
+      connectionId: connected.connectionId,
+      disconnected: true,
+    });
+  });
+
+  it("accepts a direct page WebSocket endpoint", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+    expect(connected.bridgeReady).toBe(true);
+    expect(connected.target).toBeUndefined();
+  });
+
+  it("retains multiple game connections and closes all of them on shutdown", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const [first, second] = await Promise.all([
+      server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }),
+      server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }),
+    ]).then((results) => results.map(parseToolResult));
+    expect(first.connectionId).not.toBe(second.connectionId);
+    expect(fake.activeConnectionCount()).toBe(2);
+
+    await controller.close();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fake.activeConnectionCount()).toBe(0);
+  });
+
+  it("rejects mixed direct and discovery connection inputs", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const result = await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      host: "127.0.0.1",
+      timeoutMs: 500,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("either cdpEndpoint or host/port");
+  });
+
+  it("reports when discovery finds no page target", async () => {
+    const fake = await startFakeCdp({ includePageTarget: false });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const result = await server.callTool("connect_to_game", {
+      host: "127.0.0.1",
+      port: fake.port,
+      timeoutMs: 500,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("no page target");
+  });
+
+  it("closes the provisional connection when the bridge never becomes ready", async () => {
+    const fake = await startFakeCdp({ bridgeReadyAfter: Number.MAX_SAFE_INTEGER });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const result = await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 120,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Runtime bridge was not ready");
+  });
+});
+
+describe("call_bridge", () => {
+  it("surfaces bridge command failures", async () => {
+    const fake = await startFakeCdp({
+      bridgeResult: { ok: false, error: "C3 function threw" },
+    });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    const result = await server.callTool("call_bridge", {
+      connectionId: connected.connectionId,
+      command: "callFunction",
+      args: { name: "Broken" },
+      timeoutMs: 500,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("C3 function threw");
+  });
+
+  it("supports every bridge command and keeps IDs unique under rapid calls", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+    const commands = [
+      ["callFunction", { name: "StartGame", params: [] }],
+      ["getGlobalVar", { name: "Score" }],
+      ["setGlobalVar", { name: "Score", value: 1 }],
+      ["getObjectState", { objectName: "Player" }],
+      ["getAllInstances", { objectName: "Player" }],
+      ["getLayout", {}],
+      ["goToLayout", { name: "Game" }],
+      ["evaluateExpression", { objectName: "Player", expression: "x" }],
+      ["listObjects", {}],
+      ["listGlobalVars", {}],
+      ["ping", {}],
+    ] as const;
+
+    const results = await Promise.all(commands.map(async ([command, args]) => {
+      const result = await server.callTool("call_bridge", {
+        connectionId: connected.connectionId,
+        command,
+        args,
+        timeoutMs: 500,
+      });
+      return parseToolResult(result);
+    }));
+    expect(new Set(results.map((result) => result.commandId)).size).toBe(commands.length);
+    expect(results.every((result) => result.result.pong === true)).toBe(true);
+    expect(fake.connectionCount()).toBe(1);
+  });
+
+  it("times out clearly when a command never produces a result", async () => {
+    const fake = await startFakeCdp({ resultAfter: Number.MAX_SAFE_INTEGER });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    const result = await server.callTool("call_bridge", {
+      connectionId: connected.connectionId,
+      command: "ping",
+      pollIntervalMs: 10,
+      timeoutMs: 120,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("timed out after 120ms");
+  });
+
+  it("rejects a closed connection ID", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+    await server.callTool("disconnect_from_game", { connectionId: connected.connectionId });
+
+    const result = await server.callTool("call_bridge", {
+      connectionId: connected.connectionId,
+      command: "ping",
+      timeoutMs: 500,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Unknown or closed connection");
+  });
+});
+
+describe("wait_for_condition", () => {
+  it("supports every comparison operator with check-first behavior", async () => {
+    const values = [5, 5, 5, 5, "alphabet", true, true];
+    const fake = await startFakeCdp({ commandValues: { getGlobalVar: values } });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+    const comparisons = [
+      { operator: "gt", value: 4 },
+      { operator: "gte", value: 5 },
+      { operator: "lt", value: 6 },
+      { operator: "lte", value: 5 },
+      { operator: "contains", value: "pha" },
+      { operator: "eq", value: true },
+      { operator: "neq", value: false },
+    ] as const;
+
+    for (const comparison of comparisons) {
+      const result = parseToolResult(await server.callTool("wait_for_condition", {
+        connectionId: connected.connectionId,
+        condition: {
+          type: "globalVar",
+          name: "Value",
+          ...comparison,
+        },
+        pollIntervalMs: 10,
+        timeoutMs: 500,
+      }));
+      expect(result.met).toBe(true);
+      expect(result.elapsed_ms).toBeGreaterThanOrEqual(0);
+    }
+    expect(fake.commandCount("getGlobalVar")).toBe(comparisons.length);
+  });
+
+  it("polls until a changing numeric value matches", async () => {
+    const fake = await startFakeCdp({ commandValues: { getGlobalVar: [0, 0, 5] } });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    const result = parseToolResult(await server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: { type: "globalVar", name: "Score", operator: "gt", value: 2 },
+      pollIntervalMs: 10,
+      timeoutMs: 500,
+    }));
+    expect(result).toMatchObject({ met: true, final_value: 5 });
+    expect(fake.commandCount("getGlobalVar")).toBe(3);
+  });
+
+  it("supports object properties, instance variables, layouts, and page expressions", async () => {
+    const fake = await startFakeCdp({
+      commandValues: {
+        getObjectState: [
+          { text: "0" },
+          { text: "10" },
+          { _instVars: { Health: 25 } },
+        ],
+        getLayout: [{ name: "Menu" }, { name: "Bonus" }],
+      },
+      expressionValues: [3, 11],
+    });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    const objectProperty = parseToolResult(await server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: {
+        type: "objectProperty",
+        objectType: "PotDisplay",
+        property: "text",
+        operator: "neq",
+        value: "0",
+      },
+      pollIntervalMs: 10,
+      timeoutMs: 500,
+    }));
+    expect(objectProperty).toMatchObject({ met: true, final_value: "10" });
+
+    const instanceVariable = parseToolResult(await server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: {
+        type: "objectProperty",
+        objectType: "Player",
+        property: "Health",
+        operator: "eq",
+        value: 25,
+      },
+      timeoutMs: 500,
+    }));
+    expect(instanceVariable).toMatchObject({ met: true, final_value: 25 });
+
+    const layout = parseToolResult(await server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: { type: "layout", name: "Bonus" },
+      pollIntervalMs: 10,
+      timeoutMs: 500,
+    }));
+    expect(layout).toMatchObject({ met: true, final_value: "Bonus" });
+
+    const expression = parseToolResult(await server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: {
+        type: "expression",
+        expr: "globalThis.__c3bridge.getState().objectCount",
+        operator: "gt",
+        value: 10,
+      },
+      pollIntervalMs: 10,
+      timeoutMs: 500,
+    }));
+    expect(expression).toMatchObject({ met: true, final_value: 11 });
+  });
+
+  it("returns met false with the last observed value on timeout", async () => {
+    const fake = await startFakeCdp({ commandValues: { getGlobalVar: ["WAITING"] } });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    const result = parseToolResult(await server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: { type: "globalVar", name: "State", operator: "eq", value: "READY" },
+      pollIntervalMs: 20,
+      timeoutMs: 120,
+    }));
+    expect(result.met).toBe(false);
+    expect(result.final_value).toBe("WAITING");
+    expect(result.elapsed_ms).toBeGreaterThanOrEqual(100);
+  });
+
+  it("reports invalid comparisons and missing object properties", async () => {
+    const fake = await startFakeCdp({
+      commandValues: {
+        getGlobalVar: ["5"],
+        getObjectState: [{}],
+      },
+    });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    await expect(server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: { type: "globalVar", name: "Score", operator: "eq" },
+      timeoutMs: 500,
+    })).rejects.toThrow(/value is required/u);
+
+    const mismatch = await server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: { type: "globalVar", name: "Score", operator: "gt", value: 5 },
+      timeoutMs: 500,
+    });
+    expect(mismatch.isError).toBe(true);
+    expect(mismatch.content[0].text).toContain("requires two numbers or two strings");
+
+    const missing = await server.callTool("wait_for_condition", {
+      connectionId: connected.connectionId,
+      condition: {
+        type: "objectProperty",
+        objectType: "Player",
+        property: "missing",
+        operator: "eq",
+        value: 1,
+      },
+      timeoutMs: 500,
+    });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toContain('Player.missing');
+  });
+});
+
+describe("simulate_input", () => {
+  it("dispatches delayed clicks and mouse movement with viewport coordinates", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    const startedAt = Date.now();
+    const click = parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "click", x: 120, y: 240 },
+      delayMs: 25,
+    }));
+    expect(click).toEqual({ success: true, action: "click" });
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(20);
+    expect(fake.cdpCommands()).toEqual([
+      {
+        method: "Input.dispatchMouseEvent",
+        params: {
+          type: "mousePressed",
+          x: 120,
+          y: 240,
+          button: "left",
+          clickCount: 1,
+          buttons: 1,
+        },
+      },
+      {
+        method: "Input.dispatchMouseEvent",
+        params: {
+          type: "mouseReleased",
+          x: 120,
+          y: 240,
+          button: "left",
+          clickCount: 1,
+          buttons: 0,
+        },
+      },
+    ]);
+
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "click", x: 30, y: 40, button: "right", clickCount: 2 },
+    }));
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "click", x: 50, y: 60, button: "middle" },
+    }));
+    expect(fake.cdpCommands().slice(2, 6).map((command) => command.params)).toEqual([
+      expect.objectContaining({ button: "right", buttons: 2, clickCount: 2 }),
+      expect.objectContaining({ button: "right", buttons: 0, clickCount: 2 }),
+      expect.objectContaining({ button: "middle", buttons: 4, clickCount: 1 }),
+      expect.objectContaining({ button: "middle", buttons: 0, clickCount: 1 }),
+    ]);
+
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "mouseMove", x: 12.5, y: 18.25 },
+    }));
+    expect(fake.cdpCommands().at(-1)).toEqual({
+      method: "Input.dispatchMouseEvent",
+      params: {
+        type: "mouseMoved",
+        x: 12.5,
+        y: 18.25,
+        button: "none",
+        buttons: 0,
+      },
+    });
+  });
+
+  it("dispatches key combinations and inserts text by Unicode character", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "key", key: "k", modifiers: ["Control", "Shift"] },
+    }));
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "key", key: "Space" },
+    }));
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "type", text: "A🙂" },
+    }));
+
+    const commands = fake.cdpCommands();
+    expect(commands.slice(0, 2)).toEqual([
+      {
+        method: "Input.dispatchKeyEvent",
+        params: {
+          type: "keyDown",
+          modifiers: 10,
+          key: "k",
+          code: "KeyK",
+          windowsVirtualKeyCode: 75,
+          nativeVirtualKeyCode: 75,
+        },
+      },
+      {
+        method: "Input.dispatchKeyEvent",
+        params: {
+          type: "keyUp",
+          modifiers: 10,
+          key: "k",
+          code: "KeyK",
+          windowsVirtualKeyCode: 75,
+          nativeVirtualKeyCode: 75,
+        },
+      },
+    ]);
+    expect(commands[2].params).toMatchObject({
+      type: "keyDown",
+      key: " ",
+      code: "Space",
+      text: " ",
+    });
+    expect(commands.slice(-2)).toEqual([
+      { method: "Input.insertText", params: { text: "A" } },
+      { method: "Input.insertText", params: { text: "🙂" } },
+    ]);
+  });
+
+  it("dispatches tap, swipe, and long-press touch gestures", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", {
+      cdpEndpoint: fake.endpoint,
+      timeoutMs: 500,
+    }));
+
+    await expect(server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "touch", x: 10, y: 20, gesture: "swipe" },
+    })).rejects.toThrow(/require endX and endY/u);
+
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "touch", x: 10, y: 20, gesture: "tap" },
+    }));
+    const afterTap = fake.cdpCommands();
+    expect(afterTap.map((command) => command.method)).toEqual([
+      "Emulation.setTouchEmulationEnabled",
+      "Input.dispatchTouchEvent",
+      "Input.dispatchTouchEvent",
+    ]);
+    expect(afterTap[1].params).toMatchObject({
+      type: "touchStart",
+      touchPoints: [{ x: 10, y: 20, id: 1 }],
+    });
+    expect(afterTap[2].params).toEqual({ type: "touchEnd", touchPoints: [] });
+
+    const swipeStartIndex = fake.cdpCommands().length;
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: {
+        type: "touch",
+        x: 0,
+        y: 10,
+        gesture: "swipe",
+        endX: 80,
+        endY: 90,
+      },
+    }));
+    const swipe = fake.cdpCommands().slice(swipeStartIndex);
+    expect(swipe).toHaveLength(11);
+    expect(swipe[2]).toMatchObject({
+      method: "Input.dispatchTouchEvent",
+      params: { type: "touchMove", touchPoints: [{ x: 10, y: 20 }] },
+    });
+    expect(swipe[9]).toMatchObject({
+      method: "Input.dispatchTouchEvent",
+      params: { type: "touchMove", touchPoints: [{ x: 80, y: 90 }] },
+    });
+    expect(swipe[10].params).toEqual({ type: "touchEnd", touchPoints: [] });
+
+    const longPressStartedAt = Date.now();
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "touch", x: 30, y: 40, gesture: "longPress" },
+    }));
+    expect(Date.now() - longPressStartedAt).toBeGreaterThanOrEqual(450);
+    expect(fake.cdpCommands().slice(-2).map((command) => command.params.type)).toEqual([
+      "touchStart",
+      "touchEnd",
+    ]);
+  });
+});
