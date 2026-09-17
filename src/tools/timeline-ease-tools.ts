@@ -10,6 +10,8 @@
 
 import { z } from 'zod';
 import { readFile, unlink, stat } from 'fs/promises';
+import { resolveProjectPath } from '../construct3/path-utils.js';
+import { listFileEntries, getFileFolderDirectory } from '../construct3/file-registration.js';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult } from '../construct3/types.js';
 import { validateName, toolResult, toolError } from './shared.js';
@@ -19,7 +21,7 @@ import {
   buildEaseKeyframes,
   ensureEasesFolder,
   easesFolder,
-  isBuiltinEaseName,
+  clashesWithBuiltinEase,
   referencedEases,
   type CustomEase,
 } from '../construct3/timeline-model.js';
@@ -63,6 +65,35 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
     await reader.reloadProject();
   }
 
+  /**
+   * Event sheets and script files that mention `name` as a whole word. The
+   * Tween behavior stores its ease as an event parameter (63 "ease"
+   * parameters in the samples) and scripts can name eases too, so this is a
+   * lexical search; it can report false positives but not miss a literal use.
+   */
+  async function textReferences(name: string): Promise<{ hits: string[]; unreadable: string[] }> {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`);
+    const hits: string[] = [];
+    const unreadable: string[] = [];
+    for (const sheet of await reader.listEventSheets()) {
+      try {
+        if (pattern.test(JSON.stringify(await reader.readEventSheet(sheet)))) hits.push(`event sheet "${sheet}"`);
+      } catch {
+        unreadable.push(`event sheet "${sheet}"`);
+      }
+    }
+    for (const { entry, subfolder } of listFileEntries(reader.getProject(), 'script')) {
+      const parts = [getFileFolderDirectory('script'), ...(subfolder ? subfolder.split('/') : []), entry.name];
+      try {
+        if (pattern.test(await readFile(resolveProjectPath(reader.getProjectDir(), ...parts), 'utf-8'))) hits.push(`script "${parts.join('/')}"`);
+      } catch {
+        unreadable.push(`script "${parts.join('/')}"`);
+      }
+    }
+    return { hits, unreadable };
+  }
+
   function easeNames(): string[] {
     return easesFolder(kit.projectContainer())?.items.slice() ?? [];
   }
@@ -85,7 +116,7 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
     {},
     async () => {
       try {
-        const timelines = await kit.allTimelines();
+        const { timelines, unreadable } = await kit.allTimelines();
         const eases = [];
         for (const name of easeNames()) {
           let ease: CustomEase | undefined;
@@ -102,7 +133,7 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
             usedBy: timelines.filter(t => referencedEases(t.data).has(name)).map(t => t.name),
           });
         }
-        return toolResult({ eases, count: eases.length });
+        return toolResult({ eases, count: eases.length, ...(unreadable.length > 0 ? { unreadableTimelines: unreadable } : {}) });
       } catch (error) {
         console.error('[list_eases] failed:', error);
         return toolError(`Error listing eases: ${error instanceof Error ? error.message : String(error)}`);
@@ -123,8 +154,8 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
     async (args) => {
       try {
         validateName(args.name);
-        if (isBuiltinEaseName(args.name)) {
-          return toolError(`"${args.name}" is, or looks like, one of Construct's own ease names; choose another name.`);
+        if (clashesWithBuiltinEase(args.name)) {
+          return toolError(`"${args.name}" is one of Construct's own ease names; choose another name.`);
         }
         if (easeNames().includes(args.name)) return toolError(`Custom ease "${args.name}" already exists.`);
         if (kit.timelineNames().includes(args.name)) {
@@ -187,12 +218,17 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
         await atomicWriteJson(filePath, ease);
 
         const refreshed: string[] = [];
-        for (const timeline of await kit.allTimelines()) {
+        const all = await kit.allTimelines();
+        for (const timeline of all.timelines) {
           if (!referencedEases(timeline.data).has(args.name)) continue;
           await kit.saveTimeline(timeline.filePath, timeline.data);
           refreshed.push(timeline.name);
         }
-        return result(args.name, 'updated', backupPath, { timelinesRefreshed: refreshed }, unsampledPointsWarning(args.points?.length ?? 0));
+        const warnings = unsampledPointsWarning(args.points?.length ?? 0);
+        if (all.unreadable.length > 0) {
+          warnings.push(`Timeline(s) ${all.unreadable.join(', ')} could not be opened, so any copy of the ease they hold was not refreshed.`);
+        }
+        return result(args.name, 'updated', backupPath, { timelinesRefreshed: refreshed }, warnings);
       } catch (error) {
         console.error('[update_ease] failed:', error);
         return toolError(`Error updating ease: ${error instanceof Error ? error.message : String(error)}`);
@@ -204,27 +240,46 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
 
   server.tool(
     'delete_ease',
-    'Delete a custom ease that no timeline uses: its file (keeping a .bak), its editor-state file and its registration',
+    'Delete a custom ease that no timeline uses: its registration, its file (keeping a .bak) and its editor-state file. Refused while a timeline uses it or cannot be opened, and, unless force is set, while an event sheet or script file mentions its name',
     {
       name: z.string().max(200).describe('Ease name'),
+      force: z.boolean().optional().default(false).describe('Delete even though event sheets or script files mention the name, or cannot be read (default: false)'),
     },
     async (args) => {
       try {
         if (!easeNames().includes(args.name)) {
           return toolError(`Custom ease "${args.name}" not found. Use list_eases to see the project's custom eases.`);
         }
-        const timelines = await kit.allTimelines();
+        const { timelines, unreadable } = await kit.allTimelines();
+        if (unreadable.length > 0) {
+          return toolError(`Timeline(s) ${unreadable.join(', ')} could not be opened, so it is unknown whether they use custom ease "${args.name}". Fix or remove them first.`);
+        }
         const users = timelines.filter(t => referencedEases(t.data).has(args.name)).map(t => t.name);
         if (users.length > 0) {
           return toolError(`Custom ease "${args.name}" is used by timeline(s) ${users.join(', ')}; change those eases first (update_timeline, update_track, set_keyframe).`);
         }
+
+        const warnings: string[] = [];
+        const text = await textReferences(args.name);
+        if (text.hits.length > 0 || text.unreadable.length > 0) {
+          const parts: string[] = [];
+          if (text.hits.length > 0) parts.push(`the name "${args.name}" appears in ${text.hits.join(', ')} (for example as a Tween ease)`);
+          if (text.unreadable.length > 0) parts.push(`${text.unreadable.join(', ')} could not be read`);
+          if (!args.force) {
+            return toolError(`Custom ease "${args.name}" was not deleted: ${parts.join('; ')}. Check those uses, then pass force: true to delete anyway.`);
+          }
+          warnings.push(`Deleted with force although ${parts.join('; ')}.`);
+        }
+
+        // Deregister first: a failed file delete then leaves an unregistered
+        // file rather than a registration pointing at nothing.
+        await updateEaseRegistration(args.name, false);
 
         const filePath = kit.easeFilePath(args.name);
         const backupPath = await backupFile(filePath);
         try { await unlink(filePath); } catch (e: unknown) {
           if (!(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT')) throw e;
         }
-        const warnings: string[] = [];
         const uistate = filePath.replace(/\.json$/, '.uistate.json');
         try {
           await stat(uistate);
@@ -232,8 +287,6 @@ export function registerTimelineEaseTools({ server, reader }: MutationToolDeps, 
           await unlink(uistate);
           warnings.push(`Also deleted ${args.name}.uistate.json (a .bak was written).`);
         } catch { /* none */ }
-
-        await updateEaseRegistration(args.name, false);
 
         // Drop stale copies of the ease left in timelines that no longer use it.
         const cleaned: string[] = [];

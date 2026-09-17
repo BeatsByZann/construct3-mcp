@@ -203,6 +203,11 @@ All notable changes to the Construct3 MCP Server are documented here.
 - `create_timeline` suggested, and accepted, a `transitions` subfolder, which put the timeline file among the ease files. That folder is now refused. New `timelines` containers get the nameless eases folder Construct writes.
 - Timelines created in a subfolder other than `transitions` could not be read, edited or deleted afterwards; the tools now read each timeline from its registered folder.
 - `add_flowchart_node` with `valueType: "comment"` wrote a comment node without the comment keys and with a non-empty `t`, and accepted any value type.
+- `add_flowchart_output` and `connect_flowchart_nodes` accepted comment nodes, and a comment node could become the start node; all three are now refused.
+- Comment text lost runs of spaces; it now stores them as `&nbsp;` sequences the way the editor does.
+- `delete_ease` now also refuses while a registered timeline cannot be opened or, unless `force` is set, while an event sheet or script file names the ease, and it removes the registration before the file.
+- Built-in ease names are matched against Construct's exact list, so names such as `EaseOutSoft` are allowed as custom eases and misspellings such as `easeinsinee` draw a warning.
+- `add_audio_track` now validates the track name; `update_timeline` refuses a result-mode change that would leave untyped (older) track values stale; value computations refuse tracks under a folder with a non-default result mode, which no sample shows.
 
 - `update_event_block` upgrades a block written with the legacy `isElse`/`isOr` keys before checking condition indexes, so the added else condition no longer shifts updates, removals and insertions.
 - `move_event_block_items` refuses to move an else condition; `update_event_block_action` refuses keyed parameters on calls, comments and script rows and accepts custom action bodies.

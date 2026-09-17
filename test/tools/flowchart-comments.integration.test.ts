@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, cp, rm, readFile } from 'fs/promises';
+import { mkdtemp, cp, rm, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
@@ -63,6 +63,18 @@ describe('flowchart comment nodes and value types (real project on disk)', () =>
   it('stores plain comment text as the editor HTML', () => {
     expect(commentTextToHtml('Test A & B')).toBe('Test A &amp; B');
     expect(commentTextToHtml('Line 1\nLine <2>\n\nEnd')).toBe('Line 1<div>Line &lt;2&gt;</div><div><br></div><div>End</div>');
+  });
+
+  it('keeps runs of spaces the way the editor stores them', () => {
+    expect(commentTextToHtml('a b')).toBe('a b');
+    expect(commentTextToHtml('a  b')).toBe('a&nbsp; b');
+    expect(commentTextToHtml('x   y')).toBe('x&nbsp; &nbsp;y');
+    expect(commentTextToHtml('x    y')).toBe('x&nbsp; &nbsp; y');
+    expect(commentTextToHtml(' lead')).toBe('&nbsp;lead');
+    expect(commentTextToHtml('end ')).toBe('end&nbsp;');
+    expect(commentTextToHtml('end  ')).toBe('end&nbsp;&nbsp;');
+    expect(commentTextToHtml('end    ')).toBe('end&nbsp; &nbsp;&nbsp;');
+    expect(commentTextToHtml('top\n     indented')).toBe('top<div>&nbsp; &nbsp; &nbsp;indented</div>');
   });
 
   it('adds a comment node with the sampled keys, key order and formatting', async () => {
@@ -139,6 +151,63 @@ describe('flowchart comment nodes and value types (real project on disk)', () =>
     const [node] = await nodes();
     expect(Object.keys(node)).toEqual(DICTIONARY_KEYS);
     expect(node).toMatchObject({ ty: 'dictionary', t: 'Back', c: 'Back' });
+  });
+
+  it('keeps a rich HTML body byte-identical when only formatting changes', async () => {
+    const html = 'Test (short &amp; long)<div><font color="#2fb65c" face="Calibri"><span style="font-size: 32px;"><i>&nbsp; &nbsp; x&nbsp;= 6</i></span></font></div><div><br></div>';
+    const { generatedSid } = parseResult(await add({ valueType: 'comment', commentHtml: html, font: 'Arial', fontSize: 24, bold: true, italic: false, fontColor: '#39b530' }));
+    await update(generatedSid, { fontSize: 32, fontColor: '#2FB65C', caption: 'Test Case' });
+    const [node] = await nodes();
+    expect(node.n).toBe(html);
+    expect(node).toMatchObject({ fs: 32, fc: '#2fb65c', c: 'Test Case' });
+  });
+
+  it('never makes a comment the start node', async () => {
+    const addStart = await add({ valueType: 'comment', isStart: true });
+    expect(addStart.isError).toBe(true);
+    expect(addStart.content[0].text).toContain('cannot be the start node');
+
+    const start = parseResult(await add({ caption: 'Start', isStart: true }));
+    const toComment = await update(start.generatedSid, { valueType: 'comment' });
+    expect(toComment.isError).toBe(true);
+    expect(toComment.content[0].text).toContain('cannot be the start node');
+
+    const note = parseResult(await add({ valueType: 'comment' }));
+    const makeStart = await update(note.generatedSid, { isStart: true });
+    expect(makeStart.isError).toBe(true);
+
+    const [first, second] = await nodes();
+    expect(first).toMatchObject({ ty: 'dictionary', s: true });
+    expect(second).toMatchObject({ ty: 'comment', s: false });
+
+    // Clearing the flag in the same call makes the conversion valid.
+    expect(parseResult(await update(start.generatedSid, { valueType: 'comment', isStart: false })).success).toBe(true);
+  });
+
+  it('refuses outputs and connections on comment nodes', async () => {
+    const note = parseResult(await add({ valueType: 'comment' }));
+    const other = parseResult(await add({ caption: 'Other', outputs: [{ name: 'Out' }] }));
+
+    const output = await server.callTool('add_flowchart_output', { flowchartName: 'Graph', nodeSid: note.generatedSid, name: 'Out' });
+    expect(output.isError).toBe(true);
+    expect(output.content[0].text).toContain('has no outputs');
+
+    const toComment = await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: other.outputSids[0], targetNodeSid: note.generatedSid });
+    expect(toComment.isError).toBe(true);
+    expect(toComment.content[0].text).toContain('to comment node');
+
+    // A comment that somehow carries an output still cannot be wired from.
+    const path = join(tmpDir, 'flowcharts', 'Graph.json');
+    const data = JSON.parse(await readFile(path, 'utf-8'));
+    data.nodes[0].outputs = [{ sid: 123456789012345, cnSID: null, name: 'Stray', value: '', enable: true, default: false }];
+    await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
+    const fromComment = await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: 123456789012345, targetNodeSid: other.generatedSid });
+    expect(fromComment.isError).toBe(true);
+    expect(fromComment.content[0].text).toContain('from comment node');
+
+    const after = await nodes();
+    expect(after[1].outputs[0].cnSID).toBeNull();
+    expect(after[0].pnSIDs).toEqual([]);
   });
 
   it('refuses to make a node with outputs or connections a comment', async () => {

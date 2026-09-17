@@ -440,11 +440,30 @@ function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/**
+ * Spaces as the editor's HTML keeps them: a run alternates &nbsp; and a
+ * space starting with &nbsp;, ends in &nbsp; at the end of a line, and a lone
+ * space at the start or end of a line is &nbsp;. Counting a tag as a line
+ * boundary, this matches 7,888 of the 7,922 space runs in the C3-ACE comment
+ * bodies; the rest are left over from edits inside styled spans.
+ */
+function encodeSpaces(line: string): string {
+  return line.replace(/ +/g, (run: string, offset: number) => {
+    const atStart = offset === 0;
+    const atEnd = offset + run.length === line.length;
+    if (run.length === 1) return atStart || atEnd ? '&nbsp;' : ' ';
+    let out = '';
+    for (let i = 0; i < run.length; i++) out += i % 2 === 0 ? '&nbsp;' : ' ';
+    if (atEnd && run.length % 2 === 0) out = out.slice(0, -1) + '&nbsp;';
+    return out;
+  });
+}
+
 /** Plain text as the editor stores a comment body: later lines in <div>, blank lines as <div><br></div>. */
 export function commentTextToHtml(text: string): string {
   const lines = text.split(/\r?\n/);
   return lines.map((line, i) => {
-    const escaped = escapeHtml(line);
+    const escaped = encodeSpaces(escapeHtml(line));
     if (i === 0) return escaped;
     return `<div>${escaped === '' ? '<br>' : escaped}</div>`;
   }).join('');
@@ -724,6 +743,9 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
     async (args) => {
       try {
         const isComment = args.valueType === 'comment';
+        if (isComment && args.isStart) {
+          return toolError('A comment node cannot be the start node (none of the 166 sampled comment nodes is).');
+        }
         if (isComment && (args.outputs?.length ?? 0) > 0) {
           return toolError('A comment node has no outputs; omit outputs or use valueType "dictionary".');
         }
@@ -841,6 +863,9 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
         if (!node) return nodeNotFound(data, args.flowchartName, args.nodeSid);
 
         const finalType = args.valueType ?? node.ty;
+        if (finalType === 'comment' && (args.isStart ?? node.s) === true) {
+          return toolError(`Node ${node.sid} would be a comment and the start node; a comment node cannot be the start node. Make another node the start node first.`);
+        }
         if (hasCommentInput(args) && finalType !== 'comment') {
           return toolError(`Node ${node.sid} is a "${finalType}" node; commentText, commentHtml, font, fontSize, bold, italic and fontColor apply to comment nodes only.`);
         }
@@ -956,6 +981,9 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
 
         const node = findNode(data, args.nodeSid);
         if (!node) return nodeNotFound(data, args.flowchartName, args.nodeSid);
+        if (node.ty === 'comment') {
+          return toolError(`Node ${node.sid} is a comment node, and a comment node has no outputs.`);
+        }
         if (!Array.isArray(node.outputs)) node.outputs = [];
 
         if (args.index !== undefined && args.index > node.outputs.length) {
@@ -1149,6 +1177,10 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
 
         const target = findNode(data, args.targetNodeSid);
         if (!target) return nodeNotFound(data, args.flowchartName, args.targetNodeSid);
+
+        if (node.ty === 'comment' || target.ty === 'comment') {
+          return toolError(`Cannot connect ${node.ty === 'comment' ? `from comment node ${node.sid}` : `to comment node ${target.sid}`}: a comment node has no connections.`);
+        }
 
         if (node.sid === args.targetNodeSid) {
           return toolError(

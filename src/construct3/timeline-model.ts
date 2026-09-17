@@ -398,11 +398,64 @@ export function createCustomEase(name: string, points: EasePointInput[], linear:
   return { name, linear, purpose, transitionKeyframes: buildEaseKeyframes(points) };
 }
 
-const BUILTIN_EASE = /^(default|noease|linear|ease(in|out|inout)[a-z]+)$/i;
+/**
+ * Construct's own ease ids. `default` and `noease` are the timeline values;
+ * the rest are the built-in eases of Construct's ease list (Tween and
+ * timelines). Sampled in the example packages and C3-ACE: default, noease,
+ * easeinsine, easeoutsine, easeinoutsine, easeinquad, easeoutquad,
+ * easeinoutquad, easeincubic, easeoutcubic, easeinback, easeoutback,
+ * easeoutbounce, easeoutelastic. The remaining ids complete the documented
+ * list (sine, quad, cubic, quart, quint, expo, circ, back, elastic, bounce,
+ * each in, out and in-out, plus linear) in the sampled naming pattern.
+ */
+export const BUILTIN_EASES: ReadonlySet<string> = new Set([
+  'default', 'noease', 'linear',
+  ...['sine', 'quad', 'cubic', 'quart', 'quint', 'expo', 'circ', 'back', 'elastic', 'bounce']
+    .flatMap(kind => [`easein${kind}`, `easeout${kind}`, `easeinout${kind}`]),
+]);
 
-/** True for a name that is, or looks like, one of Construct's own ease names. */
+/** True for exactly one of Construct's own ease ids (they are lower case). */
 export function isBuiltinEaseName(name: string): boolean {
-  return BUILTIN_EASE.test(name);
+  return BUILTIN_EASES.has(name);
+}
+
+/** True when a custom ease name would read as a built-in id, which Construct matches without regard to case. */
+export function clashesWithBuiltinEase(name: string): boolean {
+  return BUILTIN_EASES.has(name.toLowerCase());
+}
+
+/**
+ * The first non-default `resultMode` on a folder chain: the root folder and
+ * each folder down `path`. Every sampled folder (72 track roots, 397
+ * property-track roots, 3 track folders, 6 property-track folders) has
+ * "default", so how Construct applies a folder's mode to the tracks inside is
+ * unknown; tools that compute stored values refuse when this returns a mode.
+ */
+export function folderChainResultMode(root: TimelineFolder | undefined, path: string): string | undefined {
+  if (!isTimelineFolder(root)) return undefined;
+  const modes: unknown[] = [root.resultMode];
+  let current: TimelineFolder = root;
+  for (const part of splitFolderPath(path)) {
+    const next = (current.subfolders as unknown[]).find(
+      (sf): sf is TimelineFolder => isTimelineFolder(sf) && sf.name === part,
+    );
+    if (!next) break;
+    modes.push(next.resultMode);
+    current = next;
+  }
+  const found = modes.find(mode => typeof mode === 'string' && mode !== '' && mode !== 'default');
+  return found as string | undefined;
+}
+
+/** A non-default folder result mode that governs a track or any of its property tracks, or undefined. */
+export function trackFolderResultMode(data: Timeline, track: AnyTrack, folderPath: string): string | undefined {
+  const own = folderChainResultMode(data.tracksRoot, folderPath);
+  if (own) return own;
+  for (const { folderPath: ptPath } of listPropertyTracks(track)) {
+    const mode = folderChainResultMode(track.propertyTracksRoot, ptPath);
+    if (mode) return mode;
+  }
+  return undefined;
 }
 
 type ContainerFolder = { name?: string; items: string[]; subfolders: ContainerFolder[] };

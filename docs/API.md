@@ -1315,6 +1315,14 @@ behavior property tracks (tasty-cappuccino): each carries
 The tools find and edit property tracks inside such folders but do not
 create, rename or delete property-track folders.
 
+Folders carry `resultMode` too. Every sampled folder (72 track roots, 397
+property-track roots, 3 track folders, 6 property-track folders) has
+`"default"`, so how Construct applies a folder's mode to the tracks inside is
+unknown. Tools that compute stored values (`add_timeline_track`,
+`add_property_track`, `set_keyframe`, a result-mode change in `update_track`
+or `update_timeline`, and `move_timeline_track` for instance tracks) refuse
+when a folder above the track or its property tracks has another mode.
+
 ### Keyframe values: `value`, `rValue` and `aValue`
 
 `aValue` is the property's absolute value and `value` is its value relative to
@@ -1350,8 +1358,15 @@ in the track folders: an instance track by UID, or a value or audio track by
 name. Give exactly one. Every timeline write also refreshes `transitionsData`:
 a copy of each custom ease the timeline uses is added or updated, and copies of
 project eases it no longer uses are dropped. Ease names that are neither
-Construct's own (`default`, `noease`, `linear`, `ease...`) nor a custom ease
-are written with a warning.
+Construct's own ids nor a custom ease are written with a warning. Construct's
+ids are `default`, `noease`, `linear` and `easein`/`easeout`/`easeinout`
+followed by `sine`, `quad`, `cubic`, `quart`, `quint`, `expo`, `circ`, `back`,
+`elastic` or `bounce`, in lower case. Fourteen of them were seen in the
+samples; the rest complete Construct's documented list in the same pattern.
+
+`update_timeline` refuses a result-mode change while an untyped (older) track
+takes its mode from the timeline (neither the track nor its property tracks
+set one); every sampled untyped track sets its own.
 
 ### `list_timelines`
 
@@ -1648,7 +1663,7 @@ timelines that name the ease). No parameters.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `name` | string | Yes | Ease name; refused when it looks like a Construct ease name or is already an ease or timeline name |
+| `name` | string | Yes | Ease name; refused when it equals a Construct ease id in any letter case, or is already an ease or timeline name |
 | `points` | array | Yes | `{ x, y, startHandle?: { x, y }, endHandle?: { x, y } }` from `(0,0)` to `(1,1)`, x strictly increasing; the first point takes no `endHandle` and the last no `startHandle` |
 | `linear` | boolean | No | Default: false |
 
@@ -1665,13 +1680,19 @@ that uses the ease. The result lists `timelinesRefreshed`.
 
 #### `delete_ease`
 
-Delete an ease that no timeline uses (otherwise refused, naming the
-timelines): its file and `.uistate.json` (with `.bak` copies), its
-registration, and any stale copy left in a timeline's `transitionsData`.
+Delete an ease that no timeline uses: first its registration, then its file
+and `.uistate.json` (with `.bak` copies), and any stale copy left in a
+timeline's `transitionsData`. Refused, naming them, while a timeline uses the
+ease or a registered timeline cannot be opened. The Tween behavior and
+scripts can also name an ease, so event sheets and registered script files
+are searched for the name as a whole word; a hit, or a file that cannot be
+read, refuses the delete unless `force` is true, and a forced delete reports
+them in `warnings`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Ease name |
+| `force` | boolean | No | Delete despite event-sheet or script mentions (default: false) |
 
 ---
 
@@ -1805,11 +1826,12 @@ warning when the flowchart is left without a start node.
 | `enabled` | boolean | No | The `e` field (default: true) |
 | `valueType` | `dictionary` / `comment` | No | The `ty` field (default: `dictionary`). A comment node takes no `outputs`, gets `t: ""` unless `nodeType` is given, and gets the comment keys |
 | `outputs` | array | No | `{ name, value?, enabled?, isDefault? }` pins to create |
-| `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption) |
+| `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption). Runs of spaces become alternating `&nbsp;` and spaces starting with `&nbsp;`, ending in `&nbsp;` at a line end, and a lone space at a line start or end becomes `&nbsp;`, as in 7,888 of the 7,922 space runs in the C3-ACE comments |
 | `commentHtml` | string | No | Comment body as HTML, stored unchanged; give this or `commentText` |
 | `font`, `fontSize`, `bold`, `italic`, `fontColor` | string, number, boolean, boolean, `#rrggbb` | No | Comment formatting (`fo`, `fs`, `fb`, `fi`, `fc`). Missing values take the most common sampled values (Calibri, 36, bold, not italic, `#39b530`) with a warning; Construct's own defaults were not sampled |
 
-The comment fields are refused on a dictionary node.
+The comment fields are refused on a dictionary node, and a comment node
+cannot be the start node (none of the 166 sampled comment nodes is).
 
 There is no `color` parameter: the node `c` field is the caption, and colors are
 held in the `.uistate.json` file these tools do not write.
@@ -1830,7 +1852,7 @@ preserved. `isStart: true` clears the flag on every other node.
 | `enabled` | boolean | No | The `e` field |
 | `parentIndex` | number | No | The `pi` field (meaning undetermined) |
 | `x`, `y`, `width`, `height` | number | No | Canvas position and box size |
-| `valueType` | `dictionary` / `comment` | No | Change the `ty` field. To `comment`: refused while the node has outputs or connections; `t` is cleared and the comment keys are added (body from the caption unless given). To `dictionary`: the comment keys are removed and an empty `t` takes the caption |
+| `valueType` | `dictionary` / `comment` | No | Change the `ty` field. To `comment`: refused while the node has outputs or connections, or is (or is being made) the start node; `t` is cleared and the comment keys are added (body from the caption unless given). To `dictionary`: the comment keys are removed and an empty `t` takes the caption |
 | `commentText`, `commentHtml`, `font`, `fontSize`, `bold`, `italic`, `fontColor` | | No | Comment fields as for `add_flowchart_node`; only on a node that is, or becomes, a comment |
 
 ### `delete_flowchart_node`
@@ -1847,6 +1869,7 @@ parallel `pnSIDs`/`poSIDs` entries, and any output whose `cnSID` pointed at it
 ### `add_flowchart_output`
 
 Add an output pin, unconnected, at the end of the array or at `index`.
+Refused on a comment node, which has no outputs.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1897,7 +1920,8 @@ this changes behavior.
 Set the output's `cnSID`, append the source node SID to the target's `pnSIDs`
 and the output SID to its `poSIDs`, and add the target to the source's
 `nodeSIDs`. Connecting a node to itself is refused, as is reusing an output that
-is already connected; disconnect it first.
+is already connected (disconnect it first) and connecting from or to a comment
+node, which has no connections.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
