@@ -16,7 +16,7 @@ import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js'
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { MockServer } from '../mocks/mock-server.js';
-import { registerReplaceTools, expressionMembers } from '../../src/tools/replace-tools.js';
+import { registerReplaceTools, expressionMembers, matchAllBounded, RegexTimeoutError } from '../../src/tools/replace-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'rename-project');
 const MAIN_BLOCK = 610000000000015;
@@ -140,6 +140,23 @@ describe('replace_object_in_events', () => {
     // Custom action arguments under a Hostiles-owned definition are ordinary references.
     const custom = bySid(events, 610000000000023);
     expect(custom.actions[0].parameters).toEqual(['Enemy.UID', '"Player"', 'score']);
+  });
+
+  it('leaves a whole branch alone when one of its sub-events cannot be swapped', async () => {
+    await editJson(['eventSheets', 'Main.json'], s => {
+      const inner = s.events[2].children[1];
+      inner.actions.push({ id: 'set-enabled', objectClass: 'Player', behaviorType: 'Platform', sid: 700000000000050, parameters: { state: 'enabled' } });
+    });
+    const result = await server.callTool('replace_object_in_events', { fromObject: 'Player', toObject: 'Enemy', sheetName: 'Main' });
+    const data = parse(result);
+    const main = data.skippedEvents.find((s: any) => s.eventSid === MAIN_BLOCK);
+    expect(main.reasons).toEqual(['sub-event events[2].children[1]: "set-enabled" uses behavior "Platform", which Enemy does not have']);
+    const events = (await readJson('eventSheets', 'Main.json')).events;
+    const block = bySid(events, MAIN_BLOCK);
+    expect(block.actions[0].objectClass).toBe('Player');
+    expect(block.children[1].actions[1].objectClass).toBe('Player');
+    // Branches without the object still swap independently.
+    expect(bySid(events, 610000000000023).actions[0].parameters[0]).toBe('Enemy.UID');
   });
 
   it('skips an event whose instance variable the replacement lacks', async () => {
@@ -272,6 +289,52 @@ describe('replace_in_expressions', () => {
     const result = await server.callTool('replace_in_expressions', { find: 'x*', replace: 'y', regex: true });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('empty text');
+  });
+
+  it('leaves name and combo parameters alone unless parameterKeys names them', async () => {
+    await editJson(['eventSheets', 'Main.json'], s => {
+      s.events.push({
+        eventType: 'block', sid: 700000000000060, conditions: [],
+        actions: [{ id: 'set-visible', objectClass: 'Player', sid: 700000000000061, parameters: { visibility: 'visible', state: 'visible' } }],
+      });
+    });
+    const result = await server.callTool('replace_in_expressions', { find: 'score', replace: 'points', sheets: ['Main'] });
+    const data = parse(result);
+    expect(data.warnings[0]).toContain('variable (2)');
+    expect(data.warnings[0]).toContain('instance-variable (1)');
+    let main = bySid((await readJson('eventSheets', 'Main.json')).events, MAIN_BLOCK);
+    expect(main.actions[4].parameters).toEqual({ variable: 'score', value: 'points + Player.X' });
+    expect(main.actions[5].parameters).toEqual({ 'instance-variable': 'score', value: '1' });
+
+    const combo = await server.callTool('replace_in_expressions', { find: 'visible', replace: 'shown', sheets: ['Main'] });
+    expect(parse(combo).parametersChanged).toBe(0);
+    expect(bySid((await readJson('eventSheets', 'Main.json')).events, 700000000000060).actions[0].parameters).toEqual({ visibility: 'visible', state: 'visible' });
+
+    await server.callTool('replace_in_expressions', { find: 'score', replace: 'points', parameterKeys: ['variable'], sheets: ['Main'] });
+    main = bySid((await readJson('eventSheets', 'Main.json')).events, MAIN_BLOCK);
+    expect(main.actions[4].parameters.variable).toBe('points');
+  });
+
+  it('refuses a pattern that matches zero characters between words', async () => {
+    const before = await snapshot();
+    const result = await server.callTool('replace_in_expressions', { find: 'a?', replace: 'Z', regex: true, wholeWord: true });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('zero characters (in Main events[2]');
+    expect(await snapshot()).toBe(before);
+  });
+
+  it('counts a repeated sheet once', async () => {
+    const result = await server.callTool('replace_in_expressions', { find: 'Player.X', replace: 'Player.Y', sheets: ['Main', 'Main'] });
+    const data = parse(result);
+    expect(data.bySheet).toEqual([{ sheet: 'Main', parameters: 3, matches: 3 }]);
+    expect(data.filesWritten).toEqual(['eventSheets/Main.json']);
+  });
+
+  it('stops a catastrophically backtracking pattern at the time limit', () => {
+    const started = Date.now();
+    expect(() => matchAllBounded(/(a+)+$/g, 'x', ['a'.repeat(40) + '!'], 100)).toThrow(RegexTimeoutError);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(matchAllBounded(/a/g, 'b', ['aa'], 100)).toEqual([{ count: 2, empty: false, after: 'bb' }]);
   });
 
   it('rejects an unknown sheet', async () => {

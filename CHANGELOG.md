@@ -184,6 +184,8 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Fixed
 
+- `replace_in_expressions` no longer rewrites parameters that hold a name (`variable`, `instance-variable`, object, layout, timeline and similar keys) or a combo choice unless `parameterKeys` names them, refuses any pattern that matches zero characters (not only one that matches empty text), bounds all matching to 2 seconds so a backtracking pattern cannot hang the server, and scans a repeated sheet once.
+- `replace_object_in_events` swaps a branch (an event and its sub-events) whole or not at all, so a parent is no longer swapped while a sub-event that picks from it is skipped.
 - The ID generator scans every layer depth: UIDs, instance SIDs and layer SIDs on sub-layers were never collected, so new UIDs could repeat one already used on a sub-layer. It also collects the `imageSpriteId` of single-image objects (Tiled Background, 9-patch, Tilemap, ...).
 - `update_event_block` upgrades a block written with the legacy `isElse`/`isOr` keys before checking condition indexes, so the added else condition no longer shifts updates, removals and insertions.
 - `move_event_block_items` refuses to move an else condition; `update_event_block_action` refuses keyed parameters on calls, comments and script rows and accepts custom action bodies.

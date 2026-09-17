@@ -1792,8 +1792,11 @@ Construct's event-sheet Replace object.
 
 The references are the rename scanner's: `objectClass`, the bare object-name
 parameters (`object`, `object-to-create`, `parent`, `child`, `instance`) and
-identifier tokens in expressions. Each event is swapped whole or not at all.
-It is skipped when a condition or action on the replaced object uses a
+identifier tokens in expressions. The unit of a swap is a branch: an event
+that references the replaced object together with all its sub-events, which
+share its picked instances. A branch is swapped whole or not at all; the
+reasons of a sub-event are reported as `sub-event <path>: ...` on the branch's
+top event. An event is incompatible when a condition or action on the replaced object uses a
 behavior (`behaviorType`), an instance variable (`instance-variable`) or an
 effect (an `effect` parameter holding a quoted name) that the replacement
 lacks (object types inherit their families' behaviors, variables and
@@ -1818,8 +1821,20 @@ result has `references` (as in the rename tools), `skippedEvents`
 | `maxReported` | number | No | Individual changes listed (default 100); counts are always complete |
 
 Only condition and action parameter strings are changed, never comments,
-scripts, names or variable declarations. A pattern that matches empty text is
-refused. The result has `totalMatches`, `parametersChanged`, `bySheet`,
+scripts or variable declarations. Parameters that hold a name are skipped
+unless `parameterKeys` names their key: `variable`, `instance-variable`,
+`object`, `object-to-create`, `parent`, `child`, `instance`, `layout`,
+`timeline`, `property`, `object-class`, `pin-to`, `target`, `function`,
+`file` and `audio-file` (keys whose sample values are names). So are combo
+choices (a bare lower-case ID such as `enabled` under keys like `state`,
+`mode`, `ease` or `visibility`). Matches in skipped parameters are counted in
+a warning. Repeated `sheets` entries are scanned once.
+
+A pattern that matches zero characters anywhere (for example `a?` with
+`wholeWord`) is refused before anything is written. All matching for one call
+runs in a `vm` script limited to 2000 ms in total; V8 enforces the limit inside
+regular expression execution, so a catastrophically backtracking pattern
+fails the call instead of hanging the server. The result has `totalMatches`, `parametersChanged`, `bySheet`,
 `changes` (`[{ sheet, eventSid, path, key, before, after }]`) and
 `filesWritten`.
 
