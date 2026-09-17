@@ -460,7 +460,8 @@ export interface Layout {
   name: string;
   layers: Layer[];
   sid: number;
-  eventSheet?: string;
+  /** Bound event sheet name; the editor writes `null` when nothing is bound. */
+  eventSheet?: string | null;
   width?: number;
   height?: number;
   unboundedScrolling?: boolean;

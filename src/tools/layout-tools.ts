@@ -100,6 +100,34 @@ function worldInstancesByUid(layout: Layout): Map<number, Instance> {
   return map;
 }
 
+/**
+ * Move `keys` to the end of `obj`, in the order given, skipping absent ones.
+ *
+ * JSON key order is insertion order, and Construct writes each object's keys
+ * in a fixed order, so a key added to an existing object lands after keys the
+ * editor puts later. Re-inserting those trailing keys restores the editor's
+ * order without rebuilding the object, which would break held references.
+ */
+function moveKeysToEnd(obj: Record<string, unknown>, keys: readonly string[]): void {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+    const value = obj[key];
+    delete obj[key];
+    obj[key] = value;
+  }
+}
+
+/**
+ * Instance keys r495 writes after `sceneGraphData`. Confirmed against an
+ * r495.2 Download-a-copy: `... behaviors, sceneGraphData, showing, locked,
+ * world`, and against the r495-era sample packages for `instanceFolderItem`,
+ * which sits between `sceneGraphData` and `showing` when present.
+ */
+const INSTANCE_KEYS_AFTER_SCENE_GRAPH_DATA = ['instanceFolderItem', 'showing', 'locked', 'world'] as const;
+
+/** `sceneGraphData` keys r495 writes after `children`. */
+const SCENE_GRAPH_KEYS_AFTER_CHILDREN = ['flags', 'preview'] as const;
+
 /** The instance's hierarchy record, created in Construct's shape if absent. */
 function ensureSceneGraphData(inst: Instance): SceneGraphData {
   if (!inst.sceneGraphData) {
@@ -109,6 +137,7 @@ function ensureSceneGraphData(inst: Instance): SceneGraphData {
       flags: { ...DEFAULT_SCENE_GRAPH_FLAGS },
       preview: createScenePreview(),
     };
+    moveKeysToEnd(inst, INSTANCE_KEYS_AFTER_SCENE_GRAPH_DATA);
   }
   return inst.sceneGraphData;
 }
@@ -339,9 +368,11 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
             return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Available layers: ${layerNames}`);
           }
 
-          const pluginProps = args.properties
-            ?? (pluginId ? DEFAULT_INSTANCE_PROPERTIES[pluginId] : undefined)
-            ?? {};
+          // Copied, not aliased: the instance keeps this object, so handing out
+          // the shared table would let a later edit of one instance change the
+          // template and every other instance of the same plugin.
+          const defaults = pluginId ? DEFAULT_INSTANCE_PROPERTIES[pluginId] : undefined;
+          const pluginProps = args.properties ?? (defaults ? { ...defaults } : {});
 
           if (!args.properties && pluginId && !DEFAULT_INSTANCE_PROPERTIES[pluginId]) {
             warnings.push(`No default instance properties known for plugin "${pluginId}". Instance created with empty properties — you may need to configure them in the C3 editor.`);
@@ -1239,7 +1270,10 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
         childSg.flags = flags;
 
         const parentSg = ensureSceneGraphData(parent);
-        if (!Array.isArray(parentSg.children)) parentSg.children = [];
+        if (!Array.isArray(parentSg.children)) {
+          parentSg.children = [];
+          moveKeysToEnd(parentSg, SCENE_GRAPH_KEYS_AFTER_CHILDREN);
+        }
         const existingIdx = parentSg.children.findIndex(c => c.uid === args.childUid);
         // Construct stores the same flag values on both sides of the link.
         const entry = { uid: args.childUid, flags: { ...flags } };
