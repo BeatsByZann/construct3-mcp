@@ -11,7 +11,7 @@
  * files on disk is covered by read-failures.test.ts.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import type { ReadFailure } from '../../src/construct3/project-reader.js';
 import { MockReader } from '../mocks/mock-reader.js';
@@ -139,5 +139,68 @@ describe('IdGenerator — unreadable layouts', () => {
     const idGen = new IdGenerator();
     await expect(idGen.generateUid(reader as any))
       .rejects.toThrow(/Cannot generate a safe UID.*objectTypes\/BigGlobal/);
+  });
+});
+
+describe('IdGenerator - sub-layers and single-image objects', () => {
+  function readerWithSubLayers() {
+    return new MockReader({
+      layouts: new Map([
+        ['Nested', {
+          name: 'Nested',
+          sid: 400,
+          layers: [{
+            name: 'Parent',
+            sid: 401,
+            instances: [],
+            subLayers: [{
+              name: 'Child',
+              sid: 402,
+              instances: [{ type: 'Sprite', uid: 9001, sid: 100_000_000_000_000, properties: {} }],
+              subLayers: [{
+                name: 'Grandchild',
+                sid: 100_000_000_000_001,
+                instances: [{ type: 'Sprite', uid: 9005, sid: 403, properties: {} }],
+              }],
+            }],
+          }],
+        }],
+      ]),
+      objects: new Map([
+        ['Ground', { name: 'Ground', 'plugin-id': 'TiledBg', sid: 500, image: { width: 1, height: 1, imageSpriteId: 1_000_000 } }],
+      ]),
+    });
+  }
+
+  it('counts UIDs on sub-layers when a layout has no top-level instances', async () => {
+    const idGen = new IdGenerator();
+    expect(await idGen.generateUid(readerWithSubLayers() as any)).toBe(9006);
+  });
+
+  it('never reissues an instance or layer SID found on a sub-layer', async () => {
+    const idGen = new IdGenerator();
+    const random = vi.spyOn(Math, 'random');
+    // The first two draws land exactly on the two sub-layer SIDs.
+    random.mockReturnValueOnce(0).mockReturnValueOnce(1 / 899_999_999_999_999).mockReturnValueOnce(0.5);
+    try {
+      const sid = await idGen.generateSid(readerWithSubLayers() as any);
+      expect(sid).not.toBe(100_000_000_000_000);
+      expect(sid).not.toBe(100_000_000_000_001);
+      expect(random).toHaveBeenCalledTimes(3);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it('never reissues the imageSpriteId of a single-image object', async () => {
+    const idGen = new IdGenerator();
+    const random = vi.spyOn(Math, 'random');
+    random.mockReturnValueOnce(0).mockReturnValueOnce(0.5);
+    try {
+      const id = await idGen.generateImageSpriteId(readerWithSubLayers() as any);
+      expect(id).not.toBe(1_000_000);
+    } finally {
+      random.mockRestore();
+    }
   });
 });

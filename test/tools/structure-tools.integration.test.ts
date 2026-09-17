@@ -290,6 +290,25 @@ describe('duplicate_layout', () => {
     expect((await readJson('project.c3proj')).layouts.items).toEqual(['Level 1', 'Level 1 Copy']);
   });
 
+  it('allocates UIDs above sub-layer instances when duplicating twice', async () => {
+    // Every instance of Level 2 sits on a sub-layer and holds the highest UID.
+    await editJson(['layouts', 'Extra', 'Level 2.json'], l => {
+      l.layers = [{ ...l.layers[0], name: 'Top', sid: 631000000000001, instances: [], subLayers: [{ ...l.layers[0], instances: l.layers[0].instances.map((i: any, n: number) => ({ ...i, uid: 900 + n })) }] }];
+    });
+    const first = await server.callTool('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy A' });
+    const second = await server.callTool('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy B' });
+    expect(first.isError).not.toBe(true);
+    expect(second.isError).not.toBe(true);
+    const uids = [
+      ...allInstances(await readJson('layouts', 'Level 1.json')),
+      ...allInstances(await readJson('layouts', 'Extra', 'Level 2.json')),
+      ...allInstances(await readJson('layouts', 'Copy A.json')),
+      ...allInstances(await readJson('layouts', 'Copy B.json')),
+    ].map(i => i.uid);
+    expect(new Set(uids).size).toBe(uids.length);
+    expect(Math.min(...allInstances(await readJson('layouts', 'Copy A.json')).map(i => i.uid))).toBeGreaterThan(900);
+  });
+
   it('keeps the copy in the source folder', async () => {
     const result = await server.callTool('duplicate_layout', { layoutName: 'Level 2', newName: 'Level 3' });
     expect(result.isError).not.toBe(true);

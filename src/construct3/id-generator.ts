@@ -5,6 +5,7 @@
 
 import { isFileNotFoundError, type Construct3ProjectReader } from './project-reader.js';
 import type { AnimationsContainer, C3Event, Layout, RootFileFolders } from './types.js';
+import { collectLayers } from './layout-walk.js';
 
 const SID_MIN = 100_000_000_000_000; // 15-digit minimum
 const SID_MAX = 999_999_999_999_999; // 15-digit maximum
@@ -56,6 +57,12 @@ export class IdGenerator {
       // Animation SIDs
       if (obj.animations) {
         this.scanAnimationSids(obj.animations);
+      }
+      // Single-image plugins (TiledBg, NinePatch, Tilemap, ...) keep their
+      // image ID on `image`, in the same ID space as animation frames.
+      const image = obj.image as { imageSpriteId?: unknown } | undefined;
+      if (image && typeof image === 'object') {
+        this.collectImageSpriteId(image.imageSpriteId);
       }
       // Singleglobal instance
       const sgi = obj['singleglobal-inst'];
@@ -277,8 +284,11 @@ export class IdGenerator {
   }
 
   private scanLayoutSids(layout: Layout): void {
-    for (const layer of layout.layers) {
+    // Every layer depth: sub-layers hold layer SIDs, instance SIDs and UIDs
+    // exactly like top-level layers do.
+    for (const layer of collectLayers(layout)) {
       this.collectSid(layer.sid);
+      if (!Array.isArray(layer.instances)) continue;
       for (const instance of layer.instances) {
         this.collectSid(instance.sid);
         this.trackUid(instance.uid);
