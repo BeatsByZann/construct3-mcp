@@ -11,6 +11,7 @@ import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
 import { validateName, validateSubfolder, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord } from './shared.js';
 import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
+  DEFAULT_OBJECT_IMAGE_SIZE,
   GLOBAL_PLUGINS,
   NONWORLD_GLOBAL_PLUGINS,
   SINGLE_IMAGE_PLUGINS,
@@ -71,8 +72,8 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
             animationName: 'Animation 1',
             frameIndex: 0,
             pluginId: args.pluginId,
-            width: 1,
-            height: 1,
+            width: DEFAULT_OBJECT_IMAGE_SIZE,
+            height: DEFAULT_OBJECT_IMAGE_SIZE,
           }]);
 
           data = createSpriteObject(args.name, sid, animSid, imageSpriteId);
@@ -95,8 +96,8 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
             animationName: '',
             frameIndex: 0,
             pluginId: args.pluginId,
-            width: 1,
-            height: 1,
+            width: DEFAULT_OBJECT_IMAGE_SIZE,
+            height: DEFAULT_OBJECT_IMAGE_SIZE,
           }]);
 
           data = createTiledBgObject(args.name, sid, imageSpriteId);

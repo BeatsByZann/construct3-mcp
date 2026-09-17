@@ -54,6 +54,10 @@ describe('create_object', () => {
     expect(files[0].objectName).toBe('Hero');
     expect(files[0].animationName).toBe('Animation 1');
     expect(files[0].frameIndex).toBe(0);
+    // The placeholder must be written at the size the frame declares; r495.2
+    // reads the real image and rewrites width/height when they disagree.
+    expect(files[0].width).toBe(100);
+    expect(files[0].height).toBe(100);
 
     // Verify the written object data has imageSpriteId
     const writtenData = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
@@ -87,6 +91,8 @@ describe('create_object', () => {
     expect(files).toHaveLength(1);
     expect(files[0].objectName).toBe('BG');
     expect(files[0].pluginId).toBe('TiledBg');
+    expect(files[0].width).toBe(100);
+    expect(files[0].height).toBe(100);
 
     // Verify the written object data has imageSpriteId on the image field
     const writtenData = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;

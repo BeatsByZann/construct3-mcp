@@ -249,4 +249,45 @@ describe('layer nesting and instance hierarchy (real project on disk)', () => {
     const integrity = await validateProjectIntegrity(reader);
     expect(integrity.errors).toEqual([]);
   });
+
+  /**
+   * r495.2 writes `sceneGraphData` before `showing`, `locked` and `world` on
+   * the instance, and `children` third inside it. A plain assignment appends,
+   * so both orders have to be restored explicitly. Checked against a
+   * Download-a-copy of a tool-written project (savedWithRelease 49502).
+   */
+  it('writes hierarchy keys in the order r495.2 saves them', async () => {
+    const added = parseResult(await server.callTool('add_instance_to_layout', {
+      layoutName: 'Layout 1', layerName: 'Main', objectType: 'Sprite', x: 10, y: 20,
+    }));
+    const childUid = added.generatedUid as number;
+
+    expect(parseResult(await server.callTool('set_instance_parent', {
+      layoutName: 'Layout 1', childUid, parentUid: 0,
+    })).success).toBe(true);
+
+    const layout = await layoutOnDisk();
+    const instances = layout.layers[0].instances as any[];
+    const parent = instances.find(i => i.uid === 0);
+    const child = instances.find(i => i.uid === childUid);
+
+    for (const inst of [parent, child]) {
+      const keys = Object.keys(inst);
+      const sgdAt = keys.indexOf('sceneGraphData');
+      expect(sgdAt).toBeGreaterThan(-1);
+      for (const later of ['instanceFolderItem', 'showing', 'locked', 'world']) {
+        if (keys.includes(later)) expect(keys.indexOf(later)).toBeGreaterThan(sgdAt);
+      }
+      expect(keys.indexOf('behaviors')).toBeLessThan(sgdAt);
+    }
+
+    // The parent gained `children`; it is the third key, before flags/preview.
+    expect(Object.keys(parent.sceneGraphData)).toEqual([
+      'parent-uid', 'uid', 'children', 'flags', 'preview',
+    ]);
+    // A leaf carries no `children` key at all, never an empty array.
+    expect(Object.keys(child.sceneGraphData)).toEqual([
+      'parent-uid', 'uid', 'flags', 'preview',
+    ]);
+  });
 });

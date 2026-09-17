@@ -20,6 +20,11 @@ function imageName(frameIndex: number): string {
   return `sprite-${ANIMATION}-${String(frameIndex).padStart(3, '0')}.png`;
 }
 
+/** Width and height from a PNG's IHDR chunk, which always starts at byte 16. */
+function pngSize(buffer: Buffer): { width: number; height: number } {
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
 describe('animation frame tools against a real project on disk', () => {
   let projectDir: string;
   let reader: Construct3ProjectReader;
@@ -251,5 +256,40 @@ describe('animation frame tools against a real project on disk', () => {
     const back = JSON.parse(await readFile(join(projectDir, 'objectTypes', 'Sprite.json'), 'utf8')) as any;
     expect(back.animations.items[0].name).toBe(ANIMATION);
     expect(back.animations.subfolders[0].subfolders[0].items).toHaveLength(0);
+  });
+
+  /**
+   * r495.2 reads a frame image's real IHDR on load and rewrites the frame's
+   * width and height to match, so a placeholder written at a size other than
+   * the one the JSON declares comes back changed. The two must agree.
+   */
+  it('writes the new frame placeholder at the size the frame declares', async () => {
+    resultOf(await server.callTool('add_frame_to_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, width: 48, height: 32,
+    }));
+
+    const frames = await readFrames();
+    const added = frames[frames.length - 1];
+    expect(added.width).toBe(48);
+    expect(added.height).toBe(32);
+
+    const png = await readFile(join(projectDir, 'images', imageName(frames.length - 1)));
+    expect(pngSize(png)).toEqual({ width: 48, height: 32 });
+  });
+
+  it('writes each placeholder of a new animation at the declared frame size', async () => {
+    resultOf(await server.callTool('add_animation_to_sprite', {
+      objectName: 'Sprite', animationName: 'Walk', frameCount: 2, frameWidth: 64, frameHeight: 24,
+    }));
+
+    const obj = JSON.parse(await readFile(join(projectDir, 'objectTypes', 'Sprite.json'), 'utf8')) as any;
+    const walk = obj.animations.items.find((a: any) => a.name === 'Walk');
+    expect(walk.frames.map((f: any) => [f.width, f.height])).toEqual([[64, 24], [64, 24]]);
+
+    for (const index of [0, 1]) {
+      const name = `sprite-Walk-${String(index).padStart(3, '0')}.png`;
+      const png = await readFile(join(projectDir, 'images', name));
+      expect(pngSize(png)).toEqual({ width: 64, height: 24 });
+    }
   });
 });

@@ -157,20 +157,27 @@ export const KNOWN_SCIRRA_BEHAVIORS: Record<string, string> = {
   Wrap: 'Wrap',
 };
 
+/**
+ * Pixel size of the placeholder image a new object type is created with.
+ * The image file written to disk must match, because Construct reads an
+ * image's real dimensions on load and rewrites width/height to match.
+ */
+export const DEFAULT_OBJECT_IMAGE_SIZE = 100;
+
 export function createSpriteObject(name: string, sid: number, animSid: number, imageSpriteId?: number): ObjectType {
   return {
     name,
     'plugin-id': 'Sprite',
+    sid,
     isGlobal: false,
     editorNewInstanceIsReplica: true,
-    sid,
     instanceVariables: [],
     behaviorTypes: [],
     effectTypes: [],
     animations: {
       items: [
         {
-          frames: [createAnimationFrame(100, 100, imageSpriteId)],
+          frames: [createAnimationFrame(DEFAULT_OBJECT_IMAGE_SIZE, DEFAULT_OBJECT_IMAGE_SIZE, imageSpriteId)],
           sid: animSid,
           name: 'Animation 1',
           isLooping: false,
@@ -189,9 +196,9 @@ export function createTextObject(name: string, sid: number): ObjectType {
   return {
     name,
     'plugin-id': 'Text',
+    sid,
     isGlobal: false,
     editorNewInstanceIsReplica: true,
-    sid,
     instanceVariables: [],
     behaviorTypes: [],
     effectTypes: [],
@@ -202,28 +209,61 @@ export function createTiledBgObject(name: string, sid: number, imageSpriteId?: n
   return {
     name,
     'plugin-id': 'TiledBg',
+    sid,
     isGlobal: false,
     editorNewInstanceIsReplica: true,
-    sid,
     instanceVariables: [],
     behaviorTypes: [],
     effectTypes: [],
     image: {
-      width: 100,
-      height: 100,
+      width: DEFAULT_OBJECT_IMAGE_SIZE,
+      height: DEFAULT_OBJECT_IMAGE_SIZE,
       originX: 0.5,
       originY: 0.5,
       originalSource: '',
       exportFormat: 'lossless',
       exportQuality: 0.8,
       fileType: 'image/png',
-      tag: '',
-      useCollisionPoly: true,
-      collisionPoly: { points: [] },
       ...(imageSpriteId !== undefined ? { imageSpriteId } : {}),
+      collisionPoly: { points: [] },
+      useCollisionPoly: true,
+      tag: '',
     },
   };
 }
+
+/**
+ * Properties r495.2 writes on a newly created single-global instance, by plugin.
+ *
+ * Harvested by creating one object of each installed global plugin with the
+ * tools and reading back the editor's own save: AJAX, Browser, Clipboard,
+ * Geolocation, Keyboard, Mouse, Multiplayer, PlatformInfo and Timeline write
+ * an empty bag, and only these three carry defaults. Key order is the editor's.
+ * A plugin that is absent here gets an empty bag, which is what the editor
+ * writes for every plugin sampled so far; the editor fills in anything missing
+ * on load, so an unsampled plugin costs a round-trip difference, not an error.
+ */
+export const DEFAULT_GLOBAL_INSTANCE_PROPERTIES: Record<string, Record<string, unknown>> = {
+  Audio: {
+    'timescale-audio': 'off',
+    'save-load': 'all',
+    'play-in-background': false,
+    'latency-hint': 'interactive',
+    'enable-multiple-tags': false,
+    'panning-model': 'hrtf',
+    'distance-model': 'inverse',
+    'listener-z-height': 600,
+    'reference-distance': 600,
+    'maximum-distance': 10000,
+    'roll-off-factor': 1,
+  },
+  LocalStorage: {
+    'in-memory-only': false,
+  },
+  Touch: {
+    'use-mouse-input': true,
+  },
+};
 
 export function createGlobalObject(
   name: string,
@@ -238,7 +278,7 @@ export function createGlobalObject(
     sid,
     'singleglobal-inst': {
       type: name,
-      properties: {},
+      properties: { ...(DEFAULT_GLOBAL_INSTANCE_PROPERTIES[pluginId] ?? {}) },
       uid,
       sid: sgiSid,
       tags: '',
@@ -250,9 +290,9 @@ export function createGenericObject(name: string, pluginId: string, sid: number)
   return {
     name,
     'plugin-id': pluginId,
+    sid,
     isGlobal: false,
     editorNewInstanceIsReplica: true,
-    sid,
     instanceVariables: [],
     behaviorTypes: [],
     effectTypes: [],
@@ -304,6 +344,18 @@ export const DEFAULT_INSTANCE_PROPERTIES: Record<string, Record<string, unknown>
     'angle-random': 1,
     'blend-margin-x': 0.1,
     'blend-margin-y': 0.1,
+  },
+  /**
+   * Harvested from an r495.2 save: a Drawing Canvas instance the tools placed
+   * with no properties came back carrying exactly these four, in this order.
+   * Before this entry the editor filled all four on load, and corrected the
+   * world origin with them.
+   */
+  DrawingCanvas: {
+    'resolution-mode': 'auto',
+    'initially-visible': true,
+    origin: 'top-left',
+    antialiasing: 'off',
   },
   NinePatch: {
     'initially-visible': true,
@@ -528,11 +580,11 @@ export function createAnimationFrame(
     exportFormat: 'lossless',
     exportQuality: 0.8,
     fileType: 'image/png',
+    ...(imageSpriteId !== undefined ? { imageSpriteId } : {}),
+    collisionPoly: { points: [] },
+    useCollisionPoly: true,
     duration: 1,
     tag: '',
-    useCollisionPoly: true,
-    collisionPoly: { points: [] },
-    ...(imageSpriteId !== undefined ? { imageSpriteId } : {}),
   };
 }
 
@@ -574,20 +626,17 @@ export function createLayout(
   return {
     name,
     layers: layerData,
-    'scene-graphs-folder-root': {
-      items: [],
-      subfolders: [],
-    },
     sid,
     'nonworld-instances': [],
     effectTypes: [],
     width,
     height,
     unboundedScrolling: false,
+    sampling: 'auto',
     vpX: 0.5,
     vpY: 0.5,
     projection: 'perspective',
-    ...(eventSheet ? { eventSheet } : {}),
+    eventSheet: eventSheet ?? null,
   };
 }
 
@@ -664,8 +713,8 @@ export function createInstance(
       originX: overrides?.originX ?? 0.5,
       originY: overrides?.originY ?? 0.5,
       color: overrides?.color ?? [1, 1, 1, 1],
-      angle: overrides?.angle ?? 0,
       z: overrides?.zElevation ?? 0,
+      angle: overrides?.angle ?? 0,
     },
   };
 }

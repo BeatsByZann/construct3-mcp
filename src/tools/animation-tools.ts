@@ -372,8 +372,8 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
             animationName: args.animationName,
             frameIndex: i,
             pluginId: 'Sprite',
-            width: 1,
-            height: 1,
+            width: frameWidth,
+            height: frameHeight,
           });
         }
 
@@ -680,8 +680,8 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
             animationName: args.animationName,
             frameIndex: insertAt,
             pluginId: 'Sprite',
-            width: 1,
-            height: 1,
+            width: frameWidth,
+            height: frameHeight,
           }]);
           placeholderWritten = true;
 

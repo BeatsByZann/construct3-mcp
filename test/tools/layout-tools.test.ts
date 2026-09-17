@@ -5,6 +5,7 @@ import { MockWriter } from '../mocks/mock-writer.js';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
 import { registerLayoutTools } from '../../src/tools/layout-tools.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import { DEFAULT_INSTANCE_PROPERTIES } from '../../src/construct3/templates.js';
 
 // The project index is a module singleton built from whichever reader first
 // asked for it; MockWriter never invalidates it, so reset it per test.
@@ -130,6 +131,45 @@ describe('add_instance_to_layout', () => {
     expect(data.success).toBe(true);
     expect(data.generatedUid).toBeDefined();
     expect(data.generatedSid).toBeDefined();
+  });
+
+  /**
+   * The instance keeps the properties object it is given, so handing out the
+   * shared DEFAULT_INSTANCE_PROPERTIES entry would let a later edit of one
+   * instance reach the template and every other instance of that plugin.
+   */
+  it('gives each instance its own copy of the plugin defaults', async () => {
+    const { server, writer } = setup({
+      objects: new Map([['Canvas', {
+        name: 'Canvas', 'plugin-id': 'DrawingCanvas', sid: 1,
+        isGlobal: false, instanceVariables: [], behaviorTypes: [],
+      }]]),
+      layouts: new Map([['Level 1', {
+        name: 'Level 1', sid: 10,
+        layers: [{ name: 'Main', sid: 20, instances: [] }],
+        'nonworld-instances': [],
+      }]]),
+    });
+    for (const x of [10, 200]) {
+      expect(parseResult(await server.callTool('add_instance_to_layout', {
+        layoutName: 'Level 1', layerName: 'Main', objectType: 'Canvas', x, y: 20,
+      })).success).toBe(true);
+    }
+
+    const written = writer.callsFor('writeEntityFile');
+    const layout = written[written.length - 1].args[2] as any;
+    const placed = layout.layers[0].instances as any[];
+    expect(placed).toHaveLength(2);
+    for (const inst of placed) {
+      expect(inst.properties).toEqual({
+        'resolution-mode': 'auto',
+        'initially-visible': true,
+        origin: 'top-left',
+        antialiasing: 'off',
+      });
+    }
+    expect(placed[0].properties).not.toBe(placed[1].properties);
+    expect(placed[0].properties).not.toBe(DEFAULT_INSTANCE_PROPERTIES.DrawingCanvas);
   });
 
   it('errors on nonexistent object', async () => {
