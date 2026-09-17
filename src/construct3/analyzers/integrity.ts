@@ -734,6 +734,15 @@ async function checkOrphanedFiles(
   }
 }
 
+// Construct writes per-user editor UI state beside project files: `<name>.uistate.json`
+// files, and (r487+) `layouts/uistate/**/<name>.instancesBar.json`. They are never
+// registered in project.c3proj and do not affect the project.
+function isEditorUiStateFile(relativeDir: string, fileName: string): boolean {
+  if (fileName.endsWith('.uistate.json')) return true;
+  return fileName.endsWith('.instancesBar.json')
+    && (relativeDir === 'layouts/uistate' || relativeDir.startsWith('layouts/uistate/'));
+}
+
 async function scanDirForOrphans(
   projectDir: string,
   relativeDir: string,
@@ -748,7 +757,12 @@ async function scanDirForOrphans(
       const relativePath = `${relativeDir}/${entry.name}`;
       if (entry.isDirectory()) {
         await scanDirForOrphans(projectDir, relativePath, registeredPaths, info);
-      } else if (entry.isFile() && entry.name.endsWith('.json') && !registeredPaths.has(relativePath)) {
+      } else if (
+        entry.isFile()
+        && entry.name.endsWith('.json')
+        && !isEditorUiStateFile(relativeDir, entry.name)
+        && !registeredPaths.has(relativePath)
+      ) {
         info.push({
           check: 'orphaned-file',
           entity: relativePath,
