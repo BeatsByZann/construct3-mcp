@@ -1,17 +1,235 @@
 /**
  * Animation tools: add_animation_to_sprite, update_animation_properties,
  * delete_animation, rename_animation, add_frame_to_animation,
- * delete_frame_from_animation, update_frame, replace_sprite_image.
+ * delete_frame_from_animation, update_frame, replace_sprite_image,
+ * reorder_frames, reverse_frames, duplicate_frame, create_animation_folder,
+ * move_animation_to_folder.
  */
 
 import { z } from 'zod';
-import { readFile } from 'fs/promises';
+import { readFile, copyFile, rename, stat, unlink } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
-import type { WriteResult, ObjectType, AnimationFrame } from '../construct3/types.js';
-import { toolResult, toolError, notFoundError } from './shared.js';
+import type {
+  WriteResult,
+  ObjectType,
+  Animation,
+  AnimationFrame,
+  AnimationsContainer,
+  ImagePoint,
+} from '../construct3/types.js';
+import { toolResult, toolError, notFoundError, validateSubfolder } from './shared.js';
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
 import { getImageFileName } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
+
+// ─── Shared animation helpers ────────────────────────────
+
+/** An animation together with the container and folder path that hold it. */
+interface AnimationLocation {
+  anim: Animation;
+  container: AnimationsContainer;
+  index: number;
+  /** Slash-separated folder path, or undefined at the animations root. */
+  folderPath?: string;
+}
+
+/** An animation subfolder's name; C3 types it loosely, so read it defensively. */
+function folderName(container: AnimationsContainer): string {
+  return typeof container.name === 'string' ? container.name : '';
+}
+
+/** Every animation in an object, root folder first, depth-first after that. */
+function listAnimations(root: AnimationsContainer, folderPath?: string): AnimationLocation[] {
+  const found: AnimationLocation[] = [];
+  root.items.forEach((anim, index) => found.push({ anim, container: root, index, folderPath }));
+  for (const sub of root.subfolders) {
+    const name = folderName(sub);
+    found.push(...listAnimations(sub, folderPath ? folderPath + '/' + name : name));
+  }
+  return found;
+}
+
+/** Find an animation by name anywhere in the folder tree. */
+function findAnimationAnywhere(root: AnimationsContainer, name: string): AnimationLocation | undefined {
+  return listAnimations(root).find(location => location.anim.name === name);
+}
+
+/** Find the container addressed by a slash-separated folder path. */
+function findAnimationFolder(root: AnimationsContainer, folderPath?: string): AnimationsContainer | undefined {
+  if (!folderPath) return root;
+  let current: AnimationsContainer = root;
+  for (const part of folderPath.split('/')) {
+    const next: AnimationsContainer | undefined = current.subfolders.find(candidate => folderName(candidate) === part);
+    if (!next) return undefined;
+    current = next;
+  }
+  return current;
+}
+
+/** Guard the Sprite plugin and the animations container in one step. */
+type SpriteAnimations =
+  | { ok: true; root: AnimationsContainer }
+  | { ok: false; error: ReturnType<typeof toolError> };
+
+function readSpriteAnimations(obj: ObjectType, objectName: string): SpriteAnimations {
+  if (obj['plugin-id'] !== 'Sprite') {
+    return { ok: false, error: toolError(`Object "${objectName}" is not a Sprite. Only Sprite objects have animations.`) };
+  }
+  if (!obj.animations || !Array.isArray(obj.animations.items) || !Array.isArray(obj.animations.subfolders)) {
+    return { ok: false, error: toolError(`Object "${objectName}" has no animations structure.`) };
+  }
+  return { ok: true, root: obj.animations };
+}
+
+/**
+ * Validate image points: x/y are normalized 0-1 relative to the frame, and
+ * names are unique within a frame because C3 addresses a point by its name.
+ */
+function validateImagePoints(points: ImagePoint[], context: string): void {
+  const seen = new Set<string>();
+  for (const point of points) {
+    if (!Number.isFinite(point.x) || point.x < 0 || point.x > 1 ||
+      !Number.isFinite(point.y) || point.y < 0 || point.y > 1) {
+      throw new Error(
+        `Image point "${point.name}" in ${context} is out of range (x=${point.x}, y=${point.y}). ` +
+        'Image point x/y are normalized 0-1 relative to the frame.'
+      );
+    }
+    if (seen.has(point.name)) {
+      throw new Error(`Image point name "${point.name}" appears twice in ${context}. Names must be unique within a frame.`);
+    }
+    seen.add(point.name);
+  }
+}
+
+/** Absolute path of the image file C3 expects for a Sprite animation frame. */
+function frameImagePath(projectDir: string, objectName: string, animationName: string, frameIndex: number): string {
+  return resolveProjectPath(projectDir, 'images', getImageFileName(objectName, animationName, frameIndex, 'Sprite'));
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A sequence of image-file moves that can be undone when a later step fails. */
+class FileMoveJournal {
+  private done: Array<{ from: string; to: string; copied?: boolean }> = [];
+
+  async move(from: string, to: string): Promise<void> {
+    await rename(from, to);
+    this.done.push({ from, to });
+  }
+
+  async copy(from: string, to: string): Promise<void> {
+    await copyFile(from, to);
+    this.done.push({ from, to, copied: true });
+  }
+
+  async undo(): Promise<void> {
+    for (let i = this.done.length - 1; i >= 0; i--) {
+      const step = this.done[i];
+      try {
+        if (step.copied) await unlink(step.to);
+        else await rename(step.to, step.from);
+      } catch {
+        // Best-effort rollback: a file that is already gone is the desired state.
+      }
+    }
+    this.done = [];
+  }
+}
+
+/**
+ * Re-point frame image files so images/<object>-<animation>-NNN.png stays
+ * aligned with the reordered frames.
+ *
+ * C3 addresses a frame's image by the frame index baked into the file name, so
+ * reordering the JSON alone would leave every frame showing the image of
+ * whichever frame previously sat at its index. Files are parked under
+ * temporary names first, so no rename targets a name that is still occupied.
+ *
+ * @returns the number of image files moved and a journal that undoes them.
+ */
+async function reorderFrameImages(
+  projectDir: string,
+  objectName: string,
+  animationName: string,
+  order: number[],
+): Promise<{ moved: number; journal: FileMoveJournal }> {
+  const journal = new FileMoveJournal();
+  try {
+    const parked: Array<string | undefined> = [];
+    for (let index = 0; index < order.length; index++) {
+      const source = frameImagePath(projectDir, objectName, animationName, index);
+      if (!(await pathExists(source))) {
+        parked.push(undefined);
+        continue;
+      }
+      const temp = source + '.reorder-tmp';
+      await journal.move(source, temp);
+      parked.push(temp);
+    }
+
+    let moved = 0;
+    for (let newIndex = 0; newIndex < order.length; newIndex++) {
+      const temp = parked[order[newIndex]];
+      if (temp === undefined) continue;
+      await journal.move(temp, frameImagePath(projectDir, objectName, animationName, newIndex));
+      moved++;
+    }
+    return { moved, journal };
+  } catch (error) {
+    await journal.undo();
+    throw error;
+  }
+}
+
+/**
+ * Shift frame image files up by one from `insertAt`, then copy the duplicated
+ * frame's image into the freed slot. Mirrors reorderFrameImages' contract.
+ */
+async function duplicateFrameImage(
+  projectDir: string,
+  objectName: string,
+  animationName: string,
+  frameIndex: number,
+  insertAt: number,
+  frameCount: number,
+): Promise<{ moved: number; journal: FileMoveJournal }> {
+  const journal = new FileMoveJournal();
+  try {
+    let moved = 0;
+    for (let index = frameCount - 1; index >= insertAt; index--) {
+      const source = frameImagePath(projectDir, objectName, animationName, index);
+      if (!(await pathExists(source))) continue;
+      await journal.move(source, frameImagePath(projectDir, objectName, animationName, index + 1));
+      moved++;
+    }
+    // The source frame's image has itself shifted when it sat at or after insertAt.
+    const sourceIndex = frameIndex >= insertAt ? frameIndex + 1 : frameIndex;
+    const sourcePath = frameImagePath(projectDir, objectName, animationName, sourceIndex);
+    if (await pathExists(sourcePath)) {
+      await journal.copy(sourcePath, frameImagePath(projectDir, objectName, animationName, insertAt));
+      moved++;
+    }
+    return { moved, journal };
+  } catch (error) {
+    await journal.undo();
+    throw error;
+  }
+}
+
+/** An image point as accepted by update_frame; ranges are checked in the handler. */
+const imagePointSchema = z.object({
+  name: z.string().min(1).max(200).describe('Image point name'),
+  x: z.number().describe('Horizontal position, normalized 0-1 relative to the frame'),
+  y: z.number().describe('Vertical position, normalized 0-1 relative to the frame'),
+});
 
 export function registerAnimationTools({ server, reader, writer, idGen }: MutationToolDeps) {
   // ─── add_animation_to_sprite ──────────────────────────────
@@ -470,7 +688,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
 
   server.tool(
     'update_frame',
-    'Update per-frame properties of a Sprite animation frame (duration, dimensions, origin)',
+    'Update per-frame properties of a Sprite animation frame (duration, dimensions, origin, tag, image points, collision polygon)',
     {
       objectName: z.string().max(200).describe('Sprite object name'),
       animationName: z.string().min(1).max(200).describe('Animation name'),
@@ -480,13 +698,29 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
       duration: z.number().positive().optional().describe('New frame duration in seconds'),
       originX: z.number().min(0).max(1).optional().describe('Horizontal origin 0-1 (0.5 = center)'),
       originY: z.number().min(0).max(1).optional().describe('Vertical origin 0-1 (0.5 = center)'),
+      tag: z.string().max(200).optional().describe('Frame tag (empty string clears it)'),
+      imagePoints: z.array(imagePointSchema).max(200).optional()
+        .describe('Replace the whole image point list; x/y are normalized 0-1 and names must be unique'),
+      addImagePoints: z.array(imagePointSchema).max(200).optional()
+        .describe('Append image points to the existing list; names must not collide'),
+      removeImagePoints: z.array(z.string().min(1).max(200)).max(200).optional()
+        .describe('Remove image points by name; every name must exist on the frame'),
+      collisionPoly: z.array(z.number()).max(2000).optional()
+        .describe('Custom collision polygon as a flat [x0,y0,x1,y1,...] list normalized 0-1; at least 3 points, or [] to clear'),
+      useCollisionPoly: z.boolean().optional().describe('Whether C3 uses the custom collision polygon for this frame'),
     },
     async (args) => {
       try {
         const hasUpdates = args.width !== undefined || args.height !== undefined ||
-          args.duration !== undefined || args.originX !== undefined || args.originY !== undefined;
+          args.duration !== undefined || args.originX !== undefined || args.originY !== undefined ||
+          args.tag !== undefined || args.imagePoints !== undefined || args.addImagePoints !== undefined ||
+          args.removeImagePoints !== undefined || args.collisionPoly !== undefined ||
+          args.useCollisionPoly !== undefined;
         if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: width, height, duration, originX, originY.');
+          return toolError('No updates provided. Specify at least one of: width, height, duration, originX, originY, tag, imagePoints, addImagePoints, removeImagePoints, collisionPoly, useCollisionPoly.');
+        }
+        if (args.imagePoints !== undefined && (args.addImagePoints !== undefined || args.removeImagePoints !== undefined)) {
+          return toolError('imagePoints replaces the whole image point list; do not combine it with addImagePoints or removeImagePoints.');
         }
 
         let obj: ObjectType;
@@ -514,11 +748,64 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         }
 
         const frame = anim.frames[args.frameIndex];
+        const warnings: string[] = [];
+
         if (args.width !== undefined) frame.width = args.width;
         if (args.height !== undefined) frame.height = args.height;
         if (args.duration !== undefined) frame.duration = args.duration;
         if (args.originX !== undefined) frame.originX = args.originX;
         if (args.originY !== undefined) frame.originY = args.originY;
+        if (args.tag !== undefined) frame.tag = args.tag;
+
+        if (args.imagePoints !== undefined) {
+          try {
+            validateImagePoints(args.imagePoints, 'imagePoints');
+          } catch (validationError) {
+            return toolError(validationError instanceof Error ? validationError.message : String(validationError));
+          }
+          frame.imagePoints = args.imagePoints;
+        }
+
+        // Remove before add, so one call can replace a point by name.
+        if (args.removeImagePoints !== undefined) {
+          const current = Array.isArray(frame.imagePoints) ? frame.imagePoints : [];
+          const missing = args.removeImagePoints.filter(name => !current.some(point => point.name === name));
+          if (missing.length > 0) {
+            return toolError(`Image point(s) not found on frame ${args.frameIndex} of "${args.animationName}": ${missing.join(', ')}.`);
+          }
+          const removals = args.removeImagePoints;
+          frame.imagePoints = current.filter(point => !removals.includes(point.name));
+        }
+
+        if (args.addImagePoints !== undefined) {
+          const merged = [...(Array.isArray(frame.imagePoints) ? frame.imagePoints : []), ...args.addImagePoints];
+          try {
+            validateImagePoints(args.addImagePoints, 'addImagePoints');
+            validateImagePoints(merged, 'the resulting image point list');
+          } catch (validationError) {
+            return toolError(validationError instanceof Error ? validationError.message : String(validationError));
+          }
+          frame.imagePoints = merged;
+        }
+
+        if (args.collisionPoly !== undefined) {
+          const points = args.collisionPoly;
+          if (points.length > 0) {
+            if (points.length % 2 !== 0) {
+              return toolError(`collisionPoly must hold x,y pairs, so its length must be even; got ${points.length} value(s).`);
+            }
+            if (points.length < 6) {
+              return toolError(`collisionPoly needs at least 3 points (6 values) to form a polygon; got ${points.length / 2} point(s).`);
+            }
+          }
+          const outside = points.filter(value => value < 0 || value > 1).length;
+          if (outside > 0) {
+            warnings.push(`${outside} collisionPoly value(s) fall outside 0-1. C3 stores polygon points normalized to the frame, so points beyond the frame edge are accepted but unusual.`);
+          }
+          frame.collisionPoly = { points };
+        }
+
+        if (args.useCollisionPoly !== undefined) frame.useCollisionPoly = args.useCollisionPoly;
 
         const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
         const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
@@ -529,6 +816,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           category: 'object',
           action: 'updated',
           backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
         return toolResult(result);
       } catch (error) {
@@ -626,6 +914,319 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
       } catch (error) {
         console.error('[replace_sprite_image] failed:', error);
         return toolError(`Error replacing sprite image: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── reorder_frames / reverse_frames ───────────────────
+
+  /**
+   * Shared frame-order implementation. The image files are re-pointed before
+   * the JSON is written, and rolled back when the JSON write fails, so the
+   * frames and images/ never disagree about which image belongs to a frame.
+   */
+  const applyFrameOrder = async (
+    objectName: string,
+    animationName: string,
+    order: number[] | undefined,
+    reverse: boolean,
+  ) => {
+    let obj: ObjectType;
+    try {
+      obj = await reader.readObjectType(objectName);
+    } catch {
+      return notFoundError('Object', objectName, reader.findNearestName(objectName, 'objects'), 'list_objects');
+    }
+
+    const animations = readSpriteAnimations(obj, objectName);
+    if (!animations.ok) return animations.error;
+
+    const location = findAnimationAnywhere(animations.root, animationName);
+    if (!location) {
+      const available = listAnimations(animations.root).map(item => item.anim.name).join(', ');
+      return toolError(`Animation "${animationName}" not found on "${objectName}". Available: ${available}`);
+    }
+
+    const frames = location.anim.frames;
+    const resolved = reverse
+      ? frames.map((_unused, index) => frames.length - 1 - index)
+      : (order ?? []);
+
+    if (resolved.length !== frames.length) {
+      return toolError(`order must list every frame exactly once: animation "${animationName}" has ${frames.length} frame(s) but order has ${resolved.length} entry/entries.`);
+    }
+    const seen = new Set<number>();
+    for (const index of resolved) {
+      if (index < 0 || index >= frames.length) {
+        return toolError(`order contains frame index ${index}, which is out of range 0-${frames.length - 1}.`);
+      }
+      if (seen.has(index)) {
+        return toolError(`order repeats frame index ${index}. order must be a permutation of every current frame index.`);
+      }
+      seen.add(index);
+    }
+
+    const { moved, journal } = await reorderFrameImages(reader.getProjectDir(), objectName, animationName, resolved);
+    try {
+      location.anim.frames = resolved.map(index => frames[index]);
+
+      const subfolder = writer.getSubfolderForEntity('objectTypes', objectName);
+      const backupPath = await writer.writeEntityFile('objectTypes', objectName, obj, subfolder);
+
+      const result: WriteResult = {
+        success: true,
+        entity: objectName,
+        category: 'object',
+        action: 'updated',
+        backupFile: backupPath,
+        warnings: [moved === 0
+          ? `No frame image files were found under images/ for "${animationName}", so only the frame JSON was reordered.`
+          : `Renamed ${moved} frame image file(s) under images/ so they stay aligned with the new frame order.`],
+      };
+      return toolResult(result);
+    } catch (error) {
+      await journal.undo();
+      throw error;
+    }
+  };
+
+  server.tool(
+    'reorder_frames',
+    'Reorder the frames of a Sprite animation, renaming their image files to match',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation name'),
+      order: z.array(z.number().int()).min(1).max(1000)
+        .describe('New frame order: a full permutation of the current 0-based frame indices'),
+    },
+    async (args) => {
+      try {
+        return await applyFrameOrder(args.objectName, args.animationName, args.order, false);
+      } catch (error) {
+        console.error('[reorder_frames] failed:', error);
+        return toolError(`Error reordering frames: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  server.tool(
+    'reverse_frames',
+    'Reverse the frame order of a Sprite animation, renaming their image files to match',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation name'),
+    },
+    async (args) => {
+      try {
+        return await applyFrameOrder(args.objectName, args.animationName, undefined, true);
+      } catch (error) {
+        console.error('[reverse_frames] failed:', error);
+        return toolError(`Error reversing frames: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── duplicate_frame ───────────────────────────────────
+
+  server.tool(
+    'duplicate_frame',
+    'Duplicate a Sprite animation frame, copying its JSON and its image file',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation name'),
+      frameIndex: z.number().int().min(0).describe('0-based index of the frame to duplicate'),
+      insertAt: z.number().int().min(0).optional()
+        .describe('0-based index to insert the copy at (default: immediately after the source frame)'),
+    },
+    async (args) => {
+      try {
+        let obj: ObjectType;
+        try {
+          obj = await reader.readObjectType(args.objectName);
+        } catch {
+          return notFoundError('Object', args.objectName, reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        }
+
+        const animations = readSpriteAnimations(obj, args.objectName);
+        if (!animations.ok) return animations.error;
+
+        const location = findAnimationAnywhere(animations.root, args.animationName);
+        if (!location) {
+          const available = listAnimations(animations.root).map(item => item.anim.name).join(', ');
+          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${available}`);
+        }
+
+        const frames = location.anim.frames;
+        if (args.frameIndex >= frames.length) {
+          return toolError(`Frame index ${args.frameIndex} is out of range. Animation "${args.animationName}" has ${frames.length} frame(s).`);
+        }
+        const insertAt = args.insertAt ?? args.frameIndex + 1;
+        if (insertAt > frames.length) {
+          return toolError(`insertAt ${insertAt} is out of range. It must be between 0 and ${frames.length} (append).`);
+        }
+
+        const source = frames[args.frameIndex];
+        const copy = JSON.parse(JSON.stringify(source)) as AnimationFrame;
+        // A duplicated frame needs its own image identity; C3 keys the image
+        // record by imageSpriteId, so reusing the source id would alias them.
+        let newImageSpriteId: number | undefined;
+        if (source.imageSpriteId !== undefined) {
+          newImageSpriteId = await idGen.generateImageSpriteId(reader);
+          copy.imageSpriteId = newImageSpriteId;
+        }
+
+        const { moved, journal } = await duplicateFrameImage(
+          reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, insertAt, frames.length,
+        );
+        try {
+          frames.splice(insertAt, 0, copy);
+
+          const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+          const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+
+          const warnings = [moved === 0
+            ? `No frame image files were found under images/ for "${args.animationName}", so only the frame JSON was duplicated.`
+            : `Copied or shifted ${moved} frame image file(s) under images/ so they stay aligned with the inserted frame.`];
+          if (newImageSpriteId !== undefined) {
+            warnings.push(`The duplicated frame was given imageSpriteId ${newImageSpriteId}.`);
+          }
+
+          const result: WriteResult = {
+            success: true,
+            entity: args.objectName,
+            category: 'object',
+            action: 'updated',
+            backupFile: backupPath,
+            warnings,
+          };
+          return toolResult(result);
+        } catch (error) {
+          await journal.undo();
+          throw error;
+        }
+      } catch (error) {
+        console.error('[duplicate_frame] failed:', error);
+        return toolError(`Error duplicating frame: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── create_animation_folder ───────────────────────────
+
+  server.tool(
+    'create_animation_folder',
+    'Create an animation subfolder on a Sprite object',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      folderPath: z.string().min(1).max(500).describe('Slash-separated animation folder path, e.g. "Combat/Melee"'),
+    },
+    async (args) => {
+      try {
+        validateSubfolder(args.folderPath);
+
+        let obj: ObjectType;
+        try {
+          obj = await reader.readObjectType(args.objectName);
+        } catch {
+          return notFoundError('Object', args.objectName, reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        }
+
+        const animations = readSpriteAnimations(obj, args.objectName);
+        if (!animations.ok) return animations.error;
+
+        let current = animations.root;
+        const created: string[] = [];
+        for (const part of args.folderPath.split('/')) {
+          let next = current.subfolders.find(candidate => folderName(candidate) === part);
+          if (!next) {
+            next = { items: [], subfolders: [], name: part };
+            current.subfolders.push(next);
+            created.push(part);
+          }
+          current = next;
+        }
+        if (created.length === 0) {
+          return toolError(`Animation folder "${args.folderPath}" already exists on "${args.objectName}".`);
+        }
+
+        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+        const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.objectName,
+          category: 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          warnings: [`Created animation folder(s): ${created.join(', ')}.`],
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[create_animation_folder] failed:', error);
+        return toolError(`Error creating animation folder: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── move_animation_to_folder ──────────────────────────
+
+  server.tool(
+    'move_animation_to_folder',
+    'Move an animation into an existing animation subfolder, or back to the animations root',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation name to move'),
+      folderPath: z.string().max(500).nullable()
+        .describe('Destination animation folder path, or null for the animations root'),
+    },
+    async (args) => {
+      try {
+        const targetPath = args.folderPath === null || args.folderPath === '' ? undefined : args.folderPath;
+        if (targetPath) validateSubfolder(targetPath);
+
+        let obj: ObjectType;
+        try {
+          obj = await reader.readObjectType(args.objectName);
+        } catch {
+          return notFoundError('Object', args.objectName, reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        }
+
+        const animations = readSpriteAnimations(obj, args.objectName);
+        if (!animations.ok) return animations.error;
+
+        const location = findAnimationAnywhere(animations.root, args.animationName);
+        if (!location) {
+          const available = listAnimations(animations.root).map(item => item.anim.name).join(', ');
+          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${available}`);
+        }
+
+        const target = findAnimationFolder(animations.root, targetPath);
+        if (!target) {
+          return toolError(`Animation folder "${targetPath}" does not exist on "${args.objectName}". Create it with create_animation_folder first.`);
+        }
+        if (location.folderPath === targetPath) {
+          const where = targetPath ? `folder "${targetPath}"` : 'the animations root';
+          return toolError(`Animation "${args.animationName}" is already in ${where}.`);
+        }
+
+        location.container.items.splice(location.index, 1);
+        target.items.push(location.anim);
+
+        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+        const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.objectName,
+          category: 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          warnings: [`Moved "${args.animationName}" from ${location.folderPath ? `"${location.folderPath}"` : 'the animations root'} to ${targetPath ? `"${targetPath}"` : 'the animations root'}.`],
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[move_animation_to_folder] failed:', error);
+        return toolError(`Error moving animation: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );

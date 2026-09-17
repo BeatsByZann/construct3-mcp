@@ -11,6 +11,28 @@ import type { Construct3Project, FileFolder, FileFolderSubfolder, FileItem, Root
 export type RegisteredFileFolder = 'script' | 'general' | 'sound' | 'music' | 'video' | 'font';
 export type FileInfoKey = 'script-info' | 'file-info';
 
+/**
+ * On-disk directory each rootFileFolders family stores its files in, for a
+ * project saved as a folder. Verified against the C3-ACE project (r495):
+ * scripts live under scripts/, sound entries under sounds/, and general
+ * Project Files under files/. The music, video and font directories follow
+ * Construct's documented project-folder layout; C3-ACE registers no entries
+ * in those families, so they carry no local on-disk evidence.
+ */
+export const FILE_FOLDER_DIRECTORIES: Record<RegisteredFileFolder, string> = {
+  script: 'scripts',
+  general: 'files',
+  sound: 'sounds',
+  music: 'music',
+  video: 'videos',
+  font: 'fonts',
+};
+
+/** Directory (relative to the project root) that holds a family's files. */
+export function getFileFolderDirectory(folder: RegisteredFileFolder): string {
+  return FILE_FOLDER_DIRECTORIES[folder];
+}
+
 export interface FileRegistrationEntry {
   name: string;
   type: string;
@@ -111,4 +133,22 @@ export function removeFileEntry(
   // A repair should clean up duplicate registrations at the same path too.
   location.folder.items = location.folder.items.filter(item => item.name !== name);
   return true;
+}
+
+/** Every entry in a family, with the slash-separated subfolder that holds it. */
+export function listFileEntries(
+  project: Construct3Project,
+  folderName: RegisteredFileFolder,
+): Array<{ entry: FileItem; subfolder?: string }> {
+  const root = (project.rootFileFolders as Partial<RootFileFolders>)[folderName];
+  if (!root) return [];
+  const collected: Array<{ entry: FileItem; subfolder?: string }> = [];
+  const walk = (folder: FileFolder | FileFolderSubfolder, path: string | undefined): void => {
+    for (const entry of folder.items) collected.push({ entry, subfolder: path });
+    for (const child of folder.subfolders) {
+      walk(child, path ? `${path}/${child.name}` : child.name);
+    }
+  };
+  walk(root, undefined);
+  return collected;
 }
