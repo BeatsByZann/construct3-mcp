@@ -342,8 +342,11 @@ function validateSubfolders(
     // Construct r495.2 itself saves an unnamed, empty subfolder (seen as
     // `"timelines": { "items": [], "subfolders": [{ "items": [], "subfolders": [] }] }`
     // in an editor-saved example) and reopens the project without complaint,
-    // so only a nameless subfolder that holds something is an error.
-    if ((typeof sf.name !== 'string' || sf.name === '') && !isEmptySubfolder(sf)) {
+    // so only a nameless subfolder that holds something is an error. The one
+    // exception is the timelines list's first subfolder: Construct registers
+    // custom eases there, unnamed (tasty-cappuccino, r495.2).
+    const easeFolder = path === 'timelines' && i === 0;
+    if ((typeof sf.name !== 'string' || sf.name === '') && !isEmptySubfolder(sf) && !easeFolder) {
       errors.push({
         check: 'subfolder-structure',
         entity: `${path}/subfolders[${i}]`,

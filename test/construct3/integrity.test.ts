@@ -551,14 +551,14 @@ describe('validateProjectIntegrity', () => {
 
   it('detects subfolder missing name field', async () => {
     const reader = validProject();
-    // Patch the project to add a nameless subfolder in timelines
+    // Patch the project to add a nameless subfolder in layouts
     const origGetProject = reader.getProject.bind(reader);
     reader.getProject = () => {
       const proj = origGetProject();
-      proj.timelines = {
-        items: ['Timeline1'],
+      proj.layouts = {
+        items: ['Layout 1'],
         subfolders: [{ items: ['T2'], subfolders: [] }], // no name!
-      };
+      } as any;
       return proj;
     };
     const result = await validateProjectIntegrity(reader);
@@ -587,12 +587,29 @@ describe('validateProjectIntegrity', () => {
     const origGetProject = reader.getProject.bind(reader);
     reader.getProject = () => {
       const proj = origGetProject();
-      proj.timelines = { items: [], subfolders: [{ items: [], subfolders: [{ name: 'Inner', items: ['T2'], subfolders: [] }] }] } as any;
+      proj.layouts = { items: ['Layout 1'], subfolders: [{ items: [], subfolders: [{ name: 'Inner', items: ['T2'], subfolders: [] }] }] } as any;
       return proj;
     };
     const result = await validateProjectIntegrity(reader);
     const err = result.errors.find((e: any) => e.check === 'subfolder-structure');
-    expect(err?.entity).toBe('timelines/subfolders[0]');
+    expect(err?.entity).toBe('layouts/subfolders[0]');
+  });
+
+  it('accepts custom eases in the unnamed first timelines subfolder, but no other unnamed one', async () => {
+    const reader = validProject();
+    const origGetProject = reader.getProject.bind(reader);
+    reader.getProject = () => {
+      const proj = origGetProject();
+      // As in the tasty-cappuccino example: eases live in timelines/transitions/.
+      proj.timelines = {
+        items: [],
+        subfolders: [{ items: ['LightOutBack'], subfolders: [] }, { items: ['Stray'], subfolders: [] }],
+      } as any;
+      return proj;
+    };
+    const result = await validateProjectIntegrity(reader);
+    const errs = result.errors.filter((e: any) => e.check === 'subfolder-structure');
+    expect(errs.map((e: any) => e.entity)).toEqual(['timelines/subfolders[1]']);
   });
 
   it('passes subfolder check when all subfolders have names', async () => {
