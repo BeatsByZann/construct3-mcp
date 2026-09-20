@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, cp, rm, readFile, writeFile } from 'fs/promises';
+import { mkdtemp, cp, rm, readFile, writeFile, readdir, rename } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
@@ -495,5 +495,58 @@ describe('validate_project sees a missing object image (W97)', () => {
     const warned = r.warnings.filter((e: any) => e.check === 'object-image');
     expect(warned.some((w: any) => w.entity.startsWith('objectTypes/Hero/animation:'))).toBe(true);
     expect(r.errors.filter((e: any) => e.check === 'object-image')).toEqual([]);
+  });
+
+  // Construct names a frame file after the fileType its record declares and
+  // saves every image name in lowercase. C3-ACE holds 30 image/gif frames
+  // stored as images/<name>.gif, which a fixed .png called missing.
+  const heroFrame = async () => {
+    const files = await readdir(join(tmpDir, 'images'));
+    const f = files.find(n => /^hero-.*-000\.png$/i.test(n));
+    expect(f).toBeDefined();
+    return f!;
+  };
+  const heroWarnings = (r: any) =>
+    r.warnings.filter((e: any) => e.check === 'object-image' && e.entity.startsWith('objectTypes/Hero/'));
+
+  it('finds a frame stored as the gif its fileType declares', async () => {
+    expect(parse(await server.callTool('create_object', { name: 'Hero', pluginId: 'Sprite' })).success).toBe(true);
+    await editJson('objectTypes/Hero.json', o => { o.animations.items[0].frames[0].fileType = 'image/gif'; });
+    const png = await heroFrame();
+    await rename(join(tmpDir, 'images', png), join(tmpDir, 'images', png.replace(/\.png$/i, '.gif').toLowerCase()));
+    expect(heroWarnings(await validate())).toEqual([]);
+  });
+
+  it('warns about the gif, not the png, when a gif frame has only a png on disk', async () => {
+    expect(parse(await server.callTool('create_object', { name: 'Hero', pluginId: 'Sprite' })).success).toBe(true);
+    await editJson('objectTypes/Hero.json', o => { o.animations.items[0].frames[0].fileType = 'image/gif'; });
+    const warned = heroWarnings(await validate());
+    expect(warned).toHaveLength(1);
+    expect(warned[0].message).toMatch(/-000\.gif, which is missing/);
+  });
+
+  it('names the missing file in lowercase, as Construct saves it', async () => {
+    expect(parse(await server.callTool('create_object', { name: 'Hero', pluginId: 'Sprite' })).success).toBe(true);
+    await editJson('objectTypes/Hero.json', o => { o.animations.items[0].name = 'Walk'; });
+    for (const f of await readdir(join(tmpDir, 'images'))) {
+      if (/^hero-/i.test(f)) await rm(join(tmpDir, 'images', f));
+    }
+    const warned = heroWarnings(await validate());
+    expect(warned).toHaveLength(1);
+    expect(warned[0].message).toContain('images/hero-walk-000.png');
+  });
+
+  it('matches a frame of an unsampled fileType by its stem instead of guessing an extension', async () => {
+    expect(parse(await server.callTool('create_object', { name: 'Hero', pluginId: 'Sprite' })).success).toBe(true);
+    await editJson('objectTypes/Hero.json', o => { o.animations.items[0].frames[0].fileType = 'image/webp'; });
+    const png = await heroFrame();
+    const webp = png.replace(/\.png$/i, '.webp').toLowerCase();
+    await rename(join(tmpDir, 'images', png), join(tmpDir, 'images', webp));
+    expect(heroWarnings(await validate())).toEqual([]);
+
+    await rm(join(tmpDir, 'images', webp));
+    const warned = heroWarnings(await validate());
+    expect(warned).toHaveLength(1);
+    expect(warned[0].message).toMatch(/-000\.\*, which is missing/);
   });
 });

@@ -14,6 +14,12 @@ import { findOrphanedObjects } from './object-deps.js';
 import { SINGLE_IMAGE_PLUGINS, ANIMATION_PLUGINS } from '../templates.js';
 import { getImageFileName } from '../png-generator.js';
 
+/** Image file extensions by declared fileType, from the r495.2 samples. */
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/gif': 'gif',
+};
+
 // ─── Types ───────────────────────────────────────────────────
 
 export interface IntegrityIssue {
@@ -719,21 +725,43 @@ async function checkObjectImages(
   warnings: IntegrityIssue[]
 ): Promise<void> {
   const imagesDir = join(reader.getProjectDir(), 'images');
-  let haveImagesDir = false;
+  // Construct saves every image file name in lowercase, and the r495.2
+  // samples hold no other case, so the listing is compared in lowercase. That
+  // also keeps the check the same on a case-sensitive filesystem, where a
+  // lookup under the animation's own case would miss every mixed-case name.
+  let imageFiles: Set<string> | undefined;
   try {
-    haveImagesDir = (await lstat(imagesDir)).isDirectory();
+    if ((await lstat(imagesDir)).isDirectory()) {
+      imageFiles = new Set((await readdir(imagesDir)).map((f) => f.toLowerCase()));
+    }
   } catch {
-    haveImagesDir = false;
+    imageFiles = undefined;
   }
 
-  const missingFile = async (fileName: string): Promise<boolean> => {
-    if (!haveImagesDir) return false;
-    try {
-      await lstat(join(imagesDir, fileName));
-      return false;
-    } catch {
-      return true;
+  // The file name follows the fileType the image record declares, not a fixed
+  // .png: C3-ACE stores 30 frames as image/gif in images/<name>.gif. png and
+  // gif are the only types in the samples. For any other declared type the
+  // extension is not guessed, and any file with the same stem counts.
+  const imageFile = (
+    objectName: string,
+    animationName: string,
+    frameIndex: number,
+    pluginId: string,
+    fileType: unknown,
+  ): { name: string; present: () => boolean } => {
+    const stem = getImageFileName(objectName, animationName, frameIndex, pluginId)
+      .replace(/\.png$/, '')
+      .toLowerCase();
+    const declared = typeof fileType === 'string' ? fileType : 'image/png';
+    const ext = IMAGE_EXTENSIONS[declared];
+    if (ext !== undefined) {
+      const name = `${stem}.${ext}`;
+      return { name, present: () => !imageFiles || imageFiles.has(name) };
     }
+    return {
+      name: `${stem}.*`,
+      present: () => !imageFiles || [...imageFiles].some((f) => f.startsWith(`${stem}.`)),
+    };
   };
 
   for (const [name, obj] of objects) {
@@ -751,12 +779,12 @@ async function checkObjectImages(
         });
         continue;
       }
-      const fileName = getImageFileName(name, '', 0, pluginId);
-      if (await missingFile(fileName)) {
+      const file = imageFile(name, '', 0, pluginId, (image as Record<string, unknown>).fileType);
+      if (!file.present()) {
         warnings.push({
           check: 'object-image',
           entity: `objectTypes/${name}`,
-          message: `A ${pluginId} object type declares an image but images/${fileName} is missing, which stops Construct opening the project`,
+          message: `A ${pluginId} object type declares an image but images/${file.name} is missing, which stops Construct opening the project`,
           suggestion: `Restore the file, or replace the image with replace_object_image`,
         });
       }
@@ -790,12 +818,14 @@ async function checkObjectImages(
         continue;
       }
       for (let i = 0; i < frames.length; i++) {
-        const fileName = getImageFileName(name, item.name ?? '', i, pluginId);
-        if (await missingFile(fileName)) {
+        const frame = frames[i];
+        const fileType = frame && typeof frame === 'object' ? (frame as Record<string, unknown>).fileType : undefined;
+        const file = imageFile(name, item.name ?? '', i, pluginId, fileType);
+        if (!file.present()) {
           warnings.push({
             check: 'object-image',
             entity: `objectTypes/${name}/animation:${item.name ?? ''}`,
-            message: `Frame ${i} declares images/${fileName}, which is missing, and Construct will not open the project`,
+            message: `Frame ${i} declares images/${file.name}, which is missing, and Construct will not open the project`,
             suggestion: `Restore the file, or replace the frame image with replace_sprite_image`,
           });
         }

@@ -195,6 +195,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Fixed
 
+- `validate_project`'s object-image check named every image file `.png` and kept the animation name's case, so it reported images that exist as missing and said Construct would not open the project. It now takes the extension from the `fileType` the image record declares and compares names in lowercase, as Construct saves them. Against a real project holding 30 `image/gif` frames among 694, the false warnings drop from 30 to none, with every other check unchanged. On a case-sensitive filesystem the old lookup would also have missed most mixed-case animation names; the 696 files in that project and the 2,583 in the reference packages hold no uppercase and only `png` and `gif`. An image type with no sample is matched by its file stem rather than a guessed extension.
 - `update_instance` wrote `zElevation` to `world.z` even on instances that store `world.zElevation` (projects saved by older releases), leaving two Z keys.
 - `delete_instance_from_layout` left hierarchy links to a deleted instance (its parent's `children` entry and its children's `parent-uid`); it now detaches both sides and reports the detached children.
 - `add_instance_to_layout` could not place an instance on a sub-layer ("Layer not found").
