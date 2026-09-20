@@ -8,6 +8,31 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)](https://www.typescriptlang.org/)
 
+---
+
+## This is a fork
+
+This branch is a fork of [liauw-media/construct3-mcp](https://github.com/liauw-media/construct3-mcp)
+and has diverged from it: **169 MCP tools instead of upstream's 66**, with 103 added and none
+removed or renamed. It adds whole areas upstream does not cover (flowcharts, timeline tracks and
+keyframes, custom eases, tilemap data and brushes, effects, containers, templates, renames with
+reference rewriting, find and replace, Project Bar moves and duplicates, script and project file
+registration) and replaces the generated-script runtime bridge with live Chrome DevTools Protocol
+control of a running preview.
+
+It also changes how some upstream tools serialize their output, to match what Construct r495.2
+actually writes. **[FORK.md](FORK.md) is the full list of what was added, what was changed, and
+how this relates to upstream.** Read it before filing an issue, and note which branch you are on:
+
+| Branch | What it is |
+|---|---|
+| `main` | Close to upstream on purpose. It is the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), so it carries only those correctness fixes. Upstream's 66 tools. |
+| `claude/w84-editor-gap` | The diverged line described in this README. All 169 tools. |
+
+Everything below this notice describes `claude/w84-editor-gap`.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -35,6 +60,7 @@ node dist/index.js /path/to/your/project.c3proj
 
 ## Table of Contents
 
+- [This is a fork](#this-is-a-fork)
 - [Why This Exists](#why-this-exists)
 - [Features](#features)
 - [Installation](#installation)
@@ -399,7 +425,7 @@ npm start
 ### Building from Source
 
 ```bash
-git clone https://github.com/liauw-media/construct3-mcp.git
+git clone -b claude/w84-editor-gap https://github.com/BeatsByZann/construct3-mcp.git
 cd construct3-mcp
 npm install
 npm run build
@@ -498,8 +524,10 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/liauw-media/construct3-mcp/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/liauw-media/construct3-mcp/discussions)
+This fork and upstream have separate issue trackers. See [FORK.md](FORK.md) for which belongs where.
+
+- **This fork**: [Issues](https://github.com/BeatsByZann/construct3-mcp/issues) - for anything this fork added or changed
+- **Upstream**: [Issues](https://github.com/liauw-media/construct3-mcp/issues), [Discussions](https://github.com/liauw-media/construct3-mcp/discussions)
 
 ---
 
