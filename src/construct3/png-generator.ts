@@ -85,10 +85,17 @@ export function generatePlaceholderPng(width = 1, height = 1): Buffer {
  * Get the image filename that C3 expects for a given object/animation/frame.
  *
  * @param objectName    Object type name (will be lowercased)
- * @param animationName Animation name (for Sprites)
+ * @param animationName Animation name (for Sprites; will be lowercased)
  * @param frameIndex    Frame index (0-based, zero-padded to 3 digits)
  * @param pluginId      Plugin ID — 'TiledBg' uses a simpler naming convention
  * @returns Filename like "hero-walk-000.png" or "tiledbackground.png"
+ *
+ * Construct saves the whole name in lowercase, the animation part included:
+ * r495.2 stored an editor-made Sprite whose animation is "Animation 1" as
+ * images/<name>-animation 1-000.png, and none of the 3,279 image files it saved
+ * across C3-ACE and the reference packages has an uppercase letter. Looking up
+ * the lowercase name finds a mixed-case file on Windows, whose lookups ignore
+ * case, but not on a case-sensitive filesystem.
  */
 export function getImageFileName(
   objectName: string,
@@ -106,5 +113,5 @@ export function getImageFileName(
 
   // Sprite convention: name-animation-frameIndex(3 digits).png
   const paddedIndex = String(frameIndex).padStart(3, '0');
-  return `${lowerName}-${animationName}-${paddedIndex}.png`;
+  return `${lowerName}-${animationName.toLowerCase()}-${paddedIndex}.png`;
 }

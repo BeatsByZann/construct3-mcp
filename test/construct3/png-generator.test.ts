@@ -59,14 +59,16 @@ describe('generatePlaceholderPng', () => {
 });
 
 describe('getImageFileName', () => {
-  it('returns sprite filename with lowercase name and padded index', () => {
-    expect(getImageFileName('Hero', 'Walk', 0)).toBe('hero-Walk-000.png');
-    expect(getImageFileName('Hero', 'Walk', 5)).toBe('hero-Walk-005.png');
-    expect(getImageFileName('Hero', 'Walk', 123)).toBe('hero-Walk-123.png');
+  it('returns sprite filename with lowercase name and animation, and padded index', () => {
+    expect(getImageFileName('Hero', 'Walk', 0)).toBe('hero-walk-000.png');
+    expect(getImageFileName('Hero', 'Walk', 5)).toBe('hero-walk-005.png');
+    expect(getImageFileName('Hero', 'Walk', 123)).toBe('hero-walk-123.png');
   });
 
-  it('handles Animation 1 default name', () => {
-    expect(getImageFileName('Player', 'Animation 1', 0)).toBe('player-Animation 1-000.png');
+  // r495.2 saved an editor-made Sprite with this animation as
+  // images/<name>-animation 1-000.png (W126).
+  it('lowercases the Animation 1 default name, as Construct saves it', () => {
+    expect(getImageFileName('Player', 'Animation 1', 0)).toBe('player-animation 1-000.png');
   });
 
   it('returns TiledBg filename (just lowercase name)', () => {

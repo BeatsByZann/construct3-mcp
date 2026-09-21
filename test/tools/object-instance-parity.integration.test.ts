@@ -536,6 +536,12 @@ describe('validate_project sees a missing object image (W97)', () => {
     expect(warned[0].message).toContain('images/hero-walk-000.png');
   });
 
+  it('writes a new Sprite frame under the all-lowercase name Construct saves (W126)', async () => {
+    expect(parse(await server.callTool('create_object', { name: 'Hero', pluginId: 'Sprite' })).success).toBe(true);
+    const files = (await readdir(join(tmpDir, 'images'))).filter(n => /^hero-/i.test(n));
+    expect(files).toEqual(['hero-animation 1-000.png']);
+  });
+
   it('matches a frame of an unsampled fileType by its stem instead of guessing an extension', async () => {
     expect(parse(await server.callTool('create_object', { name: 'Hero', pluginId: 'Sprite' })).success).toBe(true);
     await editJson('objectTypes/Hero.json', o => { o.animations.items[0].frames[0].fileType = 'image/webp'; });

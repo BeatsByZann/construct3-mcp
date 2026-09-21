@@ -425,7 +425,7 @@ describe('Image pipeline (integration)', () => {
 
     await expect(stat(filePath)).resolves.toBeDefined();
     // animationName is case-preserved; only objectName is lowercased
-    expect(filePath).toContain(join('images', 'hero-Walk-000.png'));
+    expect(filePath).toContain(join('images', 'hero-walk-000.png'));
   });
 
   it('written PNG has valid signature', async () => {
@@ -446,10 +446,12 @@ describe('Image pipeline (integration)', () => {
     expect(paths).toHaveLength(3);
     const imagesDir = join(tmpDir, 'images');
     const files = await readdir(imagesDir);
-    // animationName is case-preserved
-    expect(files).toContain('player-Run-000.png');
-    expect(files).toContain('player-Run-001.png');
-    expect(files).toContain('player-Run-002.png');
+    // The whole name is lowercase, as Construct saves it. readdir reports the
+    // exact case even on Windows, whose lookups ignore it.
+    expect(files).toContain('player-run-000.png');
+    expect(files).toContain('player-run-001.png');
+    expect(files).toContain('player-run-002.png');
+    expect(files.some(f => f !== f.toLowerCase())).toBe(false);
   });
 
   it('Sprite creation round-trip: JSON has imageSpriteId + PNG exists', async () => {
