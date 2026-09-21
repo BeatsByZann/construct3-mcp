@@ -131,6 +131,7 @@ node dist/index.js /path/to/your/project.c3proj
 | `find_effect_usage` | Object types, families, layouts, layers and instances that use an effect |
 | `find_instance_variable_references` | Event references (ACE parameters, expressions, call arguments) and stored values of an instance variable |
 | `get_instance_counts` | Placed instances per object type and layout, including sub-layers and non-world instances |
+| `get_group_settings` | Every event group's active-on-start and disabled settings, optionally for one sheet |
 
 ### Mutation Tools (Safe Write Operations)
 
@@ -172,6 +173,124 @@ node dist/index.js /path/to/your/project.c3proj
 | `add_value_track` / `add_audio_track` | Add a value track or an audio track playing a registered sound or music file |
 | `add_timeline_folder` / `rename_timeline_folder` / `delete_timeline_folder` / `move_timeline_track` | Organize timeline tracks in track folders |
 | `list_eases` / `create_ease` / `update_ease` / `delete_ease` | Custom ease curves in `timelines/transitions/`, kept in step with the timelines that use them |
+
+### More Mutation Tools, by Area
+
+The table above covers the general write tools. The tools below complete the set, grouped by what they edit; [docs/API.md](docs/API.md) gives the parameters of every one.
+
+#### Events
+
+| Tool | Description |
+|------|-------------|
+| `update_event_block_action` | Replace the parameters of one action in a block, by block SID and action index |
+| `move_event_block` | Move an event to another container in the same sheet, keeping its SID and every descendant |
+| `move_events_between_sheets` | Copy or move top-level events to another sheet; a move keeps SIDs, a copy gets fresh ones |
+| `remove_event_from_sheet` | Remove an include from a sheet, by the name of the sheet it includes |
+| `add_custom_action` | Add a custom action definition owned by an object type or family |
+| `update_function` | Update a function or custom action definition; a rename rewrites every call when `renameCallers` is set |
+| `update_event_group` | Update a group in place: title, description, active on start, disabled, colors |
+| `update_event_variable` | Change an event variable declaration: name, type, initial value, flags, comment |
+| `update_comment` | Update a comment, addressed by its index in its container |
+| `update_script_event` | Replace the JavaScript of a standalone script block, or remove the block |
+
+#### Layouts, Layers and Instances
+
+| Tool | Description |
+|------|-------------|
+| `add_layer` / `delete_layer` | Add a layer, optionally as a sub-layer, or delete one (never the last) |
+| `update_layer` | Update a layer: name, visibility, parallax, blend mode, color, sampling, render settings |
+| `reorder_layers` / `move_layer` | Reorder one nesting level, or move a layer to another nesting level |
+| `update_instance` | Update a placed instance: position, size, angle, visibility and other properties |
+| `delete_instance_from_layout` | Remove a placed instance by UID |
+| `set_instance_parent` / `remove_instance_children` | Attach an instance to a hierarchy parent or detach it, or detach all of its children |
+
+#### Object Types, Families and Containers
+
+| Tool | Description |
+|------|-------------|
+| `update_instance_variable` | Rename, retype or describe an instance variable, keeping placed instances and event references in step |
+| `create_family` / `update_family` / `delete_family` | Create a family, change its members, shared variables and behaviors, or delete it |
+| `list_containers` / `create_container` / `update_container` / `delete_container` | Object containers, whose members Construct creates, picks and destroys together |
+
+#### Sprite Animations
+
+| Tool | Description |
+|------|-------------|
+| `rename_animation` / `delete_animation` | Rename an animation, renaming its frame files to match, or delete one (never the last) |
+| `add_frame_to_animation` / `delete_frame_from_animation` / `duplicate_frame` | Add a blank frame, delete a frame (never the last), or copy a frame with its image |
+| `update_frame` | Per-frame duration, size, origin, tag, image points and collision polygon |
+| `replace_sprite_image` | Replace one frame's image with PNG data |
+| `reorder_frames` / `reverse_frames` | Reorder or reverse the frames, renaming their image files to match |
+| `create_animation_folder` / `move_animation_to_folder` | Organize animations in subfolders |
+
+#### Timelines
+
+Track folders and custom eases are in the table above.
+
+| Tool | Description |
+|------|-------------|
+| `list_timelines` / `get_timeline_details` | List timelines, or read one in full |
+| `create_timeline` / `update_timeline` / `delete_timeline` | Create, update or delete a timeline |
+| `add_timeline_track` / `remove_timeline_track` | Add an instance track for a placed instance, or remove any track with its keyframes |
+| `add_property_track` / `remove_property_track` | Add or remove one property track of an instance track |
+| `set_keyframe` / `delete_keyframe` | Create, update or delete the keyframes at a time on a track |
+| `update_track` | A track's playback properties; value and audio tracks can also be renamed |
+
+#### Flowcharts
+
+| Tool | Description |
+|------|-------------|
+| `list_flowcharts` / `get_flowchart_details` | List flowcharts, or read one's nodes, outputs and connections |
+| `create_flowchart` / `delete_flowchart` | Create an empty flowchart and register it, or delete one |
+| `add_flowchart_node` / `update_flowchart_node` / `delete_flowchart_node` | Add, update or delete a node; a delete removes every reference to it |
+| `add_flowchart_output` / `update_flowchart_output` / `delete_flowchart_output` | Add, update or delete a node's output pins |
+| `reorder_flowchart_outputs` | Reorder a node's outputs, which is their execution order |
+| `connect_flowchart_nodes` / `disconnect_flowchart_nodes` | Wire an output to a node, or unwire it |
+
+#### Effects and Addons
+
+| Tool | Description |
+|------|-------------|
+| `list_effects` | The effects on an object type, family, layer or layout, and the registered effect addons |
+| `add_effect` / `update_effect` / `remove_effect` / `reorder_effects` | Attach, change, detach or reorder effects |
+| `list_addons` / `register_addon` / `unregister_addon` | The project's registered plugins, behaviors and effects; an effect must be registered before `add_effect` |
+
+#### Project Settings and Files
+
+| Tool | Description |
+|------|-------------|
+| `update_project_properties` | Any project setting, plus the first layout, viewport size, worker mode and functions name |
+| `create_data_file` | Create an Array, Dictionary, JSON or text data file and register it |
+| `set_main_script` | Mark one registered script as the main script |
+
+#### Tilemaps
+
+| Tool | Description |
+|------|-------------|
+| `get_tilemap_data` | Read a placed Tilemap's cells, including flips |
+| `set_tilemap_tiles` | Paint or erase cells, or fill a rectangle, keeping the rest |
+| `set_tilemap_data` | Replace all of a Tilemap's cells, by default resizing the instance to match |
+| `list_tilemap_brushes` / `add_tilemap_brush` / `update_tilemap_brush` / `delete_tilemap_brush` | The editor brushes stored for a Tilemap object type |
+
+#### Instance Templates
+
+| Tool | Description |
+|------|-------------|
+| `list_templates` | Every template instance and how many replicas point at it |
+| `set_instance_template` | Make an instance a template, a replica of a template, or neither |
+| `set_default_template` | Set or clear the template new instances of an object type are created from |
+
+#### Renames with Reference Rewriting
+
+Each rename rewrites the references to the name across the project, not just the name itself.
+
+| Tool | Description |
+|------|-------------|
+| `rename_object_type` | Rename an object type, with event, layout, family, container, image and file references |
+| `rename_family` | Rename a family, with event, project tree and file references |
+| `rename_layout` / `rename_event_sheet` | Rename a layout or event sheet, with every binding, include and file reference |
+| `rename_layer` | Rename a layer and the layer names written in event sheets |
+| `rename_event_variable` | Rename an event variable and every reference in its scope |
 
 ### Runtime Tools (Live Game Control)
 
@@ -388,15 +507,30 @@ construct3-mcp/
 │   │   └── zip-writer.ts           # Dependency-free .c3p archive writer
 │   ├── tools/
 │   │   ├── query.ts                # 9 query tools
-│   │   ├── analysis.ts             # 6 analysis tools
+│   │   ├── analysis.ts             # 8 analysis tools
+│   │   ├── usage-tools.ts          # 6 usage and search tools
 │   │   ├── shared.ts               # Shared validation, error helpers
-│   │   ├── event-tools.ts          # Event sheet mutation tools
+│   │   ├── mutations.ts            # Registers every mutation tool module
+│   │   ├── event-tools.ts          # 17 event sheet tools
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators
-│   │   ├── layout-tools.ts         # Layout mutation tools
-│   │   ├── object-tools.ts         # Object mutation tools
-│   │   ├── animation-tools.ts      # Animation mutation tools
-│   │   ├── project-tools.ts        # Project metadata tools
-│   │   └── runtime-tools.ts        # 12 runtime control tools
+│   │   ├── layout-tools.ts         # 14 layout, layer and instance tools
+│   │   ├── object-tools.ts         # 8 object type and family tools
+│   │   ├── container-tools.ts      # 4 container tools
+│   │   ├── animation-tools.ts      # 14 Sprite animation tools
+│   │   ├── project-tools.ts        # 5 project and addon tools
+│   │   ├── file-tools.ts           # 6 script and project file tools
+│   │   ├── effect-tools.ts         # 5 effect tools
+│   │   ├── timeline-tools.ts       # 12 timeline tools
+│   │   ├── timeline-track-tools.ts # 7 timeline track and folder tools
+│   │   ├── timeline-ease-tools.ts  # 4 custom ease tools
+│   │   ├── flowchart-tools.ts      # 13 flowchart tools
+│   │   ├── structure-tools.ts      # 6 Project Bar move and duplicate tools
+│   │   ├── replace-tools.ts        # 2 find-and-replace tools
+│   │   ├── rename-tools.ts         # 6 rename tools
+│   │   ├── template-tools.ts       # 3 instance template tools
+│   │   ├── tilemap-brush-tools.ts  # 4 tilemap brush tools
+│   │   ├── tilemap-data-tools.ts   # 3 tilemap data tools
+│   │   └── runtime-tools.ts        # 13 runtime control tools
 │   └── prompts/
 │       └── workflows.ts            # 6 workflow prompts
 ├── dist/                           # Compiled JavaScript (generated)

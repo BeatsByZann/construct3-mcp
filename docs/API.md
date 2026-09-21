@@ -13,7 +13,8 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Flowchart Tools](#flowchart-tools)
 - [Structure Tools](#structure-tools)
 - [Rename Tools](#rename-tools)
-- [Template and Tilemap Brush Tools](#template-and-tilemap-brush-tools)
+- [Template and Tilemap Tools](#template-and-tilemap-tools)
+- [Runtime Bridge and Packaging Tools](#runtime-bridge-and-packaging-tools)
 - [Runtime Connection Tools](#runtime-connection-tools)
 - [Prompts](#prompts)
 - [Error Handling](#error-handling)
@@ -200,6 +201,16 @@ The orphan-file scan covers objectTypes, eventSheets, layouts, and families recu
 
 A registered file that does not exist on disk is a `file-existence` error; a file that exists but exceeds the read cap is an `unscanned-file` warning, not an error.
 
+### `get_group_settings`
+
+List the settings of every event group across the project's event sheets: whether it is active on start and whether it is disabled. Read-only; useful for checking a migration.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `eventsheet` | string | No | Only report groups in this event sheet |
+| `activeOnly` | boolean | No | Only groups with `isActiveOnStart` true |
+| `inactiveOnly` | boolean | No | Only groups with `isActiveOnStart` false |
+
 ### Usage queries
 
 All read-only.
@@ -268,6 +279,25 @@ Update an existing object's instance variables and behaviors.
 - `description` sets C3's `desc` field and `showInPropertiesBar` sets `show` (defaults `""` and `true`). `update_family`'s `addVariables` accepts the same two options
 - There is no `initialValue` parameter: a C3 instance-variable definition has no default-value field. A placed instance's starting value lives in that instance's own `instanceVariables` dict, set with `add_instance_to_layout` / `update_instance`
 - To rename, retype or re-describe an existing variable, use `update_instance_variable`
+
+### `create_family`
+
+Create a family. A family groups object types of one plugin so they can share instance variables and behaviors.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Family name; must be unique |
+| `pluginId` | string | Yes | Plugin every member must use, for example `Sprite` or `Text` |
+| `members` | string[] | No | Object types to add as initial members (default: none) |
+| `subfolder` | string | No | Project Bar subfolder path, for example `UI` |
+
+### `delete_family`
+
+Delete a family from the project.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Family to delete |
 
 ### `update_family`
 
@@ -536,6 +566,15 @@ Delete an event from an event sheet by SID or include name.
 - **Function safety**: Blocks deletion of function-blocks that have callers (unless `force=true`).
 - Error messages include a navigable summary of top-level events with their types and SIDs.
 
+### `remove_event_from_sheet`
+
+Remove an include from an event sheet, named by the sheet it includes. Other event types are removed by SID with `delete_event_from_sheet`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet to modify |
+| `includeSheet` | string | Yes | Name of the included sheet whose include is removed |
+
 ### `move_event_block_items`
 
 Move or reorder existing actions or conditions within one block or between two blocks. Existing SIDs are preserved. With `copy: true` the source block is left unchanged and the selected items are inserted as copies with fresh SIDs (nested `sid` keys included).
@@ -590,6 +629,17 @@ At least one update parameter must be provided.
 - A block written by an older build with an `isElse` key or condition-level `isOr` is rewritten to the r495 shape, with a warning
 - Warns when all conditions are removed from a block (it becomes unconditional), and when an OR block has fewer than two conditions
 
+### `update_event_block_action`
+
+Replace the parameters of one action inside an existing block. The block is named by SID and the action by its 0-based index; `get_eventsheet_details` shows both.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet holding the block |
+| `blockSid` | integer | Yes | SID of the block that contains the action |
+| `actionIndex` | integer | Yes | 0-based index of the action in the block |
+| `parameters` | object | Yes | New parameter values; they replace the action's parameters entirely (max 100 keys, depth 6) |
+
 ### `add_custom_action`
 
 Add a custom action definition — the `custom-ace-block` event Construct writes for an object type's or family's custom action.
@@ -640,6 +690,23 @@ Use at most one destination locator. Without a locator the event moves to the ev
 - A move within one container is correct for `before`/`after`: the sibling's index is read after the event has been detached.
 - A destination container with no `children` array gets one only after every check has passed.
 - Cross-sheet moves are **not** supported here; use `move_events_between_sheets`, which copies or moves top-level events between two sheets.
+
+### `move_events_between_sheets`
+
+Copy or move top-level events from one event sheet to another, by SID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sourceSheet` | string | Yes | Sheet to take the events from |
+| `targetSheet` | string | Yes | Sheet to put them in |
+| `sids` | integer[] | Yes | SIDs of the top-level events |
+| `deleteSource` | boolean | No | `true` moves the events, removing them from the source (default: `false`, a copy) |
+| `targetGroupPath` | string | No | Insert inside a group of the target sheet, by title path such as `Movement > Collision` |
+| `position` | enum | No | `start` or `end` of the target sheet or group (default: `end`) |
+
+**Notes:**
+- A move keeps every SID and every nested child. A copy gets fresh SIDs throughout, because a SID must be unique in the project.
+- To move an event within one sheet, use `move_event_block`.
 
 ### `update_event_group`
 
@@ -733,6 +800,24 @@ At least one update parameter must be provided, unless `dryRun` is set.
 - A new `functionName` is validated as a C3 identifier and rejected if another function in the project already uses it.
 - Renaming, adding, removing and renaming parameters are all preflighted before anything is written, so a rejected call leaves every file untouched.
 
+### `update_event_variable`
+
+Change an existing event variable declaration: its name, type, initial value, flags or comment.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet that declares the variable |
+| `sid` | integer | Yes | SID of the variable declaration |
+| `newName` | string | No | New variable name |
+| `newType` | enum | No | `number`, `string`, or `boolean` |
+| `newInitialValue` | string | No | New initial value, written as a string (`"0"`, `"false"` or `""` for the defaults) |
+| `isStatic` | boolean | No | Static: the value persists between calls |
+| `isConstant` | boolean | No | Constant: the value cannot change at runtime |
+| `comment` | string | No | New declaration comment |
+
+**Notes:**
+- A rename changes the declaration only. To rewrite every reference as well, use `rename_event_variable`.
+
 ### `create_layout`
 
 Create a new layout.
@@ -776,6 +861,15 @@ Place an object instance on a layout layer. For copying instances between layout
 - Auto-fills default instance properties for Sprite, Text, TiledBg, NinePatch
 - Warns on unknown instanceVariable or behavior keys (may be inherited from families)
 - All visual and behavioral properties are preserved when specified
+
+### `delete_instance_from_layout`
+
+Remove one placed instance from a layout, by UID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout holding the instance |
+| `uid` | integer | Yes | UID of the instance to remove |
 
 ### `delete_layout`
 
@@ -867,6 +961,16 @@ Add a layer to a layout, at the top level or inside another layer's `subLayers`.
 **Notes:**
 - The parent layer is found at any nesting level; a parent with no `subLayers` array gets one.
 - Layer names must be unique across the whole layout, so a name already used by a nested layer is rejected.
+
+### `delete_layer`
+
+Delete a layer from a layout. The last layer of a layout cannot be deleted.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `layerName` | string | Yes | Layer to delete |
+| `force` | boolean | No | Delete even when the layer holds instances, which are lost with it (default: `false`) |
 
 ### `update_layer`
 
@@ -990,6 +1094,42 @@ At least one parameter must be provided.
 - Top-level keys (`name`, `firstLayout`, `viewportWidth`, `viewportHeight`, `useWorker`, `functionsName`) cannot be smuggled through `properties`; use the parameters above, or `update_project_metadata` for `name`.
 - `name`, `version`, `author` and `description` remain available through `update_project_metadata`, which is unchanged.
 
+### `list_addons`
+
+List the addons registered in the project's `usedAddons`: plugins, behaviors and effects.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `type` | enum | No | `plugin`, `behavior`, `effect`, or `all` (default: `all`) |
+
+### `register_addon`
+
+Add an addon to the project's `usedAddons` list.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `type` | enum | Yes | `plugin`, `behavior`, or `effect` |
+| `id` | string | Yes | Addon ID, for example `Sprite`, `Tween` or `hsladjust` |
+| `name` | string | Yes | Display name |
+| `author` | string | No | Addon author (default: `Scirra`) |
+| `bundled` | boolean | No | Whether the addon is bundled with Construct (default: `false`) |
+
+**Notes:**
+- Effects are never registered automatically, so register an effect before `add_effect` uses it.
+
+### `unregister_addon`
+
+Remove an addon from the project's `usedAddons` list.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `type` | enum | Yes | `plugin`, `behavior`, or `effect` |
+| `id` | string | Yes | Addon ID to remove |
+| `force` | boolean | No | Required to remove a known built-in addon (default: `false`) |
+
+**Notes:**
+- Removing an addon the project still uses makes Construct fail to load the project.
+
 ### `add_animation_to_sprite`
 
 Add a new animation to a Sprite object.
@@ -1025,6 +1165,51 @@ Update properties of an existing animation on a Sprite object.
 | `repeatCount` | number | No | New repeat count |
 
 At least one property must be provided.
+
+### `delete_animation`
+
+Delete an animation from a Sprite. The last animation of a Sprite cannot be deleted.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object type |
+| `animationName` | string | Yes | Animation to delete |
+
+### `rename_animation`
+
+Rename a Sprite animation, renaming its frame image files to match.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object type |
+| `animationName` | string | Yes | Current animation name |
+| `newName` | string | Yes | New animation name |
+
+**Notes:**
+- Construct names a frame file after its object and animation, so the files move with the name; otherwise `validate_project` would report every frame missing.
+
+### `add_frame_to_animation`
+
+Add a blank frame to a Sprite animation.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object type |
+| `animationName` | string | Yes | Animation name |
+| `index` | integer | No | Insert at this frame index (default: append) |
+| `width` | integer | No | Frame width in pixels (default: the first frame's) |
+| `height` | integer | No | Frame height in pixels (default: the first frame's) |
+| `duration` | number | No | Frame duration (default: `1`) |
+
+### `delete_frame_from_animation`
+
+Delete one frame of a Sprite animation, by index. The last frame cannot be deleted.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object type |
+| `animationName` | string | Yes | Animation name |
+| `frameIndex` | integer | Yes | 0-based index of the frame to delete |
 
 ### `update_frame`
 
@@ -1062,6 +1247,22 @@ At least one updatable property must be provided.
   frame, so its length must be even and at least 6 (three points). Values
   outside 0-1 are accepted with a warning, because a polygon point may sit
   beyond the frame edge.
+
+### `replace_sprite_image`
+
+Replace the image of one Sprite animation frame with PNG data.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object type |
+| `animationName` | string | Yes | Animation name |
+| `frameIndex` | integer | Yes | 0-based frame index |
+| `pngBase64` | string | Yes | The PNG, base64-encoded |
+| `width` | integer | No | Image width in pixels; updates the frame's metadata when given |
+| `height` | integer | No | Image height in pixels; updates the frame's metadata when given |
+
+**Notes:**
+- Images of other object kinds are replaced with `replace_object_image`.
 
 ### `replace_object_image`
 
@@ -2325,7 +2526,7 @@ Construct resolves the local first inside its container.
 
 ---
 
-## Template and Tilemap Brush Tools
+## Template and Tilemap Tools
 
 ### Instance templates
 
@@ -2448,6 +2649,113 @@ Creates the brush file when it does not exist yet.
 | `name` | string | Yes | Brush name to delete |
 
 Removing the last brush leaves the file as an empty array.
+
+### Tilemap data
+
+The painted cells of a placed Tilemap instance. Each cell value is `null` for an empty cell, a tile index, or `{ tile, flipX, flipY, flipDiagonal }`. Editor rotations: 90 is `flipY` plus `flipDiagonal`, 180 is `flipX` plus `flipY`, 270 is `flipX` plus `flipDiagonal`.
+
+#### `get_tilemap_data`
+
+Read a placed Tilemap instance's cells as `rows[y][x]`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout holding the instance |
+| `uid` | integer | Yes | UID of the Tilemap instance |
+| `region` | object | No | `{ x, y, width, height }` cell rectangle to return; required when the tilemap has more than 10000 cells |
+
+#### `set_tilemap_tiles`
+
+Paint or erase individual cells, or fill a rectangle. Cells not named keep their value.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout holding the instance |
+| `uid` | integer | Yes | UID of the Tilemap instance |
+| `tiles` | object[] | No | `{ x, y, value }` cells to set, applied in order (at most 250000) |
+| `fill` | object | No | `{ x, y, width, height, value }` rectangle filled before `tiles` is applied |
+
+**Notes:**
+- A `value` of `null` erases the cell.
+
+#### `set_tilemap_data`
+
+Replace all of a placed Tilemap instance's cells.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout holding the instance |
+| `uid` | integer | Yes | UID of the Tilemap instance |
+| `rows` | array[] | Yes | `rows[y][x]` cell values; every row the same length |
+| `resizeInstance` | boolean | No | Resize the instance to columns times tile width and rows times tile height (default: `true`) |
+
+**Notes:**
+- The grid takes the size of `rows`.
+
+---
+
+## Runtime Bridge and Packaging Tools
+
+These prepare a project for a live run: they inject or remove the runtime bridge script that exposes the running game as `globalThis.__c3bridge`, and copy or pack the project. The connection tools in the next section drive the running game.
+
+### `inject_runtime_bridge`
+
+Add the runtime bridge script to the project. It runs on startup through `runOnStartup()` and processes bridge commands every tick, so external tools such as Playwright, a browser console or curl can control the running game.
+
+No parameters.
+
+### `remove_runtime_bridge`
+
+Remove the runtime bridge script from the project, after testing.
+
+No parameters.
+
+### `get_bridge_commands`
+
+List the commands the runtime bridge supports, which is what `call_bridge` accepts.
+
+No parameters.
+
+### `generate_bridge_eval_script`
+
+Generate a shell command, using curl or Python, that runs one bridge command in the running game over the browser's remote debugging protocol.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | string | Yes | Bridge command, for example `callFunction`, `getGlobalVar` or `getObjectState` |
+| `args` | object | No | Command arguments (max 100 keys, depth 6) |
+
+### `export_for_preview`
+
+Prepare the project for a preview test: inject the runtime bridge and set worker mode to `dom`, which `globalThis` access needs. Returns what is needed to serve and open the project.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `injectBridge` | boolean | No | Inject the runtime bridge (default: `true`) |
+
+**Notes:**
+- This writes to the project. Pass `injectBridge: false` when the project should stay as it is.
+
+### `clone_project`
+
+Copy the project to a new directory, for example to test on a copy.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `targetDir` | string | Yes | Directory to copy the project into |
+| `includeBridge` | boolean | No | Include the runtime bridge in the copy (default: `true`) |
+
+### `pack_project`
+
+Pack the project folder into a `.c3p` archive that the Construct editor opens directly.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `outputPath` | string | Yes | Path of the `.c3p` to write |
+| `injectBridge` | boolean | No | Inject the runtime bridge before packing (default: `true`) |
+
+**Notes:**
+- With the default, packing also injects the bridge into the source project. Pass `injectBridge: false` for a package that is only inspected or load-checked.
 
 ---
 
