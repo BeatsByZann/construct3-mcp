@@ -428,7 +428,7 @@ describe('image-bearing plugins and the plugin tables (W97, W98)', () => {
     const frame = obj.animations.items[0].frames[0];
     expect(typeof frame.imageSpriteId).toBe('number');
     expect(frame.collisionPoly).toBeUndefined();
-    expect(await readFile(join(tmpDir, 'images', 'block-Animation 1-000.png'))).toBeTruthy();
+    expect(await readFile(join(tmpDir, 'images', 'block-animation 1-000.png'))).toBeTruthy();
   });
 
   it('keeps a tilemap tile-collision-polys key, empty, and last', async () => {

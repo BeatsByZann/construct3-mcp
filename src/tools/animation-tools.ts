@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { readFile, copyFile, rename, stat, unlink } from 'fs/promises';
+import { basename } from 'path';
 import type { MutationToolDeps } from './shared.js';
 import type {
   WriteResult,
@@ -292,6 +293,59 @@ async function duplicateFrameImage(
   }
 }
 
+/**
+ * Move an animation's frame image files from the old animation name to the new
+ * one, so images/<object>-<animation>-NNN.png follows a rename.
+ *
+ * C3 finds a frame's image by the animation name baked into the file name, so
+ * renaming the animation in the JSON alone leaves every frame without an
+ * image. The old and new names never share a file, except when they differ
+ * only in case: both then map to the same lowercase file and nothing moves.
+ *
+ * A frame whose old file is missing is skipped, as the other frame tools do.
+ * When its new file is already there, that file is adopted, which is how a
+ * rename stranded by an earlier version is undone by renaming back. A frame
+ * that has both an old file and a new one is refused before anything moves,
+ * because moving would overwrite a file this tool did not write.
+ *
+ * @returns the number of image files moved and a journal that undoes them.
+ */
+async function renameAnimationFrameImages(
+  projectDir: string,
+  objectName: string,
+  oldName: string,
+  newName: string,
+  frameCount: number,
+): Promise<{ moved: number; journal: FileMoveJournal }> {
+  const journal = new FileMoveJournal();
+  if (frameCount === 0) return { moved: 0, journal };
+  if (frameImagePath(projectDir, objectName, oldName, 0) === frameImagePath(projectDir, objectName, newName, 0)) {
+    return { moved: 0, journal };
+  }
+
+  const moves: Array<{ from: string; to: string }> = [];
+  for (let index = 0; index < frameCount; index++) {
+    const from = frameImagePath(projectDir, objectName, oldName, index);
+    const to = frameImagePath(projectDir, objectName, newName, index);
+    if (!(await pathExists(from))) continue;
+    if (await pathExists(to)) {
+      throw new Error(
+        `Frame ${index} already has an image file for "${newName}" (images/${basename(to)}) as well as its own ` +
+        `(images/${basename(from)}). Renaming would overwrite it; move or delete one of them first.`
+      );
+    }
+    moves.push({ from, to });
+  }
+
+  try {
+    for (const step of moves) await journal.move(step.from, step.to);
+    return { moved: moves.length, journal };
+  } catch (error) {
+    await journal.undo();
+    throw error;
+  }
+}
+
 /** An image point as accepted by update_frame; ranges are checked in the handler. */
 const imagePointSchema = z.object({
   name: z.string().min(1).max(200).describe('Image point name'),
@@ -558,7 +612,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
 
   server.tool(
     'rename_animation',
-    'Rename an animation on a Sprite object',
+    'Rename an animation on a Sprite object, renaming its frame image files to match',
     {
       objectName: z.string().max(200).describe('Sprite object name'),
       animationName: z.string().min(1).max(200).describe('Current animation name'),
@@ -591,20 +645,41 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         if (animItems.some(a => a.name === args.newName)) {
           return toolError(`Animation "${args.newName}" already exists on "${args.objectName}".`);
         }
+        // Frame files are named in lowercase, so two animations whose names
+        // differ only in case would share every frame file.
+        const clash = animItems.find(a => a !== anim && a.name.toLowerCase() === args.newName.toLowerCase());
+        if (clash) {
+          return toolError(
+            `Animation "${clash.name}" on "${args.objectName}" differs from "${args.newName}" only in case, ` +
+            'and their frame image files would share names. Choose another name.'
+          );
+        }
 
-        anim.name = args.newName;
+        const frameCount = Array.isArray(anim.frames) ? anim.frames.length : 0;
+        const { moved, journal } = await renameAnimationFrameImages(
+          reader.getProjectDir(), args.objectName, args.animationName, args.newName, frameCount,
+        );
+        try {
+          anim.name = args.newName;
 
-        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
-        const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+          const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+          const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
 
-        const result: WriteResult = {
-          success: true,
-          entity: args.objectName,
-          category: 'object',
-          action: 'updated',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
+          const result: WriteResult = {
+            success: true,
+            entity: args.objectName,
+            category: 'object',
+            action: 'updated',
+            backupFile: backupPath,
+            warnings: [moved === 0
+              ? `No frame image files needed renaming under images/ for "${args.animationName}", so only the animation name changed.`
+              : `Renamed ${moved} frame image file(s) under images/ to follow the new animation name.`],
+          };
+          return toolResult(result);
+        } catch (error) {
+          await journal.undo();
+          throw error;
+        }
       } catch (error) {
         console.error('[rename_animation] failed:', error);
         return toolError(`Error renaming animation: ${error instanceof Error ? error.message : String(error)}`);

@@ -670,7 +670,7 @@ describe('Behavior workflow (integration)', () => {
     expect(animations.items[0].name).toBe('Animation 1');
 
     // Verify PNG still exists
-    const pngPath = join(tmpDir, 'images', 'hero-Animation 1-000.png');
+    const pngPath = join(tmpDir, 'images', 'hero-animation 1-000.png');
     await expect(stat(pngPath)).resolves.toBeDefined();
   });
 });

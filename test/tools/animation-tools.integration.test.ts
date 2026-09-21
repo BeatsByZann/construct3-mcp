@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
@@ -16,8 +16,9 @@ function resultOf(value: { content: Array<{ text: string }>; isError?: boolean }
   return JSON.parse(value.content[0].text) as Record<string, unknown>;
 }
 
+/** Construct saves frame files under an all-lowercase name, the animation part included. */
 function imageName(frameIndex: number): string {
-  return `sprite-${ANIMATION}-${String(frameIndex).padStart(3, '0')}.png`;
+  return `sprite-${ANIMATION.toLowerCase()}-${String(frameIndex).padStart(3, '0')}.png`;
 }
 
 /** Width and height from a PNG's IHDR chunk, which always starts at byte 16. */
@@ -90,7 +91,8 @@ describe('animation frame tools against a real project on disk', () => {
     // No temporary parking files may survive a successful reorder.
     const images = await readdir(join(projectDir, 'images'));
     expect(images.filter(name => name.includes('reorder-tmp'))).toHaveLength(0);
-    expect(images.filter(name => name.endsWith('.png'))).toHaveLength(3);
+    // Exact names: readdir reports the case even where lookups ignore it.
+    expect(images.filter(name => name.endsWith('.png')).sort()).toEqual([0, 1, 2].map(imageName));
   });
 
   it('reverse_frames reverses both the frame JSON and the image files', async () => {
@@ -287,9 +289,80 @@ describe('animation frame tools against a real project on disk', () => {
     expect(walk.frames.map((f: any) => [f.width, f.height])).toEqual([[64, 24], [64, 24]]);
 
     for (const index of [0, 1]) {
-      const name = `sprite-Walk-${String(index).padStart(3, '0')}.png`;
+      const name = `sprite-walk-${String(index).padStart(3, '0')}.png`;
       const png = await readFile(join(projectDir, 'images', name));
       expect(pngSize(png)).toEqual({ width: 64, height: 24 });
     }
+  });
+
+  // rename_animation moves the frame files (W127).
+
+  async function pngNames(): Promise<string[]> {
+    return (await readdir(join(projectDir, 'images'))).filter(name => name.endsWith('.png')).sort();
+  }
+
+  async function animationNames(): Promise<string[]> {
+    const obj = JSON.parse(await readFile(join(projectDir, 'objectTypes', 'Sprite.json'), 'utf8')) as any;
+    return obj.animations.items.map((a: any) => a.name);
+  }
+
+  it('rename_animation moves every frame image file to the new animation name', async () => {
+    const result = resultOf(await server.callTool('rename_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, newName: 'Run',
+    }));
+    expect((result.warnings as string[])[0]).toContain('Renamed 3 frame image file(s)');
+    expect(await animationNames()).toEqual(['Run']);
+    expect(await pngNames()).toEqual(['sprite-run-000.png', 'sprite-run-001.png', 'sprite-run-002.png']);
+    for (const index of [0, 1, 2]) {
+      expect(await readFile(join(projectDir, 'images', `sprite-run-00${index}.png`), 'utf8')).toBe(`image-${index}`);
+    }
+  });
+
+  it('rename_animation moves nothing when the names differ only in case', async () => {
+    const before = await pngNames();
+    const result = resultOf(await server.callTool('rename_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, newName: 'ANIMATION 1',
+    }));
+    expect((result.warnings as string[])[0]).toContain('No frame image files needed renaming');
+    expect(await animationNames()).toEqual(['ANIMATION 1']);
+    expect(await pngNames()).toEqual(before);
+  });
+
+  it('rename_animation refuses a name another animation has in a different case', async () => {
+    resultOf(await server.callTool('add_animation_to_sprite', { objectName: 'Sprite', animationName: 'Walk' }));
+    const before = await pngNames();
+    const r = await server.callTool('rename_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, newName: 'walk',
+    });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('only in case');
+    expect(await animationNames()).toEqual([ANIMATION, 'Walk']);
+    expect(await pngNames()).toEqual(before);
+  });
+
+  it('rename_animation refuses, and moves nothing, when a file for the new name is already there', async () => {
+    await writeFile(join(projectDir, 'images', 'sprite-run-001.png'), 'stray', 'utf8');
+    const r = await server.callTool('rename_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, newName: 'Run',
+    });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('would overwrite');
+    expect(await animationNames()).toEqual([ANIMATION]);
+    expect(await pngNames()).toEqual([imageName(0), imageName(1), imageName(2), 'sprite-run-001.png'].sort());
+    expect(await readFile(join(projectDir, 'images', 'sprite-run-001.png'), 'utf8')).toBe('stray');
+  });
+
+  it('rename_animation adopts frame files an earlier version left under the new name', async () => {
+    // An earlier rename_animation renamed "Run" to "Animation 1" in the JSON
+    // and left the files under "run", which renaming back should repair.
+    for (const index of [0, 1, 2]) {
+      await rename(join(projectDir, 'images', imageName(index)), join(projectDir, 'images', `sprite-run-00${index}.png`));
+    }
+    const result = resultOf(await server.callTool('rename_animation', {
+      objectName: 'Sprite', animationName: ANIMATION, newName: 'Run',
+    }));
+    expect((result.warnings as string[])[0]).toContain('No frame image files needed renaming');
+    expect(await animationNames()).toEqual(['Run']);
+    expect(await pngNames()).toEqual(['sprite-run-000.png', 'sprite-run-001.png', 'sprite-run-002.png']);
   });
 });
