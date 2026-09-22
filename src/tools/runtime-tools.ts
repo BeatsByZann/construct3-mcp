@@ -16,11 +16,12 @@ import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
 import { Construct3ProjectWriter as ProjectWriter } from '../construct3/project-writer.js';
 import { IdGenerator } from '../construct3/id-generator.js';
 import { generateBridgeScript, getBridgeScriptPath } from '../runtime/bridge.js';
-import { writeFile, mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { join, dirname, relative } from 'node:path';
 import { existsSync } from 'node:fs';
 import { toolResult, toolError, boundedRecord } from './shared.js';
 import { writeZip } from '../runtime/zip-writer.js';
+import { collectProjectFiles } from '../runtime/project-files.js';
 import { RuntimeConnectionManager } from '../runtime/cdp-client.js';
 import type { RuntimeCondition, SimulatedInputAction } from '../runtime/cdp-client.js';
 
@@ -672,7 +673,7 @@ print(json.dumps({
         }
 
         // Collect all project files
-        const files = await collectFiles(projectDir);
+        const files = await collectProjectFiles(projectDir);
 
         // Build the zip using Node.js built-in zlib
         // .c3p format is a standard zip file
@@ -702,37 +703,6 @@ print(json.dumps({
 
 
 // ── File helpers ──────────────────────────────────────────
-
-/** Directories to skip when packing a C3 project. */
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.bak', '__MACOSX']);
-const SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db']);
-
-/**
- * Recursively collect all files in a directory, returning paths relative
- * to the root. Skips .git, node_modules, backups, and OS junk.
- */
-async function collectFiles(rootDir: string, subDir = ''): Promise<string[]> {
-  const results: string[] = [];
-  const fullDir = subDir ? join(rootDir, subDir) : rootDir;
-  const entries = await readdir(fullDir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (SKIP_FILES.has(entry.name)) continue;
-    const relPath = subDir ? `${subDir}/${entry.name}` : entry.name;
-
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      const subFiles = await collectFiles(rootDir, relPath);
-      results.push(...subFiles);
-    } else if (entry.isFile()) {
-      // Skip .bak files from the writer's backup system
-      if (entry.name.endsWith('.bak')) continue;
-      results.push(relPath);
-    }
-  }
-
-  return results;
-}
 
 /**
  * Build a .c3p (ZIP) file from a project directory.

@@ -13,7 +13,7 @@
 ## This is a fork
 
 This branch is a fork of [liauw-media/construct3-mcp](https://github.com/liauw-media/construct3-mcp)
-and has diverged from it: **173 MCP tools instead of upstream's 66**, with 107 added and none
+and has diverged from it: **175 MCP tools instead of upstream's 66**, with 109 added and none
 removed or renamed. It adds whole areas upstream does not cover (flowcharts, timeline tracks and
 keyframes, custom eases, tilemap data and brushes, effects, containers, templates, renames with
 reference rewriting, find and replace, Project Bar moves and duplicates, script and project file
@@ -27,7 +27,7 @@ how this relates to upstream.** Read it before filing an issue, and note which b
 | Branch | What it is |
 |---|---|
 | `main` | Close to upstream on purpose. It is the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), so it carries only those correctness fixes. Upstream's 66 tools. |
-| `claude/w84-editor-gap` | The diverged line described in this README. All 173 tools. |
+| `claude/w84-editor-gap` | The diverged line described in this README. All 175 tools. |
 
 Everything below this notice describes `claude/w84-editor-gap`.
 
@@ -42,7 +42,7 @@ npm install
 # Build the server
 npm run build
 
-# Test with your project
+# Test with your project (a folder project, or a single-file .c3p)
 node dist/index.js /path/to/your/project.c3proj
 ```
 
@@ -113,6 +113,13 @@ node dist/index.js /path/to/your/project.c3proj
 | `get_layout_details` | Get detailed info about a layout |
 | `search_objects` | Search objects by name pattern |
 | `get_project_summary` | Get comprehensive project summary |
+
+### Project Session Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_open_project` | Report the project the server serves: name, `.c3proj` path, and for a `.c3p` the archive and its working folder |
+| `open_project` | Switch to another project folder, `.c3proj` or `.c3p` while the server runs; see [Single-file (.c3p) projects](#single-file-c3p-projects) |
 
 ### Analysis Tools
 
@@ -369,7 +376,7 @@ Detailed documentation is available in the `/docs` folder:
 
 - **Node.js** >= 18.0.0
 - **npm** or **yarn**
-- A Construct 3 project saved in **folder format** (.c3proj, not .c3p)
+- A Construct 3 project saved in **folder format** (.c3proj) or as a **single file** (.c3p); see [Single-file (.c3p) projects](#single-file-c3p-projects)
 
 ### Install Dependencies
 
@@ -449,7 +456,39 @@ node /path/to/construct3-mcp/dist/index.js
 # Or pass explicit path
 node dist/index.js /path/to/project.c3proj
 node dist/index.js /path/to/project-folder
+node dist/index.js /path/to/game.c3p
 ```
+
+### Single-file (.c3p) projects
+
+Pass a `.c3p` file instead of a project folder:
+
+```bash
+node dist/index.js /path/to/game.c3p
+```
+
+Or, from a running server whatever it started on, call `open_project` with the `.c3p` path (or any
+other project folder or `.c3proj`). The switch waits for other tool calls to finish and holds new
+ones until it is done; a `.c3p` being left is written back first. If the new project cannot be
+opened, the server keeps the one it had. `get_open_project` reports which project is served.
+
+The server unpacks the archive into a private working folder under the system temp folder and
+loads that. After every tool call that changed a file, it writes the archive back: the new
+archive is built in memory, read back as a check, written beside the original and renamed over
+it, and the tool result ends with a line saying so. The first write of a session keeps the
+archive as it was opened in `game.c3p.bak`. Files that did not change are not compressed again,
+so later writes are fast even on a large project (about 0.2 s for 2,286 files).
+
+The archive is never overwritten with content it no longer matches. If something else, usually
+Construct saving the project, changed the `.c3p` after the server opened it, the write is
+refused, the tool result says so, and this session's changes stay in the working folder, whose
+path the result names. Restart the server to load the archive as it is now. Close the project
+in Construct, or at least do not save it there, while the server writes to it. The working
+folder is deleted when the server exits, unless it holds changes the archive does not.
+
+Tool results and backups name paths inside the working folder, not the archive. Archives
+Construct saves are ZIP64 with backslash paths; the server reads both, and writes plain zip
+with forward slashes and DEFLATE, which Construct r495.2 opens.
 
 ### Example Queries
 
@@ -488,6 +527,8 @@ construct3-mcp/
 ├── src/
 │   ├── index.ts                    # Main MCP server entry point
 │   ├── construct3/
+│   │   ├── c3p-project.ts          # Serve a .c3p through a working folder, written back after each change
+│   │   ├── project-session.ts      # The served project, and switching it at runtime
 │   │   ├── project-reader.ts       # Project file parser and cache
 │   │   ├── project-writer.ts       # Safe write operations with backup
 │   │   ├── id-generator.ts         # SID/UID generation with collision avoidance
@@ -510,11 +551,14 @@ construct3-mcp/
 │   ├── runtime/
 │   │   ├── bridge.ts               # Injectable C3 runtime bridge script generator
 │   │   ├── cdp-client.ts           # Persistent CDP connections and bridge calls
+│   │   ├── project-files.ts        # The files a folder project packs into a .c3p
+│   │   ├── zip-reader.ts           # Dependency-free .c3p archive reader (ZIP64, DEFLATE)
 │   │   └── zip-writer.ts           # Dependency-free .c3p archive writer
 │   ├── tools/
 │   │   ├── query.ts                # 9 query tools
 │   │   ├── analysis.ts             # 8 analysis tools
 │   │   ├── usage-tools.ts          # 6 usage and search tools
+│   │   ├── session-tools.ts        # 2 project session tools
 │   │   ├── shared.ts               # Shared validation, error helpers
 │   │   ├── mutations.ts            # Registers every mutation tool module
 │   │   ├── event-tools.ts          # 17 event sheet tools
@@ -635,14 +679,14 @@ We welcome contributions! Here's how to get started:
 - [x] Mouse, touch, keyboard, and text input simulation over CDP
 
 ### Phase 7: Advanced Features
-- [ ] Support for .c3p (zipped) projects
+- [x] Support for .c3p (zipped) projects: pass a `.c3p` path; see [Single-file (.c3p) projects](#single-file-c3p-projects)
 - [x] Rename with reference updates (dry-run preview): the six `rename_*` tools
 - [x] Bulk operations: the four bulk instance tools, plus the many-item edits of the event, object, tilemap and timeline tools
 - [ ] Plugin development assistance
 
 ## Known Limitations
 
-- **Folder Format Only**: Works with .c3proj folder projects, not .c3p ZIP files
+- **One Writer at a Time for a .c3p**: The server writes a `.c3p` back after each change and refuses to overwrite one Construct saved in the meantime. Do not edit the same archive in Construct and through the server at once.
 - **Runtime Browser Must Expose CDP**: Start Chrome or another compatible browser with a remote debugging port, then use `connect_to_game`. Browser launch and preview hosting are not yet built in.
 - **ACE validation covers built-in addons only**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a problem is a warning, not a refusal. Third-party addons, expressions inside parameter values, and parameter values other than combo choices are not checked ([details](docs/API.md#ace-validation))
 

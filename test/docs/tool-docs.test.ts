@@ -16,6 +16,8 @@ import { registerAnalysisTools } from '../../src/tools/analysis.js';
 import { registerUsageTools } from '../../src/tools/usage-tools.js';
 import { registerMutationTools } from '../../src/tools/mutations.js';
 import { registerRuntimeTools } from '../../src/tools/runtime-tools.js';
+import { registerSessionTools } from '../../src/tools/session-tools.js';
+import { ProjectSession } from '../../src/construct3/project-session.js';
 import { MockServer } from '../mocks/mock-server.js';
 
 const ROOT = join(__dirname, '..', '..');
@@ -75,6 +77,7 @@ describe('tool documentation matches the registered tools', () => {
     registerUsageTools(server as any, reader);
     registerMutationTools(server as any, reader, writer, idGen);
     runtime = registerRuntimeTools({ server: server as any, reader, writer });
+    registerSessionTools(server as any, await ProjectSession.start(reader.getProjectPath()), idGen);
     registered = sorted(server.getToolNames());
   });
 
@@ -86,7 +89,7 @@ describe('tool documentation matches the registered tools', () => {
     expect(registered.length).toBeGreaterThan(0);
     expect(new Set(registered).size).toBe(registered.length);
     const index = read('src/index.ts');
-    for (const fn of ['registerQueryTools', 'registerAnalysisTools', 'registerUsageTools', 'registerMutationTools', 'registerRuntimeTools']) {
+    for (const fn of ['registerQueryTools', 'registerAnalysisTools', 'registerUsageTools', 'registerMutationTools', 'registerRuntimeTools', 'registerSessionTools']) {
       expect(index, `index.ts no longer calls ${fn}; update this test's registration list`).toContain(`${fn}(`);
     }
   });

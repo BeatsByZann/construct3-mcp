@@ -6,6 +6,7 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 
 - [Resources](#resources)
 - [Query Tools](#query-tools)
+- [Project Session Tools](#project-session-tools)
 - [Analysis Tools](#analysis-tools)
 - [Mutation Tools](#mutation-tools)
 - [Timeline Tools](#timeline-tools)
@@ -126,6 +127,32 @@ Search objects by name pattern (case-insensitive substring match).
 ### `get_project_summary`
 
 Comprehensive project overview including metadata, statistics, addon counts, and entity lists. No parameters.
+
+---
+
+## Project Session Tools
+
+The server starts on the project its command line names. These tools report it and switch to another one while the server runs.
+
+### `get_open_project`
+
+Report the served project. No parameters. Returns `name`, `projectFile` (the `.c3proj` path), `format` (`folder` or `c3p`) and, for a `.c3p`, `archivePath` and `workDir`, the working folder the archive is served through.
+
+### `open_project`
+
+Switch to another project.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | Yes | Absolute path of a project folder, a `.c3proj` file, or a `.c3p` file |
+
+**Behavior:**
+- Waits until no other tool call is running, and holds calls that arrive meanwhile until the switch is done; they then run on the new project.
+- A `.c3p` is unpacked into a new working folder and written back after every call that changes it, as when the server starts on one (see the README's "Single-file (.c3p) projects").
+- A `.c3p` being left is written back first, then its working folder is removed. When it cannot be written (Construct saved the archive meanwhile, or the write failed), the switch still happens, the working folder is kept, and `warnings` names it.
+- If the new project cannot be opened (no project file, an unreadable archive, an invalid `.c3proj`), the result is an error and the server keeps serving the project it had.
+- Returns `opened` (`name`, `projectFile`, `format`, and `archivePath` and `workDir` for a `.c3p`) and `closed` (`name`, `projectFile`, `archivePath`).
+- Close the project in Construct before editing it here.
 
 ---
 
@@ -2843,6 +2870,7 @@ Pack the project folder into a `.c3p` archive that the Construct editor opens di
 
 **Notes:**
 - With the default, packing also injects the bridge into the source project. Pass `injectBridge: false` for a package that is only inspected or load-checked.
+- When the server was started on a `.c3p`, the source project is its working folder, so an injected bridge is also written back into that `.c3p` after the call, like any other change. The same holds for `export_for_preview` and `inject_runtime_bridge`.
 
 ---
 

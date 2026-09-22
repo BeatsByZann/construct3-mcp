@@ -118,7 +118,10 @@ which branch you are on.
 ## Caveats
 
 - Verified against Construct 3 r495.2 on folder-format projects. Other releases are untested.
-- Folder format only. `.c3p` archives can be written by `pack_project` but not read as input.
+- A `.c3p` is served through a working folder and written back after each change, either from
+  the command line or by `open_project`, which switches a running server to another project; see the
+  README's "Single-file (.c3p) projects". Construct saving the same archive meanwhile makes the
+  server refuse to write, so do not edit one archive in both at once.
 - The feature branch is a working branch, not a release. It is not published to npm and carries no
   compatibility promise.
 - MIT licensed, the same as upstream. See [LICENSE](LICENSE).

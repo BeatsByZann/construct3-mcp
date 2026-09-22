@@ -448,6 +448,24 @@ export class Construct3ProjectReader {
   }
 
   /**
+   * Serve another project. The new project file is read and parsed before
+   * anything changes, so a file that cannot be loaded leaves this reader on
+   * the project it had.
+   */
+  async switchProject(projectPath: string): Promise<void> {
+    let data: Construct3Project;
+    try {
+      data = JSON.parse(await readFile(projectPath, 'utf-8')) as Construct3Project;
+    } catch (error) {
+      throw new Error(`Failed to load Construct3 project: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    this.projectPath = projectPath;
+    this.projectData = data;
+    this.buildPathMaps();
+    this.invalidateCaches();
+  }
+
+  /**
    * Reload the project file from disk and rebuild path maps.
    * Call after modifying project.c3proj.
    */

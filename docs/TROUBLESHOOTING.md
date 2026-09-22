@@ -11,7 +11,16 @@ Common issues and solutions for the Construct3 MCP Server.
 **Solutions**:
 - Pass the path directly to the `.c3proj` file: `node dist/index.js /path/to/project.c3proj`
 - Or pass the directory that contains it: `node dist/index.js /path/to/project-folder/`
-- Make sure the project is saved in **folder format**, not as a `.c3p` ZIP file
+- For a single-file project, pass the `.c3p` file itself: `node dist/index.js /path/to/game.c3p`
+
+### "The project was NOT saved to ...: ... was changed by something else"
+
+**Cause**: The server was serving a `.c3p` and something else, usually Construct saving the project, wrote the archive after the server opened it. The server will not overwrite it.
+
+**Solutions**:
+- The session's changes are in the working folder the message names; copy out what you need.
+- Restart the server to load the archive as it is now.
+- Do not save the project in Construct while the server is writing to the same archive.
 
 ### "Invalid Construct3 project file"
 

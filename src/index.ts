@@ -7,7 +7,6 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { Construct3ProjectReader } from './construct3/project-reader.js';
 import { registerProjectResources } from './resources/project.js';
 import { registerDocsResources } from './resources/docs.js';
 import { registerQueryTools } from './tools/query.js';
@@ -18,8 +17,12 @@ import { registerMutationTools } from './tools/mutations.js';
 import { Construct3ProjectWriter } from './construct3/project-writer.js';
 import { IdGenerator } from './construct3/id-generator.js';
 import { registerRuntimeTools } from './tools/runtime-tools.js';
+import { ProjectSession } from './construct3/project-session.js';
+import { registerSessionTools } from './tools/session-tools.js';
 
-// Use explicit path if given, otherwise auto-detect .c3proj in current working directory
+// Use explicit path if given, otherwise auto-detect .c3proj in current working directory.
+// A .c3p path opens the archive through a working folder that is written back after each change;
+// open_project switches to another project while the server runs.
 const projectPath: string = process.argv[2] || process.env.C3_PROJECT_PATH || process.cwd();
 
 const server = new McpServer(
@@ -27,33 +30,22 @@ const server = new McpServer(
   { capabilities: { resources: {}, tools: {}, prompts: {} } }
 );
 
-async function initializeProject(path: string): Promise<Construct3ProjectReader> {
-  let projectFile = path;
-  if (!path.endsWith('.c3proj')) {
-    const found = await Construct3ProjectReader.findProjectFile(path);
-    if (!found) {
-      throw new Error(`No .c3proj file found in directory: ${path}`);
-    }
-    projectFile = found;
-  }
-
-  const isValid = await Construct3ProjectReader.isValidProject(projectFile);
-  if (!isValid) {
-    throw new Error(`Invalid Construct3 project file: ${projectFile}`);
-  }
-
-  const reader = new Construct3ProjectReader(projectFile);
-  await reader.loadProject();
-  console.error(`Loaded Construct3 project: ${reader.getMetadata().name}`);
-  return reader;
-}
-
 async function main() {
   try {
     console.error('Construct3 MCP Server starting...');
     console.error(`Project path: ${projectPath}`);
 
-    const reader = await initializeProject(projectPath);
+    const session = await ProjectSession.start(projectPath);
+    const reader = session.reader;
+    if (session.archive) console.error(`Opened ${session.archive.archivePath} in the working folder ${session.archive.workDir}`);
+    console.error(`Loaded Construct3 project: ${reader.getMetadata().name}`);
+    process.once('exit', () => {
+      const kept = session.closeSync();
+      if (kept) console.error(`Kept the working folder with unsaved changes: ${kept}`);
+    });
+    // Every tool goes through the session's gate: a .c3p is written back after
+    // each change, and open_project switches projects between calls.
+    session.install(server);
 
     // Register all modular handlers
     registerProjectResources(server, reader);
@@ -67,6 +59,7 @@ async function main() {
     const idGen = new IdGenerator();
     const writer = new Construct3ProjectWriter(reader, idGen);
     registerMutationTools(server, reader, writer, idGen);
+    registerSessionTools(server, session, idGen);
 
     // Runtime Control (for live game testing via browser automation)
     const runtimeTools = registerRuntimeTools({ server, reader, writer });
