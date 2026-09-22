@@ -26,19 +26,19 @@ node dist/index.js /path/to/your/project.c3proj
 
 ## How far it has diverged
 
-Measured at `claude/w84-editor-gap` (`5208e9c`) against `upstream/main` (`b6d7d58`).
+Measured at `claude/w84-editor-gap` (`e3e4051`) against `upstream/main` (`b6d7d58`).
 
 | Measure | Upstream | This fork |
 |---|---|---|
-| MCP tools registered | 66 | 169 |
+| MCP tools registered | 66 | 173 |
 | Source files under `src/` | 32 | 54 |
-| Test files | 16 | 54 |
-| Tests | not measured here | 1277 passing in 54 files |
+| Test files | 16 | 56 |
+| Tests | not measured here | 1304 passing in 56 files |
 | Package version | 1.8.1 | 1.8.2 |
 
-The branch is 72 commits ahead of upstream and one commit behind it (`b6d7d58`, a `.gitignore`
-chore). The common ancestor is `6957fcb` (2026-07-27). The diff is 133 files changed,
-40,362 insertions and 931 deletions.
+The branch is 78 commits ahead of upstream and one commit behind it (`b6d7d58`, a `.gitignore`
+chore). The common ancestor is `6957fcb` (2026-07-27). The diff is 136 files changed,
+42,227 insertions and 1,148 deletions.
 
 No upstream tool was removed or renamed. All 66 upstream tools are still registered under their
 upstream names, so an existing configuration keeps working. The fork adds 107 tools alongside them.
