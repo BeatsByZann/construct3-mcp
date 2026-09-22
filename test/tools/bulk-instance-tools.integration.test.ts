@@ -17,6 +17,7 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerLayoutTools } from '../../src/tools/layout-tools.js';
+import { registerObjectTools } from '../../src/tools/object-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 const LAYOUT = 'Layout 1';
@@ -42,6 +43,7 @@ async function openProject(): Promise<Project> {
   const writer = new Construct3ProjectWriter(reader, idGen);
   const server = new MockServer();
   registerLayoutTools({ server, reader, writer, idGen } as any);
+  registerObjectTools({ server, reader, writer, idGen } as any);
   const added = parseResult(await server.callTool('add_layer', { layoutName: LAYOUT, layerName: 'Top' }));
   expect(added.success).toBe(true);
   return { dir, server, writer, layoutFile: join(dir, 'layouts', `${LAYOUT}.json`) };
@@ -233,6 +235,90 @@ describe('bulk instance tools (real project on disk)', () => {
     expect(missing.isError).toBe(true);
     expect(missing.content[0].text).toContain('Item 1: Instance with UID 987654 not found');
     expect(await readFile(project.layoutFile, 'utf-8')).toBe(before);
+  });
+
+  it('places, moves and deletes instances on a sub-layer', async () => {
+    expect(parseResult(await project.server.callTool('add_layer', { layoutName: LAYOUT, layerName: 'Inner', parentLayer: 'Top' })).success).toBe(true);
+    const placed = parseResult(await project.server.callTool('add_instances_to_layout', {
+      layoutName: LAYOUT,
+      instances: [{ layerName: 'Inner', objectType: 'Sprite', x: 1, y: 1 }, { layerName: 'Main', objectType: 'Sprite', x: 2, y: 2 }],
+    }));
+    const [a, b] = placed.results.map((r: any) => r.uid);
+    const inner = async () => {
+      const layout = JSON.parse(await readFile(project.layoutFile, 'utf-8'));
+      const top = layout.layers.find((l: any) => l.name === 'Top');
+      return top.subLayers[0].instances.map((i: any) => i.uid);
+    };
+    expect(await inner()).toEqual([a]);
+
+    expect(parseResult(await project.server.callTool('move_instances', { layoutName: LAYOUT, moves: [{ uid: b, toLayer: 'Inner', position: 'bottom' }] })).success).toBe(true);
+    expect(await inner()).toEqual([b, a]);
+
+    expect(parseResult(await project.server.callTool('delete_instances_from_layout', { layoutName: LAYOUT, uids: [a, b] })).success).toBe(true);
+    expect(await inner()).toEqual([]);
+  });
+
+  it('handles non-world objects: placed in nonworld-instances, refused by move, removed by delete', async () => {
+    expect(parseResult(await project.server.callTool('create_object', { name: 'Store', pluginId: 'Arr' })).success).toBe(true);
+    const placed = parseResult(await project.server.callTool('add_instances_to_layout', {
+      layoutName: LAYOUT,
+      instances: [{ layerName: 'Main', objectType: 'Store', x: 0, y: 0 }, { layerName: 'Main', objectType: 'Sprite', x: 5, y: 5 }],
+    }));
+    expect(placed.success).toBe(true);
+    const [store, sprite] = placed.results.map((r: any) => r.uid);
+    expect(placed.warnings.some((w: string) => w.startsWith('Item 0: "Store" is a global (nonworld) object'))).toBe(true);
+    let layout = JSON.parse(await readFile(project.layoutFile, 'utf-8'));
+    expect(layout['nonworld-instances'].map((i: any) => i.uid)).toEqual([store]);
+
+    const updated = parseResult(await project.server.callTool('update_instances', { layoutName: LAYOUT, updates: [{ uid: store, x: 9, tags: 'data' }] }));
+    expect(updated.warnings).toEqual([`Item 0: Instance ${store} is a non-world instance; position, size, angle, Z elevation, color, origin, blend mode and depth were ignored.`]);
+
+    const before = await readFile(project.layoutFile, 'utf-8');
+    const moved = await project.server.callTool('move_instances', { layoutName: LAYOUT, moves: [{ uid: sprite, toLayer: 'Top' }, { uid: store, toLayer: 'Top' }] });
+    expect(moved.isError).toBe(true);
+    expect(moved.content[0].text).toContain(`Item 1: Instance ${store} is a non-world instance; it has no layer or Z order.`);
+    expect(await readFile(project.layoutFile, 'utf-8')).toBe(before);
+
+    const deleted = parseResult(await project.server.callTool('delete_instances_from_layout', { layoutName: LAYOUT, uids: [store, sprite] }));
+    expect(deleted.results.map((r: any) => r.objectType)).toEqual(['Store', 'Sprite']);
+    layout = JSON.parse(await readFile(project.layoutFile, 'utf-8'));
+    expect(layout['nonworld-instances']).toEqual([]);
+    expect(await placements(project)).toEqual([['Main', 0]]);
+  });
+
+  it('prefixes each warning with the index of the item that raised it', async () => {
+    const placed = parseResult(await project.server.callTool('add_instances_to_layout', {
+      layoutName: LAYOUT,
+      instances: [SPRITES[0], { ...SPRITES[1], instanceVariables: { hp: 3 } }],
+    }));
+    expect(placed.success).toBe(true);
+    expect(placed.warnings).toHaveLength(1);
+    expect(placed.warnings[0]).toMatch(/^Item 1: Instance variable "hp" is not defined on "Sprite"/);
+  });
+
+  it('refuses a repeated unknown object type at its first item', async () => {
+    const before = await readFile(project.layoutFile, 'utf-8');
+    const result = await project.server.callTool('add_instances_to_layout', {
+      layoutName: LAYOUT,
+      instances: [SPRITES[0], { ...SPRITES[1], objectType: 'Ghost' }, { ...SPRITES[2], objectType: 'Ghost' }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/^Item 1: Object type "Ghost" does not exist/);
+    expect(await readFile(project.layoutFile, 'utf-8')).toBe(before);
+  });
+
+  it('reports a missing layout the way the single tools do, for every bulk tool', async () => {
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ['add_instances_to_layout', { instances: [SPRITES[0]] }],
+      ['update_instances', { updates: [{ uid: 0, x: 1 }] }],
+      ['move_instances', { moves: [{ uid: 0, position: 'top' }] }],
+      ['delete_instances_from_layout', { uids: [0] }],
+    ];
+    for (const [tool, args] of calls) {
+      const result = await project.server.callTool(tool, { layoutName: 'Nowhere', ...args });
+      expect(result.isError, tool).toBe(true);
+      expect(result.content[0].text, tool).toContain('Nowhere');
+    }
   });
 
   it('refuses more than 500 items', async () => {
