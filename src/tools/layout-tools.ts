@@ -2,7 +2,8 @@
  * Layout tools: create_layout, add_instance_to_layout, delete_layout, update_layout,
  * add_layer, delete_layer, update_layer, reorder_layers, move_layer,
  * delete_instance_from_layout, update_instance, move_instance, set_instance_parent,
- * remove_instance_children.
+ * remove_instance_children, and the bulk add_instances_to_layout, update_instances,
+ * move_instances and delete_instances_from_layout.
  */
 
 import { z } from 'zod';
@@ -322,7 +323,514 @@ function hasAncestor(byUid: Map<number, Instance>, startUid: number, ancestorUid
   return false;
 }
 
+/** Fields of one placement, shared by add_instance_to_layout and add_instances_to_layout. */
+const placeInstanceShape = {
+  layerName: z.string().max(200).describe('Target layer within layout'),
+  objectType: z.string().max(200).describe('Object type name to place'),
+  x: z.number().describe('X position'),
+  y: z.number().describe('Y position'),
+  width: z.number().optional().default(100).describe('Instance width'),
+  height: z.number().optional().default(100).describe('Instance height'),
+  properties: boundedRecord()
+    .refine(obj => JSON.stringify(obj).length <= 50_000, 'Properties payload too large (max 50KB)')
+    .optional()
+    .describe('Plugin-specific instance properties — auto-filled for known plugins if omitted (max 100 keys, depth 6)'),
+  // Instance-level overrides
+  angle: z.number().optional().describe('Rotation angle in radians (default: 0)'),
+  color: z.array(z.number().min(0).max(1)).length(4).optional().describe('RGBA tint as [r, g, b, a] with values 0-1 (default: [1,1,1,1])'),
+  zElevation: z.number().optional().describe('Z elevation for 3D layering (default: 0)'),
+  originX: z.number().min(0).max(1).optional().describe('Horizontal origin 0-1 (default: 0.5 = center)'),
+  originY: z.number().min(0).max(1).optional().describe('Vertical origin 0-1 (default: 0.5 = center)'),
+  instanceVariables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional()
+    .describe('Instance variable values as {varName: value}'),
+  behaviors: z.record(z.string(), boundedRecord())
+    .refine(obj => Object.keys(obj).length <= 50, 'Too many behaviors (max 50)')
+    .refine(obj => JSON.stringify(obj).length <= 50_000, 'Behaviors payload too large (max 50KB)')
+    .optional()
+    .describe('Behavior runtime state as {behaviorName: {prop: val}} (each behavior props: max 100 keys, depth 6)'),
+  tags: z.string().max(500).regex(/^[a-zA-Z0-9_, ]*$/).optional()
+    .describe('Comma-separated instance tags (default: empty)'),
+  showing: z.boolean().optional().describe('Whether instance is initially visible (default: true)'),
+  locked: z.boolean().optional().describe('Whether instance is locked in the editor (default: false)'),
+};
+type PlaceInstanceArgs = z.infer<z.ZodObject<typeof placeInstanceShape>>;
+
+/** Fields of one instance update, shared by update_instance and update_instances. */
+const updateInstanceShape = {
+  uid: z.number().int().describe('UID of the instance to update'),
+  x: z.number().optional().describe('New X position'),
+  y: z.number().optional().describe('New Y position'),
+  width: z.number().optional().describe('New width'),
+  height: z.number().optional().describe('New height'),
+  angle: z.number().optional().describe('New rotation angle in radians'),
+  zElevation: z.number().optional().describe('New Z elevation'),
+  color: z.array(z.number().min(0).max(1)).length(4).optional().describe('New RGBA tint [r,g,b,a] values 0-1'),
+  originX: z.number().min(-100).max(100).optional().describe('Instance origin X as a fraction of its width (0 = left, 0.5 = center, 1 = right)'),
+  originY: z.number().min(-100).max(100).optional().describe('Instance origin Y as a fraction of its height (0 = top, 0.5 = center, 1 = bottom)'),
+  blendMode: z.enum(INSTANCE_BLEND_MODES).optional().describe('Instance blend mode; "normal" removes the stored value, as Construct does'),
+  depth: z.number().min(0).optional().describe('3D depth of the instance (3D Shape); written as world.depth'),
+  showing: z.boolean().optional().describe('Initial visibility'),
+  locked: z.boolean().optional().describe('Locked in editor'),
+  tags: z.string().max(500).optional().describe('Comma-separated tags'),
+  instanceVariables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().describe('Instance variable values to update'),
+  properties: boundedRecord(100, 4).optional().describe('Plugin property values to merge (e.g. Text "text", iframe "url", Tilemap "tile-width"); keys are the plugin\'s property IDs'),
+  behaviors: z.record(z.string(), z.object({
+    properties: boundedRecord(100, 4).describe('Behavior property values to merge'),
+  })).refine(obj => Object.keys(obj).length <= 50, 'Too many behaviors (max 50)').optional()
+    .describe('Per-instance behavior settings keyed by behavior name, e.g. { "Platform": { "properties": { "max-speed": 330 } } }'),
+  effects: z.record(z.string(), z.object({
+    isEnabled: z.boolean().optional().describe('Enable or disable this effect on the instance'),
+    parameters: boundedRecord(50, 3).optional().describe('Effect parameter values to merge'),
+  })).refine(obj => Object.keys(obj).length <= 50, 'Too many effects (max 50)').optional()
+    .describe('Per-instance effect state keyed by effect name, as defined on the object type or its family'),
+};
+type UpdateInstanceArgs = z.infer<z.ZodObject<typeof updateInstanceShape>>;
+
+/** Fields of one layer or Z-order move, shared by move_instance and move_instances. */
+const moveInstanceShape = {
+  uid: z.number().int().describe('UID of the world instance to move'),
+  toLayer: z.string().max(200).optional().describe('Destination layer (any depth); default: the instance\'s current layer'),
+  position: z.union([z.enum(['top', 'bottom']), z.number().int().min(0)]).optional()
+    .describe('Z position in the destination layer: "top", "bottom", or a 0-based index counted from the bottom. Default: top when changing layer'),
+  aboveUid: z.number().int().optional().describe('Place the instance directly above this instance (same destination layer)'),
+  belowUid: z.number().int().optional().describe('Place the instance directly below this instance (same destination layer)'),
+};
+type MoveInstanceArgs = z.infer<z.ZodObject<typeof moveInstanceShape>>;
+
+/** Most items one bulk instance call accepts. */
+const MAX_BULK_INSTANCES = 500;
+
+/** What placing an instance needs to know about its object type. */
+interface PlacementType {
+  objData: import('../construct3/types.js').ObjectType;
+  pluginId: string | undefined;
+  isNonworld: boolean;
+}
+
+/** True when an update names no field to change. */
+function isEmptyInstanceUpdate(args: UpdateInstanceArgs): boolean {
+  return args.x === undefined && args.y === undefined && args.width === undefined &&
+    args.height === undefined && args.angle === undefined && args.zElevation === undefined &&
+    args.color === undefined && args.originX === undefined && args.originY === undefined &&
+    args.blendMode === undefined && args.depth === undefined &&
+    args.showing === undefined && args.locked === undefined &&
+    args.tags === undefined && args.instanceVariables === undefined &&
+    args.properties === undefined && args.behaviors === undefined && args.effects === undefined;
+}
+
+/** The argument error of a move that needs no layout to detect, or undefined. */
+function moveArgsError(args: MoveInstanceArgs): string | undefined {
+  const placements = [args.position !== undefined, args.aboveUid !== undefined, args.belowUid !== undefined].filter(Boolean).length;
+  if (placements > 1) return 'Give at most one of position, aboveUid and belowUid.';
+  if (placements === 0 && args.toLayer === undefined) return 'Nothing to do. Give toLayer, position, aboveUid or belowUid.';
+  if (args.aboveUid === args.uid || args.belowUid === args.uid) return 'An instance cannot be placed relative to itself.';
+  return undefined;
+}
+
+/** Where a move put an instance. */
+interface InstanceMove {
+  fromLayer: string;
+  fromIndex: number;
+  toLayer: string;
+  toIndex: number;
+  layerInstanceCount: number;
+  unchanged: boolean;
+}
+
+/**
+ * Move a world instance within a layout already in memory. Returns an error
+ * instead of writing; the layout may be partly changed when it does, so the
+ * caller must then discard it.
+ */
+function moveInstanceInLayout(layout: Layout, layoutName: string, args: MoveInstanceArgs): InstanceMove | { error: string } {
+  const layers = collectLayers(layout);
+  const source = layers.find(l => Array.isArray(l.instances) && l.instances.some(i => i.uid === args.uid));
+  if (!source) {
+    const nonworld = collectInstances(layout).some(i => i.uid === args.uid);
+    return {
+      error: nonworld
+        ? `Instance ${args.uid} is a non-world instance; it has no layer or Z order.`
+        : `World instance with UID ${args.uid} not found in layout "${layoutName}". Use get_layout_details to see all instance UIDs.`,
+    };
+  }
+
+  let target = source;
+  if (args.toLayer !== undefined) {
+    const found = layers.find(l => l.name === args.toLayer);
+    if (!found) {
+      return { error: `Layer "${args.toLayer}" not found in layout "${layoutName}". Layers: ${layers.map(l => l.name).join(', ')}` };
+    }
+    target = found;
+  }
+
+  const fromIndex = source.instances.findIndex(i => i.uid === args.uid);
+  const [inst] = source.instances.splice(fromIndex, 1);
+  if (!Array.isArray(target.instances)) target.instances = [];
+
+  let toIndex: number;
+  const relative = args.aboveUid ?? args.belowUid;
+  if (relative !== undefined) {
+    const anchor = target.instances.findIndex(i => i.uid === relative);
+    if (anchor === -1) {
+      return { error: `Instance ${relative} is not on layer "${target.name}". aboveUid and belowUid must name an instance on the destination layer.` };
+    }
+    toIndex = args.aboveUid !== undefined ? anchor + 1 : anchor;
+  } else if (args.position === 'bottom') {
+    toIndex = 0;
+  } else if (typeof args.position === 'number') {
+    if (args.position > target.instances.length) {
+      return { error: `position ${args.position} is out of range: layer "${target.name}" would hold ${target.instances.length + 1} instance(s), so the highest index is ${target.instances.length}.` };
+    }
+    toIndex = args.position;
+  } else if (args.position === 'top' || target !== source) {
+    toIndex = target.instances.length;
+  } else {
+    toIndex = fromIndex;
+  }
+  target.instances.splice(toIndex, 0, inst);
+
+  return {
+    fromLayer: source.name,
+    fromIndex,
+    toLayer: target.name,
+    toIndex,
+    layerInstanceCount: target.instances.length,
+    unchanged: target === source && toIndex === fromIndex,
+  };
+}
+
+/** What removing an instance took out of a layout. */
+interface InstanceRemoval {
+  removedType: string | undefined;
+  detachedChildren: number[];
+}
+
+/**
+ * Remove an instance, world or non-world, from a layout already in memory,
+ * detaching it from its hierarchy parent and its children from it first.
+ * Returns an error instead of writing.
+ */
+function removeInstanceFromLayout(layout: Layout, layoutName: string, uid: number): InstanceRemoval | { error: string } {
+  // Hierarchy links point at UIDs; detach the instance from its parent
+  // and its children from it before it goes.
+  const byUidBefore = worldInstancesByUid(layout);
+  const target = byUidBefore.get(uid);
+  const detachedChildren: number[] = [];
+  if (target) {
+    unlinkFromParent(byUidBefore, target);
+    for (const child of target.sceneGraphData?.children ?? []) {
+      const childInst = byUidBefore.get(child.uid);
+      if (childInst?.sceneGraphData && childInst.sceneGraphData['parent-uid'] === uid) {
+        childInst.sceneGraphData['parent-uid'] = null;
+        detachedChildren.push(child.uid);
+      }
+    }
+  }
+
+  // Search every layer, sub-layers included
+  let found = false;
+  let removedType: string | undefined;
+
+  for (const layer of collectLayers(layout)) {
+    if (!Array.isArray(layer.instances)) continue;
+    const idx = layer.instances.findIndex(inst => inst.uid === uid);
+    if (idx !== -1) {
+      removedType = layer.instances[idx].type;
+      layer.instances.splice(idx, 1);
+      found = true;
+      break;
+    }
+  }
+
+  // Search nonworld-instances
+  if (!found) {
+    const nonworld = layout['nonworld-instances'] as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(nonworld)) {
+      const idx = nonworld.findIndex(inst => inst.uid === uid);
+      if (idx !== -1) {
+        removedType = nonworld[idx].type as string;
+        nonworld.splice(idx, 1);
+        found = true;
+      }
+    }
+  }
+
+  if (!found) {
+    return { error: `Instance with UID ${uid} not found in layout "${layoutName}". Use get_layout_details to see all instance UIDs.` };
+  }
+  return { removedType, detachedChildren };
+}
+
+/** The warnings a removal reports, as delete_instance_from_layout words them. */
+function removalWarnings(uid: number, removal: InstanceRemoval): string[] {
+  if (!removal.removedType) return [];
+  return [
+    `Removed instance of "${removal.removedType}" (UID ${uid}).`,
+    ...(removal.detachedChildren.length > 0 ? [`Detached its hierarchy children: ${removal.detachedChildren.join(', ')}.`] : []),
+  ];
+}
+
+/**
+ * The item errors, warnings and results a bulk instance tool reports. An item
+ * error names the item by its 0-based position in the list, and the call then
+ * writes nothing.
+ */
+function bulkItemError(index: number, message: string): string {
+  return `Item ${index}: ${message} Nothing was written.`;
+}
+
 export function registerLayoutTools({ server, reader, writer, idGen }: MutationToolDeps) {
+  // ─── Instance edits shared by the single and bulk tools ───
+  // Each applies one edit to a layout already read into memory and returns an
+  // error instead of writing, so a bulk call can check every item before the
+  // layout file is written once.
+
+  /** Read and check the object type a placement names. */
+  async function readPlacementType(objectType: string): Promise<PlacementType | { error: string }> {
+    let obj: import('../construct3/types.js').ObjectType;
+    try {
+      obj = await reader.readObjectType(objectType);
+    } catch {
+      return { error: `Object type "${objectType}" does not exist. Use list_objects to see available objects.` };
+    }
+    const pluginId = obj['plugin-id'];
+    // Block global-only objects from being placed on layouts
+    if (obj['singleglobal-inst']) {
+      return { error: `Object "${objectType}" is a global plugin (${pluginId}) and cannot be placed on layouts.` };
+    }
+    // Nonworld-global objects (Arr, Json, Dictionary) go in nonworld-instances, not on layers
+    return { objData: obj, pluginId, isNonworld: obj.isGlobal === true };
+  }
+
+  /** Place one instance in a layout already in memory, with fresh UID and SID. */
+  async function placeInstance(
+    layout: Layout, layoutName: string, args: PlaceInstanceArgs, type: PlacementType,
+  ): Promise<{ uid: number; sid: number; warnings: string[] } | { error: string }> {
+    const { objData, pluginId, isNonworld } = type;
+    const uid = await idGen.generateUid(reader);
+    const sid = await idGen.generateSid(reader);
+    const warnings: string[] = [];
+
+    // Validate instanceVariables keys against object type definition
+    if (args.instanceVariables && objData) {
+      const definedVars = new Set((objData.instanceVariables ?? []).map(v => v.name));
+      for (const key of Object.keys(args.instanceVariables)) {
+        if (!definedVars.has(key)) {
+          warnings.push(`Instance variable "${key}" is not defined on "${args.objectType}". Defined variables: ${[...definedVars].join(', ') || '(none)'}. It may be inherited from a family.`);
+        }
+      }
+    }
+
+    // Validate behaviors keys against object type definition
+    if (args.behaviors && objData) {
+      const definedBehaviors = new Set((objData.behaviorTypes ?? []).map(b => b.name));
+      for (const key of Object.keys(args.behaviors)) {
+        if (!definedBehaviors.has(key)) {
+          warnings.push(`Behavior "${key}" is not defined on "${args.objectType}". Defined behaviors: ${[...definedBehaviors].join(', ') || '(none)'}. It may be inherited from a family.`);
+        }
+      }
+    }
+
+    // Build overrides from optional params
+    const overrides: InstanceOverrides = {};
+    if (args.angle !== undefined) overrides.angle = args.angle;
+    if (args.color !== undefined) overrides.color = args.color;
+    if (args.zElevation !== undefined) overrides.zElevation = args.zElevation;
+    if (args.originX !== undefined) overrides.originX = args.originX;
+    if (args.originY !== undefined) overrides.originY = args.originY;
+    if (args.instanceVariables !== undefined) overrides.instanceVariables = args.instanceVariables;
+    if (args.behaviors !== undefined) overrides.behaviors = args.behaviors;
+    if (args.tags !== undefined) overrides.tags = args.tags;
+    if (args.showing !== undefined) overrides.showing = args.showing;
+    if (args.locked !== undefined) overrides.locked = args.locked;
+    const hasOverrides = Object.keys(overrides).length > 0;
+
+    if (isNonworld) {
+      if (!layout['nonworld-instances']) layout['nonworld-instances'] = [];
+      layout['nonworld-instances'].push({
+        type: args.objectType,
+        properties: args.properties ?? {},
+        uid,
+        sid,
+        tags: overrides.tags ?? '',
+        instanceVariables: overrides.instanceVariables ?? {},
+        behaviors: overrides.behaviors ?? {},
+        showing: overrides.showing ?? true,
+        locked: overrides.locked ?? false,
+      });
+      warnings.push(`"${args.objectType}" is a global (nonworld) object — placed in nonworld-instances instead of on a layer. Layer and position parameters were ignored.`);
+    } else {
+      // Sub-layers hold instances too.
+      const targetLayer = collectLayers(layout).find(l => l.name === args.layerName);
+      if (!targetLayer) {
+        const layerNames = collectLayers(layout).map(l => l.name).join(', ');
+        return { error: `Layer "${args.layerName}" not found in layout "${layoutName}". Available layers: ${layerNames}` };
+      }
+
+      // Copied, not aliased: the instance keeps this object, so handing out
+      // the shared table would let a later edit of one instance change the
+      // template and every other instance of the same plugin.
+      const defaults = pluginId ? DEFAULT_INSTANCE_PROPERTIES[pluginId] : undefined;
+      const pluginProps = args.properties ?? (defaults ? { ...defaults } : {});
+
+      if (!args.properties && pluginId && !DEFAULT_INSTANCE_PROPERTIES[pluginId]) {
+        warnings.push(`No default instance properties known for plugin "${pluginId}". Instance created with empty properties — you may need to configure them in the C3 editor.`);
+      }
+
+      const instance = createInstance(
+        args.objectType, uid, sid, args.x, args.y, args.width, args.height,
+        pluginProps,
+        hasOverrides ? overrides : undefined,
+      );
+      if (instance.world) {
+        const origin = resolveInstanceOrigin(
+          pluginId, objData as unknown as Record<string, unknown> | undefined, instance.properties,
+          { x: args.originX, y: args.originY },
+          { x: instance.world.originX ?? 0.5, y: instance.world.originY ?? 0.5 },
+        );
+        if ('error' in origin) return { error: origin.error };
+        instance.world.originX = origin.x;
+        instance.world.originY = origin.y;
+        if (origin.property) instance.properties = { ...instance.properties, origin: origin.property };
+        if (origin.warning) warnings.push(origin.warning);
+      }
+
+      targetLayer.instances.push(instance);
+    }
+    return { uid, sid, warnings };
+  }
+
+  /**
+   * Apply one update to an instance in a layout already in memory. Returns an
+   * error instead of writing; the layout may be partly changed when it does.
+   */
+  async function updateInstanceInLayout(
+    layout: Layout, layoutName: string, args: UpdateInstanceArgs,
+  ): Promise<{ warnings: string[] } | { error: string }> {
+    // Instances live in nested layers and in nonworld-instances alike.
+    const inst: Instance | undefined = collectInstances(layout).find(i => i.uid === args.uid);
+    if (!inst) {
+      return { error: `Instance with UID ${args.uid} not found in layout "${layoutName}". Use get_layout_details to see all instance UIDs.` };
+    }
+
+    const warnings: string[] = [];
+
+    // Behavior and effect names must be defined on the object type or on a
+    // family it belongs to; a stray effect key would fail the editor load.
+    if (args.behaviors || args.effects) {
+      const defined = await definedBehaviorsAndEffects(reader, inst.type);
+      if (args.behaviors && defined) {
+        for (const key of Object.keys(args.behaviors)) {
+          if (!defined.behaviors.has(key)) {
+            warnings.push(`Behavior "${key}" is not defined on "${inst.type}" or its families. Defined behaviors: ${[...defined.behaviors].join(', ') || '(none)'}.`);
+          }
+        }
+      }
+      if (args.effects && defined) {
+        const unknown = Object.keys(args.effects).filter(key => !defined.effects.has(key));
+        if (unknown.length > 0) {
+          return { error: `Effect(s) ${unknown.map(k => `"${k}"`).join(', ')} are not defined on "${inst.type}" or its families. Add them with add_effect first. Defined effects: ${[...defined.effects].join(', ') || '(none)'}.` };
+        }
+      }
+    }
+
+    // World properties apply only to world instances.
+    if (inst.world) {
+      if (args.x !== undefined) inst.world.x = args.x;
+      if (args.y !== undefined) inst.world.y = args.y;
+      if (args.width !== undefined) inst.world.width = args.width;
+      if (args.height !== undefined) inst.world.height = args.height;
+      if (args.angle !== undefined) inst.world.angle = args.angle;
+      if (args.zElevation !== undefined) {
+        // Older saves store the value as zElevation (the r424 examples),
+        // newer ones as z (r476 and r495). Keep whichever key the
+        // instance already has.
+        if ('zElevation' in inst.world && !('z' in inst.world)) inst.world.zElevation = args.zElevation;
+        else inst.world.z = args.zElevation;
+      }
+      if (args.color !== undefined) inst.world.color = args.color;
+      const originProperty = args.properties && typeof args.properties.origin === 'string' ? args.properties.origin : undefined;
+      if (args.originX !== undefined || args.originY !== undefined || originProperty !== undefined) {
+        let obj: Record<string, unknown> | undefined;
+        try {
+          obj = await reader.readObjectType(inst.type) as unknown as Record<string, unknown>;
+        } catch {
+          obj = undefined;
+        }
+        const origin = resolveInstanceOrigin(
+          typeof obj?.['plugin-id'] === 'string' ? obj['plugin-id'] as string : undefined,
+          obj, { ...(inst.properties ?? {}), ...(args.properties ?? {}) },
+          { x: args.originX, y: args.originY },
+          { x: inst.world.originX ?? 0.5, y: inst.world.originY ?? 0.5 },
+        );
+        if ('error' in origin) return { error: origin.error };
+        if (origin.property && originProperty !== undefined && origin.property !== originProperty) {
+          return { error: `properties.origin "${originProperty}" and originX/originY (${origin.x}, ${origin.y} = "${origin.property}") disagree; give one of them.` };
+        }
+        inst.world.originX = origin.x;
+        inst.world.originY = origin.y;
+        if (origin.property) inst.properties = { ...(inst.properties ?? {}), origin: origin.property };
+        if (origin.warning) warnings.push(origin.warning);
+      }
+      if (args.depth !== undefined) {
+        if (!('depth' in inst.world)) {
+          inst.world = insertKeyAfter(inst.world, 'depth', args.depth, ['zElevation', 'z']) as typeof inst.world;
+        } else {
+          inst.world.depth = args.depth;
+        }
+        const plugin = await pluginOf(reader, inst.type);
+        if (plugin !== undefined && plugin !== 'Shape3D') {
+          warnings.push(`Depth is a 3D Shape property; "${inst.type}" uses the ${plugin} plugin, which may ignore it.`);
+        }
+      }
+      if (args.blendMode !== undefined) {
+        if (args.blendMode === 'normal') delete inst.world.blendMode;
+        else inst.world.blendMode = args.blendMode;
+      }
+    } else {
+      const ignoredWorldProps = [
+        args.x, args.y, args.width, args.height, args.angle, args.zElevation, args.color,
+        args.originX, args.originY, args.blendMode, args.depth,
+      ].filter(v => v !== undefined);
+      if (ignoredWorldProps.length > 0) {
+        warnings.push(`Instance ${args.uid} is a non-world instance; position, size, angle, Z elevation, color, origin, blend mode and depth were ignored.`);
+      }
+    }
+    if (args.showing !== undefined) inst.showing = args.showing;
+    if (args.locked !== undefined) inst.locked = args.locked;
+    if (args.tags !== undefined) inst.tags = args.tags;
+    if (args.instanceVariables !== undefined) {
+      inst.instanceVariables = { ...(inst.instanceVariables ?? {}), ...args.instanceVariables };
+    }
+    if (args.properties !== undefined) {
+      inst.properties = { ...(inst.properties ?? {}), ...args.properties };
+    }
+    if (args.behaviors !== undefined) {
+      const behaviors = (inst.behaviors ?? {}) as Record<string, { properties?: Record<string, unknown> }>;
+      for (const [name, update] of Object.entries(args.behaviors)) {
+        const existing = behaviors[name] ?? { properties: {} };
+        behaviors[name] = { ...existing, properties: { ...(existing.properties ?? {}), ...update.properties } };
+      }
+      inst.behaviors = behaviors;
+    }
+    if (args.effects !== undefined) {
+      const instRecord = inst as Record<string, unknown>;
+      const effects = (instRecord.effects && typeof instRecord.effects === 'object'
+        ? instRecord.effects
+        : {}) as Record<string, { isEnabled?: boolean; parameters?: Record<string, unknown> }>;
+      for (const [name, update] of Object.entries(args.effects)) {
+        const existing = effects[name] ?? { isEnabled: true, parameters: {} };
+        effects[name] = {
+          ...existing,
+          isEnabled: update.isEnabled ?? existing.isEnabled ?? true,
+          parameters: { ...(existing.parameters ?? {}), ...(update.parameters ?? {}) },
+        };
+      }
+      instRecord.effects = effects;
+    }
+    return { warnings };
+  }
+
   // ─── create_layout ────────────────────────────────────────
 
   server.tool(
@@ -398,55 +906,12 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
     'Place an object instance on a layout layer. For copying instances between layouts, read the source with get_layout_details and pass instance properties here — all visual and behavioral properties (angle, color, instanceVariables, behaviors, etc.) are preserved when specified.',
     {
       layoutName: z.string().max(200).describe('Target layout'),
-      layerName: z.string().max(200).describe('Target layer within layout'),
-      objectType: z.string().max(200).describe('Object type name to place'),
-      x: z.number().describe('X position'),
-      y: z.number().describe('Y position'),
-      width: z.number().optional().default(100).describe('Instance width'),
-      height: z.number().optional().default(100).describe('Instance height'),
-      properties: boundedRecord()
-        .refine(obj => JSON.stringify(obj).length <= 50_000, 'Properties payload too large (max 50KB)')
-        .optional()
-        .describe('Plugin-specific instance properties — auto-filled for known plugins if omitted (max 100 keys, depth 6)'),
-      // Instance-level overrides
-      angle: z.number().optional().describe('Rotation angle in radians (default: 0)'),
-      color: z.array(z.number().min(0).max(1)).length(4).optional().describe('RGBA tint as [r, g, b, a] with values 0-1 (default: [1,1,1,1])'),
-      zElevation: z.number().optional().describe('Z elevation for 3D layering (default: 0)'),
-      originX: z.number().min(0).max(1).optional().describe('Horizontal origin 0-1 (default: 0.5 = center)'),
-      originY: z.number().min(0).max(1).optional().describe('Vertical origin 0-1 (default: 0.5 = center)'),
-      instanceVariables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional()
-        .describe('Instance variable values as {varName: value}'),
-      behaviors: z.record(z.string(), boundedRecord())
-        .refine(obj => Object.keys(obj).length <= 50, 'Too many behaviors (max 50)')
-        .refine(obj => JSON.stringify(obj).length <= 50_000, 'Behaviors payload too large (max 50KB)')
-        .optional()
-        .describe('Behavior runtime state as {behaviorName: {prop: val}} (each behavior props: max 100 keys, depth 6)'),
-      tags: z.string().max(500).regex(/^[a-zA-Z0-9_, ]*$/).optional()
-        .describe('Comma-separated instance tags (default: empty)'),
-      showing: z.boolean().optional().describe('Whether instance is initially visible (default: true)'),
-      locked: z.boolean().optional().describe('Whether instance is locked in the editor (default: false)'),
+      ...placeInstanceShape,
     },
     async (args) => {
       try {
-        // Validate object type exists and read its plugin ID
-        let pluginId: string | undefined;
-        let isNonworld = false;
-        let objData: import('../construct3/types.js').ObjectType | undefined;
-        try {
-          const obj = await reader.readObjectType(args.objectType);
-          objData = obj;
-          pluginId = obj['plugin-id'];
-          // Block global-only objects from being placed on layouts
-          if (obj['singleglobal-inst']) {
-            return toolError(`Object "${args.objectType}" is a global plugin (${pluginId}) and cannot be placed on layouts.`);
-          }
-          // Nonworld-global objects (Arr, Json, Dictionary) go in nonworld-instances, not on layers
-          if (obj.isGlobal === true) {
-            isNonworld = true;
-          }
-        } catch {
-          return toolError(`Object type "${args.objectType}" does not exist. Use list_objects to see available objects.`);
-        }
+        const type = await readPlacementType(args.objectType);
+        if ('error' in type) return toolError(type.error);
 
         let layout: Layout;
         try {
@@ -455,96 +920,9 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        const uid = await idGen.generateUid(reader);
-        const sid = await idGen.generateSid(reader);
-        const warnings: string[] = [];
-
-        // Validate instanceVariables keys against object type definition
-        if (args.instanceVariables && objData) {
-          const definedVars = new Set((objData.instanceVariables ?? []).map(v => v.name));
-          for (const key of Object.keys(args.instanceVariables)) {
-            if (!definedVars.has(key)) {
-              warnings.push(`Instance variable "${key}" is not defined on "${args.objectType}". Defined variables: ${[...definedVars].join(', ') || '(none)'}. It may be inherited from a family.`);
-            }
-          }
-        }
-
-        // Validate behaviors keys against object type definition
-        if (args.behaviors && objData) {
-          const definedBehaviors = new Set((objData.behaviorTypes ?? []).map(b => b.name));
-          for (const key of Object.keys(args.behaviors)) {
-            if (!definedBehaviors.has(key)) {
-              warnings.push(`Behavior "${key}" is not defined on "${args.objectType}". Defined behaviors: ${[...definedBehaviors].join(', ') || '(none)'}. It may be inherited from a family.`);
-            }
-          }
-        }
-
-        // Build overrides from optional params
-        const overrides: InstanceOverrides = {};
-        if (args.angle !== undefined) overrides.angle = args.angle;
-        if (args.color !== undefined) overrides.color = args.color;
-        if (args.zElevation !== undefined) overrides.zElevation = args.zElevation;
-        if (args.originX !== undefined) overrides.originX = args.originX;
-        if (args.originY !== undefined) overrides.originY = args.originY;
-        if (args.instanceVariables !== undefined) overrides.instanceVariables = args.instanceVariables;
-        if (args.behaviors !== undefined) overrides.behaviors = args.behaviors;
-        if (args.tags !== undefined) overrides.tags = args.tags;
-        if (args.showing !== undefined) overrides.showing = args.showing;
-        if (args.locked !== undefined) overrides.locked = args.locked;
-        const hasOverrides = Object.keys(overrides).length > 0;
-
-        if (isNonworld) {
-          if (!layout['nonworld-instances']) layout['nonworld-instances'] = [];
-          layout['nonworld-instances'].push({
-            type: args.objectType,
-            properties: args.properties ?? {},
-            uid,
-            sid,
-            tags: overrides.tags ?? '',
-            instanceVariables: overrides.instanceVariables ?? {},
-            behaviors: overrides.behaviors ?? {},
-            showing: overrides.showing ?? true,
-            locked: overrides.locked ?? false,
-          });
-          warnings.push(`"${args.objectType}" is a global (nonworld) object — placed in nonworld-instances instead of on a layer. Layer and position parameters were ignored.`);
-        } else {
-          // Sub-layers hold instances too.
-          const targetLayer = collectLayers(layout).find(l => l.name === args.layerName);
-          if (!targetLayer) {
-            const layerNames = collectLayers(layout).map(l => l.name).join(', ');
-            return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Available layers: ${layerNames}`);
-          }
-
-          // Copied, not aliased: the instance keeps this object, so handing out
-          // the shared table would let a later edit of one instance change the
-          // template and every other instance of the same plugin.
-          const defaults = pluginId ? DEFAULT_INSTANCE_PROPERTIES[pluginId] : undefined;
-          const pluginProps = args.properties ?? (defaults ? { ...defaults } : {});
-
-          if (!args.properties && pluginId && !DEFAULT_INSTANCE_PROPERTIES[pluginId]) {
-            warnings.push(`No default instance properties known for plugin "${pluginId}". Instance created with empty properties — you may need to configure them in the C3 editor.`);
-          }
-
-          const instance = createInstance(
-            args.objectType, uid, sid, args.x, args.y, args.width, args.height,
-            pluginProps,
-            hasOverrides ? overrides : undefined,
-          );
-          if (instance.world) {
-            const origin = resolveInstanceOrigin(
-              pluginId, objData as unknown as Record<string, unknown> | undefined, instance.properties,
-              { x: args.originX, y: args.originY },
-              { x: instance.world.originX ?? 0.5, y: instance.world.originY ?? 0.5 },
-            );
-            if ('error' in origin) return toolError(origin.error);
-            instance.world.originX = origin.x;
-            instance.world.originY = origin.y;
-            if (origin.property) instance.properties = { ...instance.properties, origin: origin.property };
-            if (origin.warning) warnings.push(origin.warning);
-          }
-
-          targetLayer.instances.push(instance);
-        }
+        const placed = await placeInstance(layout, args.layoutName, args, type);
+        if ('error' in placed) return toolError(placed.error);
+        const { uid, sid, warnings } = placed;
 
         const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
         await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
@@ -1142,69 +1520,20 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        // Hierarchy links point at UIDs; detach the instance from its parent
-        // and its children from it before it goes.
-        const byUidBefore = worldInstancesByUid(layout);
-        const target = byUidBefore.get(args.uid);
-        const detachedChildren: number[] = [];
-        if (target) {
-          unlinkFromParent(byUidBefore, target);
-          for (const child of target.sceneGraphData?.children ?? []) {
-            const childInst = byUidBefore.get(child.uid);
-            if (childInst?.sceneGraphData && childInst.sceneGraphData['parent-uid'] === args.uid) {
-              childInst.sceneGraphData['parent-uid'] = null;
-              detachedChildren.push(child.uid);
-            }
-          }
-        }
-
-        // Search every layer, sub-layers included
-        let found = false;
-        let removedType: string | undefined;
-
-        for (const layer of collectLayers(layout)) {
-          if (!Array.isArray(layer.instances)) continue;
-          const idx = layer.instances.findIndex(inst => inst.uid === args.uid);
-          if (idx !== -1) {
-            removedType = layer.instances[idx].type;
-            layer.instances.splice(idx, 1);
-            found = true;
-            break;
-          }
-        }
-
-        // Search nonworld-instances
-        if (!found) {
-          const nonworld = layout['nonworld-instances'] as Array<Record<string, unknown>> | undefined;
-          if (Array.isArray(nonworld)) {
-            const idx = nonworld.findIndex(inst => inst.uid === args.uid);
-            if (idx !== -1) {
-              removedType = nonworld[idx].type as string;
-              nonworld.splice(idx, 1);
-              found = true;
-            }
-          }
-        }
-
-        if (!found) {
-          return toolError(`Instance with UID ${args.uid} not found in layout "${args.layoutName}". Use get_layout_details to see all instance UIDs.`);
-        }
+        const removal = removeInstanceFromLayout(layout, args.layoutName, args.uid);
+        if ('error' in removal) return toolError(removal.error);
 
         const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
         const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
 
+        const warnings = removalWarnings(args.uid, removal);
         const result: WriteResult = {
           success: true,
           entity: args.layoutName,
           category: 'layout',
           action: 'updated',
           backupFile: backupPath,
-          warnings: removedType
-            ? [
-              `Removed instance of "${removedType}" (UID ${args.uid}).`,
-              ...(detachedChildren.length > 0 ? [`Detached its hierarchy children: ${detachedChildren.join(', ')}.`] : []),
-            ]
-            : undefined,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
         return toolResult(result);
       } catch (error) {
@@ -1221,44 +1550,11 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
     'Update properties of a placed instance on a layout (position, size, angle, visibility, etc.)',
     {
       layoutName: z.string().max(200).describe('Layout name'),
-      uid: z.number().int().describe('UID of the instance to update'),
-      x: z.number().optional().describe('New X position'),
-      y: z.number().optional().describe('New Y position'),
-      width: z.number().optional().describe('New width'),
-      height: z.number().optional().describe('New height'),
-      angle: z.number().optional().describe('New rotation angle in radians'),
-      zElevation: z.number().optional().describe('New Z elevation'),
-      color: z.array(z.number().min(0).max(1)).length(4).optional().describe('New RGBA tint [r,g,b,a] values 0-1'),
-      originX: z.number().min(-100).max(100).optional().describe('Instance origin X as a fraction of its width (0 = left, 0.5 = center, 1 = right)'),
-      originY: z.number().min(-100).max(100).optional().describe('Instance origin Y as a fraction of its height (0 = top, 0.5 = center, 1 = bottom)'),
-      blendMode: z.enum(INSTANCE_BLEND_MODES).optional().describe('Instance blend mode; "normal" removes the stored value, as Construct does'),
-      depth: z.number().min(0).optional().describe('3D depth of the instance (3D Shape); written as world.depth'),
-      showing: z.boolean().optional().describe('Initial visibility'),
-      locked: z.boolean().optional().describe('Locked in editor'),
-      tags: z.string().max(500).optional().describe('Comma-separated tags'),
-      instanceVariables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().describe('Instance variable values to update'),
-      properties: boundedRecord(100, 4).optional().describe('Plugin property values to merge (e.g. Text "text", iframe "url", Tilemap "tile-width"); keys are the plugin\'s property IDs'),
-      behaviors: z.record(z.string(), z.object({
-        properties: boundedRecord(100, 4).describe('Behavior property values to merge'),
-      })).refine(obj => Object.keys(obj).length <= 50, 'Too many behaviors (max 50)').optional()
-        .describe('Per-instance behavior settings keyed by behavior name, e.g. { "Platform": { "properties": { "max-speed": 330 } } }'),
-      effects: z.record(z.string(), z.object({
-        isEnabled: z.boolean().optional().describe('Enable or disable this effect on the instance'),
-        parameters: boundedRecord(50, 3).optional().describe('Effect parameter values to merge'),
-      })).refine(obj => Object.keys(obj).length <= 50, 'Too many effects (max 50)').optional()
-        .describe('Per-instance effect state keyed by effect name, as defined on the object type or its family'),
+      ...updateInstanceShape,
     },
     async (args) => {
       try {
-        const hasUpdates = args.x !== undefined || args.y !== undefined || args.width !== undefined ||
-          args.height !== undefined || args.angle !== undefined || args.zElevation !== undefined ||
-          args.color !== undefined || args.originX !== undefined || args.originY !== undefined ||
-          args.blendMode !== undefined || args.depth !== undefined ||
-          args.showing !== undefined || args.locked !== undefined ||
-          args.tags !== undefined || args.instanceVariables !== undefined ||
-          args.properties !== undefined || args.behaviors !== undefined || args.effects !== undefined;
-
-        if (!hasUpdates) {
+        if (isEmptyInstanceUpdate(args)) {
           return toolError('No updates provided. Specify at least one property to update.');
         }
 
@@ -1269,127 +1565,9 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        // Instances live in nested layers and in nonworld-instances alike.
-        const inst: Instance | undefined = collectInstances(layout).find(i => i.uid === args.uid);
-        if (!inst) {
-          return toolError(`Instance with UID ${args.uid} not found in layout "${args.layoutName}". Use get_layout_details to see all instance UIDs.`);
-        }
-
-        const warnings: string[] = [];
-
-        // Behavior and effect names must be defined on the object type or on a
-        // family it belongs to; a stray effect key would fail the editor load.
-        if (args.behaviors || args.effects) {
-          const defined = await definedBehaviorsAndEffects(reader, inst.type);
-          if (args.behaviors && defined) {
-            for (const key of Object.keys(args.behaviors)) {
-              if (!defined.behaviors.has(key)) {
-                warnings.push(`Behavior "${key}" is not defined on "${inst.type}" or its families. Defined behaviors: ${[...defined.behaviors].join(', ') || '(none)'}.`);
-              }
-            }
-          }
-          if (args.effects && defined) {
-            const unknown = Object.keys(args.effects).filter(key => !defined.effects.has(key));
-            if (unknown.length > 0) {
-              return toolError(`Effect(s) ${unknown.map(k => `"${k}"`).join(', ')} are not defined on "${inst.type}" or its families. Add them with add_effect first. Defined effects: ${[...defined.effects].join(', ') || '(none)'}.`);
-            }
-          }
-        }
-
-        // World properties apply only to world instances.
-        if (inst.world) {
-          if (args.x !== undefined) inst.world.x = args.x;
-          if (args.y !== undefined) inst.world.y = args.y;
-          if (args.width !== undefined) inst.world.width = args.width;
-          if (args.height !== undefined) inst.world.height = args.height;
-          if (args.angle !== undefined) inst.world.angle = args.angle;
-          if (args.zElevation !== undefined) {
-            // Older saves store the value as zElevation (the r424 examples),
-            // newer ones as z (r476 and r495). Keep whichever key the
-            // instance already has.
-            if ('zElevation' in inst.world && !('z' in inst.world)) inst.world.zElevation = args.zElevation;
-            else inst.world.z = args.zElevation;
-          }
-          if (args.color !== undefined) inst.world.color = args.color;
-          const originProperty = args.properties && typeof args.properties.origin === 'string' ? args.properties.origin : undefined;
-          if (args.originX !== undefined || args.originY !== undefined || originProperty !== undefined) {
-            let obj: Record<string, unknown> | undefined;
-            try {
-              obj = await reader.readObjectType(inst.type) as unknown as Record<string, unknown>;
-            } catch {
-              obj = undefined;
-            }
-            const origin = resolveInstanceOrigin(
-              typeof obj?.['plugin-id'] === 'string' ? obj['plugin-id'] as string : undefined,
-              obj, { ...(inst.properties ?? {}), ...(args.properties ?? {}) },
-              { x: args.originX, y: args.originY },
-              { x: inst.world.originX ?? 0.5, y: inst.world.originY ?? 0.5 },
-            );
-            if ('error' in origin) return toolError(origin.error);
-            if (origin.property && originProperty !== undefined && origin.property !== originProperty) {
-              return toolError(`properties.origin "${originProperty}" and originX/originY (${origin.x}, ${origin.y} = "${origin.property}") disagree; give one of them.`);
-            }
-            inst.world.originX = origin.x;
-            inst.world.originY = origin.y;
-            if (origin.property) inst.properties = { ...(inst.properties ?? {}), origin: origin.property };
-            if (origin.warning) warnings.push(origin.warning);
-          }
-          if (args.depth !== undefined) {
-            if (!('depth' in inst.world)) {
-              inst.world = insertKeyAfter(inst.world, 'depth', args.depth, ['zElevation', 'z']) as typeof inst.world;
-            } else {
-              inst.world.depth = args.depth;
-            }
-            const plugin = await pluginOf(reader, inst.type);
-            if (plugin !== undefined && plugin !== 'Shape3D') {
-              warnings.push(`Depth is a 3D Shape property; "${inst.type}" uses the ${plugin} plugin, which may ignore it.`);
-            }
-          }
-          if (args.blendMode !== undefined) {
-            if (args.blendMode === 'normal') delete inst.world.blendMode;
-            else inst.world.blendMode = args.blendMode;
-          }
-        } else {
-          const ignoredWorldProps = [
-            args.x, args.y, args.width, args.height, args.angle, args.zElevation, args.color,
-            args.originX, args.originY, args.blendMode, args.depth,
-          ].filter(v => v !== undefined);
-          if (ignoredWorldProps.length > 0) {
-            warnings.push(`Instance ${args.uid} is a non-world instance; position, size, angle, Z elevation, color, origin, blend mode and depth were ignored.`);
-          }
-        }
-        if (args.showing !== undefined) inst.showing = args.showing;
-        if (args.locked !== undefined) inst.locked = args.locked;
-        if (args.tags !== undefined) inst.tags = args.tags;
-        if (args.instanceVariables !== undefined) {
-          inst.instanceVariables = { ...(inst.instanceVariables ?? {}), ...args.instanceVariables };
-        }
-        if (args.properties !== undefined) {
-          inst.properties = { ...(inst.properties ?? {}), ...args.properties };
-        }
-        if (args.behaviors !== undefined) {
-          const behaviors = (inst.behaviors ?? {}) as Record<string, { properties?: Record<string, unknown> }>;
-          for (const [name, update] of Object.entries(args.behaviors)) {
-            const existing = behaviors[name] ?? { properties: {} };
-            behaviors[name] = { ...existing, properties: { ...(existing.properties ?? {}), ...update.properties } };
-          }
-          inst.behaviors = behaviors;
-        }
-        if (args.effects !== undefined) {
-          const instRecord = inst as Record<string, unknown>;
-          const effects = (instRecord.effects && typeof instRecord.effects === 'object'
-            ? instRecord.effects
-            : {}) as Record<string, { isEnabled?: boolean; parameters?: Record<string, unknown> }>;
-          for (const [name, update] of Object.entries(args.effects)) {
-            const existing = effects[name] ?? { isEnabled: true, parameters: {} };
-            effects[name] = {
-              ...existing,
-              isEnabled: update.isEnabled ?? existing.isEnabled ?? true,
-              parameters: { ...(existing.parameters ?? {}), ...(update.parameters ?? {}) },
-            };
-          }
-          instRecord.effects = effects;
-        }
+        const updated = await updateInstanceInLayout(layout, args.layoutName, args);
+        if ('error' in updated) return toolError(updated.error);
+        const { warnings } = updated;
 
         const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
         const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
@@ -1417,25 +1595,12 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
     'Move a placed world instance to another layer and/or change its Z order within its layer (the editor\'s "Move to layer", "Move to top/bottom" and Z Order Bar drag). A layer\'s instances are stored bottom to top.',
     {
       layoutName: z.string().max(200).describe('Layout name'),
-      uid: z.number().int().describe('UID of the world instance to move'),
-      toLayer: z.string().max(200).optional().describe('Destination layer (any depth); default: the instance\'s current layer'),
-      position: z.union([z.enum(['top', 'bottom']), z.number().int().min(0)]).optional()
-        .describe('Z position in the destination layer: "top", "bottom", or a 0-based index counted from the bottom. Default: top when changing layer'),
-      aboveUid: z.number().int().optional().describe('Place the instance directly above this instance (same destination layer)'),
-      belowUid: z.number().int().optional().describe('Place the instance directly below this instance (same destination layer)'),
+      ...moveInstanceShape,
     },
     async (args) => {
       try {
-        const placements = [args.position !== undefined, args.aboveUid !== undefined, args.belowUid !== undefined].filter(Boolean).length;
-        if (placements > 1) {
-          return toolError('Give at most one of position, aboveUid and belowUid.');
-        }
-        if (placements === 0 && args.toLayer === undefined) {
-          return toolError('Nothing to do. Give toLayer, position, aboveUid or belowUid.');
-        }
-        if (args.aboveUid === args.uid || args.belowUid === args.uid) {
-          return toolError('An instance cannot be placed relative to itself.');
-        }
+        const argsError = moveArgsError(args);
+        if (argsError) return toolError(argsError);
 
         let layout: Layout;
         try {
@@ -1444,58 +1609,16 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        const layers = collectLayers(layout);
-        const source = layers.find(l => Array.isArray(l.instances) && l.instances.some(i => i.uid === args.uid));
-        if (!source) {
-          const nonworld = collectInstances(layout).some(i => i.uid === args.uid);
-          return toolError(nonworld
-            ? `Instance ${args.uid} is a non-world instance; it has no layer or Z order.`
-            : `World instance with UID ${args.uid} not found in layout "${args.layoutName}". Use get_layout_details to see all instance UIDs.`);
-        }
-
-        let target = source;
-        if (args.toLayer !== undefined) {
-          const found = layers.find(l => l.name === args.toLayer);
-          if (!found) {
-            return toolError(`Layer "${args.toLayer}" not found in layout "${args.layoutName}". Layers: ${layers.map(l => l.name).join(', ')}`);
-          }
-          target = found;
-        }
-
-        const fromIndex = source.instances.findIndex(i => i.uid === args.uid);
-        const [inst] = source.instances.splice(fromIndex, 1);
-        if (!Array.isArray(target.instances)) target.instances = [];
-
-        let toIndex: number;
-        const relative = args.aboveUid ?? args.belowUid;
-        if (relative !== undefined) {
-          const anchor = target.instances.findIndex(i => i.uid === relative);
-          if (anchor === -1) {
-            return toolError(`Instance ${relative} is not on layer "${target.name}". aboveUid and belowUid must name an instance on the destination layer.`);
-          }
-          toIndex = args.aboveUid !== undefined ? anchor + 1 : anchor;
-        } else if (args.position === 'bottom') {
-          toIndex = 0;
-        } else if (typeof args.position === 'number') {
-          if (args.position > target.instances.length) {
-            return toolError(`position ${args.position} is out of range: layer "${target.name}" would hold ${target.instances.length + 1} instance(s), so the highest index is ${target.instances.length}.`);
-          }
-          toIndex = args.position;
-        } else if (args.position === 'top' || target !== source) {
-          toIndex = target.instances.length;
-        } else {
-          toIndex = fromIndex;
-        }
-        target.instances.splice(toIndex, 0, inst);
-
-        const unchanged = target === source && toIndex === fromIndex;
+        const moved = moveInstanceInLayout(layout, args.layoutName, args);
+        if ('error' in moved) return toolError(moved.error);
+        const { unchanged, ...placement } = moved;
         if (unchanged) {
           return toolResult({
             success: true,
             entity: args.layoutName,
             category: 'layout',
             action: 'unchanged',
-            message: `Instance ${args.uid} is already at index ${fromIndex} of layer "${source.name}".`,
+            message: `Instance ${args.uid} is already at index ${placement.fromIndex} of layer "${placement.fromLayer}".`,
           });
         }
 
@@ -1509,15 +1632,221 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           action: 'updated',
           backupFile: backupPath,
           uid: args.uid,
-          fromLayer: source.name,
-          fromIndex,
-          toLayer: target.name,
-          toIndex,
-          layerInstanceCount: target.instances.length,
+          ...placement,
         });
       } catch (error) {
         console.error('[move_instance] failed:', error);
         return toolError(`Error moving instance: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── Bulk instance tools ─────────────────────────────────
+  // Each applies a list of edits to one layout, in list order, so a later
+  // item sees what an earlier one did. Every item is checked and applied in
+  // memory first; the layout file is then written once, or not at all when
+  // any item fails or dryRun is set.
+
+  /** Write the layout a bulk call changed, or report the dry run, with its per-item results. */
+  async function finishBulk(
+    layoutName: string, layout: Layout, dryRun: boolean,
+    results: Array<Record<string, unknown>>, warnings: string[], dryRunNote?: string,
+  ) {
+    const base = {
+      success: true,
+      entity: layoutName,
+      category: 'layout',
+      count: results.length,
+      results,
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
+    if (dryRun) {
+      return toolResult({ ...base, action: 'dry-run', dryRun: true, message: `Nothing was written.${dryRunNote ? ` ${dryRunNote}` : ''}` });
+    }
+    const subfolder = writer.getSubfolderForEntity('layouts', layoutName);
+    const backupPath = await writer.writeEntityFile('layouts', layoutName, layout, subfolder);
+    return toolResult({ ...base, action: 'updated', backupFile: backupPath });
+  }
+
+  const bulkDryRun = z.boolean().optional().default(false)
+    .describe('Check and apply every item in memory, report the results, and write nothing');
+
+  // ─── add_instances_to_layout ─────────────────────────────
+
+  server.tool(
+    'add_instances_to_layout',
+    `Place many object instances on one layout in a single call. Each item takes the same fields as add_instance_to_layout. Every item is checked first; if any fails, nothing is written and the error names the item by its 0-based index. Otherwise the layout file is written once. Up to ${MAX_BULK_INSTANCES} items.`,
+    {
+      layoutName: z.string().max(200).describe('Target layout'),
+      instances: z.array(z.object(placeInstanceShape)).min(1).max(MAX_BULK_INSTANCES)
+        .describe('Instances to place, in order; each is an add_instance_to_layout call without layoutName'),
+      dryRun: bulkDryRun,
+    },
+    async (args) => {
+      try {
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        const types = new Map<string, PlacementType | { error: string }>();
+        const results: Array<Record<string, unknown>> = [];
+        const warnings: string[] = [];
+        for (const [index, item] of args.instances.entries()) {
+          let type = types.get(item.objectType);
+          if (!type) {
+            type = await readPlacementType(item.objectType);
+            types.set(item.objectType, type);
+          }
+          if ('error' in type) return toolError(bulkItemError(index, type.error));
+          const placed = await placeInstance(layout, args.layoutName, item, type);
+          if ('error' in placed) return toolError(bulkItemError(index, placed.error));
+          results.push({ index, objectType: item.objectType, uid: placed.uid, sid: placed.sid });
+          warnings.push(...placed.warnings.map(w => `Item ${index}: ${w}`));
+        }
+
+        return await finishBulk(args.layoutName, layout, args.dryRun, results, warnings,
+          'The UIDs and SIDs shown were reserved for this preview only; a real call assigns new ones.');
+      } catch (error) {
+        console.error('[add_instances_to_layout] failed:', error);
+        return toolError(`Error adding instances: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── update_instances ────────────────────────────────────
+
+  server.tool(
+    'update_instances',
+    `Update many placed instances on one layout in a single call. Each item takes a uid and the same fields as update_instance. Every item is checked first; if any fails, nothing is written and the error names the item by its 0-based index. Otherwise the layout file is written once. Up to ${MAX_BULK_INSTANCES} items.`,
+    {
+      layoutName: z.string().max(200).describe('Layout name'),
+      updates: z.array(z.object(updateInstanceShape)).min(1).max(MAX_BULK_INSTANCES)
+        .describe('Updates to apply, in order; each is an update_instance call without layoutName'),
+      dryRun: bulkDryRun,
+    },
+    async (args) => {
+      try {
+        const empty = args.updates.findIndex(isEmptyInstanceUpdate);
+        if (empty !== -1) {
+          return toolError(bulkItemError(empty, 'No updates provided. Specify at least one property to update.'));
+        }
+
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        const results: Array<Record<string, unknown>> = [];
+        const warnings: string[] = [];
+        for (const [index, item] of args.updates.entries()) {
+          const updated = await updateInstanceInLayout(layout, args.layoutName, item);
+          if ('error' in updated) return toolError(bulkItemError(index, updated.error));
+          results.push({ index, uid: item.uid });
+          warnings.push(...updated.warnings.map(w => `Item ${index}: ${w}`));
+        }
+
+        return await finishBulk(args.layoutName, layout, args.dryRun, results, warnings);
+      } catch (error) {
+        console.error('[update_instances] failed:', error);
+        return toolError(`Error updating instances: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── move_instances ──────────────────────────────────────
+
+  server.tool(
+    'move_instances',
+    `Move many world instances of one layout to other layers or Z positions in a single call. Each item takes a uid and the same fields as move_instance, and is applied in list order, so a position counts the instances left by the items before it. Every item is checked first; if any fails, nothing is written and the error names the item by its 0-based index. Otherwise the layout file is written once. Up to ${MAX_BULK_INSTANCES} items.`,
+    {
+      layoutName: z.string().max(200).describe('Layout name'),
+      moves: z.array(z.object(moveInstanceShape)).min(1).max(MAX_BULK_INSTANCES)
+        .describe('Moves to apply, in order; each is a move_instance call without layoutName'),
+      dryRun: bulkDryRun,
+    },
+    async (args) => {
+      try {
+        for (const [index, item] of args.moves.entries()) {
+          const argsError = moveArgsError(item);
+          if (argsError) return toolError(bulkItemError(index, argsError));
+        }
+
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        const results: Array<Record<string, unknown>> = [];
+        for (const [index, item] of args.moves.entries()) {
+          const moved = moveInstanceInLayout(layout, args.layoutName, item);
+          if ('error' in moved) return toolError(bulkItemError(index, moved.error));
+          results.push({ index, uid: item.uid, ...moved });
+        }
+
+        if (results.every(r => r.unchanged === true)) {
+          return toolResult({
+            success: true,
+            entity: args.layoutName,
+            category: 'layout',
+            action: 'unchanged',
+            count: results.length,
+            results,
+            message: 'Every instance is already where its item puts it. Nothing was written.',
+          });
+        }
+        return await finishBulk(args.layoutName, layout, args.dryRun, results, []);
+      } catch (error) {
+        console.error('[move_instances] failed:', error);
+        return toolError(`Error moving instances: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── delete_instances_from_layout ────────────────────────
+
+  server.tool(
+    'delete_instances_from_layout',
+    `Remove many placed instances from one layout by UID in a single call, detaching hierarchy links as delete_instance_from_layout does. Every UID is checked first; if any is missing or repeated, nothing is written and the error names the item by its 0-based index. Otherwise the layout file is written once. Up to ${MAX_BULK_INSTANCES} UIDs.`,
+    {
+      layoutName: z.string().max(200).describe('Layout name'),
+      uids: z.array(z.number().int()).min(1).max(MAX_BULK_INSTANCES).describe('UIDs of the instances to remove'),
+      dryRun: bulkDryRun,
+    },
+    async (args) => {
+      try {
+        const seen = new Set<number>();
+        for (const [index, uid] of args.uids.entries()) {
+          if (seen.has(uid)) return toolError(bulkItemError(index, `UID ${uid} is listed more than once.`));
+          seen.add(uid);
+        }
+
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch {
+          return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
+        }
+
+        const results: Array<Record<string, unknown>> = [];
+        const warnings: string[] = [];
+        for (const [index, uid] of args.uids.entries()) {
+          const removal = removeInstanceFromLayout(layout, args.layoutName, uid);
+          if ('error' in removal) return toolError(bulkItemError(index, removal.error));
+          results.push({ index, uid, objectType: removal.removedType });
+          warnings.push(...removalWarnings(uid, removal).map(w => `Item ${index}: ${w}`));
+        }
+
+        return await finishBulk(args.layoutName, layout, args.dryRun, results, warnings);
+      } catch (error) {
+        console.error('[delete_instances_from_layout] failed:', error);
+        return toolError(`Error deleting instances: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );

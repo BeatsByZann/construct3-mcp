@@ -925,6 +925,65 @@ Move a world instance to another layer and/or change its Z order. A layer's `ins
 
 Give at most one of `position`, `aboveUid` and `belowUid`. Non-world instances are refused. The result reports `fromLayer`, `fromIndex`, `toLayer` and `toIndex`; `action: "unchanged"` when nothing moved.
 
+### Bulk instance tools
+
+Four tools apply a list of instance edits to one layout in a single call. They share these rules:
+
+- Items are applied in list order, so a later item sees what an earlier one did (a `move_instances` position counts the instances the earlier moves left on that layer).
+- Every item is checked and applied in memory before anything is written. If any item fails, the call returns an error that names the item by its 0-based index (`Item 2: ...`) and writes nothing. Otherwise the layout file is written once, with one backup.
+- Each item is checked exactly as its single tool checks it, and produces the same layout: the single and bulk tools share one implementation per edit.
+- Up to 500 items per call. `dryRun: true` checks and applies every item in memory, reports the results with `action: "dry-run"`, and writes nothing.
+- The result has `count`, per-item `results` (each with its `index` and `uid`), and `warnings` prefixed with the item index.
+- Edits on several layouts need one call per layout; nothing links separate calls.
+
+### `add_instances_to_layout`
+
+Place many instances on one layout.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Target layout |
+| `instances` | object[] | Yes | 1 to 500 items, each with the parameters of `add_instance_to_layout` except `layoutName` (`layerName`, `objectType`, `x`, `y`, and the optional ones) |
+| `dryRun` | boolean | No | Report the results and write nothing (default: false) |
+
+Each result carries the `objectType` and the new `uid` and `sid`. New UIDs continue from the highest UID in the project. A dry run reserves UIDs for its preview only, so a real call afterwards assigns different ones.
+
+### `update_instances`
+
+Update many placed instances of one layout.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `updates` | object[] | Yes | 1 to 500 items, each with a `uid` and the parameters of `update_instance` except `layoutName` |
+| `dryRun` | boolean | No | Report the results and write nothing (default: false) |
+
+An item that names no field to change is refused before the layout is read.
+
+### `move_instances`
+
+Move many world instances of one layout to other layers or Z positions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `moves` | object[] | Yes | 1 to 500 items, each with a `uid` and the parameters of `move_instance` except `layoutName` (`toLayer`, `position`, `aboveUid`, `belowUid`) |
+| `dryRun` | boolean | No | Report the results and write nothing (default: false) |
+
+Each result reports `fromLayer`, `fromIndex`, `toLayer`, `toIndex`, `layerInstanceCount` and `unchanged`. When every item leaves its instance where it was, the call returns `action: "unchanged"` and writes nothing.
+
+### `delete_instances_from_layout`
+
+Remove many instances, world or non-world, from one layout by UID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uids` | integer[] | Yes | 1 to 500 UIDs; a UID listed twice is refused |
+| `dryRun` | boolean | No | Report the results and write nothing (default: false) |
+
+Hierarchy links are detached as `delete_instance_from_layout` detaches them: each removed instance leaves its parent's child list, and its children lose their parent link. Each result carries the removed `objectType`.
+
 ### `update_layout`
 
 Update layout properties (event sheet binding, dimensions, scrolling, sampling, projection, viewport anchor).

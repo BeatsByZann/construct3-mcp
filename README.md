@@ -13,7 +13,7 @@
 ## This is a fork
 
 This branch is a fork of [liauw-media/construct3-mcp](https://github.com/liauw-media/construct3-mcp)
-and has diverged from it: **169 MCP tools instead of upstream's 66**, with 103 added and none
+and has diverged from it: **173 MCP tools instead of upstream's 66**, with 107 added and none
 removed or renamed. It adds whole areas upstream does not cover (flowcharts, timeline tracks and
 keyframes, custom eases, tilemap data and brushes, effects, containers, templates, renames with
 reference rewriting, find and replace, Project Bar moves and duplicates, script and project file
@@ -27,7 +27,7 @@ how this relates to upstream.** Read it before filing an issue, and note which b
 | Branch | What it is |
 |---|---|
 | `main` | Close to upstream on purpose. It is the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), so it carries only those correctness fixes. Upstream's 66 tools. |
-| `claude/w84-editor-gap` | The diverged line described in this README. All 169 tools. |
+| `claude/w84-editor-gap` | The diverged line described in this README. All 173 tools. |
 
 Everything below this notice describes `claude/w84-editor-gap`.
 
@@ -202,6 +202,10 @@ The table above covers the general write tools. The tools below complete the set
 | `reorder_layers` / `move_layer` | Reorder one nesting level, or move a layer to another nesting level |
 | `update_instance` | Update a placed instance: position, size, angle, visibility and other properties |
 | `delete_instance_from_layout` | Remove a placed instance by UID |
+| `add_instances_to_layout` | Place up to 500 instances on one layout in one call; if any item fails, nothing is written (`dryRun`) |
+| `update_instances` | Update up to 500 placed instances of one layout in one call, all or nothing (`dryRun`) |
+| `move_instances` | Move up to 500 world instances of one layout between layers or Z positions in one call, applied in list order, all or nothing (`dryRun`) |
+| `delete_instances_from_layout` | Remove up to 500 instances of one layout by UID in one call, detaching hierarchy links, all or nothing (`dryRun`) |
 | `set_instance_parent` / `remove_instance_children` | Attach an instance to a hierarchy parent or detach it, or detach all of its children |
 
 #### Object Types, Families and Containers
@@ -513,7 +517,7 @@ construct3-mcp/
 │   │   ├── mutations.ts            # Registers every mutation tool module
 │   │   ├── event-tools.ts          # 17 event sheet tools
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators
-│   │   ├── layout-tools.ts         # 14 layout, layer and instance tools
+│   │   ├── layout-tools.ts         # 18 layout, layer and instance tools
 │   │   ├── object-tools.ts         # 8 object type and family tools
 │   │   ├── container-tools.ts      # 4 container tools
 │   │   ├── animation-tools.ts      # 14 Sprite animation tools
@@ -630,14 +634,13 @@ We welcome contributions! Here's how to get started:
 
 ### Phase 7: Advanced Features
 - [ ] Support for .c3p (zipped) projects
-- [ ] Rename with reference updates (dry-run preview)
-- [ ] Bulk operations
+- [x] Rename with reference updates (dry-run preview): the six `rename_*` tools
+- [x] Bulk operations: the four bulk instance tools, plus the many-item edits of the event, object, tilemap and timeline tools
 - [ ] Plugin development assistance
 
 ## Known Limitations
 
 - **Folder Format Only**: Works with .c3proj folder projects, not .c3p ZIP files
-- **No Rename Refactoring**: Renaming objects/sheets does not update cross-references (planned for Phase 5)
 - **Runtime Browser Must Expose CDP**: Start Chrome or another compatible browser with a remote debugging port, then use `connect_to_game`. Browser launch and preview hosting are not yet built in.
 - **No ACE Validation**: Event block conditions/actions are not validated against plugin schemas (the AI caller is expected to know valid ACE IDs)
 

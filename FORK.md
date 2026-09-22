@@ -41,11 +41,11 @@ chore). The common ancestor is `6957fcb` (2026-07-27). The diff is 133 files cha
 40,362 insertions and 931 deletions.
 
 No upstream tool was removed or renamed. All 66 upstream tools are still registered under their
-upstream names, so an existing configuration keeps working. The fork adds 103 tools alongside them.
+upstream names, so an existing configuration keeps working. The fork adds 107 tools alongside them.
 
 ## What the fork adds
 
-103 new tools, grouped by the area they cover.
+107 new tools, grouped by the area they cover.
 
 | Area | Tools |
 |---|---|
@@ -62,7 +62,7 @@ upstream names, so an existing configuration keeps working. The fork adds 103 to
 | Read-only usage queries (new area) | `get_project_properties`, `search_project`, `find_behavior_usage`, `find_effect_usage`, `find_instance_variable_references`, `get_instance_counts` |
 | Script and project files (new area) | `register_script_file`, `deregister_script_file`, `register_project_file`, `deregister_project_file`, `create_data_file`, `set_main_script` |
 | Event-sheet authoring | `add_custom_action`, `update_function`, `update_event_group`, `update_comment`, `update_script_event`, `move_event_block`, `move_event_block_items` |
-| Layouts, layers and hierarchy | `move_instance`, `move_layer`, `reorder_layers`, `set_instance_parent`, `remove_instance_children` |
+| Layouts, layers and hierarchy | `move_instance`, `add_instances_to_layout`, `update_instances`, `move_instances`, `delete_instances_from_layout`, `move_layer`, `reorder_layers`, `set_instance_parent`, `remove_instance_children` |
 | Objects and animation | `reorder_behaviors`, `update_instance_variable`, `replace_object_image`, `create_animation_folder`, `move_animation_to_folder`, `duplicate_frame`, `reorder_frames`, `reverse_frames` |
 | Live runtime control over CDP | `connect_to_game`, `disconnect_from_game`, `call_bridge`, `wait_for_condition`, `simulate_input`, `get_canvas_size` |
 | Project settings | `update_project_properties` |
@@ -100,7 +100,7 @@ The per-change detail, including the r495.2 sample sizes the shapes were derived
 
 ## Relationship to upstream
 
-Seven correctness commits were offered upstream as PR #15 and are on this fork's `main`. The 103
+Seven correctness commits were offered upstream as PR #15 and are on this fork's `main`. The 107
 added tools have not been offered upstream and are not scheduled to be; they were built against
 the needs of one project and against Construct r495.2 specifically.
 
