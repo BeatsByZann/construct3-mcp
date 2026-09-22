@@ -91,6 +91,10 @@ These are behavior changes, not additions. They matter if you already depend on 
 - Delete tools deregister before removing an entity file, so caches stay consistent when a delete
   fails part way.
 - Filesystem paths are redacted out of error messages returned to the client.
+- `validate_project`, `add_event_block`, `update_event_block`, `update_event_block_action` and the
+  two replace tools check
+  built-in conditions and actions against the definitions Construct r495.2 ships, and warn about
+  unknown IDs, unknown or missing parameters and invalid combo choices.
 - Object types backed by an image or a plugin table (3D Shape, Particles, Sprite Font, Tilemap,
   9-patch) are created with the files and tables Construct needs, so the project still opens.
 

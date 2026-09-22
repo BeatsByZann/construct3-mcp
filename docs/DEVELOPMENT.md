@@ -140,6 +140,18 @@ Key things to know when working with Construct 3 project files:
 - **JSON formatting**: C3 uses tab indentation (`\t`)
 - **Field naming**: Mostly camelCase for object properties (`isGlobal`, `behaviorTypes`), kebab-case for some identifiers (`plugin-id`, `initially-visible`)
 
+## ACE Catalogue
+
+`src/construct3/ace-catalog-data.ts` holds the condition and action definitions the ACE validation checks against. It is generated, never edited by hand:
+
+```bash
+node scripts/build-ace-catalog.mjs r495-2
+```
+
+The script reads three public files the Construct editor loads for that release from `https://editor.construct.net/<release>/`: `plugins/allAces.json` and `behaviors/allAces.json` (each built-in addon's own ACEs) and `main.js` (the common ACEs the editor adds to plugins by capability, which the other two leave out). It keeps each ACE's ID and its parameters' IDs, types and combo choices. It stops with an error if it cannot read a common ACE definition or tell conditions from actions, which is the likely failure when a new release changes the editor's code.
+
+After regenerating for a new release, run the tests, then check the catalogue against projects that release saved, as was done for r495.2: 8,191 built-in conditions and actions across C3-ACE and three reference packages, 0 problems.
+
 ## Cache Invalidation
 
 After any write operation, three caches must be cleared:

@@ -30,6 +30,7 @@ import type { MutationToolDeps } from './shared.js';
 import type { EventSheet, C3Event } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError } from './shared.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
+import { aceTreeSnapshot, buildAceContext, changedAceSidsInTree, checkEventAces, describeEventAceProblem } from '../construct3/ace-catalog.js';
 import {
   collectObjectNameRefsInSheet,
   countUnrewrittenObjectMentions,
@@ -51,6 +52,8 @@ interface ObjectMembers {
   kind: 'object' | 'family';
   plugin: string;
   behaviors: Set<string>;
+  /** Behavior name to behavior ID, for telling same-named behaviors of different types apart. */
+  behaviorIds: Map<string, string>;
   variables: Set<string>;
   effects: Set<string>;
   animations: Set<string> | null;
@@ -71,6 +74,9 @@ function names(list: unknown): string[] {
 async function readMembers(reader: Reader, name: string): Promise<ObjectMembers | null> {
   const add = (target: ObjectMembers, holder: Json) => {
     names(holder.behaviorTypes).forEach(n => target.behaviors.add(n));
+    for (const b of Array.isArray(holder.behaviorTypes) ? holder.behaviorTypes as Json[] : []) {
+      if (typeof b.name === 'string' && typeof b.behaviorId === 'string') target.behaviorIds.set(b.name, b.behaviorId);
+    }
     names(holder.instanceVariables).forEach(n => target.variables.add(n));
     names(holder.effectTypes).forEach(n => target.effects.add(n));
   };
@@ -81,6 +87,7 @@ async function readMembers(reader: Reader, name: string): Promise<ObjectMembers 
       kind: 'object',
       plugin: String(obj['plugin-id']),
       behaviors: new Set(),
+      behaviorIds: new Map(),
       variables: new Set(),
       effects: new Set(),
       animations: animations ? new Set(collectAnimationNames(animations)) : null,
@@ -97,6 +104,7 @@ async function readMembers(reader: Reader, name: string): Promise<ObjectMembers 
       kind: 'family',
       plugin: String(family['plugin-id']),
       behaviors: new Set(),
+      behaviorIds: new Map(),
       variables: new Set(),
       effects: new Set(),
       animations: null,
@@ -204,6 +212,13 @@ function incompatibilities(
       if (ace.objectClass === from) {
         if (typeof ace.behaviorType === 'string' && !target.behaviors.has(ace.behaviorType)) {
           reasons.push(`"${label}" uses behavior "${ace.behaviorType}", which ${to} does not have`);
+        } else if (typeof ace.behaviorType === 'string') {
+          // Same name, different behavior: the ACE would address a behavior of another kind.
+          const sourceId = source.behaviorIds.get(ace.behaviorType);
+          const targetId = target.behaviorIds.get(ace.behaviorType);
+          if (sourceId !== undefined && targetId !== undefined && sourceId !== targetId) {
+            reasons.push(`"${label}" uses behavior "${ace.behaviorType}", which is a ${sourceId} behavior on ${from} but a ${targetId} behavior on ${to}`);
+          }
         }
         for (const { key: paramKey, value } of params) {
           if (paramKey === 'instance-variable' && !target.variables.has(value)) {
@@ -469,6 +484,7 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
         const sites: RefSite[] = [];
         const skipped: SkippedEvent[] = [];
         let unrewritten = 0;
+        let aceContext: Awaited<ReturnType<typeof buildAceContext>> | undefined;
         for (const name of scope) {
           const file = reader.getEntityRelativePath('eventSheets', name);
           let sheet: EventSheet;
@@ -478,11 +494,17 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
             warnings.push(`Event sheet "${name}" could not be read and was not scanned: ${e instanceof Error ? e.message : String(e)}`);
             continue;
           }
+          const acesBefore = aceTreeSnapshot(sheet.events);
           const result = replaceInSheet(file, sheet, from, to, source, target, !args.dryRun, warnings);
           sites.push(...result.sites);
           skipped.push(...result.skipped);
           unrewritten += countUnrewrittenObjectMentions(sheet, from);
           if (!args.dryRun && result.sites.length > 0) {
+            // The swapped conditions and actions, against Construct's own definitions.
+            aceContext ??= await buildAceContext(reader);
+            for (const problem of checkEventAces(sheet.events, aceContext, changedAceSidsInTree(acesBefore, sheet.events))) {
+              warnings.push(`${name}: ${describeEventAceProblem(problem)}`);
+            }
             const subfolder = writer.getSubfolderForEntity('eventSheets', name);
             await writer.writeEntityFile('eventSheets', name, sheet, subfolder);
             resetProjectIndex();
@@ -624,6 +646,7 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
         }
 
         // Phase 3: apply and report.
+        const acesBefore = args.dryRun ? [] : sheets.map(sheet => aceTreeSnapshot(sheet.data.events));
         const changes: Array<{ sheet: string; eventSid?: number; path: string; key: string; before: string; after: string }> = [];
         const perSheet = new Map<number, { sheet: string; parameters: number; matches: number }>();
         const protectedHits = new Map<string, number>();
@@ -657,6 +680,17 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
         }
 
         const touched = [...perSheet].sort((x, y) => x[0] - y[0]);
+        if (!args.dryRun && touched.length > 0) {
+          // The rewritten parameters, against Construct's own definitions (a
+          // combo value changed through parameterKeys can stop being a choice).
+          const aceContext = await buildAceContext(reader);
+          for (const [index] of touched) {
+            const { name, data } = sheets[index];
+            for (const problem of checkEventAces(data.events, aceContext, changedAceSidsInTree(acesBefore[index], data.events))) {
+              warnings.push(`${name}: ${describeEventAceProblem(problem)}`);
+            }
+          }
+        }
         if (!args.dryRun) {
           for (const [index] of touched) {
             const { name, data } = sheets[index];

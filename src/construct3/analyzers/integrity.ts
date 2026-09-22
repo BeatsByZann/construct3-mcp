@@ -13,6 +13,7 @@ import { getProjectIndex } from './index-builder.js';
 import { findOrphanedObjects } from './object-deps.js';
 import { SINGLE_IMAGE_PLUGINS, ANIMATION_PLUGINS } from '../templates.js';
 import { getImageFileName } from '../png-generator.js';
+import { ACE_CATALOG_RELEASE, buildAceContext, checkEventAces, describeEventAceProblem } from '../ace-catalog.js';
 
 /** Image file extensions by declared fileType, from the r495.2 samples. */
 const IMAGE_EXTENSIONS: Record<string, string> = {
@@ -104,13 +105,14 @@ export async function validateProjectIntegrity(
   checkBrokenEventSheetReferences(layouts, eventSheets, warnings);
   checkBrokenIncludes(eventSheets, warnings);
   checkMissingAddons(objects, reader, warnings);
+  await checkEventAceDefinitions(reader, eventSheets, warnings);
 
   // Info checks
   await checkOrphanedFiles(reader, registeredObjects, registeredSheets, registeredLayouts, info);
   await checkBackupFiles(reader, info);
   await checkOrphanedObjects(reader, info);
 
-  const checksRun = 14;
+  const checksRun = 15;
 
   return {
     valid: errors.length === 0,
@@ -626,6 +628,32 @@ async function checkBrokenObjectReferences(
         entity: `objectReference/${objName}`,
         message: `Object "${objName}" is referenced in events but does not exist as an object, family, or "System"`,
         suggestion: `Check for typos or deleted objects. Referenced in event sheets.`,
+      });
+    }
+  }
+}
+
+// ─── Check 6b: Conditions and Actions Against Construct's Definitions ──
+
+/**
+ * Every standard condition and action of a built-in plugin or behavior must be
+ * one Construct defines, with the parameter names it defines and, for a combo
+ * parameter, one of its choices. ACEs of third-party addons and of objects the
+ * project does not declare are skipped.
+ */
+async function checkEventAceDefinitions(
+  reader: Construct3ProjectReader,
+  sheets: Map<string, EventSheet>,
+  warnings: IntegrityIssue[]
+): Promise<void> {
+  const context = await buildAceContext(reader);
+  for (const [name, sheet] of sheets) {
+    for (const problem of checkEventAces(sheet.events, context)) {
+      warnings.push({
+        check: `ace-${problem.code}`,
+        entity: `eventSheets/${name}${problem.sid !== undefined ? `/sid:${problem.sid}` : ''}`,
+        message: describeEventAceProblem(problem),
+        suggestion: `Compare with the ${problem.kind === 'conditions' ? 'condition' : 'action'} as Construct ${ACE_CATALOG_RELEASE} writes it, or fix it with update_event_block`,
       });
     }
   }

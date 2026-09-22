@@ -124,7 +124,7 @@ node dist/index.js /path/to/your/project.c3proj
 | `find_orphaned_objects` | Find objects not referenced in any event sheet or layout |
 | `get_asset_usage` | Track sound, image, font, and video asset usage |
 | `analyze_performance` | Heuristic performance audit with categorized issues |
-| `validate_project` | Integrity checks: file existence, duplicate SIDs/UIDs, broken references, orphaned files; `complete` says whether every object type, event sheet and layout was scanned |
+| `validate_project` | Integrity checks: file existence, duplicate SIDs/UIDs, broken references, conditions and actions against Construct r495.2's own definitions, orphaned files; `complete` says whether every object type, event sheet and layout was scanned |
 | `get_project_properties` | Every project setting: the full `properties` bag and top-level settings such as `bundleAddons` |
 | `search_project` | Find text or a regular expression across event sheets, script files and layout instance values |
 | `find_behavior_usage` | Declarations, event references and per-instance settings of a behavior |
@@ -493,6 +493,8 @@ construct3-mcp/
 │   │   ├── id-generator.ts         # SID/UID generation with collision avoidance
 │   │   ├── templates.ts            # Object, event sheet, layout templates
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNG generation
+│   │   ├── ace-catalog.ts          # Condition and action validation
+│   │   ├── ace-catalog-data.ts     # Construct r495.2 ACE definitions (generated)
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
 │   │       ├── index-builder.ts    # Cross-reference index
@@ -642,7 +644,7 @@ We welcome contributions! Here's how to get started:
 
 - **Folder Format Only**: Works with .c3proj folder projects, not .c3p ZIP files
 - **Runtime Browser Must Expose CDP**: Start Chrome or another compatible browser with a remote debugging port, then use `connect_to_game`. Browser launch and preview hosting are not yet built in.
-- **No ACE Validation**: Event block conditions/actions are not validated against plugin schemas (the AI caller is expected to know valid ACE IDs)
+- **ACE validation covers built-in addons only**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a problem is a warning, not a refusal. Third-party addons, expressions inside parameter values, and parameter values other than combo choices are not checked ([details](docs/API.md#ace-validation))
 
 ## License
 

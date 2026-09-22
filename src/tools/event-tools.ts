@@ -3,6 +3,7 @@
  */
 
 import { z } from 'zod';
+import { aceSnapshot, buildAceContext, changedAceSids, checkEventAces, describeEventAceProblem } from '../construct3/ace-catalog.js';
 import type { MutationToolDeps } from './shared.js';
 import type { C3Event, EventSheet, FunctionBlockEvent, WriteResult } from '../construct3/types.js';
 import { validateName, validateSubfolder, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord } from './shared.js';
@@ -377,6 +378,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         );
         warnings.push(...counter.warnings);
         const blockSid = blockEvent.sid as number;
+
+        // Conditions and actions of built-in plugins and behaviors are checked
+        // against Construct's own definitions; the block is still written.
+        warnings.push(...checkEventAces([blockEvent], await buildAceContext(reader)).map(describeEventAceProblem));
 
         // Commit deferred children-array creation only after all validation and
         // block construction have succeeded.
@@ -760,6 +765,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
         action.parameters = { ...args.parameters };
         await applyCustomEaseParameter(reader, action.parameters);
+        const warnings = checkEventAces([{ actions: [action] }], await buildAceContext(reader)).map(describeEventAceProblem);
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
@@ -773,6 +779,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           updatedBlockSid: args.blockSid,
           updatedActionIndex: args.actionIndex,
           actionId: action.id,
+          warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
         });
       } catch (error) {
@@ -1122,6 +1129,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const conditions = event.conditions as Record<string, unknown>[];
         const actions = event.actions as Record<string, unknown>[];
         const warnings: string[] = [];
+        const aceBefore = aceSnapshot(event);
         // Rewrite unknown keys older builds wrote (isElse, condition isOr) before
         // any index is checked: adding the else condition shifts condition indexes.
         // The sheet was parsed fresh for this call, so an early error discards it.
@@ -1416,6 +1424,14 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (conditions.length === 0 && eventType === 'block') {
           warnings.push('All conditions were removed — block will match unconditionally (always true).');
         }
+
+        // Check the conditions and actions this call added or changed against
+        // Construct's own definitions; the block is still written.
+        warnings.push(...checkEventAces(
+          [{ conditions: event.conditions, actions: event.actions }],
+          await buildAceContext(reader),
+          changedAceSids(aceBefore, event),
+        ).map(describeEventAceProblem));
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
