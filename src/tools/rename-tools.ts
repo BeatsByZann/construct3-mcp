@@ -29,6 +29,7 @@ import type { WriteResult, EventSheet, Layout, ObjectType } from '../construct3/
 import { validateName, toolResult, toolError, notFoundError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
+import { assertUnchanged, recordChange, restamp } from '../construct3/change-journal.js';
 import { findLayer, collectLayers } from '../construct3/layout-walk.js';
 import { findEventBySid } from './event-helpers.js';
 import {
@@ -145,6 +146,7 @@ async function readProjectJson(projectPath: string): Promise<ProjectJson> {
 
 async function backupFileIfPresent(filePath: string): Promise<string> {
   const bak = filePath + '.bak';
+  await assertUnchanged(filePath);
   try {
     await stat(filePath);
     await copyFile(filePath, bak);
@@ -157,6 +159,11 @@ async function backupFileIfPresent(filePath: string): Promise<string> {
 
 async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
   const tmpPath = filePath + '.tmp';
+  // Callers back the file up first (backupFileIfPresent); the journal records the write as such.
+  let existed = true;
+  try { await stat(filePath); } catch { existed = false; }
+  let hasBackup = false;
+  if (existed) { try { await stat(filePath + '.bak'); hasBackup = true; } catch { /* no backup */ } }
   await writeFile(tmpPath, JSON.stringify(data, null, '\t'), 'utf-8');
   try {
     await renameFile(tmpPath, filePath);
@@ -169,6 +176,10 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
       throw e;
     }
   }
+  recordChange(!existed
+    ? { kind: 'create', path: filePath }
+    : hasBackup ? { kind: 'write', path: filePath, backupPath: filePath + '.bak' } : { kind: 'overwrite-no-backup', path: filePath });
+  await restamp(filePath);
 }
 
 // ─── Shared helpers ────────────────────────────────────────

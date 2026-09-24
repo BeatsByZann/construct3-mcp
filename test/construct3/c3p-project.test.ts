@@ -176,6 +176,18 @@ describe('C3pProject.sync', () => {
     expect(await readFile(archivePath)).toEqual(construct);
   });
 
+  it('tells two writes of the same size within one time stamp apart', async () => {
+    const project = await open();
+    const file = join(project.workDir, 'layouts', 'Layout 1.json');
+    await writeFile(file, '{"a":1}');
+    expect((await project.sync()).status).toBe('saved');
+    const same = await stat(file);
+    await writeFile(file, '{"a":2}');
+    await utimes(file, same.atime, same.mtime); // the same second write a file system may give it
+    expect((await project.sync()).status).toBe('saved');
+    expect(JSON.parse(readZip(await readFile(archivePath)).find(e => e.path === 'layouts/Layout 1.json')!.data.toString('utf-8'))).toEqual({ a: 2 });
+  });
+
   it('treats a new time stamp on the same content as no change', async () => {
     const project = await open();
     const later = new Date(Date.now() + 60_000);
@@ -258,8 +270,9 @@ describe('syncAfterEveryTool', () => {
 
     const added = await server.callTool('add_layer', { layoutName: 'Layout 1', layerName: 'Top' });
     expect(parse(added).success).toBe(true);
-    expect(added.content).toHaveLength(2);
-    expect(added.content[1].text).toBe(`Saved the project to "${archivePath}" (4 files).`);
+    expect(added.content).toHaveLength(3);
+    expect(added.content[1].text).toBe('Changed 1 file(s): layouts/Layout 1.json (1 with a .bak backup; revert_last_change undoes this call).');
+    expect(added.content[2].text).toBe(`Saved the project to "${archivePath}" (4 files).`);
     const layout = JSON.parse((await archiveFiles())['layouts/Layout 1.json']);
     expect(layout.layers.map((l: any) => l.name)).toContain('Top');
   });
@@ -268,8 +281,8 @@ describe('syncAfterEveryTool', () => {
     const { project, server } = await serve();
     await writeFile(archivePath, buildZip([{ path: 'project.c3proj', data: Buffer.from('{}') }]));
     const added = await server.callTool('add_layer', { layoutName: 'Layout 1', layerName: 'Top' });
-    expect(added.content[1].text).toMatch(/^The project was NOT saved to .*changed by something else.*working folder/);
-    expect(added.content[1].text).toContain(project.workDir);
+    expect(added.content[2].text).toMatch(/^The project was NOT saved to .*changed by something else.*working folder/);
+    expect(added.content[2].text).toContain(project.workDir);
   });
 
   it('writes once after overlapping calls finish, and holds new calls until the write is done', async () => {
@@ -297,7 +310,7 @@ describe('syncAfterEveryTool', () => {
     release();
     const slowResult = await slow;
     expect(sync).toHaveBeenCalledTimes(1);
-    expect(slowResult.content[1].text).toMatch(/^Saved the project/);
+    expect(slowResult.content.at(-1)!.text).toMatch(/^Saved the project/);
     expect(order).toEqual(['fast', 'slow']);
 
     // A call that starts while a write is under way runs after it.

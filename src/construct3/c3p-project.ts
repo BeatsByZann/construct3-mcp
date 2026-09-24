@@ -18,9 +18,10 @@ import { createHash } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { collectProjectFiles } from '../runtime/project-files.js';
+import { withJournalEntry, type JournalEntry } from './change-journal.js';
 import { readZip } from '../runtime/zip-reader.js';
 import { assembleZip, packZipEntry } from '../runtime/zip-writer.js';
 import type { PackedZipEntry } from '../runtime/zip-writer.js';
@@ -173,21 +174,39 @@ export class C3pProject {
   }
 }
 
-/** Each packed file's size and modification time in nanoseconds, by path, in path order. */
+/**
+ * Each packed file's size and modification time in nanoseconds, by path, in
+ * path order. A file modified within the last RACY_MS also carries a content
+ * hash: a second write of the same size inside one time-stamp tick would
+ * otherwise look unchanged (the same race git guards against).
+ */
 type FolderStamp = Map<string, string>;
+const RACY_MS = 100;
 
 async function folderStamp(dir: string): Promise<FolderStamp> {
   const files = (await collectProjectFiles(dir)).sort();
+  const now = Date.now();
   const stamps = await Promise.all(files.map(async path => {
-    const info = await stat(join(dir, path), { bigint: true });
-    return [path, `${info.size}:${info.mtimeNs}`] as const;
+    const full = join(dir, path);
+    const info = await stat(full, { bigint: true });
+    const base = `${info.size}:${info.mtimeNs}`;
+    const recent = now - Number(info.mtimeMs) < RACY_MS;
+    return [path, recent ? `${base}:${sha256(await readFile(full))}` : base] as const;
   }));
   return new Map(stamps);
 }
 
+/** Stamps agree when their size and time agree and, where both carry a hash, the hashes agree. */
 function sameStamp(a: FolderStamp, b: FolderStamp): boolean {
   if (a.size !== b.size) return false;
-  for (const [path, stamp] of a) if (b.get(path) !== stamp) return false;
+  for (const [path, stamp] of a) {
+    const other = b.get(path);
+    if (other === undefined) return false;
+    const [sizeA, timeA, hashA] = stamp.split(':');
+    const [sizeB, timeB, hashB] = other.split(':');
+    if (sizeA !== sizeB || timeA !== timeB) return false;
+    if (hashA !== undefined && hashB !== undefined && hashA !== hashB) return false;
+  }
   return true;
 }
 
@@ -211,6 +230,7 @@ export function describeSync(project: C3pProject, sync: C3pSyncResult): string |
 type ToolRegistrar = (...args: unknown[]) => unknown;
 interface ToolResultLike {
   content?: Array<{ type: string; text?: string }>;
+  isError?: boolean;
 }
 
 const pause = () => new Promise(resolve => setTimeout(resolve, 5));
@@ -235,25 +255,53 @@ export class ToolGate {
   private held: Promise<unknown> | undefined;
   private exclusiveChain: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly archive: () => C3pProject | undefined) {}
+  constructor(
+    private readonly archive: () => C3pProject | undefined,
+    private readonly projectDir: () => string | undefined = () => undefined,
+  ) {}
 
   install(server: McpServer): void {
     const register = (server.tool as ToolRegistrar).bind(server);
     (server as unknown as { tool: ToolRegistrar }).tool = (...args: unknown[]) => {
       const last = args.length - 1;
       const handler = args[last];
-      if (typeof handler === 'function') args[last] = (...callArgs: unknown[]) => this.run(() => handler(...callArgs));
+      const name = typeof args[0] === 'string' ? args[0] : 'tool';
+      if (typeof handler === 'function') args[last] = (...callArgs: unknown[]) => this.run(name, () => handler(...callArgs));
       return register(...args);
     };
   }
 
-  private async run(handler: () => unknown): Promise<unknown> {
+  /**
+   * Lines for a tool result, from its journal entry: the files the call
+   * changed, and the files it found changed on disk by something else.
+   */
+  private describeChanges(entry: JournalEntry): string[] {
+    const dir = this.projectDir() ?? this.archive()?.workDir;
+    const rel = (p: string) => (dir ? relative(dir, p) : p).split(sep).join('/');
+    const list = (paths: string[]) => paths.slice(0, 12).join(', ') + (paths.length > 12 ? `, and ${paths.length - 12} more` : '');
+    const lines: string[] = [];
+    if (entry.outside.length > 0) {
+      const files = entry.outside.map(rel);
+      lines.push(`Note: ${files.length} file(s) changed on disk since this server last read them, so Construct or another program saved them: ${list(files)}. The call worked from their current content; run validate_project if that was not expected.`);
+    }
+    if (entry.changes.length > 0) {
+      const files = [...new Set(entry.changes.map(c => rel(c.path)))];
+      const backups = entry.changes.filter(c => c.backupPath).length;
+      lines.push(`Changed ${files.length} file(s): ${list(files)}${backups > 0 ? ` (${backups} with a .bak backup; revert_last_change undoes this call)` : ''}.`);
+    }
+    return lines;
+  }
+
+  private async run(name: string, handler: () => unknown): Promise<unknown> {
     for (let wait = this.writing ?? this.held; wait; wait = this.writing ?? this.held) await wait.catch(() => undefined);
     this.running++;
     let result: unknown;
     let failure: { error: unknown } | undefined;
+    let entry: JournalEntry | undefined;
     try {
-      result = await handler();
+      const journaled = await withJournalEntry(name, async () => handler());
+      result = journaled.result;
+      entry = journaled.entry;
     } catch (error) {
       failure = { error };
     }
@@ -270,8 +318,11 @@ export class ToolGate {
       }
     }
     if (failure) throw failure.error;
-    const note = project && sync && describeSync(project, sync);
     const content = (result as ToolResultLike | undefined)?.content;
+    if (entry && Array.isArray(content) && !(result as ToolResultLike | undefined)?.isError) {
+      for (const line of this.describeChanges(entry)) content.push({ type: 'text', text: line });
+    }
+    const note = project && sync && describeSync(project, sync);
     if (note && Array.isArray(content)) content.push({ type: 'text', text: note });
     return result;
   }

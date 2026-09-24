@@ -56,7 +56,7 @@ export class ProjectSession {
     private readonly workRoot: string | undefined,
   ) {
     this.current = archive;
-    this.gate = new ToolGate(() => this.current);
+    this.gate = new ToolGate(() => this.current, () => this.reader.getProjectDir());
   }
 
   /** Open the project the server starts with. */

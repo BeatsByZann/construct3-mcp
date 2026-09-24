@@ -14,6 +14,7 @@ import { addFileEntry, findFileEntry, removeFileEntry } from './file-registratio
 import { resetProjectIndex } from './analyzers/index-builder.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from './templates.js';
 import { generatePlaceholderPng, getImageFileName } from './png-generator.js';
+import { assertUnchanged, forgetStamp, recordChange, restamp } from './change-journal.js';
 
 /** Maximum entity file size we'll write (5MB — well above any real C3 entity) */
 const MAX_WRITE_SIZE = 5 * 1024 * 1024;
@@ -77,16 +78,23 @@ export class Construct3ProjectWriter {
    * On Windows, rename fails with EEXIST if destination exists — we handle
    * this by deleting the destination first, then retrying the rename.
    */
+  /** What createBackup found for a path, consumed by the write that follows it. */
+  private readonly pendingBackups = new Map<string, { backupPath: string; existed: boolean }>();
+
   private async atomicWrite(filePath: string, content: string | Buffer): Promise<void> {
     const tmpPath = filePath + '.tmp';
     await writeFile(tmpPath, content, typeof content === 'string' ? 'utf-8' : undefined);
     try {
       await rename(tmpPath, filePath);
+      this.noteWritten(filePath);
+      await restamp(filePath);
     } catch (e: unknown) {
       if (e && typeof e === 'object' && 'code' in e && e.code === 'EEXIST') {
         // Windows: destination exists — delete it then retry
         await unlink(filePath);
         await rename(tmpPath, filePath);
+        this.noteWritten(filePath);
+        await restamp(filePath);
       } else {
         // Cleanup temp file before re-throwing
         try { await unlink(tmpPath); } catch { /* best-effort */ }
@@ -95,21 +103,36 @@ export class Construct3ProjectWriter {
     }
   }
 
+  /** Journal a write that atomicWrite just completed, as a change of the tool call in progress. */
+  private noteWritten(filePath: string): void {
+    const backup = this.pendingBackups.get(filePath);
+    this.pendingBackups.delete(filePath);
+    recordChange(backup?.existed
+      ? { kind: 'write', path: filePath, backupPath: backup.backupPath }
+      : { kind: 'create', path: filePath });
+  }
+
   /**
    * Create a .bak backup of a file before overwriting.
    * Returns the backup path (even if the original didn't exist).
+   * Refuses a file that changed on disk since this process last read it.
    */
   private async createBackup(filePath: string): Promise<string> {
     const backupPath = filePath + '.bak';
+    await assertUnchanged(filePath);
     try {
       await stat(filePath);
     } catch (e: unknown) {
       // File doesn't exist yet (new entity) — no backup needed
-      if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') return backupPath;
+      if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') {
+        this.pendingBackups.set(filePath, { backupPath, existed: false });
+        return backupPath;
+      }
       throw new Error(`Cannot access file for backup: ${e instanceof Error ? e.message : String(e)}`);
     }
     // File exists — backup must succeed or we abort
     await copyFile(filePath, backupPath);
+    this.pendingBackups.set(filePath, { backupPath, existed: true });
     return backupPath;
   }
 
@@ -196,6 +219,8 @@ export class Construct3ProjectWriter {
     const filePath = resolveProjectPath(this.reader.getProjectDir(), ...segments);
 
     const backupPath = await this.createBackup(filePath);
+    const backup = this.pendingBackups.get(filePath);
+    this.pendingBackups.delete(filePath);
     try {
       await unlink(filePath);
     } catch (e: unknown) {
@@ -204,6 +229,8 @@ export class Construct3ProjectWriter {
         throw e;
       }
     }
+    if (backup?.existed) recordChange({ kind: 'delete', path: filePath, backupPath });
+    forgetStamp(filePath);
 
     this.invalidateAll();
     return backupPath;
@@ -535,7 +562,12 @@ export class Construct3ProjectWriter {
     await mkdir(dirname(filePath), { recursive: true });
 
     const png = generatePlaceholderPng(width, height);
+    // A placeholder image is written without a backup; the journal says so.
+    let existed = true;
+    try { await stat(filePath); } catch { existed = false; }
     await writeFile(filePath, png);
+    recordChange(existed ? { kind: 'overwrite-no-backup', path: filePath } : { kind: 'create', path: filePath });
+    await restamp(filePath);
 
     return filePath;
   }

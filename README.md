@@ -13,7 +13,7 @@
 ## This is a fork
 
 This branch is a fork of [liauw-media/construct3-mcp](https://github.com/liauw-media/construct3-mcp)
-and has diverged from it: **179 MCP tools instead of upstream's 66**, with 113 added and none
+and has diverged from it: **182 MCP tools instead of upstream's 66**, with 116 added and none
 removed or renamed. It adds whole areas upstream does not cover (flowcharts, timeline tracks and
 keyframes, custom eases, tilemap data and brushes, effects, containers, templates, renames with
 reference rewriting, find and replace, Project Bar moves and duplicates, script and project file
@@ -27,7 +27,7 @@ how this relates to upstream.** Read it before filing an issue, and note which b
 | Branch | What it is |
 |---|---|
 | `main` | Close to upstream on purpose. It is the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), so it carries only those correctness fixes. Upstream's 66 tools. |
-| `claude/w84-editor-gap` | The diverged line described in this README. All 179 tools. |
+| `claude/w84-editor-gap` | The diverged line described in this README. All 182 tools. |
 
 Everything below this notice describes `claude/w84-editor-gap`.
 
@@ -120,6 +120,9 @@ node dist/index.js /path/to/your/project.c3proj
 |------|-------------|
 | `get_open_project` | Report the project the server serves: name, `.c3proj` path, and for a `.c3p` the archive and its working folder |
 | `open_project` | Switch to another project folder, `.c3proj` or `.c3p` while the server runs; see [Single-file (.c3p) projects](#single-file-c3p-projects) |
+| `reload_project` | Re-read the project after Construct or another program saved it, and report which files had changed on disk |
+| `list_changes` | What recent tool calls wrote, created, deleted or moved, with the `.bak` backup each write left |
+| `revert_last_change` | Undo the most recent tool call that changed files, from those backups |
 
 ### Analysis Tools
 
@@ -563,7 +566,7 @@ construct3-mcp/
 │   │   ├── query.ts                # 9 query tools
 │   │   ├── analysis.ts             # 8 analysis tools
 │   │   ├── usage-tools.ts          # 6 usage and search tools
-│   │   ├── session-tools.ts        # 2 project session tools
+│   │   ├── session-tools.ts        # 5 project session tools
 │   │   ├── shared.ts               # Shared validation, error helpers
 │   │   ├── mutations.ts            # Registers every mutation tool module
 │   │   ├── event-tools.ts          # 17 event sheet tools
@@ -693,6 +696,7 @@ We welcome contributions! Here's how to get started:
 ## Known Limitations
 
 - **One Writer at a Time for a .c3p**: The server writes a `.c3p` back after each change and refuses to overwrite one Construct saved in the meantime. Do not edit the same archive in Construct and through the server at once.
+- **Folder projects and the editor**: every tool reads a file fresh before writing it, and a call whose files Construct saved in the meantime says so in its result; a write made from a stale bulk read is refused until `reload_project`. Still, close the project in Construct before editing it here: the editor keeps its own copy and saves over yours.
 - **The game must be exported first**: `serve_preview` serves and launches an HTML5 export, and `connect_to_game` reaches any browser started with a remote-debugging port, but Construct exports only from its editor; the tools cannot produce the export, and the editor's own preview is not reachable over CDP.
 - **ACE validation needs definitions**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a third-party addon's against its own `aces.json` once loaded (`C3_ADDON_DEFINITIONS` or `load_addon_definitions`); `validate_project` names the addons still unloaded. A problem is a warning, not a refusal. Expressions inside parameter values are parsed and their names resolved against the project ([details](docs/API.md#expression-checking)); the type a parameter expects is not checked against the expression's type
 

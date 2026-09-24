@@ -132,7 +132,29 @@ Comprehensive project overview including metadata, statistics, addon counts, and
 
 ## Project Session Tools
 
-The server starts on the project its command line names. These tools report it and switch to another one while the server runs.
+The server starts on the project its command line names. These tools report it, switch to another one while the server runs, re-read it after an outside save, and list or undo what recent calls changed.
+
+### File stamps and the change journal
+
+The server remembers the size and modification time of every project file it reads or writes. A call that reads a file Construct or another program saved since then says so in its result (`Note: 1 file(s) changed on disk since this server last read them ...`) and works from the file's current content. A write that starts from a stale bulk read (the caches `validate_project` and the analyzers fill) is refused with the same wording until `reload_project` runs, so a stale copy never overwrites an editor save.
+
+Every call also gets a journal entry: the files it wrote, created, deleted or moved, and the `.bak` backup each write or delete left beside the file. A mutation result ends with `Changed N file(s): ...` naming them. `list_changes` shows the entries and `revert_last_change` undoes the most recent one from those backups. A placeholder image overwritten by `create_object` or `add_frame_to_animation` has no backup and is reported as not restorable.
+
+### `reload_project`
+
+Re-read the project from disk: every cached file, the project index and the file stamps. No parameters. Returns the project name and `changedOnDisk`, the files whose stamp no longer matched (`changed`) or that are gone (`missing`) before the stamps were cleared.
+
+### `list_changes`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | integer | No | How many calls to list, newest first, 1 to 50 (default 20) |
+
+Returns `calls`: for each call that changed a file, its `id`, `tool`, `at`, `reverted` flag and `changes` (`kind` of `write`, `create`, `delete`, `move`, `copy` or `overwrite-no-backup`, the `file`, a move's `from`, and the `backup` when one exists), paths relative to the project.
+
+### `revert_last_change`
+
+Undo the most recent call that changed files, last change first: a written or deleted file is restored from its `.bak`, a created or copied file removed, a moved file moved back. No parameters. Refused when a later call, reverted or not, touched any of the same files, because their backups then hold that later state; the message names those calls. Returns `reverted` (the entry), `restored` (file and how) and `notRestored` (file and why) when a change had no backup. The project is re-read afterwards.
 
 ### `get_open_project`
 

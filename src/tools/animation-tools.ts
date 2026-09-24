@@ -19,6 +19,7 @@ import type {
   ImagePoint,
 } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError, validateSubfolder } from './shared.js';
+import { forgetChange, recordChange } from '../construct3/change-journal.js';
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
 import { getImageFileName } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
@@ -149,11 +150,13 @@ class FileMoveJournal {
   async move(from: string, to: string): Promise<void> {
     await rename(from, to);
     this.done.push({ from, to });
+    recordChange({ kind: 'move', path: to, from });
   }
 
   async copy(from: string, to: string): Promise<void> {
     await copyFile(from, to);
     this.done.push({ from, to, copied: true });
+    recordChange({ kind: 'copy', path: to });
   }
 
   async undo(): Promise<void> {
@@ -165,6 +168,8 @@ class FileMoveJournal {
       } catch {
         // Best-effort rollback: a file that is already gone is the desired state.
       }
+      // The tool undid it itself, so the call's journal must not offer it again.
+      forgetChange(step.to);
     }
     this.done = [];
   }

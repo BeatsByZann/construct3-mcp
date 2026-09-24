@@ -12,6 +12,7 @@ import type {
   Subfolder,
 } from './types.js';
 import { resolveProjectPath } from './path-utils.js';
+import { noteSeen } from './change-journal.js';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -116,6 +117,8 @@ export class Construct3ProjectReader {
         `File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB exceeds 10MB limit)`
       );
     }
+    // Remember the file as read, so a later write notices an outside change.
+    noteSeen(filePath, stats);
     return readFile(filePath, 'utf-8');
   }
 

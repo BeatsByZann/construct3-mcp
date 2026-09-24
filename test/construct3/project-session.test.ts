@@ -96,7 +96,7 @@ describe('open_project', () => {
     const layoutName = (layouts.layouts ?? layouts)[0].name ?? (layouts.layouts ?? layouts)[0];
     const added = await server.callTool('add_layer', { layoutName, layerName: 'From Session' });
     expect(parse(added).success).toBe(true);
-    expect(added.content[1].text).toMatch(/^Saved the project to /);
+    expect(added.content.at(-1)!.text).toMatch(/^Saved the project to /);
     const entry = readZip(await readFile(archivePath)).find(e => e.path === `layouts/${layoutName}.json`)!;
     expect(JSON.parse(entry.data.toString('utf-8')).layers.map((l: any) => l.name)).toContain('From Session');
     // The folder project the server left is untouched.

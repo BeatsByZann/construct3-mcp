@@ -73,6 +73,18 @@ Common issues and solutions for the Construct3 MCP Server.
 
 Same as above — use the corresponding `list_` tool to find the correct name.
 
+### "... changed on disk after this server last read it"
+
+**Cause**: A write started from a copy the server read before Construct or another program saved the file (a bulk read the analyzers cached). Overwriting it would lose that save.
+
+**Solution**: Call `reload_project`, which re-reads the project and lists the files that had changed, then repeat the call. A call that reads the file fresh does not hit this; its result carries a `Note:` naming the file instead.
+
+### "cannot be reverted: later call(s) ... touched the same file(s)"
+
+**Cause**: `revert_last_change` works from the single `.bak` beside each file, and a later call (even one already reverted) rewrote that backup.
+
+**Solution**: Revert the later calls first, one at a time, or restore the `.bak` files by hand; `list_changes` shows which files each call touched.
+
 ### Stale data after editing in C3 editor
 
 **Cause**: The reader caches project data at startup.
