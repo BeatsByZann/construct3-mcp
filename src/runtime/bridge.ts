@@ -189,6 +189,31 @@ runOnStartup(async (runtime) => {
             break;
           }
 
+          case "layerToCssPx": {
+            // Layout coordinates on a layer to CSS pixels relative to the
+            // page viewport (client coordinates), through Construct's own
+            // transform, so callers need not model scaling or letterboxing.
+            const layer = runtime.layout.getLayer(cmd.args.layer ?? 0);
+            if (!layer) {
+              result = { error: "Layer not found: " + cmd.args.layer };
+              break;
+            }
+            const [cssX, cssY] = layer.layerToCssPx(cmd.args.x, cmd.args.y);
+            result = { x: cssX, y: cssY, layer: layer.name };
+            break;
+          }
+
+          case "cssPxToLayer": {
+            const layer = runtime.layout.getLayer(cmd.args.layer ?? 0);
+            if (!layer) {
+              result = { error: "Layer not found: " + cmd.args.layer };
+              break;
+            }
+            const [layerX, layerY] = layer.cssPxToLayer(cmd.args.x, cmd.args.y);
+            result = { x: layerX, y: layerY, layer: layer.name };
+            break;
+          }
+
           case "listObjects":
             result = Object.keys(runtime.objects);
             break;

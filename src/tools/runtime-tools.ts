@@ -21,12 +21,7 @@ import { join, dirname, relative } from 'node:path';
 import { existsSync } from 'node:fs';
 import { toolResult, toolError, boundedRecord } from './shared.js';
 import { writeZip } from '../runtime/zip-writer.js';
-
-/** True for the names and addresses that reach this machine. */
-export function isLoopbackHost(host: string): boolean {
-  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
-  return bare === 'localhost' || bare === '::1' || /^127\.\d+\.\d+\.\d+$/.test(bare);
-}
+import { PreviewManager, isLoopbackHost } from '../runtime/preview-server.js';
 
 /** The host part of a ws:// or wss:// endpoint, or the endpoint itself when it does not parse. */
 function hostOfEndpoint(endpoint: string): string {
@@ -61,6 +56,8 @@ const BRIDGE_COMMANDS = [
   'getLayout',
   'goToLayout',
   'evaluateExpression',
+  'layerToCssPx',
+  'cssPxToLayer',
   'listObjects',
   'listGlobalVars',
   'ping',
@@ -178,6 +175,7 @@ async function ensureBridgeFiles(reader: Construct3ProjectReader, writer: Constr
 
 export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps): RuntimeToolController {
   const connections = new RuntimeConnectionManager();
+  const previews = new PreviewManager();
 
   // ── inject_runtime_bridge ─────────────────────────────────
 
@@ -297,6 +295,14 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
         getLayout: {
           description: 'Get current layout info (name, size, layers)',
           args: {},
+        },
+        layerToCssPx: {
+          description: 'Convert layout coordinates on a layer to CSS pixels relative to the page viewport, through the game\'s own transform (scaling, letterboxing and the canvas offset included); simulate_input uses it for coordinateSpace "layout"',
+          args: { layer: 'string or number (layer name or index; default 0)', x: 'number', y: 'number' },
+        },
+        cssPxToLayer: {
+          description: 'Convert CSS pixels relative to the page viewport to layout coordinates on a layer',
+          args: { layer: 'string or number (layer name or index; default 0)', x: 'number', y: 'number' },
         },
         goToLayout: {
           description: 'Navigate to a different layout',
@@ -443,22 +449,25 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
 
   server.tool(
     'simulate_input',
-    'Send mouse, touch, keyboard, or text input to a connected game through the Chrome DevTools Protocol Input domain. Coordinates are CSS pixels relative to the page viewport by default; with coordinateSpace "canvas" they are CSS pixels relative to the game canvas top-left and are offset by the canvas position. Use get_canvas_size to read the canvas geometry.',
+    'Send mouse, touch, keyboard, or text input to a connected game through the Chrome DevTools Protocol Input domain. Coordinates are CSS pixels relative to the page viewport by default; with coordinateSpace "canvas" they are CSS pixels relative to the game canvas top-left and are offset by the canvas position; with coordinateSpace "layout" they are layout coordinates on a layer, converted by the game itself (scaling, letterboxing and the canvas offset included) through the bridge. Use get_canvas_size to read the canvas geometry.',
     {
       connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
       action: inputActionSchema.describe('Input action to dispatch'),
       delayMs: z.number().int().min(0).max(60_000).optional().default(0)
         .describe('Delay before dispatching the input action'),
-      coordinateSpace: z.enum(['viewport', 'canvas']).optional().default('viewport')
-        .describe('Whether x/y (and endX/endY) are page-viewport or game-canvas CSS pixels'),
+      coordinateSpace: z.enum(['viewport', 'canvas', 'layout']).optional().default('viewport')
+        .describe('Whether x/y (and endX/endY) are page-viewport CSS pixels, game-canvas CSS pixels, or layout coordinates on a layer'),
+      layer: z.union([z.string().max(200), z.number().int().min(0)]).optional()
+        .describe('For coordinateSpace "layout": the layer name or index whose coordinates x/y are in (default: layer 0)'),
     },
-    async ({ connectionId, action, delayMs, coordinateSpace }) => {
+    async ({ connectionId, action, delayMs, coordinateSpace, layer }) => {
       try {
         const result = await connections.simulateInput({
           connectionId,
           action: action as SimulatedInputAction,
           delayMs,
           coordinateSpace,
+          layer,
         });
         return toolResult(result);
       } catch (error) {
@@ -482,6 +491,103 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
       } catch (error) {
         console.error('[get_canvas_size] failed:', error);
         return toolError(`Failed to read canvas size: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  // ── screenshot_game ──────────────────────────────────────
+
+  server.tool(
+    'screenshot_game',
+    'Capture the connected game page, or only its canvas, as a PNG or JPEG file on disk, so a run can keep visual evidence of a state without an editor or a browser tool.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+      outputPath: z.string().min(1).max(4096).describe('File to write (e.g. "C:/runs/after-click.png")'),
+      format: z.enum(['png', 'jpeg']).optional().default('png').describe('Image format (default: png)'),
+      quality: z.number().int().min(0).max(100).optional().describe('JPEG quality 0-100 (jpeg only)'),
+      canvasOnly: z.boolean().optional().default(false).describe('Capture only the game canvas rectangle (default: the whole viewport)'),
+    },
+    async ({ connectionId, outputPath, format, quality, canvasOnly }) => {
+      try {
+        const shot = await connections.captureScreenshot({ connectionId, format, quality, canvasOnly });
+        await mkdir(dirname(outputPath), { recursive: true });
+        await writeFile(outputPath, shot.data);
+        return toolResult({ success: true, path: outputPath, bytes: shot.data.length, format: shot.format, clip: shot.clip });
+      } catch (error) {
+        console.error('[screenshot_game] failed:', error);
+        return toolError(`Failed to capture a screenshot: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  // ── serve_preview / stop_preview ─────────────────────────
+
+  server.tool(
+    'serve_preview',
+    'Serve an exported Construct game (the HTML5 export folder that holds index.html) over HTTP on this machine, and optionally launch Chrome on it with a remote-debugging port so connect_to_game can follow. A source project folder or a .c3p is refused: Construct exports only from its editor.',
+    {
+      folder: z.string().min(1).max(4096).describe('The exported game folder (contains index.html)'),
+      port: z.number().int().min(0).max(65535).optional().default(0).describe('HTTP port (default 0: any free port)'),
+      host: z.string().min(1).max(255).optional().default('localhost').describe('Interface to listen on (default: localhost)'),
+      allowRemoteHost: z.boolean().optional().default(false).describe('Allow listening on an interface other than this machine (default: false)'),
+      launchBrowser: z.boolean().optional().default(false).describe('Launch Chrome (or Edge) on the served URL with a remote-debugging port (default: false)'),
+      chromeDebuggingPort: z.number().int().min(1).max(65535).optional().default(9222).describe('Remote-debugging port for the launched browser (default: 9222)'),
+      chromePath: z.string().max(4096).optional().describe('Browser executable (default: CHROME_PATH, then the platform\'s usual Chrome and Edge locations)'),
+      headless: z.boolean().optional().default(false).describe('Launch the browser headless with software WebGL (default: false, a visible window)'),
+      windowWidth: z.number().int().min(100).max(10_000).optional().describe('Browser window width in pixels'),
+      windowHeight: z.number().int().min(100).max(10_000).optional().describe('Browser window height in pixels'),
+      readyTimeoutMs: z.number().int().min(1000).max(120_000).optional().default(15_000).describe('How long to wait for the browser\'s debugging port (default: 15000)'),
+    },
+    async (args) => {
+      try {
+        if (!args.allowRemoteHost && !isLoopbackHost(args.host)) {
+          return toolError(`Refusing to listen on "${args.host}": only this machine (localhost, 127.0.0.1, ::1) is allowed unless allowRemoteHost is true.`);
+        }
+        const info = await previews.serve({
+          folder: args.folder,
+          host: args.host,
+          port: args.port,
+          launch: args.launchBrowser ? {
+            debuggingPort: args.chromeDebuggingPort,
+            chromePath: args.chromePath,
+            headless: args.headless,
+            windowWidth: args.windowWidth,
+            windowHeight: args.windowHeight,
+            readyTimeoutMs: args.readyTimeoutMs,
+          } : undefined,
+        });
+        return toolResult({
+          success: true,
+          ...info,
+          next: info.browser
+            ? `connect_to_game with host "127.0.0.1" and port ${info.browser.cdpPort}; the game must carry the runtime bridge (inject_runtime_bridge before the export).`
+            : `Open ${info.url} in a browser started with --remote-debugging-port, then connect_to_game; or call again with launchBrowser: true.`,
+        });
+      } catch (error) {
+        console.error('[serve_preview] failed:', error);
+        return toolError(`Failed to serve the preview: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  server.tool(
+    'stop_preview',
+    'Stop a preview server started by serve_preview, closing the browser it launched. Without serverId, stops every preview server this MCP server holds.',
+    {
+      serverId: z.string().uuid().optional().describe('The serverId returned by serve_preview (default: all)'),
+    },
+    async ({ serverId }) => {
+      try {
+        if (serverId === undefined) {
+          const stopped = previews.list();
+          await previews.closeAll();
+          return toolResult({ success: true, stopped });
+        }
+        const stopped = await previews.stop(serverId);
+        return toolResult({ success: true, stopped: [stopped] });
+      } catch (error) {
+        console.error('[stop_preview] failed:', error);
+        return toolError(`Failed to stop the preview: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
   );
@@ -718,7 +824,10 @@ print(json.dumps({
   );
 
   return {
-    close: () => connections.closeAll(),
+    close: async () => {
+      await connections.closeAll();
+      await previews.closeAll();
+    },
   };
 }
 

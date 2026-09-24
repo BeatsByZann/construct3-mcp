@@ -52,6 +52,8 @@ describe('generateBridgeScript', () => {
       'getLayout',
       'goToLayout',
       'evaluateExpression',
+      'layerToCssPx',
+      'cssPxToLayer',
       'listObjects',
       'listGlobalVars',
       'ping',

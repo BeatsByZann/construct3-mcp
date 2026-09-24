@@ -1,5 +1,8 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import { RuntimeConnectionManager } from "../../src/runtime/cdp-client.js";
@@ -79,7 +82,12 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
       };
       if (request.method !== "Runtime.evaluate") {
         cdpCommands.push({ method: request.method, params: request.params ?? {} });
-        socket.send(JSON.stringify({ id: request.id, result: {} }));
+        // A screenshot answers with the parameters it was given, so a test can
+        // read the format and clip back out of the "image" file.
+        const result = request.method === "Page.captureScreenshot"
+          ? { data: Buffer.from(`image:${JSON.stringify(request.params ?? {})}`).toString("base64") }
+          : {};
+        socket.send(JSON.stringify({ id: request.id, result }));
         return;
       }
 
@@ -672,6 +680,116 @@ describe("wait_for_condition", () => {
     });
     expect(missing.isError).toBe(true);
     expect(missing.content[0].text).toContain('Player.missing');
+  });
+});
+
+describe("screenshot_game", () => {
+  it("writes the page or only the canvas rectangle to a file", async () => {
+    const geometry = {
+      left: 40, top: 25.5, cssWidth: 320, cssHeight: 240, backingWidth: 640, backingHeight: 480,
+      devicePixelRatio: 2, viewportWidth: 400, viewportHeight: 300,
+    };
+    const fake = await startFakeCdp({ canvasGeometry: geometry });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+    const dir = await mkdtemp(join(tmpdir(), "c3-shot-"));
+    try {
+      const whole = parseToolResult(await server.callTool("screenshot_game", {
+        connectionId: connected.connectionId, outputPath: join(dir, "nested", "page.png"),
+      }));
+      expect(whole).toMatchObject({ success: true, format: "png", path: join(dir, "nested", "page.png") });
+      expect(whole.clip).toBeUndefined();
+      expect((await readFile(whole.path, "utf8"))).toBe('image:{"format":"png"}');
+
+      const canvas = parseToolResult(await server.callTool("screenshot_game", {
+        connectionId: connected.connectionId, outputPath: join(dir, "canvas.jpg"), format: "jpeg", quality: 80, canvasOnly: true,
+      }));
+      expect(canvas.clip).toEqual({ x: 40, y: 25.5, width: 320, height: 240 });
+      expect(await readFile(canvas.path, "utf8")).toBe('image:{"format":"jpeg","quality":80,"clip":{"x":40,"y":25.5,"width":320,"height":240,"scale":1}}');
+      expect(canvas.bytes).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("simulate_input in layout coordinates", () => {
+  it("converts every point through the bridge's layerToCssPx before dispatching", async () => {
+    const fake = await startFakeCdp({
+      commandValues: { layerToCssPx: [{ x: 300, y: 200, layer: "Layer 0" }, { x: 310, y: 210, layer: "Layer 0" }, { x: 330, y: 240, layer: "Layer 0" }] },
+    });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId, action: { type: "click", x: 10, y: 20 }, coordinateSpace: "layout", layer: "Layer 0",
+    }));
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId, action: { type: "touch", x: 0, y: 0, gesture: "swipe", endX: 50, endY: 60 }, coordinateSpace: "layout",
+    }));
+    expect(fake.commandCount("layerToCssPx")).toBe(3);
+    const commands = fake.cdpCommands();
+    expect(commands[0].params).toMatchObject({ type: "mousePressed", x: 300, y: 200 });
+    expect(commands[1].params).toMatchObject({ type: "mouseReleased", x: 300, y: 200 });
+    const touchStart = commands.find(c => c.params.type === "touchStart");
+    expect(touchStart?.params).toMatchObject({ touchPoints: [{ x: 310, y: 210 }] });
+    // A swipe interpolates its moves; the last one lands on the converted end point.
+    const touchMoves = commands.filter(c => c.params.type === "touchMove");
+    expect(touchMoves.at(-1)?.params).toMatchObject({ touchPoints: [{ x: 330, y: 240 }] });
+  });
+
+  it("reports a layer the game does not have, or an old bridge, instead of clicking somewhere", async () => {
+    const fake = await startFakeCdp({ commandValues: { layerToCssPx: [{ error: "Layer not found: Nope" }] } });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+    const result = await server.callTool("simulate_input", {
+      connectionId: connected.connectionId, action: { type: "click", x: 1, y: 2 }, coordinateSpace: "layout", layer: "Nope",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Could not convert layout coordinates");
+    expect(result.content[0].text).toContain("Layer not found: Nope");
+    expect(fake.cdpCommands().some(c => c.method === "Input.dispatchMouseEvent")).toBe(false);
+  });
+});
+
+describe("serve_preview and stop_preview", () => {
+  it("refuses a non-loopback interface and a source project, serves an export, and stops it", async () => {
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const root = await mkdtemp(join(tmpdir(), "c3-serve-"));
+    try {
+      await mkdir(join(root, "game"));
+      await writeFile(join(root, "game", "index.html"), "<title>Served</title>", "utf8");
+
+      const remote = await server.callTool("serve_preview", { folder: join(root, "game"), host: "0.0.0.0" });
+      expect(remote.isError).toBe(true);
+      expect(remote.content[0].text).toContain("allowRemoteHost");
+
+      const archive = await server.callTool("serve_preview", { folder: join(root, "game.c3p") });
+      expect(archive.isError).toBe(true);
+      expect(archive.content[0].text).toContain("source project, not an exported game");
+
+      const served = parseToolResult(await server.callTool("serve_preview", { folder: join(root, "game"), host: "127.0.0.1" }));
+      expect(served).toMatchObject({ success: true, host: "127.0.0.1", folder: join(root, "game") });
+      expect(served.next).toContain("launchBrowser: true");
+      expect(await (await fetch(served.url)).text()).toBe("<title>Served</title>");
+
+      const stopped = parseToolResult(await server.callTool("stop_preview", { serverId: served.serverId }));
+      expect(stopped.stopped.map((p: { serverId: string }) => p.serverId)).toEqual([served.serverId]);
+      await expect(fetch(served.url)).rejects.toThrow();
+
+      const again = parseToolResult(await server.callTool("serve_preview", { folder: join(root, "game"), host: "127.0.0.1" }));
+      const all = parseToolResult(await server.callTool("stop_preview", {}));
+      expect(all.stopped.map((p: { serverId: string }) => p.serverId)).toEqual([again.serverId]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -2916,8 +2916,13 @@ discovered connection, the selected page target metadata.
 
 ### `call_bridge`
 
-Submit one of the 11 commands listed by `get_bridge_commands`, poll the bridge
-for its result, and return `commandId`, `result`, and `elapsedMs`.
+Submit one of the 13 commands listed by `get_bridge_commands`, poll the bridge
+for its result, and return `commandId`, `result`, and `elapsedMs`. The two
+coordinate commands, `layerToCssPx` and `cssPxToLayer` (`{ layer?, x, y }`),
+convert between layout coordinates on a layer and CSS pixels relative to the
+page viewport through the game's own transform; a game running a bridge
+injected before they existed answers them with an unknown-command error, so
+inject the current bridge and export again.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -2970,7 +2975,8 @@ command for the action succeeds.
 | `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
 | `action` | object | Yes | One of the action shapes below |
 | `delayMs` | integer | No | Delay before dispatch, 0 to 60000 ms (default: 0) |
-| `coordinateSpace` | string | No | `viewport` (default) or `canvas` |
+| `coordinateSpace` | string | No | `viewport` (default), `canvas` or `layout` |
+| `layer` | string or integer | No | For `layout`: the layer name or index the coordinates are on (default: layer 0) |
 
 Action shapes:
 
@@ -2989,11 +2995,14 @@ page viewport, which is also the coordinate system used by CDP. With `canvas`,
 coordinates are CSS pixels relative to the top-left corner of the page's first
 `canvas` element; the tool reads the canvas bounding rectangle immediately
 before dispatch, adds its offset, and rejects points beyond the canvas CSS
-width or height. Neither space converts Construct layout or layer
-coordinates; a caller that starts from layout positions must convert them to
-canvas CSS pixels first. Long press holds for 500 ms; swipe interpolates eight
-move events from the start to the end point. A swipe without both end
-coordinates is rejected before any event is dispatched.
+width or height. With `layout`, coordinates are layout coordinates on
+`layer`, and every point (the start, and a swipe's end) is converted by the
+game itself through the bridge's `layerToCssPx`, so scaling, letterboxing,
+the canvas offset and the device pixel ratio are Construct's arithmetic;
+the game must run the current bridge, and a layer the layout does not have is
+an error before anything is dispatched. Long press holds for 500 ms; swipe
+interpolates eight move events from the start to the end point. A swipe
+without both end coordinates is rejected before any event is dispatched.
 
 ### `get_canvas_size`
 
@@ -3003,11 +3012,67 @@ viewport), `cssWidth` and `cssHeight`, `backingWidth` and `backingHeight`
 (canvas pixel buffer), `devicePixelRatio`, and `viewportWidth` and
 `viewportHeight`. The tool returns an error when the page has no canvas.
 
+### `screenshot_game`
+
+Capture the connected page as an image file, so a run keeps visual evidence
+of a state without an editor or a browser tool.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
+| `outputPath` | string | Yes | File to write; missing folders are created |
+| `format` | enum | No | `png` (default) or `jpeg` |
+| `quality` | integer | No | JPEG quality 0 to 100 |
+| `canvasOnly` | boolean | No | Capture only the game canvas rectangle (default: the whole viewport) |
+
+Returns `path`, `bytes`, `format` and, with `canvasOnly`, the `clip`
+rectangle in viewport CSS pixels.
+
+### `serve_preview`
+
+Serve an exported Construct game over HTTP on this machine and, on request,
+launch Chrome (or Edge) on it with a remote-debugging port, so a run starts,
+connects to, drives and stops the game with no editor open.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `folder` | string | Yes | The HTML5 export folder, the one holding `index.html` |
+| `port` | integer | No | HTTP port (default 0: any free port) |
+| `host` | string | No | Interface to listen on (default: `localhost`) |
+| `allowRemoteHost` | boolean | No | Allow an interface other than this machine (default: `false`) |
+| `launchBrowser` | boolean | No | Launch the browser on the served URL (default: `false`) |
+| `chromeDebuggingPort` | integer | No | Its remote-debugging port (default: 9222) |
+| `chromePath` | string | No | Browser executable (default: `CHROME_PATH`, then the usual Chrome and Edge locations) |
+| `headless` | boolean | No | Headless with software WebGL (default: `false`, a visible window) |
+| `windowWidth`, `windowHeight` | integer | No | Window size in pixels |
+| `readyTimeoutMs` | integer | No | Wait for the debugging port, 1000 to 120000 ms (default: 15000) |
+
+Returns `serverId`, `url`, `host`, `port`, `folder`, `browser` (`pid`,
+`executable`, `cdpPort`, `headless`) when one was launched, and `next`, the
+call to make after this one.
+
+- The input must be what Construct's Export > Web (HTML5) produced. A source
+  project folder (`project.c3proj`) or a `.c3p` is refused: Construct exports
+  only from its editor, and a source project is not a runnable game. For the
+  bridge tools to work, inject the bridge (`inject_runtime_bridge`) before
+  exporting.
+- Files are served as they are, with `Cache-Control: no-store`, from under the
+  folder only; a path that escapes it is a 404.
+- The launched browser gets a fresh temporary profile and ends with the MCP
+  server process or on `stop_preview`, which asks it to close over CDP and
+  kills it if it does not.
+
+### `stop_preview`
+
+Stop a preview server and the browser it launched. Parameter: `serverId`
+(the UUID `serve_preview` returned); without it, every preview server this
+MCP server holds is stopped. Returns the stopped servers' details.
+
 ### `disconnect_from_game`
 
 Close a persistent connection. Parameter: `connectionId` (required UUID).
-All remaining connections are terminated when the MCP transport closes or the
-server receives SIGINT/SIGTERM.
+All remaining connections are terminated, and every preview server stopped,
+when the MCP transport closes or the server receives SIGINT/SIGTERM.
 
 ---
 

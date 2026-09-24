@@ -129,13 +129,30 @@ export type SimulatedInputAction =
     y: number;
   };
 
-export type InputCoordinateSpace = "viewport" | "canvas";
+export type InputCoordinateSpace = "viewport" | "canvas" | "layout";
 
 export interface SimulateInputOptions {
   connectionId: string;
   action: SimulatedInputAction;
   delayMs: number;
   coordinateSpace?: InputCoordinateSpace;
+  /** The layer whose coordinates `layout` space uses: a name or index (default: layer 0). */
+  layer?: string | number;
+}
+
+export interface ScreenshotOptions {
+  connectionId: string;
+  format: "png" | "jpeg";
+  /** JPEG quality 0 to 100. */
+  quality?: number;
+  /** Capture only the game canvas rectangle. */
+  canvasOnly: boolean;
+}
+
+export interface ScreenshotResult {
+  data: Buffer;
+  format: "png" | "jpeg";
+  clip?: { x: number; y: number; width: number; height: number };
 }
 
 export interface CanvasGeometry {
@@ -815,9 +832,14 @@ export class RuntimeConnectionManager {
     }
     if (options.delayMs > 0) await delay(options.delayMs);
 
-    const action = options.coordinateSpace === "canvas"
-      ? toViewportAction(options.action, await this.getCanvasGeometry(options.connectionId))
-      : options.action;
+    let action: SimulatedInputAction;
+    if (options.coordinateSpace === "canvas") {
+      action = toViewportAction(options.action, await this.getCanvasGeometry(options.connectionId));
+    } else if (options.coordinateSpace === "layout") {
+      action = await this.layoutToViewportAction(options.connectionId, options.action, options.layer ?? 0);
+    } else {
+      action = options.action;
+    }
 
     switch (action.type) {
       case "click": {
@@ -881,6 +903,56 @@ export class RuntimeConnectionManager {
     }
 
     return { success: true, action: action.type };
+  }
+
+  /**
+   * Convert an action's layout coordinates to viewport CSS pixels through the
+   * game's own layer transform (the bridge's `layerToCssPx`), so scaling,
+   * letterboxing and the canvas offset are Construct's arithmetic, not ours.
+   */
+  private async layoutToViewportAction(
+    connectionId: string,
+    action: SimulatedInputAction,
+    layer: string | number,
+  ): Promise<SimulatedInputAction> {
+    const convert = async (x: number, y: number): Promise<{ x: number; y: number }> => {
+      const { result } = await this.callBridge({
+        connectionId,
+        command: "layerToCssPx",
+        args: { layer, x, y },
+        pollIntervalMs: 20,
+        timeoutMs: 5_000,
+      });
+      const point = result as { x?: unknown; y?: unknown; error?: unknown } | null;
+      if (!point || typeof point.x !== "number" || typeof point.y !== "number") {
+        const reason = point && typeof point.error === "string" ? point.error : "the bridge returned no point";
+        throw new Error(`Could not convert layout coordinates on layer ${JSON.stringify(layer)}: ${reason}. Inject the current bridge (inject_runtime_bridge) if the game runs an older one.`);
+      }
+      return { x: point.x, y: point.y };
+    };
+    if (action.type === "key" || action.type === "type") return action;
+    const start = await convert(action.x, action.y);
+    if (action.type === "touch" && action.endX !== undefined && action.endY !== undefined) {
+      const end = await convert(action.endX, action.endY);
+      return { ...action, x: start.x, y: start.y, endX: end.x, endY: end.y };
+    }
+    return { ...action, x: start.x, y: start.y };
+  }
+
+  /** Capture the connected page, or only its game canvas, as PNG or JPEG bytes. */
+  async captureScreenshot(options: ScreenshotOptions): Promise<ScreenshotResult> {
+    const connection = this.getConnection(options.connectionId);
+    const params: Record<string, unknown> = { format: options.format };
+    if (options.format === "jpeg" && options.quality !== undefined) params.quality = options.quality;
+    let clip: ScreenshotResult["clip"];
+    if (options.canvasOnly) {
+      const canvas = await this.getCanvasGeometry(options.connectionId);
+      clip = { x: canvas.left, y: canvas.top, width: canvas.cssWidth, height: canvas.cssHeight };
+      params.clip = { ...clip, scale: 1 };
+    }
+    const captured = await connection.command("Page.captureScreenshot", params) as { data?: unknown };
+    if (!captured || typeof captured.data !== "string") throw new Error("Page.captureScreenshot returned no image data");
+    return { data: Buffer.from(captured.data, "base64"), format: options.format, clip };
   }
 
   async closeAll(): Promise<void> {

@@ -13,7 +13,7 @@
 ## This is a fork
 
 This branch is a fork of [liauw-media/construct3-mcp](https://github.com/liauw-media/construct3-mcp)
-and has diverged from it: **175 MCP tools instead of upstream's 66**, with 109 added and none
+and has diverged from it: **178 MCP tools instead of upstream's 66**, with 112 added and none
 removed or renamed. It adds whole areas upstream does not cover (flowcharts, timeline tracks and
 keyframes, custom eases, tilemap data and brushes, effects, containers, templates, renames with
 reference rewriting, find and replace, Project Bar moves and duplicates, script and project file
@@ -27,7 +27,7 @@ how this relates to upstream.** Read it before filing an issue, and note which b
 | Branch | What it is |
 |---|---|
 | `main` | Close to upstream on purpose. It is the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), so it carries only those correctness fixes. Upstream's 66 tools. |
-| `claude/w84-editor-gap` | The diverged line described in this README. All 175 tools. |
+| `claude/w84-editor-gap` | The diverged line described in this README. All 178 tools. |
 
 Everything below this notice describes `claude/w84-editor-gap`.
 
@@ -314,8 +314,11 @@ Each rename rewrites the references to the name across the project, not just the
 | `disconnect_from_game` | Close a persistent game connection |
 | `call_bridge` | Execute any supported bridge command over a persistent game connection |
 | `wait_for_condition` | Poll a global variable, object property, layout, or page expression until a condition is met |
-| `simulate_input` | Send mouse, touch, keyboard, and text input through CDP, in viewport or canvas coordinates |
+| `simulate_input` | Send mouse, touch, keyboard, and text input through CDP, in viewport, canvas or layout coordinates |
 | `get_canvas_size` | Read the game canvas position, CSS size, backing size, and device pixel ratio |
+| `screenshot_game` | Save the connected page, or only its canvas, as a PNG or JPEG file |
+| `serve_preview` | Serve an exported game folder over loopback HTTP and optionally launch Chrome on it with a debugging port |
+| `stop_preview` | Stop a preview server and the browser it launched |
 | `generate_bridge_eval_script` | Generate a curl/python script to execute a bridge command via browser remote debugging |
 | `export_for_preview` | Pre-flight checks (worker mode, bridge injection) for preview testing |
 | `clone_project` | Deep-copy the project with optional bridge injection |
@@ -551,6 +554,7 @@ construct3-mcp/
 │   ├── runtime/
 │   │   ├── bridge.ts               # Injectable C3 runtime bridge script generator
 │   │   ├── cdp-client.ts           # Persistent CDP connections and bridge calls
+│   │   ├── preview-server.ts       # Serves an exported game and launches Chrome on it
 │   │   ├── project-files.ts        # The files a folder project packs into a .c3p
 │   │   ├── zip-reader.ts           # Dependency-free .c3p archive reader (ZIP64, DEFLATE)
 │   │   └── zip-writer.ts           # Dependency-free .c3p archive writer
@@ -580,7 +584,7 @@ construct3-mcp/
 │   │   ├── template-tools.ts       # 3 instance template tools
 │   │   ├── tilemap-brush-tools.ts  # 4 tilemap brush tools
 │   │   ├── tilemap-data-tools.ts   # 3 tilemap data tools
-│   │   └── runtime-tools.ts        # 13 runtime control tools
+│   │   └── runtime-tools.ts        # 16 runtime control tools
 │   └── prompts/
 │       └── workflows.ts            # 6 workflow prompts
 ├── dist/                           # Compiled JavaScript (generated)
@@ -674,6 +678,7 @@ We welcome contributions! Here's how to get started:
 - [x] Export-for-preview pre-flight checks (worker mode, bridge registration)
 - [x] Bridge eval script generation (curl/python for browser CDP)
 - [x] Persistent CDP connection discovery and cleanup
+- [x] Serve an exported game and launch Chrome on it; screenshots; input in layout coordinates
 - [x] Direct runtime bridge command execution with bounded polling
 - [x] Runtime condition waits with bounded polling and graceful timeout results
 - [x] Mouse, touch, keyboard, and text input simulation over CDP
@@ -687,7 +692,7 @@ We welcome contributions! Here's how to get started:
 ## Known Limitations
 
 - **One Writer at a Time for a .c3p**: The server writes a `.c3p` back after each change and refuses to overwrite one Construct saved in the meantime. Do not edit the same archive in Construct and through the server at once.
-- **Runtime Browser Must Expose CDP**: Start Chrome or another compatible browser with a remote debugging port, then use `connect_to_game`. Browser launch and preview hosting are not yet built in.
+- **The game must be exported first**: `serve_preview` serves and launches an HTML5 export, and `connect_to_game` reaches any browser started with a remote-debugging port, but Construct exports only from its editor; the tools cannot produce the export, and the editor's own preview is not reachable over CDP.
 - **ACE validation covers built-in addons only**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a problem is a warning, not a refusal. Third-party addons, expressions inside parameter values, and parameter values other than combo choices are not checked ([details](docs/API.md#ace-validation))
 
 ## License

@@ -6,6 +6,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
+- `serve_preview` and `stop_preview`: serve an exported HTML5 game folder over loopback HTTP (a source project folder or a `.c3p` is refused, since Construct exports only from its editor) and optionally launch Chrome or Edge on it with a remote-debugging port, a fresh temporary profile and, when asked, headless software WebGL; the browser ends with the MCP server or on `stop_preview`, which asks it to close over CDP and kills it otherwise. Every preview server is stopped on shutdown.
+- `screenshot_game`: capture the connected page, or only its canvas rectangle, as a PNG or JPEG file.
+- `simulate_input` takes `coordinateSpace: "layout"` with a `layer`: every point is converted by the game itself through the new bridge commands `layerToCssPx` and `cssPxToLayer` (`{ layer?, x, y }`, viewport CSS pixels on the other side), so scaling, letterboxing, the canvas offset and the device pixel ratio are Construct's arithmetic. A game running an older bridge answers with an unknown-command error and nothing is dispatched.
+
 - `validate_project` warns (`event-legacy-key`) about keys Construct never writes and does not read on a block, condition or action: `behavior-type` and `object-class` (the keys are `behaviorType` and `objectClass`; with the wrong key Construct reports every such ACE as a missing action id on load, which is upstream issue 16), `is-inverted`, a block-level `isElse` and a condition-level `isOr`. 16 checks now run.
 - `connect_to_game` takes `allowRemoteHost`. Without it only this machine (`localhost`, `127.x.x.x`, `::1`) is accepted, from `host` or from the `cdpEndpoint` URL, because the runtime bridge runs script in whatever page it reaches.
 
