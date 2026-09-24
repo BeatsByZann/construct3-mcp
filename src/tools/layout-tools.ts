@@ -1189,11 +1189,11 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'delete_layer',
-    'Delete a layer from a layout (must not be the last layer)',
+    'Delete a layer from a layout, at the top level or nested in another layer (must not be the last top-level layer)',
     {
       layoutName: z.string().max(200).describe('Layout name'),
-      layerName: z.string().max(200).describe('Layer name to delete'),
-      force: z.boolean().optional().default(false).describe('Delete even if the layer contains instances (instances will be lost)'),
+      layerName: z.string().max(200).describe('Layer name to delete (searched at every nesting level)'),
+      force: z.boolean().optional().default(false).describe('Delete even if the layer or its sub-layers contain instances, or it has sub-layers at all (they are lost with it)'),
     },
     async (args) => {
       try {
@@ -1204,43 +1204,60 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        const layerIdx = layout.layers.findIndex(l => l.name === args.layerName);
-        if (layerIdx === -1) {
-          const available = layout.layers.map(l => l.name).join(', ');
-          return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Available layers: ${available}`);
+        // Layers nest through subLayers, so the layer may sit at any depth
+        // and may itself hold sub-layers whose instances go with it.
+        const location = findLayerLocation(layout, args.layerName);
+        if (!location) {
+          const available = collectLayers(layout).map(l => l.name).join(', ');
+          return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}" at any nesting level. Available layers: ${available}`);
         }
+        const { layer, siblings, index, parent } = location;
 
-        // Prevent deleting the last layer
-        if (layout.layers.length <= 1) {
+        // Prevent deleting the last top-level layer
+        if (parent === undefined && layout.layers.length <= 1) {
           return toolError(`Cannot delete the last layer in layout "${args.layoutName}". A layout must have at least one layer.`);
         }
 
-        const layer = layout.layers[layerIdx];
-        const instanceCount = layer.instances.length;
+        const subLayers = collectSubLayers(layer);
+        const ownInstances = Array.isArray(layer.instances) ? layer.instances.length : 0;
+        const nestedInstances = subLayers.reduce((n, l) => n + (Array.isArray(l.instances) ? l.instances.length : 0), 0);
+        const instanceCount = ownInstances + nestedInstances;
+        const subLayerNames = subLayers.map(l => l.name);
 
-        if (instanceCount > 0 && !args.force) {
+        if ((instanceCount > 0 || subLayers.length > 0) && !args.force) {
+          const nested = subLayers.length > 0
+            ? ` and ${subLayers.length} sub-layer(s) (${subLayerNames.join(', ')}) holding ${nestedInstances} more`
+            : '';
           return toolResult({
             success: false,
             entity: args.layoutName,
             category: 'layout',
             action: 'delete_blocked',
-            message: `Layer "${args.layerName}" contains ${instanceCount} instance(s). Use force=true to delete the layer and all its instances.`,
+            message: `Layer "${args.layerName}" contains ${ownInstances} instance(s) of its own${nested}. Use force=true to delete the layer, its sub-layers and all their instances.`,
             instanceCount,
+            subLayers: subLayerNames,
           });
         }
 
-        layout.layers.splice(layerIdx, 1);
+        siblings.splice(index, 1);
 
         const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
         const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
 
+        const warnings: string[] = [];
+        if (subLayers.length > 0) {
+          warnings.push(`Deleted layer had ${subLayers.length} sub-layer(s) (${subLayerNames.join(', ')}) — they have been removed with it.`);
+        }
+        if (instanceCount > 0) {
+          warnings.push(`Deleted layer contained ${instanceCount} instance(s) (${ownInstances} of its own, ${nestedInstances} on sub-layers) — they have been removed.`);
+        }
         const result: WriteResult = {
           success: true,
           entity: args.layoutName,
           category: 'layout',
           action: 'updated',
           backupFile: backupPath,
-          warnings: instanceCount > 0 ? [`Deleted layer contained ${instanceCount} instance(s) — they have been removed.`] : undefined,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
         return toolResult(result);
       } catch (error) {

@@ -822,6 +822,37 @@ export function insertIntoContainer(
   }
 }
 
+/**
+ * Why an else block cannot be inserted at the requested position, or
+ * undefined when it can. Construct's editor only offers "else" on an event
+ * block that follows another block in the same container, so an else with
+ * nothing before it, or after a group, comment, variable or include, has no
+ * editor-made counterpart and is refused rather than written unverified.
+ * `exclude` is an event being moved, which no longer counts as a neighbour.
+ */
+export function elsePlacementError(
+  container: ResolvedContainer,
+  position: 'start' | 'end' | 'before' | 'after',
+  exclude?: Record<string, unknown>,
+): string | undefined {
+  const events = container.targetEvents.filter(e => e !== exclude);
+  const { siblingEvent } = container;
+  let previous: Record<string, unknown> | undefined;
+  if (siblingEvent && (position === 'before' || position === 'after')) {
+    const index = events.indexOf(siblingEvent);
+    previous = position === 'after' ? siblingEvent : (index > 0 ? events[index - 1] : undefined);
+  } else if (position === 'end') {
+    previous = events[events.length - 1];
+  }
+  if (previous === undefined) {
+    return 'An else block needs an event block before it in the same container; it cannot be the first event there.';
+  }
+  if (previous.eventType !== 'block') {
+    return `An else block must directly follow an event block, but the event before it would be a "${String(previous.eventType)}" event.`;
+  }
+  return undefined;
+}
+
 // ─── Subtree Identity Helpers ───────────────────────────────
 
 export interface SubtreeIdentity {

@@ -114,9 +114,23 @@ function validateImagePoints(points: ImagePoint[], context: string): void {
   }
 }
 
+/**
+ * File extension of a frame's image, from the `fileType` its frame record
+ * declares. C3-ACE holds 30 `image/gif` frames among its PNGs, and the
+ * r495.2 samples show only those two types; anything else takes the MIME
+ * subtype as its extension.
+ */
+function frameExtension(frame: { fileType?: string } | undefined): string {
+  const type = frame?.fileType;
+  if (type === undefined || type === 'image/png') return 'png';
+  if (type === 'image/gif') return 'gif';
+  const subtype = type.split('/')[1];
+  return subtype && /^[a-z0-9]+$/i.test(subtype) ? subtype.toLowerCase() : 'png';
+}
+
 /** Absolute path of the image file C3 expects for a Sprite animation frame. */
-function frameImagePath(projectDir: string, objectName: string, animationName: string, frameIndex: number): string {
-  return resolveProjectPath(projectDir, 'images', getImageFileName(objectName, animationName, frameIndex, 'Sprite'));
+function frameImagePath(projectDir: string, objectName: string, animationName: string, frameIndex: number, extension = 'png'): string {
+  return resolveProjectPath(projectDir, 'images', getImageFileName(objectName, animationName, frameIndex, 'Sprite', extension));
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -172,12 +186,13 @@ async function reorderFrameImages(
   objectName: string,
   animationName: string,
   order: number[],
+  frames: AnimationFrame[],
 ): Promise<{ moved: number; journal: FileMoveJournal }> {
   const journal = new FileMoveJournal();
   try {
     const parked: Array<string | undefined> = [];
     for (let index = 0; index < order.length; index++) {
-      const source = frameImagePath(projectDir, objectName, animationName, index);
+      const source = frameImagePath(projectDir, objectName, animationName, index, frameExtension(frames[index]));
       if (!(await pathExists(source))) {
         parked.push(undefined);
         continue;
@@ -191,7 +206,8 @@ async function reorderFrameImages(
     for (let newIndex = 0; newIndex < order.length; newIndex++) {
       const temp = parked[order[newIndex]];
       if (temp === undefined) continue;
-      await journal.move(temp, frameImagePath(projectDir, objectName, animationName, newIndex));
+      // The frame keeps its own image type at its new index.
+      await journal.move(temp, frameImagePath(projectDir, objectName, animationName, newIndex, frameExtension(frames[order[newIndex]])));
       moved++;
     }
     return { moved, journal };
@@ -214,12 +230,14 @@ async function shiftFrameImagesUp(
   from: number,
   frameCount: number,
   journal: FileMoveJournal,
+  frames: AnimationFrame[],
 ): Promise<number> {
   let moved = 0;
   for (let index = frameCount - 1; index >= from; index--) {
-    const source = frameImagePath(projectDir, objectName, animationName, index);
+    const extension = frameExtension(frames[index]);
+    const source = frameImagePath(projectDir, objectName, animationName, index, extension);
     if (!(await pathExists(source))) continue;
-    await journal.move(source, frameImagePath(projectDir, objectName, animationName, index + 1));
+    await journal.move(source, frameImagePath(projectDir, objectName, animationName, index + 1, extension));
     moved++;
   }
   return moved;
@@ -240,21 +258,23 @@ async function removeFrameImageSlot(
   frameIndex: number,
   frameCount: number,
   journal: FileMoveJournal,
+  frames: AnimationFrame[],
 ): Promise<{ moved: number; parked?: string }> {
   try {
     let moved = 0;
     let parked: string | undefined;
 
-    const removed = frameImagePath(projectDir, objectName, animationName, frameIndex);
+    const removed = frameImagePath(projectDir, objectName, animationName, frameIndex, frameExtension(frames[frameIndex]));
     if (await pathExists(removed)) {
       parked = removed + '.reorder-tmp';
       await journal.move(removed, parked);
       moved++;
     }
     for (let index = frameIndex + 1; index < frameCount; index++) {
-      const source = frameImagePath(projectDir, objectName, animationName, index);
+      const extension = frameExtension(frames[index]);
+      const source = frameImagePath(projectDir, objectName, animationName, index, extension);
       if (!(await pathExists(source))) continue;
-      await journal.move(source, frameImagePath(projectDir, objectName, animationName, index - 1));
+      await journal.move(source, frameImagePath(projectDir, objectName, animationName, index - 1, extension));
       moved++;
     }
     return { moved, parked };
@@ -275,15 +295,17 @@ async function duplicateFrameImage(
   frameIndex: number,
   insertAt: number,
   frameCount: number,
+  frames: AnimationFrame[],
 ): Promise<{ moved: number; journal: FileMoveJournal }> {
   const journal = new FileMoveJournal();
   try {
-    let moved = await shiftFrameImagesUp(projectDir, objectName, animationName, insertAt, frameCount, journal);
+    let moved = await shiftFrameImagesUp(projectDir, objectName, animationName, insertAt, frameCount, journal, frames);
     // The source frame's image has itself shifted when it sat at or after insertAt.
     const sourceIndex = frameIndex >= insertAt ? frameIndex + 1 : frameIndex;
-    const sourcePath = frameImagePath(projectDir, objectName, animationName, sourceIndex);
+    const extension = frameExtension(frames[frameIndex]);
+    const sourcePath = frameImagePath(projectDir, objectName, animationName, sourceIndex, extension);
     if (await pathExists(sourcePath)) {
-      await journal.copy(sourcePath, frameImagePath(projectDir, objectName, animationName, insertAt));
+      await journal.copy(sourcePath, frameImagePath(projectDir, objectName, animationName, insertAt, extension));
       moved++;
     }
     return { moved, journal };
@@ -316,6 +338,7 @@ async function renameAnimationFrameImages(
   oldName: string,
   newName: string,
   frameCount: number,
+  frames: AnimationFrame[],
 ): Promise<{ moved: number; journal: FileMoveJournal }> {
   const journal = new FileMoveJournal();
   if (frameCount === 0) return { moved: 0, journal };
@@ -325,8 +348,9 @@ async function renameAnimationFrameImages(
 
   const moves: Array<{ from: string; to: string }> = [];
   for (let index = 0; index < frameCount; index++) {
-    const from = frameImagePath(projectDir, objectName, oldName, index);
-    const to = frameImagePath(projectDir, objectName, newName, index);
+    const extension = frameExtension(frames[index]);
+    const from = frameImagePath(projectDir, objectName, oldName, index, extension);
+    const to = frameImagePath(projectDir, objectName, newName, index, extension);
     if (!(await pathExists(from))) continue;
     if (await pathExists(to)) {
       throw new Error(
@@ -657,7 +681,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
 
         const frameCount = Array.isArray(anim.frames) ? anim.frames.length : 0;
         const { moved, journal } = await renameAnimationFrameImages(
-          reader.getProjectDir(), args.objectName, args.animationName, args.newName, frameCount,
+          reader.getProjectDir(), args.objectName, args.animationName, args.newName, frameCount, anim.frames ?? [],
         );
         try {
           anim.name = args.newName;
@@ -740,7 +764,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         let shifted: number;
         try {
           shifted = await shiftFrameImagesUp(
-            reader.getProjectDir(), args.objectName, args.animationName, insertAt, anim.frames.length, journal,
+            reader.getProjectDir(), args.objectName, args.animationName, insertAt, anim.frames.length, journal, anim.frames,
           );
         } catch (shiftError) {
           await journal.undo();
@@ -843,7 +867,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         // JSON write has succeeded.
         const journal = new FileMoveJournal();
         const { moved, parked } = await removeFrameImageSlot(
-          reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, anim.frames.length, journal,
+          reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, anim.frames.length, journal, anim.frames,
         );
 
         try {
@@ -1089,6 +1113,14 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         await mkdir(dirname(filePath), { recursive: true });
         await writeFile(filePath, pngBuffer);
 
+        // A frame that was a GIF keeps its record truthful: the new image is a
+        // PNG, so the declared type changes and the old file is removed.
+        const previousExtension = frameExtension(frame);
+        if (previousExtension !== 'png') {
+          await unlink(frameImagePath(reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, previousExtension)).catch(() => undefined);
+          frame.fileType = 'image/png';
+        }
+
         // Update frame metadata if dimensions provided
         if (args.width !== undefined) frame.width = args.width;
         if (args.height !== undefined) frame.height = args.height;
@@ -1243,7 +1275,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
       seen.add(index);
     }
 
-    const { moved, journal } = await reorderFrameImages(reader.getProjectDir(), objectName, animationName, resolved);
+    const { moved, journal } = await reorderFrameImages(reader.getProjectDir(), objectName, animationName, resolved, frames);
     try {
       location.anim.frames = resolved.map(index => frames[index]);
 
@@ -1353,7 +1385,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         }
 
         const { moved, journal } = await duplicateFrameImage(
-          reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, insertAt, frames.length,
+          reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, insertAt, frames.length, frames,
         );
         try {
           frames.splice(insertAt, 0, copy);

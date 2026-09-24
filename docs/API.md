@@ -212,7 +212,7 @@ Heuristic performance audit with categorized issues (info/warning/critical).
 
 ### `validate_project`
 
-Run integrity checks: file existence, required fields, duplicate SIDs/UIDs, broken references, missing addons, conditions and actions against Construct's own definitions ([ACE validation](#ace-validation)), orphaned files. No parameters.
+Run integrity checks: file existence, required fields, duplicate SIDs/UIDs (on every layer, sub-layers included), broken references, missing addons, conditions and actions against Construct's own definitions ([ACE validation](#ace-validation)), event keys Construct does not read, orphaned files. No parameters.
 
 **Result:**
 
@@ -227,6 +227,8 @@ Run integrity checks: file existence, required fields, duplicate SIDs/UIDs, brok
 The orphan-file scan covers objectTypes, eventSheets, layouts, and families recursively, comparing project-relative file paths with registrations. It does not follow symbolic links and skips absent or unreadable directories. This additional family orphan check does not change the existing `complete` or file-existence semantics above.
 
 A registered file that does not exist on disk is a `file-existence` error; a file that exists but exceeds the read cap is an `unscanned-file` warning, not an error.
+
+An `event-legacy-key` warning names a block, condition or action carrying a key Construct never writes and does not read: `behavior-type` or `object-class` (Construct's keys are `behaviorType` and `objectClass`; with the wrong key the editor reports the ACE as a missing action or condition id on load), `is-inverted`, a block-level `isElse`, or a condition-level `isOr` (an OR block is marked on the block as `isOrBlock`). `update_event_block` rewrites a block that carries the two legacy keys this server once wrote.
 
 ### ACE validation
 
@@ -520,6 +522,8 @@ Use at most one of `groupPath` or `parentSid`; with neither, the event is added 
 
 Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Supports sub-events, else blocks, OR blocks, disabled conditions and actions, function and custom action calls, action comments, and script actions. Every built-in condition and action, sub-events included, is checked as described in [ACE validation](#ace-validation), and each problem is returned as a warning.
 
+An else block (`isElse`) must land directly after an event block in the same container, as Construct's editor only offers "else" there: an else with nothing before it, or after a group, comment, variable or include, is refused.
+
 An `ease` parameter that names a registered custom ease is stored as Construct r495.2 saves it, `{ "name": "<ease>", "json": [{ "folders": [], "json": <ease file> }] }`, here and in `update_event_block` and `update_event_block_action`. Built-in ease names and other values stay strings (see [Custom eases](#custom-eases)).
 
 | Parameter | Type | Required | Description |
@@ -733,6 +737,7 @@ Use at most one destination locator. Without a locator the event moves to the ev
 
 **Behavior:**
 - Works on any event the SID index can find: `block`, `group`, `variable`, `function-block`, `custom-ace-block`. Construct does not write a `sid` on `comment` or `include` events, so those cannot be addressed here — the not-found error says so.
+- An else block keeps needing an event block directly before it where it lands, so a move that would make it first, or put it after a group, comment, variable or include, is refused. Moving a block away from in front of an else succeeds with a warning that the else no longer follows a block.
 - Refuses a destination inside the moved event's own subtree (`parentSid`, `groupPath` or `siblingSid` resolving to the event itself or one of its descendants), which would detach the branch from the sheet.
 - Refuses `siblingSid` or `parentSid` equal to `sid`.
 - The destination is resolved before anything is detached, so a rejected move leaves the file untouched.
@@ -832,6 +837,8 @@ Update a function-block or a custom action definition (`custom-ace-block`) and, 
 | `addParameters` | array | No | `[{ name, type, initialValue?, comment? }]` appended to the end of the list; each gets a fresh SID |
 | `removeParameters` | string[] | No | Parameter names to remove |
 | `renameParameters` | array | No | `[{ from, to }]` — rename in place, keeping the position and SID |
+
+Caller sheets are written first and the sheet holding the definition last. If a write fails part way, the error names the sheets already written and those not written; the definition still carries the old name, so re-running the same call finishes the rename and skips the callers already done.
 
 At least one update parameter must be provided, unless `dryRun` is set.
 
@@ -1072,13 +1079,13 @@ Add a layer to a layout, at the top level or inside another layer's `subLayers`.
 
 ### `delete_layer`
 
-Delete a layer from a layout. The last layer of a layout cannot be deleted.
+Delete a layer from a layout, at the top level or nested in another layer. The last top-level layer of a layout cannot be deleted. A layer's sub-layers go with it, so without `force` the call is refused when the layer holds any instance at any depth or has any sub-layer at all; the `delete_blocked` result names the sub-layers and counts the instances, the layer's own and those below it.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `layoutName` | string | Yes | Layout name |
-| `layerName` | string | Yes | Layer to delete |
-| `force` | boolean | No | Delete even when the layer holds instances, which are lost with it (default: `false`) |
+| `layerName` | string | Yes | Layer to delete (searched at every nesting level) |
+| `force` | boolean | No | Delete even when the layer or its sub-layers hold instances, or it has sub-layers at all; they are lost with it (default: `false`) |
 
 ### `update_layer`
 
@@ -1358,7 +1365,7 @@ At least one updatable property must be provided.
 
 ### `replace_sprite_image`
 
-Replace the image of one Sprite animation frame with PNG data.
+Replace the image of one Sprite animation frame with PNG data. A frame that was a GIF (`fileType: "image/gif"`) becomes a PNG: its record's `fileType` changes and the old `.gif` file is removed.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1385,7 +1392,7 @@ Writes `images/<lowercased name>.png`, the naming every single-image object uses
 
 ### `reorder_frames`
 
-Reorder the frames of a Sprite animation.
+Reorder the frames of a Sprite animation. Every frame tool that moves, copies or renames image files (`reorder_frames`, `reverse_frames`, `duplicate_frame`, `delete_frame_from_animation`, `add_frame_to_animation`, `rename_animation`) takes each file's extension from the frame's `fileType`, so a GIF-backed frame is moved as `.gif`; only `image/png` and `image/gif` were seen in the r495.2 samples.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1844,7 +1851,9 @@ keyframe at that time. With `property`, delete only that one property keyframe
 and leave the master keyframe in place (instance tracks only). Deleting the
 last remaining master keyframe is refused, because a track with no keyframes
 is not a valid track; use `remove_timeline_track` instead. Property keyframes
-inside property-track folders are removed with their master keyframe.
+inside property-track folders are removed with their master keyframe. An audio
+track's keyframe at time 0 is also refused: Construct moves a keyframe there on
+load, so deleting it would leave a track the editor silently rewrites.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -2539,6 +2548,8 @@ identical call after a failure finishes the rename. Each result lists
 | `newName` | string | Yes | New name; must be unique among object types *and* families |
 | `dryRun` | boolean | No | Report only (default `false`) |
 
+Object type, family, layout and event sheet names are compared without case, because they become file names: renaming `Player` to `enemy` while `Enemy` exists is refused, since on Windows or macOS the new file would replace the other entity's. A rename that changes only the case of the same name (`Main` to `MAIN`) is refused too, because the new file would replace the old before the old is deleted; rename to a temporary name first, then to the final one.
+
 Reference kinds: `objectClass` (conditions and actions),
 `customAceObjectClass` (a `custom-ace-block` event's owner),
 `parameterObjectName` (the bare-name keys `object`, `object-to-create`,
@@ -2892,8 +2903,13 @@ bridge to report `ready: true` before returning.
 | `host` | string | No* | CDP discovery host (default: `localhost`) |
 | `port` | integer | No* | CDP discovery port (default: `9222`) |
 | `timeoutMs` | integer | No | Connect and bridge-ready timeout, 100 to 60000 ms (default: 10000) |
+| `allowRemoteHost` | boolean | No | Allow a host other than this machine (default: `false`) |
 
 *Use `cdpEndpoint` alone, or `host`/`port`; do not combine the two routes.
+
+Only `localhost`, `127.x.x.x` and `::1` are accepted unless `allowRemoteHost` is
+true, whether the host comes from `host` or from the `cdpEndpoint` URL: the
+runtime bridge runs script in whatever page it reaches.
 
 The result contains `connectionId`, `bridgeReady`, `gameState`, and, for a
 discovered connection, the selected page target metadata.

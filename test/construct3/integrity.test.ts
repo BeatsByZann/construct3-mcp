@@ -45,6 +45,90 @@ describe('validateProjectIntegrity', () => {
     resetProjectIndex();
   });
 
+  // ─── Sub-layers and legacy keys ──────────────────────────
+
+  it('reports duplicate UIDs and SIDs that sit on a sub-layer', async () => {
+    const reader = createReader({
+      objects: new Map([
+        ['Sprite', { name: 'Sprite', 'plugin-id': 'Sprite', sid: 100 }],
+      ]),
+      eventSheets: new Map([
+        ['MainSheet', { name: 'MainSheet', events: [], sid: 200 }],
+      ]),
+      layouts: new Map([
+        ['Layout 1', {
+          name: 'Layout 1',
+          sid: 300,
+          eventSheet: 'MainSheet',
+          layers: [{
+            name: 'Main',
+            sid: 301,
+            instances: [{ type: 'Sprite', uid: 5, sid: 302, properties: {} }],
+            subLayers: [{
+              name: 'Inner',
+              sid: 303,
+              instances: [{ type: 'Sprite', uid: 5, sid: 302, properties: {} }],
+            }],
+          }],
+        }],
+      ]),
+      usedAddons: [
+        { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
+      ],
+    });
+    const result = await validateProjectIntegrity(reader);
+    const uid = result.warnings.filter(w => w.check === 'duplicate-uid');
+    expect(uid).toHaveLength(1);
+    expect(uid[0].message).toContain('layer:Inner');
+    const sid = result.warnings.filter(w => w.check === 'duplicate-sid');
+    expect(sid).toHaveLength(1);
+    expect(sid[0].message).toContain('layer:Inner');
+  });
+
+  it('warns about keys Construct does not read on blocks, conditions and actions', async () => {
+    const reader = createReader({
+      objects: new Map([
+        ['Sprite', { name: 'Sprite', 'plugin-id': 'Sprite', sid: 100 }],
+      ]),
+      eventSheets: new Map([
+        ['MainSheet', {
+          name: 'MainSheet',
+          sid: 200,
+          events: [{
+            eventType: 'block',
+            sid: 201,
+            isElse: true,
+            conditions: [{ id: 'every-tick', objectClass: 'System', sid: 202, isOr: true }],
+            actions: [{ id: 'flash', objectClass: 'Sprite', 'behavior-type': 'Flash', sid: 203, parameters: {} }],
+            children: [{
+              eventType: 'block',
+              sid: 204,
+              conditions: [{ id: 'every-tick', 'object-class': 'System', sid: 205 }],
+              actions: [],
+            }],
+          }],
+        }],
+      ]),
+      layouts: new Map([
+        ['Layout 1', { name: 'Layout 1', sid: 300, eventSheet: 'MainSheet', layers: [{ name: 'Main', sid: 301, instances: [] }] }],
+      ]),
+      usedAddons: [
+        { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
+      ],
+    });
+    const result = await validateProjectIntegrity(reader);
+    const legacy = result.warnings.filter(w => w.check === 'event-legacy-key');
+    expect(legacy.map(w => w.message)).toEqual([
+      expect.stringContaining('"isElse"'),
+      expect.stringContaining('"isOr"'),
+      expect.stringContaining('"behavior-type"'),
+      expect.stringContaining('"object-class"'),
+    ]);
+    expect(legacy[0].entity).toBe('eventSheets/MainSheet (event SID 201)');
+    expect(legacy[2].message).toContain('"behaviorType"');
+    expect(legacy[3].entity).toBe('eventSheets/MainSheet (event SID 204)');
+  });
+
   // ─── Clean project ───────────────────────────────────────
 
   it('returns valid: true for a clean project', async () => {
@@ -53,7 +137,7 @@ describe('validateProjectIntegrity', () => {
     expect(result.valid).toBe(true);
     expect(result.complete).toBe(true);
     expect(result.summary.errors).toBe(0);
-    expect(result.summary.checksRun).toBe(15);
+    expect(result.summary.checksRun).toBe(16);
     expect(result.summary.entitiesScanned).toBeGreaterThan(0);
   });
 

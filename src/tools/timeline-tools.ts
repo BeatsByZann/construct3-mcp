@@ -1512,6 +1512,12 @@ export function registerTimelineTools(deps: MutationToolDeps) {
           if (keyframes.length <= 1) {
             return toolError(`Refusing to delete the last master keyframe of ${trackLabel.charAt(0).toLowerCase()}${trackLabel.slice(1)}: a track with no keyframes is not a valid track. Use remove_timeline_track to remove the whole track.`);
           }
+          // add_audio_track requires a keyframe at 0 because r495.2 moves a
+          // lone later keyframe back there on load; deleting it here would
+          // leave a track the editor silently rewrites.
+          if (found.kind === 'audio-track' && sameTime(args.time, 0)) {
+            return toolError(`${trackLabel} is an audio track, which needs its keyframe at time 0 (Construct moves one there on load). Delete a later keyframe, or remove_timeline_track to remove the whole track.`);
+          }
           keyframes.splice(index, 1);
           for (const { propertyTrack } of listPropertyTracks(track)) {
             if (!Array.isArray(propertyTrack.propertyKeyframes)) continue;

@@ -645,6 +645,20 @@ export function collectLayerRefsInSheet(
   return sites;
 }
 
+/**
+ * The walk path of an event in a sheet (`events[2].children[1]`), or
+ * undefined when the event is not in the sheet. Matched by object identity.
+ */
+export function findEventPath(sheet: EventSheet, target: Record<string, unknown>): string | undefined {
+  let found: string | undefined;
+  walkEvents(
+    sheet.events as unknown as C3Event[],
+    ({ event, path }) => { if (found === undefined && event === target) found = path; },
+    () => { /* ACEs are not needed */ },
+  );
+  return found;
+}
+
 // ─── Event variable references ─────────────────────────────
 
 /**
@@ -662,12 +676,17 @@ export function collectVariableRefsInSheet(
   oldName: string,
   newName: string,
   apply: boolean,
+  scopePath?: string,
 ): RefSite[] {
   const sites: RefSite[] = [];
   walkEvents(
     sheet.events as unknown as C3Event[],
     () => { /* the declaration is renamed by the caller */ },
     ({ ace, path }) => {
+      // A local variable is visible only inside the container that declares
+      // it, so references outside that container's children belong to some
+      // other declaration and are left alone.
+      if (scopePath !== undefined && !path.startsWith(scopePath)) return;
       forEachParameter(ace, path, (key, value, paramPath, set) => {
         if (key === 'instance-variable') return;
         if (key === 'variable') {

@@ -102,6 +102,7 @@ export function getImageFileName(
   animationName: string,
   frameIndex: number,
   pluginId?: string,
+  extension = 'png',
 ): string {
   const lowerName = objectName.toLowerCase();
 
@@ -113,5 +114,5 @@ export function getImageFileName(
 
   // Sprite convention: name-animation-frameIndex(3 digits).png
   const paddedIndex = String(frameIndex).padStart(3, '0');
-  return `${lowerName}-${animationName.toLowerCase()}-${paddedIndex}.png`;
+  return `${lowerName}-${animationName.toLowerCase()}-${paddedIndex}.${extension}`;
 }

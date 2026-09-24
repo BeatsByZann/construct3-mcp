@@ -233,8 +233,12 @@ describe('add_event_block', () => {
   });
 
   it('allows else block without conditions', async () => {
+    // An else needs an event block before it in the same container.
     const { server } = setup({
-      eventSheets: new Map([['MainSheet', { name: 'MainSheet', events: [], sid: 10 }]]),
+      eventSheets: new Map([['MainSheet', {
+        name: 'MainSheet', sid: 10,
+        events: [{ eventType: 'block', sid: 11, conditions: [{ id: 'every-tick', objectClass: 'System', sid: 12 }], actions: [] }],
+      }]]),
     });
     const result = await server.callTool('add_event_block', {
       sheetName: 'MainSheet',

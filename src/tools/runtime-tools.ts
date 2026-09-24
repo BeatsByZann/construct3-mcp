@@ -21,6 +21,21 @@ import { join, dirname, relative } from 'node:path';
 import { existsSync } from 'node:fs';
 import { toolResult, toolError, boundedRecord } from './shared.js';
 import { writeZip } from '../runtime/zip-writer.js';
+
+/** True for the names and addresses that reach this machine. */
+export function isLoopbackHost(host: string): boolean {
+  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
+  return bare === 'localhost' || bare === '::1' || /^127\.\d+\.\d+\.\d+$/.test(bare);
+}
+
+/** The host part of a ws:// or wss:// endpoint, or the endpoint itself when it does not parse. */
+function hostOfEndpoint(endpoint: string): string {
+  try {
+    return new URL(endpoint).hostname;
+  } catch {
+    return endpoint;
+  }
+}
 import { collectProjectFiles } from '../runtime/project-files.js';
 import { RuntimeConnectionManager } from '../runtime/cdp-client.js';
 import type { RuntimeCondition, SimulatedInputAction } from '../runtime/cdp-client.js';
@@ -322,9 +337,15 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
       port: z.number().int().min(1).max(65535).optional().describe('CDP discovery port (default: 9222)'),
       timeoutMs: z.number().int().min(100).max(60_000).optional().default(10_000)
         .describe('Maximum time to connect and wait for the runtime bridge'),
+      allowRemoteHost: z.boolean().optional().default(false)
+        .describe('Allow a host other than this machine (localhost, 127.0.0.1, ::1). Off by default: the bridge runs arbitrary script in the connected page.'),
     },
-    async ({ cdpEndpoint, host, port, timeoutMs }) => {
+    async ({ cdpEndpoint, host, port, timeoutMs, allowRemoteHost }) => {
       try {
+        const target = cdpEndpoint !== undefined ? hostOfEndpoint(cdpEndpoint) : (host ?? 'localhost');
+        if (!allowRemoteHost && !isLoopbackHost(target)) {
+          return toolError(`Refusing to connect to "${target}": only this machine (localhost, 127.0.0.1, ::1) is allowed unless allowRemoteHost is true. The runtime bridge runs script in whatever page it reaches.`);
+        }
         const connected = await connections.connect({ cdpEndpoint, host, port, timeoutMs });
         return toolResult(connected);
       } catch (error) {

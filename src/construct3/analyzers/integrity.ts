@@ -13,6 +13,7 @@ import { getProjectIndex } from './index-builder.js';
 import { findOrphanedObjects } from './object-deps.js';
 import { SINGLE_IMAGE_PLUGINS, ANIMATION_PLUGINS } from '../templates.js';
 import { getImageFileName } from '../png-generator.js';
+import { collectLayers } from '../layout-walk.js';
 import { ACE_CATALOG_RELEASE, buildAceContext, checkEventAces, describeEventAceProblem } from '../ace-catalog.js';
 
 /** Image file extensions by declared fileType, from the r495.2 samples. */
@@ -104,6 +105,7 @@ export async function validateProjectIntegrity(
   await checkBrokenObjectReferences(reader, families, warnings);
   checkBrokenEventSheetReferences(layouts, eventSheets, warnings);
   checkBrokenIncludes(eventSheets, warnings);
+  checkLegacyEventKeys(eventSheets, warnings);
   checkMissingAddons(objects, reader, warnings);
   await checkEventAceDefinitions(reader, eventSheets, warnings);
 
@@ -112,7 +114,7 @@ export async function validateProjectIntegrity(
   await checkBackupFiles(reader, info);
   await checkOrphanedObjects(reader, info);
 
-  const checksRun = 15;
+  const checksRun = 16;
 
   return {
     valid: errors.length === 0,
@@ -440,16 +442,14 @@ function checkDuplicateSids(
     }
   }
 
-  // Layouts
+  // Layouts: every layer at every depth, since sub-layers hold instances too
   for (const [name, layout] of layouts) {
     track(layout.sid, `layouts/${name}`);
-    if (Array.isArray(layout.layers)) {
-      for (const layer of layout.layers) {
-        track(layer.sid, `layouts/${name}/layer:${layer.name}`);
-        if (Array.isArray(layer.instances)) {
-          for (const inst of layer.instances) {
-            track(inst.sid, `layouts/${name}/layer:${layer.name}/inst:${inst.type}:${inst.uid}`);
-          }
+    for (const layer of collectLayers(layout)) {
+      track(layer.sid, `layouts/${name}/layer:${layer.name}`);
+      if (Array.isArray(layer.instances)) {
+        for (const inst of layer.instances) {
+          track(inst.sid, `layouts/${name}/layer:${layer.name}/inst:${inst.type}:${inst.uid}`);
         }
       }
     }
@@ -569,12 +569,10 @@ function checkDuplicateUids(
   };
 
   for (const [name, layout] of layouts) {
-    if (Array.isArray(layout.layers)) {
-      for (const layer of layout.layers) {
-        if (Array.isArray(layer.instances)) {
-          for (const inst of layer.instances) {
-            track(inst.uid, `layouts/${name}/layer:${layer.name}/inst:${inst.type}`);
-          }
+    for (const layer of collectLayers(layout)) {
+      if (Array.isArray(layer.instances)) {
+        for (const inst of layer.instances) {
+          track(inst.uid, `layouts/${name}/layer:${layer.name}/inst:${inst.type}`);
         }
       }
     }
@@ -682,6 +680,73 @@ function checkBrokenEventSheetReferences(
 }
 
 // ─── Check 8: Broken Includes ────────────────────────────────
+
+// ─── Check: legacy or misspelt event keys ───────────────────
+
+/** Keys Construct r495 never writes on a block, condition or action, with what it writes instead. */
+const LEGACY_EVENT_KEYS: Record<string, string> = {
+  'behavior-type': 'behaviorType',
+  'object-class': 'objectClass',
+  'is-inverted': 'isInverted',
+};
+const LEGACY_BLOCK_KEYS: Record<string, string> = {
+  isElse: 'a leading System "else" condition',
+  isOr: 'isOrBlock',
+};
+
+/**
+ * Warn about keys a hand edit or an older tool wrote in a shape the editor
+ * does not read: `behavior-type` instead of `behaviorType` makes Construct
+ * report every behavior action as a missing action id (upstream issue 16),
+ * and `isElse` / condition-level `isOr` were shapes older builds of this
+ * server wrote before the r495 samples were taken.
+ */
+function checkLegacyEventKeys(eventSheets: Map<string, EventSheet>, warnings: IntegrityIssue[]): void {
+  const walk = (events: unknown, sheet: string, depth: number) => {
+    if (!Array.isArray(events) || depth > 50) return;
+    for (const event of events as Array<Record<string, unknown>>) {
+      if (!event || typeof event !== 'object') continue;
+      const where = `eventSheets/${sheet}` + (typeof event.sid === 'number' ? ` (event SID ${event.sid})` : '');
+      for (const [legacy, correct] of Object.entries(LEGACY_BLOCK_KEYS)) {
+        if (legacy in event) {
+          warnings.push({
+            check: 'event-legacy-key',
+            entity: where,
+            message: `Event uses "${legacy}", which Construct does not read; it stores this as ${correct}.`,
+            suggestion: 'Rewrite the block with update_event_block, which converts the legacy keys, or fix the key by hand.',
+          });
+        }
+      }
+      for (const listKey of ['conditions', 'actions'] as const) {
+        const aces = event[listKey];
+        if (!Array.isArray(aces)) continue;
+        for (const ace of aces as Array<Record<string, unknown>>) {
+          if (!ace || typeof ace !== 'object') continue;
+          for (const [legacy, correct] of Object.entries(LEGACY_EVENT_KEYS)) {
+            if (legacy in ace) {
+              warnings.push({
+                check: 'event-legacy-key',
+                entity: where,
+                message: `A ${listKey.slice(0, -1)} uses "${legacy}", which Construct does not read; the key is "${correct}". Construct reports such an ACE as a missing action or condition id on load.`,
+                suggestion: `Rename the key to "${correct}" (update_event_block rewrites the block with the right keys).`,
+              });
+            }
+          }
+          if (listKey === 'conditions' && 'isOr' in ace) {
+            warnings.push({
+              check: 'event-legacy-key',
+              entity: where,
+              message: 'A condition carries "isOr"; Construct marks an OR block on the block itself as isOrBlock.',
+              suggestion: 'Rewrite the block with update_event_block, which converts condition-level isOr to isOrBlock.',
+            });
+          }
+        }
+      }
+      walk(event.children, sheet, depth + 1);
+    }
+  };
+  for (const [name, sheet] of eventSheets) walk(sheet.events, name, 0);
+}
 
 function checkBrokenIncludes(
   sheets: Map<string, EventSheet>,

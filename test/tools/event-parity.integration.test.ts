@@ -93,6 +93,12 @@ describe('add_event_block with every action kind', () => {
   });
 
   it('writes an else-if block with the else condition first', async () => {
+    // An else must follow an event block, so give it one.
+    await server.callTool('add_event_block', {
+      sheetName: 'Main',
+      conditions: [{ id: 'on-start-of-layout', objectClass: 'System' }],
+      actions: [],
+    });
     const result = await server.callTool('add_event_block', {
       sheetName: 'Main', isElse: true,
       conditions: [{ id: 'every-tick', objectClass: 'System' }],

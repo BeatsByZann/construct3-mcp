@@ -31,6 +31,7 @@ import {
   resolveContainer,
   commitContainer,
   insertIntoContainer,
+  elsePlacementError,
   collectSubtree,
   MAX_ITEMS_PER_BLOCK,
   MAX_SEARCH_DEPTH,
@@ -345,6 +346,11 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         });
         if ('error' in resolution) return toolError(resolution.error);
         const container = resolution.container;
+
+        if (args.isElse) {
+          const placement = elsePlacementError(container, args.position);
+          if (placement) return toolError(placement);
+        }
 
         // Collect all objectClass references from entire tree (parent + descendants)
         const allRefs: Array<{ objectClass: string; behaviorType?: string }> = [];
@@ -1663,6 +1669,21 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         const childCount = countDescendants(moving);
 
+        // An else block keeps needing a block before it where it lands, and
+        // an else left behind loses the block it followed.
+        if (isElseBlock(moving)) {
+          const placement = elsePlacementError(container, args.position, moving);
+          if (placement) return toolError(placement);
+        }
+        const warnings: string[] = [];
+        const nextInSource = found.parentArray[found.index + 1];
+        if (nextInSource && isElseBlock(nextInSource) && moving.eventType === 'block') {
+          const before = found.index > 0 ? found.parentArray[found.index - 1] : undefined;
+          if (!before || before.eventType !== 'block' || before === moving) {
+            warnings.push(`The else block after SID ${args.sid} no longer follows an event block; Construct's editor never writes an else in that position. Move or delete it.`);
+          }
+        }
+
         // Detach first, then insert. insertIntoContainer reads the sibling
         // index at insert time, so a move within one array still lands beside
         // the intended sibling after the removal shifted it.
@@ -1690,6 +1711,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
                 ? { siblingSid: args.siblingSid, position: args.position }
                 : { root: true, position: args.position },
           backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined,
         });
       } catch (error) {
         console.error('[move_event_block] failed:', error);
@@ -2272,11 +2294,29 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
         func.functionParameters = nextParameters;
 
+        // Caller sheets first and the definition's sheet last, so a failure
+        // part way leaves the old name findable and the same call resumes.
+        const writeOrder = [...modifiedSheets].filter(name => name !== args.sheetName);
+        writeOrder.push(args.sheetName);
         const backupFiles: string[] = [];
-        for (const name of modifiedSheets) {
+        const filesWritten: string[] = [];
+        for (const name of writeOrder) {
           const data = loaded.get(name)!;
           const subfolder = writer.getSubfolderForEntity('eventSheets', name);
-          backupFiles.push(await writer.writeEntityFile('eventSheets', name, data, subfolder));
+          try {
+            backupFiles.push(await writer.writeEntityFile('eventSheets', name, data, subfolder));
+          } catch (error) {
+            resetProjectIndex();
+            const reason = error instanceof Error ? error.message : String(error);
+            const written = filesWritten.length > 0
+              ? ` Sheets already written (in order): ${filesWritten.join(', ')}; not written: ${writeOrder.slice(filesWritten.length).join(', ')}.`
+              : ' No sheet was written.';
+            return toolError(
+              `update_function failed writing sheet "${name}": ${reason}.${written} ` +
+              'The definition is written last, so re-running the same call resumes: callers already renamed are skipped.'
+            );
+          }
+          filesWritten.push(name);
         }
         resetProjectIndex();
 

@@ -255,6 +255,33 @@ describe("connect_to_game", () => {
     });
   });
 
+  it("refuses a host off this machine unless allowRemoteHost is set", async () => {
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const byHost = await server.callTool("connect_to_game", { host: "10.1.2.3", port: 1, timeoutMs: 200 });
+    expect(byHost.isError).toBe(true);
+    expect(byHost.content[0].text).toContain("allowRemoteHost");
+    expect(byHost.content[0].text).toContain("10.1.2.3");
+
+    const byEndpoint = await server.callTool("connect_to_game", { cdpEndpoint: "ws://example.com:9222/devtools/page/1", timeoutMs: 200 });
+    expect(byEndpoint.isError).toBe(true);
+    expect(byEndpoint.content[0].text).toContain("allowRemoteHost");
+    expect(byEndpoint.content[0].text).toContain("example.com");
+
+    // Loopback spellings pass the guard and fail only on the connection itself.
+    for (const host of ["localhost", "127.0.0.1", "::1"]) {
+      const attempt = await server.callTool("connect_to_game", { host, port: 1, timeoutMs: 200 });
+      expect(attempt.isError).toBe(true);
+      expect(attempt.content[0].text).not.toContain("allowRemoteHost");
+    }
+
+    // With the flag the remote host is attempted, and fails on the connection, not the guard.
+    const allowed = await server.callTool("connect_to_game", { host: "10.1.2.3", port: 1, timeoutMs: 200, allowRemoteHost: true });
+    expect(allowed.isError).toBe(true);
+    expect(allowed.content[0].text).not.toContain("allowRemoteHost");
+  });
+
   it("accepts a direct page WebSocket endpoint", async () => {
     const fake = await startFakeCdp();
     openFakes.push(fake);

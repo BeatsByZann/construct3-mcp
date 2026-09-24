@@ -185,6 +185,15 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
   // ─── audio tracks ─────────────────────────────────────────
 
   describe('audio tracks', () => {
+    it('keeps the keyframe at time 0 that Construct requires (A-T1)', async () => {
+      await createMove();
+      await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', name: 'Sfx', keyframeTimes: [0, 1.5] });
+      await fails('delete_keyframe', { timelineName: 'Move', trackName: 'Sfx', time: 0 }, 'needs its keyframe at time 0');
+      expect((await onDisk()).tracks[0].keyframes.map((k: Json) => k.time)).toEqual([0, 1.5]);
+      await ok('delete_keyframe', { timelineName: 'Move', trackName: 'Sfx', time: 1.5 });
+      expect((await onDisk()).tracks[0].keyframes.map((k: Json) => k.time)).toEqual([0]);
+    });
+
     it('adds an audio track shaped like the r495 sample, copying the registered file entry', async () => {
       await createMove();
       const result = await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', keyframeTimes: [0, 1.5] });

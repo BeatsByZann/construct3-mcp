@@ -217,7 +217,7 @@ describe('ACE validation (real project on disk)', () => {
 
   it('validate_project reports every wrong ACE in the project, located by sheet and SID', async () => {
     const clean = await validateProjectIntegrity(reader);
-    expect(clean.summary.checksRun).toBe(15);
+    expect(clean.summary.checksRun).toBe(16);
     expect(clean.warnings.filter(w => w.check.startsWith('ace-'))).toEqual([]);
 
     parseResult(await server.callTool('add_event_block', {

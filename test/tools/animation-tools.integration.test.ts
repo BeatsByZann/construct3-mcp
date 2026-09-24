@@ -6,6 +6,7 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { registerAnimationTools } from '../../src/tools/animation-tools.js';
+import { generatePlaceholderPng } from '../../src/construct3/png-generator.js';
 import { MockServer } from '../mocks/mock-server.js';
 
 const FIXTURE_DIR = join(import.meta.dirname, '..', 'fixtures', 'minimal-project');
@@ -364,5 +365,100 @@ describe('animation frame tools against a real project on disk', () => {
     expect((result.warnings as string[])[0]).toContain('No frame image files needed renaming');
     expect(await animationNames()).toEqual(['Run']);
     expect(await pngNames()).toEqual(['sprite-run-000.png', 'sprite-run-001.png', 'sprite-run-002.png']);
+  });
+});
+
+/**
+ * A-O1: frame files take their extension from the frame's fileType. C3-ACE
+ * holds 30 image/gif frames; every frame tool must move, copy, rename and
+ * replace those under their .gif names rather than assume .png.
+ */
+describe('frame tools on GIF-backed frames', () => {
+  let projectDir: string;
+  let server: MockServer;
+
+  async function readFrames(): Promise<Array<Record<string, unknown>>> {
+    const obj = JSON.parse(await readFile(join(projectDir, 'objectTypes', 'Sprite.json'), 'utf8')) as any;
+    return obj.animations.items[0].frames;
+  }
+  async function imageFiles(): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const name of (await readdir(join(projectDir, 'images'))).sort()) {
+      out[name] = await readFile(join(projectDir, 'images', name), 'utf8');
+    }
+    return out;
+  }
+  const name = (index: number, ext: string) => `sprite-${ANIMATION.toLowerCase()}-${String(index).padStart(3, '0')}.${ext}`;
+
+  beforeEach(async () => {
+    projectDir = await mkdtemp(join(tmpdir(), 'c3-animation-gif-'));
+    await cp(FIXTURE_DIR, projectDir, { recursive: true });
+    const objectPath = join(projectDir, 'objectTypes', 'Sprite.json');
+    const obj = JSON.parse(await readFile(objectPath, 'utf8')) as any;
+    // Frame 1 is a GIF among PNGs, as in C3-ACE.
+    obj.animations.items[0].frames = [0, 1, 2].map(index => ({
+      width: 64, height: 64, originX: 0.5, originY: 0.5, duration: 1, tag: '',
+      imageSpriteId: 500 + index,
+      ...(index === 1 ? { fileType: 'image/gif' } : {}),
+    }));
+    await writeFile(objectPath, JSON.stringify(obj, null, '\t'), 'utf8');
+    await mkdir(join(projectDir, 'images'), { recursive: true });
+    await writeFile(join(projectDir, 'images', name(0, 'png')), 'image-0', 'utf8');
+    await writeFile(join(projectDir, 'images', name(1, 'gif')), 'image-1', 'utf8');
+    await writeFile(join(projectDir, 'images', name(2, 'png')), 'image-2', 'utf8');
+    const reader = new Construct3ProjectReader(join(projectDir, 'project.c3proj'));
+    await reader.loadProject();
+    const idGen = new IdGenerator();
+    const writer = new Construct3ProjectWriter(reader, idGen);
+    server = new MockServer();
+    registerAnimationTools({ server, reader, writer, idGen } as any);
+  });
+
+  afterEach(async () => {
+    await rm(projectDir, { recursive: true, force: true });
+  });
+
+  it('reorder_frames moves the GIF under its new index as a GIF', async () => {
+    resultOf(await server.callTool('reorder_frames', { objectName: 'Sprite', animationName: ANIMATION, order: [1, 0, 2] }));
+    expect((await readFrames()).map(f => f.fileType)).toEqual(['image/gif', undefined, undefined]);
+    expect(await imageFiles()).toEqual({
+      [name(0, 'gif')]: 'image-1',
+      [name(1, 'png')]: 'image-0',
+      [name(2, 'png')]: 'image-2',
+    });
+  });
+
+  it('duplicate_frame copies the GIF and shifts the later PNG', async () => {
+    resultOf(await server.callTool('duplicate_frame', { objectName: 'Sprite', animationName: ANIMATION, frameIndex: 1 }));
+    expect((await readFrames()).map(f => f.fileType)).toEqual([undefined, 'image/gif', 'image/gif', undefined]);
+    expect(await imageFiles()).toEqual({
+      [name(0, 'png')]: 'image-0',
+      [name(1, 'gif')]: 'image-1',
+      [name(2, 'gif')]: 'image-1',
+      [name(3, 'png')]: 'image-2',
+    });
+  });
+
+  it('delete_frame_from_animation shifts the GIF down under its own extension', async () => {
+    resultOf(await server.callTool('delete_frame_from_animation', { objectName: 'Sprite', animationName: ANIMATION, frameIndex: 0 }));
+    expect((await readFrames()).map(f => f.fileType)).toEqual(['image/gif', undefined]);
+    expect(await imageFiles()).toEqual({
+      [name(0, 'gif')]: 'image-1',
+      [name(1, 'png')]: 'image-2',
+    });
+  });
+
+  it('rename_animation moves the GIF with the PNGs', async () => {
+    resultOf(await server.callTool('rename_animation', { objectName: 'Sprite', animationName: ANIMATION, newName: 'Run' }));
+    expect(Object.keys(await imageFiles())).toEqual(['sprite-run-000.png', 'sprite-run-001.gif', 'sprite-run-002.png']);
+  });
+
+  it('replace_sprite_image turns a GIF frame into a PNG and removes the old file', async () => {
+    const png = generatePlaceholderPng(8, 8).toString('base64');
+    resultOf(await server.callTool('replace_sprite_image', { objectName: 'Sprite', animationName: ANIMATION, frameIndex: 1, pngBase64: png }));
+    expect((await readFrames())[1].fileType).toBe('image/png');
+    const files = Object.keys(await imageFiles());
+    expect(files).toContain(name(1, 'png'));
+    expect(files).not.toContain(name(1, 'gif'));
   });
 });

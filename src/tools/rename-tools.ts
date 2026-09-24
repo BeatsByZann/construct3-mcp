@@ -40,6 +40,7 @@ import {
   collectLayoutParameterRefs,
   collectLayerRefsInSheet,
   collectVariableRefsInSheet,
+  findEventPath,
   collectContainerMemberRefs,
   collectTimelineObjectTypeRefs,
   countUnrewrittenObjectMentions,
@@ -95,6 +96,28 @@ function buildResult(
  * Wrap a rename failure so the caller learns how far it got. The files listed
  * were written successfully; re-running the identical call resumes the rename.
  */
+/**
+ * The existing name that `candidate` would collide with when names are
+ * compared without case, or undefined. `self` is the entity being renamed,
+ * so a rename that only changes its own case is not a clash.
+ */
+function clashIgnoringCase(names: string[], candidate: string, self: string): string | undefined {
+  const lower = candidate.toLowerCase();
+  return names.find(n => n !== self && n.toLowerCase() === lower);
+}
+
+/**
+ * A rename that changes only the case of a file-backed entity is refused.
+ * The rename writes the new file and then deletes the old one; on Windows
+ * and macOS those are the same file, so the entity would be deleted.
+ */
+function caseOnlyRenameError(kind: string, name: string, newName: string): ReturnType<typeof toolError> | undefined {
+  if (name === newName || name.toLowerCase() !== newName.toLowerCase()) return undefined;
+  return toolError(
+    `"${newName}" differs from "${name}" only in case. ${kind} names are file names, and on a case-insensitive disk the new file would replace the old one before the old one is deleted, losing the ${kind.toLowerCase()}. Rename to a temporary name first, then to "${newName}".`
+  );
+}
+
 function partialFailure(tool: string, error: unknown, filesWritten: string[]) {
   const reason = error instanceof Error ? error.message : String(error);
   const written = filesWritten.length > 0
@@ -457,18 +480,24 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         const { name, newName, dryRun } = args;
         if (name === newName) return toolError(`"${name}" is already the object type's name.`);
         validateName(newName);
+        const caseOnly = caseOnlyRenameError('Object type', name, newName);
+        if (caseOnly) return caseOnly;
 
         const objectTypes = await reader.listObjectTypes();
         if (!objectTypes.includes(name)) {
           return notFoundError('Object', name, reader.findNearestName(name, 'objects'), 'list_objects');
         }
         const families = await reader.listFamilies();
-        if (objectTypes.includes(newName)) {
-          return toolError(`An object type named "${newName}" already exists. Pick a different name.`);
+        // Names are compared without case because they become file names, and
+        // Windows would write one object's data over the other's file.
+        const objectClash = clashIgnoringCase(objectTypes, newName, name);
+        if (objectClash) {
+          return toolError(`An object type named "${objectClash}" already exists. Object type names are compared without case because they are file names. Pick a different name.`);
         }
-        if (families.includes(newName)) {
+        const familyClash = clashIgnoringCase(families, newName, name);
+        if (familyClash) {
           return toolError(
-            `A family named "${newName}" already exists. Object types and families share one name space in Construct, so the rename would be ambiguous.`
+            `A family named "${familyClash}" already exists. Object types and families share one name space in Construct, so the rename would be ambiguous.`
           );
         }
 
@@ -614,18 +643,22 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         const { name, newName, dryRun } = args;
         if (name === newName) return toolError(`"${name}" is already the family's name.`);
         validateName(newName);
+        const caseOnly = caseOnlyRenameError('Family', name, newName);
+        if (caseOnly) return caseOnly;
 
         const families = await reader.listFamilies();
         if (!families.includes(name)) {
           return toolError(`Family "${name}" not found. Use list_families to see all available names.`);
         }
         const objectTypes = await reader.listObjectTypes();
-        if (families.includes(newName)) {
-          return toolError(`A family named "${newName}" already exists. Pick a different name.`);
+        const familyClash = clashIgnoringCase(families, newName, name);
+        if (familyClash) {
+          return toolError(`A family named "${familyClash}" already exists. Family names are compared without case because they are file names. Pick a different name.`);
         }
-        if (objectTypes.includes(newName)) {
+        const objectClash = clashIgnoringCase(objectTypes, newName, name);
+        if (objectClash) {
           return toolError(
-            `An object type named "${newName}" already exists. Object types and families share one name space in Construct, so the rename would be ambiguous.`
+            `An object type named "${objectClash}" already exists. Object types and families share one name space in Construct, so the rename would be ambiguous.`
           );
         }
 
@@ -704,13 +737,16 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         const { name, newName, dryRun } = args;
         if (name === newName) return toolError(`"${name}" is already the layout's name.`);
         validateName(newName);
+        const caseOnly = caseOnlyRenameError('Layout', name, newName);
+        if (caseOnly) return caseOnly;
 
         const layouts = await reader.listLayouts();
         if (!layouts.includes(name)) {
           return notFoundError('Layout', name, reader.findNearestName(name, 'layouts'), 'list_layouts');
         }
-        if (layouts.includes(newName)) {
-          return toolError(`A layout named "${newName}" already exists. Pick a different name.`);
+        const layoutClash = clashIgnoringCase(layouts, newName, name);
+        if (layoutClash) {
+          return toolError(`A layout named "${layoutClash}" already exists. Layout names are compared without case because they are file names. Pick a different name.`);
         }
 
         const subfolder = writer.getSubfolderForEntity('layouts', name);
@@ -794,13 +830,16 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         const { name, newName, dryRun } = args;
         if (name === newName) return toolError(`"${name}" is already the event sheet's name.`);
         validateName(newName);
+        const caseOnly = caseOnlyRenameError('Event sheet', name, newName);
+        if (caseOnly) return caseOnly;
 
         const sheets = await reader.listEventSheets();
         if (!sheets.includes(name)) {
           return notFoundError('Event sheet', name, reader.findNearestName(name, 'eventsheets'), 'list_eventsheets');
         }
-        if (sheets.includes(newName)) {
-          return toolError(`An event sheet named "${newName}" already exists. Pick a different name.`);
+        const sheetClash = clashIgnoringCase(sheets, newName, name);
+        if (sheetClash) {
+          return toolError(`An event sheet named "${sheetClash}" already exists. Sheet names are compared without case because they are file names. Pick a different name.`);
         }
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', name);
@@ -1008,6 +1047,12 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         // visible project-wide; a nested one is local to its container.
         const isGlobal = found.parentEvent === undefined;
         const scopeSheets = isGlobal ? await reader.listEventSheets() : [sheetName];
+        // A local is visible only to the events inside its container, so the
+        // rewrite stops at that container's children; a sibling group's local
+        // of the same name is a different variable.
+        const containerPath = found.parentEvent === undefined ? undefined : findEventPath(sheet, found.parentEvent);
+        const scopePath = containerPath === undefined ? undefined : `${containerPath}.children`;
+        const containerEvents = (found.parentEvent?.children ?? sheet.events) as unknown as Array<Record<string, unknown>>;
 
         const warnings = expressionIdentifierWarnings(oldName, newName);
         const clash = await findVariableNameClash(reader, newName, sid, isGlobal, sheetName);
@@ -1019,7 +1064,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         for (const scopeSheet of scopeSheets) {
           const file = reader.getEntityRelativePath('eventSheets', scopeSheet);
           try {
-            sites.push(...collectVariableRefsInSheet(file, await reader.readEventSheet(scopeSheet), oldName, newName, false));
+            sites.push(...collectVariableRefsInSheet(file, await reader.readEventSheet(scopeSheet), oldName, newName, false, scopeSheet === sheetName ? scopePath : undefined));
           } catch (e) {
             warnings.push(`Event sheet "${scopeSheet}" could not be read and was not scanned: ${e instanceof Error ? e.message : String(e)}`);
           }
@@ -1035,10 +1080,10 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
             'local first inside its container, so the rewritten expressions there will read the local, not this global.'
           );
         }
-        if (!isGlobal && variableNameInUse(sheet.events as unknown as Array<Record<string, unknown>>, oldName, sid)) {
+        if (!isGlobal && variableNameInUse(containerEvents, oldName, sid)) {
           warnings.push(
-            `Another declaration in "${sheetName}" is also named "${oldName}". A local variable's scope cannot be told ` +
-            'apart from a sibling scope in expression text, so uses belonging to that other declaration were rewritten too.'
+            `Another declaration inside the same container is also named "${oldName}". Their uses cannot be told ` +
+            'apart in expression text, so uses belonging to that other declaration were rewritten too.'
           );
         }
 
@@ -1068,7 +1113,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         if (!ownerFound) {
           return toolError(`Variable SID ${sid} disappeared from sheet "${sheetName}" while renaming.`);
         }
-        collectVariableRefsInSheet(ownerFile, owner, oldName, newName, true);
+        collectVariableRefsInSheet(ownerFile, owner, oldName, newName, true, scopePath);
         ownerFound.event.name = newName;
         const backupPath = await writeSheet(writer, sheetName, owner);
         filesWritten.push(ownerFile);
