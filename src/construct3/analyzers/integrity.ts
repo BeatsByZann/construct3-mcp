@@ -14,7 +14,8 @@ import { findOrphanedObjects } from './object-deps.js';
 import { SINGLE_IMAGE_PLUGINS, ANIMATION_PLUGINS } from '../templates.js';
 import { getImageFileName } from '../png-generator.js';
 import { collectLayers } from '../layout-walk.js';
-import { ACE_CATALOG_RELEASE, buildAceContext, checkEventAces, describeEventAceProblem } from '../ace-catalog.js';
+import { ACE_CATALOG_RELEASE, buildAceContext, checkEventAces, describeEventAceProblem, isBuiltInAddon } from '../ace-catalog.js';
+import { addonDefinition } from '../addon-definitions.js';
 
 /** Image file extensions by declared fileType, from the r495.2 samples. */
 const IMAGE_EXTENSIONS: Record<string, string> = {
@@ -112,9 +113,10 @@ export async function validateProjectIntegrity(
   // Info checks
   await checkOrphanedFiles(reader, registeredObjects, registeredSheets, registeredLayouts, info);
   await checkBackupFiles(reader, info);
+  checkAddonDefinitions(reader, info);
   await checkOrphanedObjects(reader, info);
 
-  const checksRun = 16;
+  const checksRun = 17;
 
   return {
     valid: errors.length === 0,
@@ -928,6 +930,27 @@ async function checkObjectImages(
 }
 
 // ─── Check 9: Missing Addons ─────────────────────────────────
+
+// ─── Check: addons whose ACEs cannot be checked ──────────────
+
+/**
+ * Name every used plugin or behavior that is neither a built-in of the
+ * catalogue's release nor loaded from its own definitions, because its
+ * conditions and actions are silently skipped by the ACE checks until then.
+ */
+function checkAddonDefinitions(reader: Construct3ProjectReader, info: IntegrityIssue[]): void {
+  for (const addon of reader.getUsedAddons()) {
+    if (addon.type !== 'plugin' && addon.type !== 'behavior') continue;
+    if (isBuiltInAddon(addon.type, addon.id) || addonDefinition(addon.type, addon.id)) continue;
+    const version = typeof (addon as { version?: unknown }).version === 'string' ? ` ${(addon as { version: string }).version}` : '';
+    info.push({
+      check: 'ace-definitions-unavailable',
+      entity: `usedAddons/${addon.id}`,
+      message: `The ${addon.type} "${addon.id}" (${addon.name}${version}) is not a built-in of Construct ${ACE_CATALOG_RELEASE} and its definitions are not loaded, so its conditions and actions are not checked.`,
+      suggestion: 'Point C3_ADDON_DEFINITIONS at its .c3addon file or unpacked folder before starting the server, or call load_addon_definitions with that path.',
+    });
+  }
+}
 
 function checkMissingAddons(
   objects: Map<string, ObjectType>,

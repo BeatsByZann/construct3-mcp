@@ -13,7 +13,7 @@
 ## This is a fork
 
 This branch is a fork of [liauw-media/construct3-mcp](https://github.com/liauw-media/construct3-mcp)
-and has diverged from it: **178 MCP tools instead of upstream's 66**, with 112 added and none
+and has diverged from it: **179 MCP tools instead of upstream's 66**, with 113 added and none
 removed or renamed. It adds whole areas upstream does not cover (flowcharts, timeline tracks and
 keyframes, custom eases, tilemap data and brushes, effects, containers, templates, renames with
 reference rewriting, find and replace, Project Bar moves and duplicates, script and project file
@@ -27,7 +27,7 @@ how this relates to upstream.** Read it before filing an issue, and note which b
 | Branch | What it is |
 |---|---|
 | `main` | Close to upstream on purpose. It is the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), so it carries only those correctness fixes. Upstream's 66 tools. |
-| `claude/w84-editor-gap` | The diverged line described in this README. All 178 tools. |
+| `claude/w84-editor-gap` | The diverged line described in this README. All 179 tools. |
 
 Everything below this notice describes `claude/w84-editor-gap`.
 
@@ -130,6 +130,7 @@ node dist/index.js /path/to/your/project.c3proj
 | `get_object_dependencies` | Where objects are used (event sheets, layouts, families) |
 | `find_orphaned_objects` | Find objects not referenced in any event sheet or layout |
 | `get_asset_usage` | Track sound, image, font, and video asset usage |
+| `load_addon_definitions` | Load a third-party addon's conditions and actions (addon.json and aces.json, unpacked or as a .c3addon) so its ACEs are checked like the built-in ones; without a path, list what is loaded |
 | `analyze_performance` | Heuristic performance audit with categorized issues |
 | `validate_project` | Integrity checks: file existence, duplicate SIDs/UIDs, broken references, conditions and actions against Construct r495.2's own definitions, orphaned files; `complete` says whether every object type, event sheet and layout was scanned |
 | `get_project_properties` | Every project setting: the full `properties` bag and top-level settings such as `bundleAddons` |
@@ -571,7 +572,7 @@ construct3-mcp/
 │   │   ├── object-tools.ts         # 8 object type and family tools
 │   │   ├── container-tools.ts      # 4 container tools
 │   │   ├── animation-tools.ts      # 14 Sprite animation tools
-│   │   ├── project-tools.ts        # 5 project and addon tools
+│   │   ├── project-tools.ts        # 6 project and addon tools
 │   │   ├── file-tools.ts           # 6 script and project file tools
 │   │   ├── effect-tools.ts         # 5 effect tools
 │   │   ├── timeline-tools.ts       # 12 timeline tools
@@ -693,7 +694,7 @@ We welcome contributions! Here's how to get started:
 
 - **One Writer at a Time for a .c3p**: The server writes a `.c3p` back after each change and refuses to overwrite one Construct saved in the meantime. Do not edit the same archive in Construct and through the server at once.
 - **The game must be exported first**: `serve_preview` serves and launches an HTML5 export, and `connect_to_game` reaches any browser started with a remote-debugging port, but Construct exports only from its editor; the tools cannot produce the export, and the editor's own preview is not reachable over CDP.
-- **ACE validation covers built-in addons only**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a problem is a warning, not a refusal. Third-party addons, expressions inside parameter values, and parameter values other than combo choices are not checked ([details](docs/API.md#ace-validation))
+- **ACE validation needs definitions**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a third-party addon's against its own `aces.json` once loaded (`C3_ADDON_DEFINITIONS` or `load_addon_definitions`); `validate_project` names the addons still unloaded. A problem is a warning, not a refusal. Expressions inside parameter values and parameter values other than combo choices are not checked ([details](docs/API.md#ace-validation))
 
 ## License
 

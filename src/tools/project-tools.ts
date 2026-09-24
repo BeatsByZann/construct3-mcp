@@ -10,6 +10,7 @@ import type { WriteResult, Addon } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError, boundedRecord } from './shared.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from '../construct3/templates.js';
 import { PROJECT_PROPERTY_KEYS, PROJECT_TOP_LEVEL_KEYS } from '../construct3/project-writer.js';
+import { loadAddonDefinitions, loadedAddonDefinitions } from '../construct3/addon-definitions.js';
 
 export function registerProjectTools({ server, reader, writer }: MutationToolDeps) {
   server.tool(
@@ -140,6 +141,36 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
       } catch (error) {
         console.error('[list_addons] failed:', error);
         return toolError(`Error listing addons: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── load_addon_definitions ───────────────────────────────
+  server.tool(
+    'load_addon_definitions',
+    'Load a third-party addon\'s conditions and actions (its addon.json and aces.json) so validate_project and the event tools check that addon\'s ACEs like the built-in ones. Without a path, list the definitions loaded so far.',
+    {
+      path: z.string().min(1).max(4096).optional().describe('An unpacked addon folder, a .c3addon file, or a folder holding several of either'),
+    },
+    async ({ path }) => {
+      try {
+        const summary = (d: ReturnType<typeof loadedAddonDefinitions>[number]) => ({
+          id: d.id, type: d.type, name: d.name, version: d.version, source: d.source, counts: d.counts,
+        });
+        if (path === undefined) {
+          return toolResult({ success: true, loaded: loadedAddonDefinitions().map(summary) });
+        }
+        const report = await loadAddonDefinitions(path);
+        const warnings = report.skipped.map(s => `${s.path}: ${s.reason}`);
+        return toolResult({
+          success: report.loaded.length > 0,
+          loaded: report.loaded,
+          nowLoaded: loadedAddonDefinitions().map(d => `${d.type}:${d.id}`),
+          warnings: warnings.length > 0 ? warnings : undefined,
+        });
+      } catch (error) {
+        console.error('[load_addon_definitions] failed:', error);
+        return toolError(`Error loading addon definitions: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );

@@ -1,0 +1,20 @@
+﻿{
+	"$schema": "../../aces.schema.json",
+	"timer": {
+		"conditions": [
+			{ "id": "on-timer", "scriptName": "OnTimer", "isTrigger": true, "params": [{ "id": "tag", "type": "string" }] },
+			{ "id": "is-running", "scriptName": "IsRunning", "params": [{ "id": "tag", "type": "string" }] }
+		],
+		"actions": [
+			{ "id": "start-timer", "scriptName": "StartTimer", "params": [
+				{ "id": "duration", "type": "number" },
+				{ "id": "tag", "type": "string" },
+				{ "id": "mode", "type": "combo", "items": ["once", "regular"] }
+			] },
+			{ "id": "stop-timer", "scriptName": "StopTimer", "params": [{ "id": "tag", "type": "string" }] }
+		],
+		"expressions": [
+			{ "id": "elapsed", "expressionName": "Elapsed", "returnType": "number", "params": [{ "id": "tag", "type": "string" }] }
+		]
+	}
+}

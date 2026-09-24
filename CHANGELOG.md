@@ -6,6 +6,8 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
+- Third-party addon ACE validation: `load_addon_definitions` reads an addon's `addon.json` and `aces.json` (an unpacked folder, a `.c3addon`, or a folder of either; a byte-order mark and the `$schema` key are tolerated) and `C3_ADDON_DEFINITIONS` loads such paths at startup, after which the addon's conditions and actions are checked exactly like the built-in ones by `validate_project`, `add_event_block`, `update_event_block`, `update_event_block_action` and the two replace tools. `validate_project` lists every used plugin or behavior that is neither built in nor loaded as an `ace-definitions-unavailable` info entry (17 checks now run), instead of skipping it silently.
+
 - Editor checklist coverage: `scripts/editor-coverage.json` maps every item of the 425-item Construct editor acceptance checklist to a status (covered, partial, open, editor-only) and the tools that produce the same end state; `scripts/editor-coverage.mjs` prints the per-surface table and keeps the copy in `FORK.md` current, and a test refuses a stale table or an unregistered tool name. At this build: 187 items have no file representation; of the 238 that do, 177 are covered, 45 partly and 16 not at all.
 
 - `serve_preview` and `stop_preview`: serve an exported HTML5 game folder over loopback HTTP (a source project folder or a `.c3p` is refused, since Construct exports only from its editor) and optionally launch Chrome or Edge on it with a remote-debugging port, a fresh temporary profile and, when asked, headless software WebGL; the browser ends with the MCP server or on `stop_preview`, which asks it to close over CDP and kills it otherwise. Every preview server is stopped on shutdown.

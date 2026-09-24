@@ -19,6 +19,8 @@ import { IdGenerator } from './construct3/id-generator.js';
 import { registerRuntimeTools } from './tools/runtime-tools.js';
 import { ProjectSession } from './construct3/project-session.js';
 import { registerSessionTools } from './tools/session-tools.js';
+import { loadAddonDefinitionsFromEnv } from './construct3/addon-definitions.js';
+import { delimiter } from 'node:path';
 
 // Use explicit path if given, otherwise auto-detect .c3proj in current working directory.
 // A .c3p path opens the archive through a working folder that is written back after each change;
@@ -39,6 +41,10 @@ async function main() {
     const reader = session.reader;
     if (session.archive) console.error(`Opened ${session.archive.archivePath} in the working folder ${session.archive.workDir}`);
     console.error(`Loaded Construct3 project: ${reader.getMetadata().name}`);
+    // Third-party addon definitions, so their conditions and actions are checked too.
+    const addons = await loadAddonDefinitionsFromEnv(process.env.C3_ADDON_DEFINITIONS, delimiter);
+    for (const loaded of addons.loaded) console.error(`Loaded addon definitions: ${loaded.type} ${loaded.id} ${loaded.version ?? ''} (${loaded.counts.conditions} conditions, ${loaded.counts.actions} actions)`);
+    for (const skipped of addons.skipped) console.error(`Addon definitions skipped: ${skipped.path}: ${skipped.reason}`);
     process.once('exit', () => {
       const kept = session.closeSync();
       if (kept) console.error(`Kept the working folder with unsaved changes: ${kept}`);

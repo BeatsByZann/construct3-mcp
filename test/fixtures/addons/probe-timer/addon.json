@@ -1,0 +1,12 @@
+{
+	"$schema": "../../addon.schema.json",
+	"is-c3-addon": true,
+	"sdk-version": 2,
+	"type": "behavior",
+	"name": "Probe Timer",
+	"id": "Probe_Timer",
+	"version": "1.0.0.0",
+	"author": "construct3-mcp tests",
+	"website": "https://example.invalid",
+	"description": "A behavior definition for the tests: two conditions, two actions, one expression."
+}
