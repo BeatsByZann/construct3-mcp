@@ -1,0 +1,3958 @@
+{
+ "suite": "c3-editor-acceptance",
+ "suiteVersion": 1,
+ "construct": "r495.2 (baselines)",
+ "surfaces": {
+  "EVC": "Event sheet conditions",
+  "EVA": "Event sheet actions and parameters",
+  "EVS": "Event sheet structure and navigation",
+  "EVV": "Event variables, functions and custom actions",
+  "PB": "Project Bar",
+  "PRB": "Properties Bar",
+  "LVT": "Layout View tools",
+  "LYR": "Layers Bar, Z Order Bar and Instances Bar",
+  "ANE": "Animations Editor",
+  "TMB": "Tilemap Bar",
+  "TLB": "Timeline Bar",
+  "FCV": "Flowchart View",
+  "MEN": "Main menu, main toolbar, bars and tabs",
+  "DLG": "Dialogs the editor can raise",
+  "OUT": "Preview, debug, export, save and backups",
+  "SCR": "Scripting, code and file editors"
+ },
+ "items": [
+  {
+   "id": "EVC-01",
+   "surface": "EVC",
+   "capability": "Create a new event, which starts by adding its first condition",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVC-02",
+   "surface": "EVC",
+   "capability": "Add another condition to an existing event",
+   "status": "covered",
+   "tools": [
+    "update_event_block"
+   ],
+   "note": "addConditions"
+  },
+  {
+   "id": "EVC-03",
+   "surface": "EVC",
+   "capability": "Step 1 of the Add Condition dialog: choose the object type, including System, folders and the search box",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Add Condition dialog's steps; its outcome (id, objectClass, parameters) is what add_event_block writes"
+  },
+  {
+   "id": "EVC-04",
+   "surface": "EVC",
+   "capability": "Step 2 of the Add Condition dialog: choose the condition from its categories, with search",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Add Condition dialog's steps; its outcome (id, objectClass, parameters) is what add_event_block writes"
+  },
+  {
+   "id": "EVC-05",
+   "surface": "EVC",
+   "capability": "Step 3: enter condition parameters in the Parameters dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Add Condition dialog's steps; its outcome (id, objectClass, parameters) is what add_event_block writes"
+  },
+  {
+   "id": "EVC-06",
+   "surface": "EVC",
+   "capability": "Use Next and Back to move between the three dialog steps",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Add Condition dialog's steps; its outcome (id, objectClass, parameters) is what add_event_block writes"
+  },
+  {
+   "id": "EVC-07",
+   "surface": "EVC",
+   "capability": "Edit an existing condition",
+   "status": "covered",
+   "tools": [
+    "update_event_block"
+   ],
+   "note": "updateConditions"
+  },
+  {
+   "id": "EVC-08",
+   "surface": "EVC",
+   "capability": "Replace a condition with a different one",
+   "status": "covered",
+   "tools": [
+    "update_event_block"
+   ],
+   "note": "replaceConditions"
+  },
+  {
+   "id": "EVC-09",
+   "surface": "EVC",
+   "capability": "Delete a condition",
+   "status": "covered",
+   "tools": [
+    "update_event_block"
+   ],
+   "note": "removeConditionIndices"
+  },
+  {
+   "id": "EVC-10",
+   "surface": "EVC",
+   "capability": "Invert a condition",
+   "status": "covered",
+   "tools": [
+    "add_event_block",
+    "update_event_block"
+   ],
+   "note": "isInverted"
+  },
+  {
+   "id": "EVC-11",
+   "surface": "EVC",
+   "capability": "Make an event an OR block and toggle it back",
+   "status": "covered",
+   "tools": [
+    "add_event_block",
+    "update_event_block"
+   ],
+   "note": "isOrBlock"
+  },
+  {
+   "id": "EVC-12",
+   "surface": "EVC",
+   "capability": "Select a single condition by clicking it",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection state"
+  },
+  {
+   "id": "EVC-13",
+   "surface": "EVC",
+   "capability": "Multi-select conditions with Ctrl-click and Shift-click, within the conditions-only selection rule",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection state"
+  },
+  {
+   "id": "EVC-14",
+   "surface": "EVC",
+   "capability": "Reorder conditions inside an event by drag and drop",
+   "status": "covered",
+   "tools": [
+    "move_event_block_items"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVC-15",
+   "surface": "EVC",
+   "capability": "Drag a condition to a different event; Ctrl-drag to duplicate it",
+   "status": "covered",
+   "tools": [
+    "move_event_block_items"
+   ],
+   "note": "copy: true duplicates"
+  },
+  {
+   "id": "EVC-16",
+   "surface": "EVC",
+   "capability": "Cut, copy and paste conditions",
+   "status": "covered",
+   "tools": [
+    "move_event_block_items"
+   ],
+   "note": "cut and paste is a move, copy and paste a copy"
+  },
+  {
+   "id": "EVC-17",
+   "surface": "EVC",
+   "capability": "Add a System condition such as Pick random instance, For each, Compare variable",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "System, trigger, loop, behaviorType, family and instance-variable conditions are ordinary conditions in the file"
+  },
+  {
+   "id": "EVC-18",
+   "surface": "EVC",
+   "capability": "Add a trigger condition and observe the trigger arrow marker",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "System, trigger, loop, behaviorType, family and instance-variable conditions are ordinary conditions in the file"
+  },
+  {
+   "id": "EVC-19",
+   "surface": "EVC",
+   "capability": "Add a looping condition and observe the loop marker",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "System, trigger, loop, behaviorType, family and instance-variable conditions are ordinary conditions in the file"
+  },
+  {
+   "id": "EVC-20",
+   "surface": "EVC",
+   "capability": "Add a behavior-supplied condition on an object that has behaviors",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "System, trigger, loop, behaviorType, family and instance-variable conditions are ordinary conditions in the file"
+  },
+  {
+   "id": "EVC-21",
+   "surface": "EVC",
+   "capability": "Add a family condition",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "System, trigger, loop, behaviorType, family and instance-variable conditions are ordinary conditions in the file"
+  },
+  {
+   "id": "EVC-22",
+   "surface": "EVC",
+   "capability": "Add an instance variable comparison condition, including boolean Is set",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "System, trigger, loop, behaviorType, family and instance-variable conditions are ordinary conditions in the file"
+  },
+  {
+   "id": "EVC-23",
+   "surface": "EVC",
+   "capability": "Toggle a breakpoint on a condition",
+   "status": "open",
+   "tools": [],
+   "note": "breakpoints live in the sheet's uistate file, which no tool writes"
+  },
+  {
+   "id": "EVC-24",
+   "surface": "EVC",
+   "capability": "Toggle a condition disabled and re-enabled",
+   "status": "covered",
+   "tools": [
+    "add_event_block",
+    "update_event_block"
+   ],
+   "note": "disabled"
+  },
+  {
+   "id": "EVC-25",
+   "surface": "EVC",
+   "capability": "Replace the object referenced by a selected condition",
+   "status": "partial",
+   "tools": [
+    "replace_object_in_events"
+   ],
+   "note": "per sheet or project-wide, not per selected condition"
+  },
+  {
+   "id": "EVC-26",
+   "surface": "EVC",
+   "capability": "Move the selection sideways between events, conditions and actions with arrow keys",
+   "status": "editor-only",
+   "tools": [],
+   "note": "keyboard selection"
+  },
+  {
+   "id": "EVA-01",
+   "surface": "EVA",
+   "capability": "Add an action via the Add action link",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVA-02",
+   "surface": "EVA",
+   "capability": "Add another action via right-click or the A shortcut",
+   "status": "covered",
+   "tools": [
+    "update_event_block"
+   ],
+   "note": "addActions"
+  },
+  {
+   "id": "EVA-03",
+   "surface": "EVA",
+   "capability": "Step through the Add Action dialog: object then action, with search",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Add Action dialog; its outcome is what add_event_block writes"
+  },
+  {
+   "id": "EVA-04",
+   "surface": "EVA",
+   "capability": "Enter action parameters in the Parameters dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Add Action dialog; its outcome is what add_event_block writes"
+  },
+  {
+   "id": "EVA-05",
+   "surface": "EVA",
+   "capability": "Edit an existing action",
+   "status": "covered",
+   "tools": [
+    "update_event_block_action"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVA-06",
+   "surface": "EVA",
+   "capability": "Replace an action",
+   "status": "covered",
+   "tools": [
+    "update_event_block"
+   ],
+   "note": "updateActions"
+  },
+  {
+   "id": "EVA-07",
+   "surface": "EVA",
+   "capability": "Delete an action",
+   "status": "covered",
+   "tools": [
+    "update_event_block"
+   ],
+   "note": "removeActionIndices"
+  },
+  {
+   "id": "EVA-08",
+   "surface": "EVA",
+   "capability": "Reorder actions, drag between events, Ctrl-drag to duplicate",
+   "status": "covered",
+   "tools": [
+    "move_event_block_items"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVA-09",
+   "surface": "EVA",
+   "capability": "Cut, copy and paste actions",
+   "status": "covered",
+   "tools": [
+    "move_event_block_items"
+   ],
+   "note": "copy: true"
+  },
+  {
+   "id": "EVA-10",
+   "surface": "EVA",
+   "capability": "Add an action comment",
+   "status": "covered",
+   "tools": [
+    "add_event_block",
+    "update_event_block"
+   ],
+   "note": "comment actions"
+  },
+  {
+   "id": "EVA-11",
+   "surface": "EVA",
+   "capability": "Toggle an action disabled",
+   "status": "covered",
+   "tools": [
+    "add_event_block",
+    "update_event_block"
+   ],
+   "note": "disabled"
+  },
+  {
+   "id": "EVA-12",
+   "surface": "EVA",
+   "capability": "Toggle a breakpoint on an action",
+   "status": "open",
+   "tools": [],
+   "note": "breakpoints live in uistate"
+  },
+  {
+   "id": "EVA-13",
+   "surface": "EVA",
+   "capability": "Call a function from an action via the Functions object",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "callFunction"
+  },
+  {
+   "id": "EVA-14",
+   "surface": "EVA",
+   "capability": "Call a custom action from its object type or family",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "customAction"
+  },
+  {
+   "id": "EVA-15",
+   "surface": "EVA",
+   "capability": "Add a JavaScript or TypeScript script action",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "script actions"
+  },
+  {
+   "id": "EVA-16",
+   "surface": "EVA",
+   "capability": "Show and hide the Expressions Dictionary",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Expressions Dictionary, autocomplete and field navigation"
+  },
+  {
+   "id": "EVA-17",
+   "surface": "EVA",
+   "capability": "Insert an expression by double-clicking it in the Expressions Dictionary",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Expressions Dictionary, autocomplete and field navigation"
+  },
+  {
+   "id": "EVA-18",
+   "surface": "EVA",
+   "capability": "Drive the parameter autocomplete list with typing, arrow keys and Enter",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Expressions Dictionary, autocomplete and field navigation"
+  },
+  {
+   "id": "EVA-19",
+   "surface": "EVA",
+   "capability": "Move between parameter fields with Tab and Shift+Tab, and accept with Enter",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Expressions Dictionary, autocomplete and field navigation"
+  },
+  {
+   "id": "EVA-20",
+   "surface": "EVA",
+   "capability": "Type a full expression: numbers, quoted strings, & concatenation, operators, ternary",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "expressions are the parameter strings; only combo values are checked"
+  },
+  {
+   "id": "EVA-21",
+   "surface": "EVA",
+   "capability": "Use an object-picker button inside a parameter field",
+   "status": "editor-only",
+   "tools": [],
+   "note": "object picker button"
+  },
+  {
+   "id": "EVA-22",
+   "surface": "EVA",
+   "capability": "Set a boolean parameter presented as a checkbox",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "boolean parameter values"
+  },
+  {
+   "id": "EVS-01",
+   "surface": "EVS",
+   "capability": "Add an event below or above the selection",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "siblingSid with position before or after"
+  },
+  {
+   "id": "EVS-02",
+   "surface": "EVS",
+   "capability": "Add a sub-event, and a blank sub-event",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "parentSid"
+  },
+  {
+   "id": "EVS-03",
+   "surface": "EVS",
+   "capability": "Indent and de-indent event blocks",
+   "status": "covered",
+   "tools": [
+    "move_event_block"
+   ],
+   "note": "into or out of a parent"
+  },
+  {
+   "id": "EVS-04",
+   "surface": "EVS",
+   "capability": "Add an Else event after the selected event",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "isElse, after a block"
+  },
+  {
+   "id": "EVS-05",
+   "surface": "EVS",
+   "capability": "Add an event group and fill the Event Group dialog: name, description, active on start",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet",
+    "update_event_group"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVS-06",
+   "surface": "EVS",
+   "capability": "Collapse and expand a group",
+   "status": "editor-only",
+   "tools": [],
+   "note": "collapse state"
+  },
+  {
+   "id": "EVS-07",
+   "surface": "EVS",
+   "capability": "Drag events into and out of groups, using the event margin",
+   "status": "covered",
+   "tools": [
+    "move_event_block"
+   ],
+   "note": "groupPath"
+  },
+  {
+   "id": "EVS-08",
+   "surface": "EVS",
+   "capability": "Change group header text and background color, and restore defaults",
+   "status": "covered",
+   "tools": [
+    "update_event_group"
+   ],
+   "note": "colors"
+  },
+  {
+   "id": "EVS-09",
+   "surface": "EVS",
+   "capability": "Add a block comment and edit it, including Shift+Enter line breaks",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet",
+    "update_comment"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVS-10",
+   "surface": "EVS",
+   "capability": "Use BBCode formatting tags inside a comment",
+   "status": "covered",
+   "tools": [
+    "update_comment"
+   ],
+   "note": "BBCode is text"
+  },
+  {
+   "id": "EVS-11",
+   "surface": "EVS",
+   "capability": "Change comment text and background colors",
+   "status": "covered",
+   "tools": [
+    "update_comment"
+   ],
+   "note": "colors"
+  },
+  {
+   "id": "EVS-12",
+   "surface": "EVS",
+   "capability": "Include another event sheet",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet"
+   ],
+   "note": "include"
+  },
+  {
+   "id": "EVS-13",
+   "surface": "EVS",
+   "capability": "Toggle whole events disabled and enabled",
+   "status": "covered",
+   "tools": [
+    "update_event_block",
+    "update_event_group"
+   ],
+   "note": "disabled"
+  },
+  {
+   "id": "EVS-14",
+   "surface": "EVS",
+   "capability": "Toggle a breakpoint on an event block",
+   "status": "open",
+   "tools": [],
+   "note": "breakpoints live in uistate"
+  },
+  {
+   "id": "EVS-15",
+   "surface": "EVS",
+   "capability": "Toggle a bookmark and navigate bookmarks",
+   "status": "open",
+   "tools": [],
+   "note": "bookmarks live in uistate"
+  },
+  {
+   "id": "EVS-16",
+   "surface": "EVS",
+   "capability": "Use the Bookmarks Bar: list, double-click to navigate, remove, remove all",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Bookmarks Bar"
+  },
+  {
+   "id": "EVS-17",
+   "surface": "EVS",
+   "capability": "Find text in the current sheet or the whole project, with case sensitivity",
+   "status": "covered",
+   "tools": [
+    "search_project"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVS-18",
+   "surface": "EVS",
+   "capability": "Use Find all references for an object, behavior or instance variable",
+   "status": "covered",
+   "tools": [
+    "get_object_dependencies",
+    "find_behavior_usage",
+    "find_instance_variable_references"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVS-19",
+   "surface": "EVS",
+   "capability": "Work the Find Results Bar: go to result, delete result, clear, redo search, secondary filter, show ambiguous",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the Find Results Bar"
+  },
+  {
+   "id": "EVS-20",
+   "surface": "EVS",
+   "capability": "Replace the object referenced across a whole selection",
+   "status": "covered",
+   "tools": [
+    "replace_object_in_events"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVS-21",
+   "surface": "EVS",
+   "capability": "Select a whole event by clicking the event margin or the lower event block",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection and context menu"
+  },
+  {
+   "id": "EVS-22",
+   "surface": "EVS",
+   "capability": "Open the event margin right-click menu and reach every Add option",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection and context menu"
+  },
+  {
+   "id": "EVS-23",
+   "surface": "EVS",
+   "capability": "Add a JavaScript or TypeScript script block",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet"
+   ],
+   "note": "script blocks"
+  },
+  {
+   "id": "EVS-24",
+   "surface": "EVS",
+   "capability": "Open an additional Event Sheet View for the same sheet",
+   "status": "editor-only",
+   "tools": [],
+   "note": "views and navigation"
+  },
+  {
+   "id": "EVS-25",
+   "surface": "EVS",
+   "capability": "Change event sheet text size",
+   "status": "editor-only",
+   "tools": [],
+   "note": "views and navigation"
+  },
+  {
+   "id": "EVS-26a",
+   "surface": "EVS",
+   "capability": "Scroll and pan the event sheet, and jump to top and bottom",
+   "status": "editor-only",
+   "tools": [],
+   "note": "views and navigation"
+  },
+  {
+   "id": "EVS-26b",
+   "surface": "EVS",
+   "capability": "Scroll and pan the event sheet, and jump to top and bottom",
+   "status": "editor-only",
+   "tools": [],
+   "note": "views and navigation"
+  },
+  {
+   "id": "EVS-26c",
+   "surface": "EVS",
+   "capability": "Scroll and pan the event sheet, and jump to top and bottom",
+   "status": "editor-only",
+   "tools": [],
+   "note": "views and navigation"
+  },
+  {
+   "id": "EVS-26d",
+   "surface": "EVS",
+   "capability": "Scroll and pan the event sheet, and jump to top and bottom",
+   "status": "editor-only",
+   "tools": [],
+   "note": "views and navigation"
+  },
+  {
+   "id": "EVS-26e",
+   "surface": "EVS",
+   "capability": "Scroll and pan the event sheet, and jump to top and bottom",
+   "status": "editor-only",
+   "tools": [],
+   "note": "views and navigation"
+  },
+  {
+   "id": "EVS-27",
+   "surface": "EVS",
+   "capability": "Go to the associated layout from an event sheet",
+   "status": "editor-only",
+   "tools": [],
+   "note": "views and navigation"
+  },
+  {
+   "id": "EVS-28",
+   "surface": "EVS",
+   "capability": "Add, rename and delete event sheets",
+   "status": "covered",
+   "tools": [
+    "create_event_sheet",
+    "rename_event_sheet",
+    "delete_event_sheet"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVS-29",
+   "surface": "EVS",
+   "capability": "Move events between sheets by cut and paste",
+   "status": "covered",
+   "tools": [
+    "move_events_between_sheets"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVS-30",
+   "surface": "EVS",
+   "capability": "Set a layout's Event sheet property to share a sheet between layouts",
+   "status": "covered",
+   "tools": [
+    "update_layout"
+   ],
+   "note": "eventSheet"
+  },
+  {
+   "id": "EVV-01",
+   "surface": "EVV",
+   "capability": "Add a global variable at the root of a sheet",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVV-02",
+   "surface": "EVV",
+   "capability": "Add a local variable inside a group or sub-event",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet"
+   ],
+   "note": "groupPath or parentSid"
+  },
+  {
+   "id": "EVV-03",
+   "surface": "EVV",
+   "capability": "Fill the Event Variable dialog: name, type, initial value, description, static, constant",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet",
+    "update_event_variable"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVV-04",
+   "surface": "EVV",
+   "capability": "Edit and delete an existing event variable",
+   "status": "covered",
+   "tools": [
+    "update_event_variable",
+    "delete_event_from_sheet"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVV-05",
+   "surface": "EVV",
+   "capability": "Move a global variable to another event sheet",
+   "status": "covered",
+   "tools": [
+    "move_events_between_sheets"
+   ],
+   "note": "a variable is an event"
+  },
+  {
+   "id": "EVV-06",
+   "surface": "EVV",
+   "capability": "Add a function and fill the Function dialog: name, description, category, return type, copy picked, asynchronous",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet",
+    "update_function"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVV-07",
+   "surface": "EVV",
+   "capability": "Add a function parameter and fill the Function Parameter dialog",
+   "status": "covered",
+   "tools": [
+    "update_function"
+   ],
+   "note": "addParameters"
+  },
+  {
+   "id": "EVV-08",
+   "surface": "EVV",
+   "capability": "Edit or delete a function, and observe the effect on existing callers",
+   "status": "covered",
+   "tools": [
+    "update_function",
+    "delete_event_from_sheet"
+   ],
+   "note": "rename rewrites callers; delete reports callers"
+  },
+  {
+   "id": "EVV-09",
+   "surface": "EVV",
+   "capability": "Add conditions, actions and sub-events inside a function block",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": "parentSid of the function block"
+  },
+  {
+   "id": "EVV-10",
+   "surface": "EVV",
+   "capability": "Add a custom action and fill its dialog: object, name, description, category, copy all picked, asynchronous",
+   "status": "covered",
+   "tools": [
+    "add_custom_action"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVV-11",
+   "surface": "EVV",
+   "capability": "Add a family custom action and an object-type override of the same name",
+   "status": "covered",
+   "tools": [
+    "add_custom_action"
+   ],
+   "note": "family definition and member override"
+  },
+  {
+   "id": "EVV-12",
+   "surface": "EVV",
+   "capability": "Add, edit and delete instance variables on an object type",
+   "status": "covered",
+   "tools": [
+    "update_object_properties",
+    "update_instance_variable"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVV-13",
+   "surface": "EVV",
+   "capability": "Toggle Show in Properties Bar on an instance variable",
+   "status": "covered",
+   "tools": [
+    "update_instance_variable"
+   ],
+   "note": "show"
+  },
+  {
+   "id": "EVV-14",
+   "surface": "EVV",
+   "capability": "Add family instance variables and confirm member object types inherit them",
+   "status": "covered",
+   "tools": [
+    "update_family"
+   ],
+   "note": ""
+  },
+  {
+   "id": "EVV-15",
+   "surface": "EVV",
+   "capability": "Use string instance variable autocomplete in the Parameters dialog and the Properties Bar",
+   "status": "editor-only",
+   "tools": [],
+   "note": "autocomplete"
+  },
+  {
+   "id": "PB-01",
+   "surface": "PB",
+   "capability": "Select the project item to show project properties",
+   "status": "covered",
+   "tools": [
+    "get_project_properties"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-02",
+   "surface": "PB",
+   "capability": "Add a subfolder inside a folder of the same type",
+   "status": "covered",
+   "tools": [
+    "move_project_item"
+   ],
+   "note": "creates the folder"
+  },
+  {
+   "id": "PB-03",
+   "surface": "PB",
+   "capability": "Drag items and folders into folders, including multi-select drag",
+   "status": "covered",
+   "tools": [
+    "move_project_item"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-04",
+   "surface": "PB",
+   "capability": "Rename an item",
+   "status": "covered",
+   "tools": [
+    "rename_object_type",
+    "rename_family",
+    "rename_layout",
+    "rename_event_sheet",
+    "rename_animation"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-05",
+   "surface": "PB",
+   "capability": "Delete an item, including full removal of an object type from the project",
+   "status": "covered",
+   "tools": [
+    "delete_object",
+    "delete_layout",
+    "delete_event_sheet",
+    "delete_family",
+    "delete_flowchart",
+    "delete_timeline"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-06",
+   "surface": "PB",
+   "capability": "Search the Project Bar and clear the search",
+   "status": "editor-only",
+   "tools": [],
+   "note": "search box"
+  },
+  {
+   "id": "PB-07",
+   "surface": "PB",
+   "capability": "Add a layout, and accept or decline the paired event sheet prompt",
+   "status": "covered",
+   "tools": [
+    "create_layout",
+    "create_event_sheet"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-08",
+   "surface": "PB",
+   "capability": "Add an event sheet",
+   "status": "covered",
+   "tools": [
+    "create_event_sheet"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-09",
+   "surface": "PB",
+   "capability": "Add an object type from the Project Bar rather than the Layout View",
+   "status": "covered",
+   "tools": [
+    "create_object"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-10",
+   "surface": "PB",
+   "capability": "Add a family and use the Edit Family dialog to transfer object types in and out",
+   "status": "covered",
+   "tools": [
+    "create_family",
+    "update_family"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-11",
+   "surface": "PB",
+   "capability": "Add family behaviors and family effects",
+   "status": "covered",
+   "tools": [
+    "update_family",
+    "add_effect"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-12",
+   "surface": "PB",
+   "capability": "Import sounds and music, choosing the correct folder",
+   "status": "partial",
+   "tools": [
+    "register_project_file"
+   ],
+   "note": "registers an audio file already encoded; encoding stays outside the tools"
+  },
+  {
+   "id": "PB-13",
+   "surface": "PB",
+   "capability": "Import project files into Files, Videos, Fonts and Icons folders",
+   "status": "partial",
+   "tools": [
+    "register_project_file"
+   ],
+   "note": "Files, Videos and Fonts; the Icons purpose is not written"
+  },
+  {
+   "id": "PB-14",
+   "surface": "PB",
+   "capability": "Use the New submenu on the Files folder to add Array, Dictionary, text, HTML, CSS and JSON files",
+   "status": "covered",
+   "tools": [
+    "create_data_file"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-15",
+   "surface": "PB",
+   "capability": "Set the Purpose property on an image in Icons and screenshots",
+   "status": "open",
+   "tools": [],
+   "note": "icon purpose has no tool"
+  },
+  {
+   "id": "PB-16",
+   "surface": "PB",
+   "capability": "Preview a sound, music, video, font or SVG by double-clicking it",
+   "status": "editor-only",
+   "tools": [],
+   "note": "preview of an asset"
+  },
+  {
+   "id": "PB-17",
+   "surface": "PB",
+   "capability": "Open the Array, Dictionary or Text editor by double-clicking a project file",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editors; create_data_file writes the content"
+  },
+  {
+   "id": "PB-18",
+   "surface": "PB",
+   "capability": "Add or import script files in the Scripts folder",
+   "status": "covered",
+   "tools": [
+    "register_script_file"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-19",
+   "surface": "PB",
+   "capability": "Add a timeline, an ease and a flowchart",
+   "status": "covered",
+   "tools": [
+    "create_timeline",
+    "create_ease",
+    "create_flowchart"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-20",
+   "surface": "PB",
+   "capability": "Drag an object type from the Project Bar into the Layout View to create an instance",
+   "status": "covered",
+   "tools": [
+    "add_instance_to_layout"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PB-21",
+   "surface": "PB",
+   "capability": "Read the italic modified marker to tell saved from unsaved state",
+   "status": "editor-only",
+   "tools": [],
+   "note": "markers, menus, preview and the Asset Browser"
+  },
+  {
+   "id": "PB-22",
+   "surface": "PB",
+   "capability": "Open the Tools submenu on the project item",
+   "status": "editor-only",
+   "tools": [],
+   "note": "markers, menus, preview and the Asset Browser"
+  },
+  {
+   "id": "PB-23",
+   "surface": "PB",
+   "capability": "Preview a layout directly from the Project Bar",
+   "status": "editor-only",
+   "tools": [],
+   "note": "markers, menus, preview and the Asset Browser"
+  },
+  {
+   "id": "PB-24",
+   "surface": "PB",
+   "capability": "Open the Asset Browser and import assets by double-click or drag and drop",
+   "status": "editor-only",
+   "tools": [],
+   "note": "markers, menus, preview and the Asset Browser"
+  },
+  {
+   "id": "PRB-01",
+   "surface": "PRB",
+   "capability": "Observe that the Properties Bar follows the current selection across all views",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the bar itself"
+  },
+  {
+   "id": "PRB-02",
+   "surface": "PRB",
+   "capability": "Expand and collapse property categories",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the bar itself"
+  },
+  {
+   "id": "PRB-03",
+   "surface": "PRB",
+   "capability": "Edit each property control type: number, text, dropdown, checkbox, color, link",
+   "status": "covered",
+   "tools": [
+    "update_instance",
+    "update_layer",
+    "update_layout",
+    "update_object_properties"
+   ],
+   "note": "every control type is a value in the file"
+  },
+  {
+   "id": "PRB-04",
+   "surface": "PRB",
+   "capability": "Activate link-style properties: Behaviors, Effects, Instance variables, Container Create and Add object, Edit family, Project properties",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the links open dialogs whose outcomes are covered under DLG"
+  },
+  {
+   "id": "PRB-05",
+   "surface": "PRB",
+   "capability": "Type a calculation into a number field and have it evaluate",
+   "status": "editor-only",
+   "tools": [],
+   "note": "field gestures"
+  },
+  {
+   "id": "PRB-06",
+   "surface": "PRB",
+   "capability": "Drag a number value vertically for live feedback, with Ctrl and Shift rate modifiers",
+   "status": "editor-only",
+   "tools": [],
+   "note": "field gestures"
+  },
+  {
+   "id": "PRB-07",
+   "surface": "PRB",
+   "capability": "Edit a property with several objects selected and confirm it applies to all",
+   "status": "covered",
+   "tools": [
+    "update_instances"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PRB-08",
+   "surface": "PRB",
+   "capability": "Read the property description panel text",
+   "status": "editor-only",
+   "tools": [],
+   "note": "descriptions, help and section headings"
+  },
+  {
+   "id": "PRB-09",
+   "surface": "PRB",
+   "capability": "Follow the Help link at the end of a property list",
+   "status": "editor-only",
+   "tools": [],
+   "note": "descriptions, help and section headings"
+  },
+  {
+   "id": "PRB-10",
+   "surface": "PRB",
+   "capability": "Distinguish common, plugin, behavior, effect and instance-variable property sections",
+   "status": "editor-only",
+   "tools": [],
+   "note": "descriptions, help and section headings"
+  },
+  {
+   "id": "PRB-11",
+   "surface": "PRB",
+   "capability": "Edit project properties: name, version, auto-increment, description, author, viewport, sampling, UID numbering, preview effects, bundle addons",
+   "status": "covered",
+   "tools": [
+    "update_project_properties",
+    "update_project_metadata"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PRB-12",
+   "surface": "PRB",
+   "capability": "Edit layout properties: name, event sheet, size, unbounded scrolling, sampling, projection, editor display options",
+   "status": "covered",
+   "tools": [
+    "update_layout"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PRB-13",
+   "surface": "PRB",
+   "capability": "Edit layer properties: parallax, scale, rotation, opacity, background color, transparent, global, HTML layer, sampling",
+   "status": "covered",
+   "tools": [
+    "update_layer"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PRB-14",
+   "surface": "PRB",
+   "capability": "Edit the hierarchy section on a child instance: transform flags and destroy with parent",
+   "status": "covered",
+   "tools": [
+    "set_instance_parent"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PRB-15",
+   "surface": "PRB",
+   "capability": "Edit the Template section: template mode, template name, template source",
+   "status": "covered",
+   "tools": [
+    "set_instance_template"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PRB-16",
+   "surface": "PRB",
+   "capability": "Edit the Container section: create, add object, remove",
+   "status": "covered",
+   "tools": [
+    "create_container",
+    "update_container"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PRB-17",
+   "surface": "PRB",
+   "capability": "Edit mesh point properties including Z elevation",
+   "status": "open",
+   "tools": [],
+   "note": "mesh points have one sample and no tool"
+  },
+  {
+   "id": "PRB-18",
+   "surface": "PRB",
+   "capability": "Edit flowchart node properties: caption, tags, start node, color, parent index",
+   "status": "covered",
+   "tools": [
+    "update_flowchart_node"
+   ],
+   "note": ""
+  },
+  {
+   "id": "PRB-19",
+   "surface": "PRB",
+   "capability": "Edit timeline element properties: animation mode, result mode, ease, path mode, enabled, visible, locked",
+   "status": "covered",
+   "tools": [
+    "update_timeline",
+    "update_track"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-01",
+   "surface": "LVT",
+   "capability": "Select an instance by clicking it",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-02",
+   "surface": "LVT",
+   "capability": "Multi-select with Ctrl-click and Shift-click, and with a marquee drag",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-03",
+   "surface": "LVT",
+   "capability": "Hold Tab and click to cycle selection through overlapping instances",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-04",
+   "surface": "LVT",
+   "capability": "Hold Alt to select an individual instance inside a container or auto-selecting hierarchy",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-05",
+   "surface": "LVT",
+   "capability": "Move instances by dragging, with Shift axis lock and Ctrl clone",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-06",
+   "surface": "LVT",
+   "capability": "Nudge with arrow keys, 1px and Shift 10px, grid-aware, with Alt to override grid",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-07",
+   "surface": "LVT",
+   "capability": "Resize with the handles, Shift proportional, Ctrl relative to origin",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-08",
+   "surface": "LVT",
+   "capability": "Rotate by dragging just outside the handles, Shift for 5 degree increments",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-09",
+   "surface": "LVT",
+   "capability": "Hold Alt to hide resize handles and disable rotation while selecting past them",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-10",
+   "surface": "LVT",
+   "capability": "Wrap a multi-selection with Enter, then resize and rotate it as one",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-11",
+   "surface": "LVT",
+   "capability": "Click an object inside a wrapped selection to set the rotation origin",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-12",
+   "surface": "LVT",
+   "capability": "Select a container and wrap it with W",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection gestures"
+  },
+  {
+   "id": "LVT-13",
+   "surface": "LVT",
+   "capability": "Use the Align submenu to align edges and space objects equally, relative to the right-clicked object",
+   "status": "partial",
+   "tools": [
+    "update_instances"
+   ],
+   "note": "the caller computes the aligned positions"
+  },
+  {
+   "id": "LVT-14",
+   "surface": "LVT",
+   "capability": "Center horizontally in the viewport with C, and align to viewport top with T",
+   "status": "partial",
+   "tools": [
+    "update_instances"
+   ],
+   "note": "the caller computes the aligned positions"
+  },
+  {
+   "id": "LVT-15",
+   "surface": "LVT",
+   "capability": "Enable grid snapping and configure grid size in layout properties",
+   "status": "covered",
+   "tools": [
+    "update_layout"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-16",
+   "surface": "LVT",
+   "capability": "Toggle the editor display options: show collision polygons, show hierarchy arrows, show meshes",
+   "status": "editor-only",
+   "tools": [],
+   "note": "display toggles"
+  },
+  {
+   "id": "LVT-17",
+   "surface": "LVT",
+   "capability": "Send to top or bottom of layer",
+   "status": "covered",
+   "tools": [
+    "move_instance"
+   ],
+   "note": "z order"
+  },
+  {
+   "id": "LVT-18",
+   "surface": "LVT",
+   "capability": "Insert a new object type via the Create New Object Type dialog",
+   "status": "covered",
+   "tools": [
+    "create_object"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-19",
+   "surface": "LVT",
+   "capability": "Place the first instance with the crosshair cursor after adding an object type",
+   "status": "covered",
+   "tools": [
+    "add_instance_to_layout"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-20",
+   "surface": "LVT",
+   "capability": "Create extra instances by Ctrl-drag, copy and paste, or drag from the Project Bar",
+   "status": "covered",
+   "tools": [
+    "add_instances_to_layout"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-21",
+   "surface": "LVT",
+   "capability": "Paste in place by holding Shift when clicking the paste crosshair",
+   "status": "editor-only",
+   "tools": [],
+   "note": "paste gesture"
+  },
+  {
+   "id": "LVT-22",
+   "surface": "LVT",
+   "capability": "Delete instances",
+   "status": "covered",
+   "tools": [
+    "delete_instance_from_layout",
+    "delete_instances_from_layout"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-23",
+   "surface": "LVT",
+   "capability": "Drag and drop image files into the view to create a Sprite, including GIF and APNG frame splitting",
+   "status": "partial",
+   "tools": [
+    "create_object",
+    "replace_sprite_image",
+    "add_frame_to_animation"
+   ],
+   "note": "one image per frame; no GIF or APNG frame splitting"
+  },
+  {
+   "id": "LVT-24",
+   "surface": "LVT",
+   "capability": "Drag and drop an SVG file to create an SVG Picture object",
+   "status": "partial",
+   "tools": [
+    "create_object"
+   ],
+   "note": "the SVG Picture object type; its SVG file is not written"
+  },
+  {
+   "id": "LVT-25",
+   "surface": "LVT",
+   "capability": "Drag and drop a .glb or .gltf model to create a 3D model object",
+   "status": "open",
+   "tools": [],
+   "note": "3D models have no sample and no tool"
+  },
+  {
+   "id": "LVT-26",
+   "surface": "LVT",
+   "capability": "Set up a hierarchy: Hierarchy > Add selection to this instance",
+   "status": "covered",
+   "tools": [
+    "set_instance_parent"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-27",
+   "surface": "LVT",
+   "capability": "Remove from parent and Remove all children",
+   "status": "covered",
+   "tools": [
+    "remove_instance_children",
+    "set_instance_parent"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-28",
+   "surface": "LVT",
+   "capability": "Set the root instance Select mode for hierarchies and containers",
+   "status": "editor-only",
+   "tools": [],
+   "note": "select mode"
+  },
+  {
+   "id": "LVT-29",
+   "surface": "LVT",
+   "capability": "Create a mesh, set mesh size, drag mesh points, Shift-drag to mask without distorting",
+   "status": "open",
+   "tools": [],
+   "note": "meshes have one sample and no tool"
+  },
+  {
+   "id": "LVT-30",
+   "surface": "LVT",
+   "capability": "Reset mesh, stop editing mesh, edit mesh, remove mesh",
+   "status": "open",
+   "tools": [],
+   "note": "meshes have one sample and no tool"
+  },
+  {
+   "id": "LVT-31",
+   "surface": "LVT",
+   "capability": "Pan the view: scrollbars, mouse wheel, Shift wheel, middle-drag, Space-drag",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-32",
+   "surface": "LVT",
+   "capability": "Zoom: Ctrl plus wheel, Ctrl plus and minus, Ctrl+0, View > Zoom menu, Shift for double or halve",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-33",
+   "surface": "LVT",
+   "capability": "Read the status bar: active layer, mouse position, zoom level; copy co-ordinates",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-34",
+   "surface": "LVT",
+   "capability": "Switch between 2D and 3D view modes from the top toolbar",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-35",
+   "surface": "LVT",
+   "capability": "Use the 3D gizmo in move mode: axis arrows, plane squares, Shift axis lock, Ctrl clone",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-36",
+   "surface": "LVT",
+   "capability": "Use the 3D gizmo in scale mode, including the central proportional box",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-37",
+   "surface": "LVT",
+   "capability": "Move the 3D camera: right-mouse plus WASDQE, free look mode, F to focus, middle-drag orbit, Shift middle-drag pan",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-38",
+   "surface": "LVT",
+   "capability": "Change camera orientation between top down and parallel to layout",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-39",
+   "surface": "LVT",
+   "capability": "Go to the associated event sheet",
+   "status": "editor-only",
+   "tools": [],
+   "note": "view navigation, camera, status bar"
+  },
+  {
+   "id": "LVT-40",
+   "surface": "LVT",
+   "capability": "Edit a Text object's initial text by double-clicking it",
+   "status": "covered",
+   "tools": [
+    "update_instance"
+   ],
+   "note": "properties"
+  },
+  {
+   "id": "LVT-41",
+   "surface": "LVT",
+   "capability": "Open the Animations Editor by double-clicking an object with an image",
+   "status": "editor-only",
+   "tools": [],
+   "note": "opens the Animations Editor"
+  },
+  {
+   "id": "LVT-42",
+   "surface": "LVT",
+   "capability": "Use the Layout View Timeline submenu: add timeline, add to timeline, set keyframes",
+   "status": "covered",
+   "tools": [
+    "create_timeline",
+    "add_timeline_track",
+    "set_keyframe"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LVT-43",
+   "surface": "LVT",
+   "capability": "Start and stop Live Previews",
+   "status": "editor-only",
+   "tools": [],
+   "note": "live preview"
+  },
+  {
+   "id": "LVT-44",
+   "surface": "LVT",
+   "capability": "Apply template hierarchy replacement shortcuts",
+   "status": "partial",
+   "tools": [
+    "set_instance_template"
+   ],
+   "note": "the template block, not the replacement shortcut"
+  },
+  {
+   "id": "LVT-45",
+   "surface": "LVT",
+   "capability": "Show the context menu on the current selection rather than the top instance",
+   "status": "editor-only",
+   "tools": [],
+   "note": "context menu and tabs"
+  },
+  {
+   "id": "LVT-46",
+   "surface": "LVT",
+   "capability": "Switch, close and recolor view tabs",
+   "status": "editor-only",
+   "tools": [],
+   "note": "context menu and tabs"
+  },
+  {
+   "id": "LYR-01",
+   "surface": "LYR",
+   "capability": "Add, rename and delete a layer",
+   "status": "covered",
+   "tools": [
+    "add_layer",
+    "rename_layer",
+    "delete_layer"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LYR-02",
+   "surface": "LYR",
+   "capability": "Reorder layers by drag and drop",
+   "status": "covered",
+   "tools": [
+    "reorder_layers"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LYR-03",
+   "surface": "LYR",
+   "capability": "Create sub-layers by drag and drop, and expand or collapse them",
+   "status": "covered",
+   "tools": [
+    "add_layer",
+    "move_layer"
+   ],
+   "note": "parentLayer"
+  },
+  {
+   "id": "LYR-04",
+   "surface": "LYR",
+   "capability": "Toggle a layer's editor visibility checkbox",
+   "status": "partial",
+   "tools": [
+    "update_layer"
+   ],
+   "note": "the runtime flags are written; the editor's own visibility and lock flags are not"
+  },
+  {
+   "id": "LYR-05",
+   "surface": "LYR",
+   "capability": "Toggle a layer's lock padlock",
+   "status": "partial",
+   "tools": [
+    "update_layer"
+   ],
+   "note": "the runtime flags are written; the editor's own visibility and lock flags are not"
+  },
+  {
+   "id": "LYR-06",
+   "surface": "LYR",
+   "capability": "Use show, hide, lock and unlock all layers, and all but selected",
+   "status": "partial",
+   "tools": [
+    "update_layer"
+   ],
+   "note": "the runtime flags are written; the editor's own visibility and lock flags are not"
+  },
+  {
+   "id": "LYR-07",
+   "surface": "LYR",
+   "capability": "Select a layer to make it the active layer for new instances",
+   "status": "editor-only",
+   "tools": [],
+   "note": "active layer"
+  },
+  {
+   "id": "LYR-08",
+   "surface": "LYR",
+   "capability": "Read the layer index number and the global and HTML layer icons",
+   "status": "covered",
+   "tools": [
+    "get_layout_details"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LYR-09",
+   "surface": "LYR",
+   "capability": "Navigate to the source layout of a global layer",
+   "status": "editor-only",
+   "tools": [],
+   "note": "navigation"
+  },
+  {
+   "id": "LYR-10",
+   "surface": "LYR",
+   "capability": "Open the Z Order Bar",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the bar"
+  },
+  {
+   "id": "LYR-11",
+   "surface": "LYR",
+   "capability": "Reorder instances in the Z Order Bar by drag and drop, including moving them between layers",
+   "status": "covered",
+   "tools": [
+    "move_instance"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LYR-12",
+   "surface": "LYR",
+   "capability": "Multi-select and drag a block of instances while preserving relative order",
+   "status": "covered",
+   "tools": [
+    "move_instances"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LYR-13",
+   "surface": "LYR",
+   "capability": "Identify an instance by UID, flash it, and scroll the selection into view",
+   "status": "partial",
+   "tools": [
+    "get_layout_details"
+   ],
+   "note": "finds the instance by UID; no flash or scroll"
+  },
+  {
+   "id": "LYR-14",
+   "surface": "LYR",
+   "capability": "Open the Instances Bar",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the bar"
+  },
+  {
+   "id": "LYR-15",
+   "surface": "LYR",
+   "capability": "Add folders in the Instances Bar and drag instances in and out, including from the Layout View",
+   "status": "open",
+   "tools": [],
+   "note": "instance folders live in uistate"
+  },
+  {
+   "id": "LYR-16",
+   "surface": "LYR",
+   "capability": "Set hierarchies by dragging one Instances Bar row onto another",
+   "status": "covered",
+   "tools": [
+    "set_instance_parent"
+   ],
+   "note": ""
+  },
+  {
+   "id": "LYR-17",
+   "surface": "LYR",
+   "capability": "Toggle the Instances Bar display options: hierarchies, meshes, layers and layouts, plugin, templates, timelines",
+   "status": "editor-only",
+   "tools": [],
+   "note": "display options"
+  },
+  {
+   "id": "ANE-01",
+   "surface": "ANE",
+   "capability": "Open the editor by double-clicking an object with an image or animations",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor, colors and drawing tools"
+  },
+  {
+   "id": "ANE-02",
+   "surface": "ANE",
+   "capability": "Resize the editor panes by dragging their borders",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor, colors and drawing tools"
+  },
+  {
+   "id": "ANE-03",
+   "surface": "ANE",
+   "capability": "Pick primary and secondary colors with left and right click",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor, colors and drawing tools"
+  },
+  {
+   "id": "ANE-04",
+   "surface": "ANE",
+   "capability": "Save and pick a palette, and save or load palettes as JSON and zip files",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor, colors and drawing tools"
+  },
+  {
+   "id": "ANE-05",
+   "surface": "ANE",
+   "capability": "Paste a color string in rgb, rgba, hsl, hsla or hex form into a color input",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor, colors and drawing tools"
+  },
+  {
+   "id": "ANE-06",
+   "surface": "ANE",
+   "capability": "Use the drawing tools: pencil, brush, line, rectangle, ellipse, fill, eye dropper, rectangle select",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor, colors and drawing tools"
+  },
+  {
+   "id": "ANE-07",
+   "surface": "ANE",
+   "capability": "Change a tool's settings, for example brush size",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor, colors and drawing tools"
+  },
+  {
+   "id": "ANE-08",
+   "surface": "ANE",
+   "capability": "Clear the image to transparent",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor, colors and drawing tools"
+  },
+  {
+   "id": "ANE-09",
+   "surface": "ANE",
+   "capability": "Open an image file into the current frame, including SVG raster size choice",
+   "status": "covered",
+   "tools": [
+    "replace_sprite_image",
+    "replace_object_image"
+   ],
+   "note": ""
+  },
+  {
+   "id": "ANE-10",
+   "surface": "ANE",
+   "capability": "Save or export the image, the animation, or all animations, with image point and collision data",
+   "status": "editor-only",
+   "tools": [],
+   "note": "export of images"
+  },
+  {
+   "id": "ANE-11",
+   "surface": "ANE",
+   "capability": "Set the export format to lossless or lossy, for image, animation or all",
+   "status": "partial",
+   "tools": [
+    "update_frame"
+   ],
+   "note": "exportFormat per frame; not per animation or all at once"
+  },
+  {
+   "id": "ANE-12",
+   "surface": "ANE",
+   "capability": "Undo and redo inside the Animations Editor",
+   "status": "editor-only",
+   "tools": [],
+   "note": "pixel operations"
+  },
+  {
+   "id": "ANE-13",
+   "surface": "ANE",
+   "capability": "Cut, copy and paste image regions",
+   "status": "editor-only",
+   "tools": [],
+   "note": "pixel operations"
+  },
+  {
+   "id": "ANE-14",
+   "surface": "ANE",
+   "capability": "Mirror and flip the image, and the whole animation",
+   "status": "editor-only",
+   "tools": [],
+   "note": "pixel operations"
+  },
+  {
+   "id": "ANE-15",
+   "surface": "ANE",
+   "capability": "Rotate clockwise and anticlockwise, image or whole animation",
+   "status": "editor-only",
+   "tools": [],
+   "note": "pixel operations"
+  },
+  {
+   "id": "ANE-16",
+   "surface": "ANE",
+   "capability": "Crop, for the image, the animation, or all animations",
+   "status": "editor-only",
+   "tools": [],
+   "note": "pixel operations"
+  },
+  {
+   "id": "ANE-17",
+   "surface": "ANE",
+   "capability": "Resize via the Resize dialog, with apply-to-animation and apply-to-all options",
+   "status": "partial",
+   "tools": [
+    "replace_sprite_image"
+   ],
+   "note": "the caller supplies the resized image"
+  },
+  {
+   "id": "ANE-18",
+   "surface": "ANE",
+   "capability": "Zoom in, out and reset; toggle background brightness",
+   "status": "editor-only",
+   "tools": [],
+   "note": "zoom, onion skin, grid, preview, settings"
+  },
+  {
+   "id": "ANE-19",
+   "surface": "ANE",
+   "capability": "Toggle onion skin and choose its range",
+   "status": "editor-only",
+   "tools": [],
+   "note": "zoom, onion skin, grid, preview, settings"
+  },
+  {
+   "id": "ANE-20",
+   "surface": "ANE",
+   "capability": "Toggle the editor grid and set grid size, color and snap",
+   "status": "editor-only",
+   "tools": [],
+   "note": "zoom, onion skin, grid, preview, settings"
+  },
+  {
+   "id": "ANE-21",
+   "surface": "ANE",
+   "capability": "Preview the current animation, and close the preview",
+   "status": "editor-only",
+   "tools": [],
+   "note": "zoom, onion skin, grid, preview, settings"
+  },
+  {
+   "id": "ANE-22",
+   "surface": "ANE",
+   "capability": "Open the Animations Editor settings dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "zoom, onion skin, grid, preview, settings"
+  },
+  {
+   "id": "ANE-23",
+   "surface": "ANE",
+   "capability": "Switch to the Image points tool and add, rename and delete image points",
+   "status": "covered",
+   "tools": [
+    "update_frame"
+   ],
+   "note": "imagePoints"
+  },
+  {
+   "id": "ANE-24",
+   "surface": "ANE",
+   "capability": "Place an image point by clicking, nudge it with arrow keys, and quick-assign with the num pad",
+   "status": "covered",
+   "tools": [
+    "update_frame"
+   ],
+   "note": "imagePoints"
+  },
+  {
+   "id": "ANE-25",
+   "surface": "ANE",
+   "capability": "Apply an image point to the whole animation, all animations, or a subfolder",
+   "status": "partial",
+   "tools": [
+    "update_frame"
+   ],
+   "note": "the caller repeats it per frame"
+  },
+  {
+   "id": "ANE-26",
+   "surface": "ANE",
+   "capability": "Switch to the Collision polygon tool, drag points, add and delete points",
+   "status": "covered",
+   "tools": [
+    "update_frame"
+   ],
+   "note": "collisionPoly and useCollision"
+  },
+  {
+   "id": "ANE-27",
+   "surface": "ANE",
+   "capability": "Toggle Use collision, or toggle the collision polygon off entirely",
+   "status": "covered",
+   "tools": [
+    "update_frame"
+   ],
+   "note": "collisionPoly and useCollision"
+  },
+  {
+   "id": "ANE-28",
+   "surface": "ANE",
+   "capability": "Add, duplicate, delete and reorder animation frames",
+   "status": "covered",
+   "tools": [
+    "add_frame_to_animation",
+    "duplicate_frame",
+    "delete_frame_from_animation",
+    "reorder_frames"
+   ],
+   "note": ""
+  },
+  {
+   "id": "ANE-29",
+   "surface": "ANE",
+   "capability": "Reverse the frame order of an animation",
+   "status": "covered",
+   "tools": [
+    "reverse_frames"
+   ],
+   "note": ""
+  },
+  {
+   "id": "ANE-30",
+   "surface": "ANE",
+   "capability": "Set frame properties: duration multiplier and tag; read the index",
+   "status": "covered",
+   "tools": [
+    "update_frame"
+   ],
+   "note": "duration and tag"
+  },
+  {
+   "id": "ANE-31",
+   "surface": "ANE",
+   "capability": "Import frames from files, and from a sprite sheet with the slicing dialog",
+   "status": "partial",
+   "tools": [
+    "add_frame_to_animation",
+    "replace_sprite_image"
+   ],
+   "note": "one file per frame; no sprite-sheet slicing"
+  },
+  {
+   "id": "ANE-32",
+   "surface": "ANE",
+   "capability": "Adjust frame thumbnail size",
+   "status": "editor-only",
+   "tools": [],
+   "note": "thumbnails"
+  },
+  {
+   "id": "ANE-33",
+   "surface": "ANE",
+   "capability": "Add, rename and delete animations, and add animation subfolders",
+   "status": "covered",
+   "tools": [
+    "add_animation_to_sprite",
+    "rename_animation",
+    "delete_animation",
+    "create_animation_folder",
+    "move_animation_to_folder"
+   ],
+   "note": ""
+  },
+  {
+   "id": "ANE-34",
+   "surface": "ANE",
+   "capability": "Set animation properties: speed, loop, repeat count, repeat to, ping pong",
+   "status": "covered",
+   "tools": [
+    "update_animation_properties"
+   ],
+   "note": ""
+  },
+  {
+   "id": "ANE-35",
+   "surface": "ANE",
+   "capability": "Find all references for an animation",
+   "status": "partial",
+   "tools": [
+    "search_project"
+   ],
+   "note": "text search for the name"
+  },
+  {
+   "id": "ANE-36",
+   "surface": "ANE",
+   "capability": "Import animations from files and from a sheet",
+   "status": "partial",
+   "tools": [
+    "add_animation_to_sprite",
+    "add_frame_to_animation",
+    "replace_sprite_image"
+   ],
+   "note": "one file per frame"
+  },
+  {
+   "id": "ANE-37",
+   "surface": "ANE",
+   "capability": "Bulk import by dropping folders and zip files onto each pane, including nested content",
+   "status": "editor-only",
+   "tools": [],
+   "note": "bulk import and navigation"
+  },
+  {
+   "id": "ANE-38",
+   "surface": "ANE",
+   "capability": "Drive a bulk import with a c3-import-settings.json file",
+   "status": "editor-only",
+   "tools": [],
+   "note": "bulk import and navigation"
+  },
+  {
+   "id": "ANE-39",
+   "surface": "ANE",
+   "capability": "Navigate animations and frames with Ctrl plus arrow keys",
+   "status": "editor-only",
+   "tools": [],
+   "note": "bulk import and navigation"
+  },
+  {
+   "id": "ANE-40",
+   "surface": "ANE",
+   "capability": "Edit 3D model textures in the Frames pane: mesh, color, opacity, content",
+   "status": "open",
+   "tools": [],
+   "note": "3D model textures have no sample and no tool"
+  },
+  {
+   "id": "ANE-41",
+   "surface": "ANE",
+   "capability": "Edit a single tile's collision polygon by double-clicking it in the Tilemap Bar",
+   "status": "open",
+   "tools": [],
+   "note": "per-tile collision polygons have no tool"
+  },
+  {
+   "id": "ANE-42",
+   "surface": "ANE",
+   "capability": "Use the editor on an image-only object such as Tiled Background, where animation UI is hidden",
+   "status": "covered",
+   "tools": [
+    "replace_object_image"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TMB-01",
+   "surface": "TMB",
+   "capability": "Open the Tilemap Bar",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the bar and tile selection"
+  },
+  {
+   "id": "TMB-02",
+   "surface": "TMB",
+   "capability": "Return to normal layout selection so the tilemap object itself can be moved and resized",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the bar and tile selection"
+  },
+  {
+   "id": "TMB-03",
+   "surface": "TMB",
+   "capability": "Select a tile in the tileset view, and select a rectangular range of tiles",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the bar and tile selection"
+  },
+  {
+   "id": "TMB-04",
+   "surface": "TMB",
+   "capability": "Draw with the Pencil tool, including stamping a multi-tile patch",
+   "status": "covered",
+   "tools": [
+    "set_tilemap_tiles"
+   ],
+   "note": "pencil, erase (-1) and rectangle are tile writes"
+  },
+  {
+   "id": "TMB-05",
+   "surface": "TMB",
+   "capability": "Erase with the Erase tool, and with right-click while another tool is active",
+   "status": "covered",
+   "tools": [
+    "set_tilemap_tiles"
+   ],
+   "note": "pencil, erase (-1) and rectangle are tile writes"
+  },
+  {
+   "id": "TMB-06",
+   "surface": "TMB",
+   "capability": "Draw with the Rectangle tool, including 3x3 nine-patch and 1x3 or 3x1 runs",
+   "status": "covered",
+   "tools": [
+    "set_tilemap_tiles"
+   ],
+   "note": "pencil, erase (-1) and rectangle are tile writes"
+  },
+  {
+   "id": "TMB-07",
+   "surface": "TMB",
+   "capability": "Fill a continuous area, with a repeating multi-tile selection",
+   "status": "partial",
+   "tools": [
+    "set_tilemap_tiles"
+   ],
+   "note": "the caller computes the fill"
+  },
+  {
+   "id": "TMB-08",
+   "surface": "TMB",
+   "capability": "Use the Select tool to pick a range of tiles from the tilemap for reuse",
+   "status": "covered",
+   "tools": [
+    "get_tilemap_data"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TMB-09",
+   "surface": "TMB",
+   "capability": "Pick a tile or patch from the layout with Shift plus right-click or Shift plus right-drag",
+   "status": "editor-only",
+   "tools": [],
+   "note": "pick gesture"
+  },
+  {
+   "id": "TMB-10",
+   "surface": "TMB",
+   "capability": "Use the Auto tile tool and choose a brush from its dropdown",
+   "status": "partial",
+   "tools": [
+    "set_tilemap_tiles",
+    "list_tilemap_brushes"
+   ],
+   "note": "the brush is readable; applying it is the caller's arithmetic"
+  },
+  {
+   "id": "TMB-11",
+   "surface": "TMB",
+   "capability": "Use the Patch tool and choose a brush from its dropdown",
+   "status": "partial",
+   "tools": [
+    "set_tilemap_tiles",
+    "list_tilemap_brushes"
+   ],
+   "note": "the brush is readable; applying it is the caller's arithmetic"
+  },
+  {
+   "id": "TMB-12",
+   "surface": "TMB",
+   "capability": "Apply Mirror, Flip, Rotate clockwise and anticlockwise, and Reset transformation",
+   "status": "covered",
+   "tools": [
+    "set_tilemap_tiles"
+   ],
+   "note": "flip flags; the d and hvd combinations are unsampled"
+  },
+  {
+   "id": "TMB-13",
+   "surface": "TMB",
+   "capability": "Zoom the tileset view",
+   "status": "editor-only",
+   "tools": [],
+   "note": "zoom and modifiers"
+  },
+  {
+   "id": "TMB-14",
+   "surface": "TMB",
+   "capability": "Use the modifier shortcuts: Shift to switch temporarily to Select, Ctrl to erase with pencil, eraser and rectangle",
+   "status": "editor-only",
+   "tools": [],
+   "note": "zoom and modifiers"
+  },
+  {
+   "id": "TMB-15",
+   "surface": "TMB",
+   "capability": "Read a tile ID by hovering over a tile",
+   "status": "covered",
+   "tools": [
+    "get_tilemap_data"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TMB-16",
+   "surface": "TMB",
+   "capability": "Open the Tilemap Brush Editor from either the auto tile or patch tool dropdown",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the dialog"
+  },
+  {
+   "id": "TMB-17",
+   "surface": "TMB",
+   "capability": "Add, select and delete brushes, and set brush type Auto 16, Auto 47 or Patch",
+   "status": "covered",
+   "tools": [
+    "add_tilemap_brush",
+    "update_tilemap_brush",
+    "delete_tilemap_brush"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TMB-18",
+   "surface": "TMB",
+   "capability": "Assign tileset tiles to template positions, including multiple tiles per position",
+   "status": "covered",
+   "tools": [
+    "add_tilemap_brush",
+    "update_tilemap_brush",
+    "delete_tilemap_brush"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TMB-19",
+   "surface": "TMB",
+   "capability": "Set a tile's Probability in the Assigned tiles pane",
+   "status": "covered",
+   "tools": [
+    "add_tilemap_brush",
+    "update_tilemap_brush",
+    "delete_tilemap_brush"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TMB-20",
+   "surface": "TMB",
+   "capability": "Set patch brush Width and Height",
+   "status": "covered",
+   "tools": [
+    "add_tilemap_brush",
+    "update_tilemap_brush",
+    "delete_tilemap_brush"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TMB-21",
+   "surface": "TMB",
+   "capability": "Toggle tiles in the template, toggle background, zoom in the brush editor",
+   "status": "editor-only",
+   "tools": [],
+   "note": "brush editor view"
+  },
+  {
+   "id": "TMB-22",
+   "surface": "TMB",
+   "capability": "Edit Tilemap object properties: tile width and height, tile offset, tile spacing, seamless mode",
+   "status": "covered",
+   "tools": [
+    "update_instance"
+   ],
+   "note": "properties"
+  },
+  {
+   "id": "TMB-23",
+   "surface": "TMB",
+   "capability": "Resize the Tilemap instance itself in the Layout View",
+   "status": "covered",
+   "tools": [
+    "update_instance"
+   ],
+   "note": "width and height"
+  },
+  {
+   "id": "TMB-24",
+   "surface": "TMB",
+   "capability": "Select which of several stacked tilemaps is being edited, using the Z Order Bar or layer lock and hide",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection among stacked tilemaps"
+  },
+  {
+   "id": "TLB-01",
+   "surface": "TLB",
+   "capability": "Create a timeline",
+   "status": "covered",
+   "tools": [
+    "create_timeline"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-02",
+   "surface": "TLB",
+   "capability": "Add instances to a timeline: plus button dialog, drag from Layout View, Layout View context menu",
+   "status": "covered",
+   "tools": [
+    "add_timeline_track"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-03",
+   "surface": "TLB",
+   "capability": "Toggle edit mode and observe highlighted animatable properties",
+   "status": "editor-only",
+   "tools": [],
+   "note": "edit mode and the time marker"
+  },
+  {
+   "id": "TLB-04",
+   "surface": "TLB",
+   "capability": "Move the current time marker by clicking the ruler or dragging, with Ctrl to scrub without previewing",
+   "status": "editor-only",
+   "tools": [],
+   "note": "edit mode and the time marker"
+  },
+  {
+   "id": "TLB-05",
+   "surface": "TLB",
+   "capability": "Set keyframes at the current time marker",
+   "status": "covered",
+   "tools": [
+    "set_keyframe"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-06",
+   "surface": "TLB",
+   "capability": "Toggle auto keyframes",
+   "status": "editor-only",
+   "tools": [],
+   "note": "auto keyframes"
+  },
+  {
+   "id": "TLB-07",
+   "surface": "TLB",
+   "capability": "Update a master keyframe, and update an individual property keyframe",
+   "status": "covered",
+   "tools": [
+    "set_keyframe"
+   ],
+   "note": "master and property keyframes"
+  },
+  {
+   "id": "TLB-08",
+   "surface": "TLB",
+   "capability": "Add missing property keyframes with interpolated or current values",
+   "status": "covered",
+   "tools": [
+    "set_keyframe"
+   ],
+   "note": "master and property keyframes"
+  },
+  {
+   "id": "TLB-09",
+   "surface": "TLB",
+   "capability": "Drag master keyframes to retime, and Shift-drag to duplicate them",
+   "status": "partial",
+   "tools": [
+    "set_keyframe",
+    "delete_keyframe"
+   ],
+   "note": "retime, duplicate and paste are a delete and a set"
+  },
+  {
+   "id": "TLB-10",
+   "surface": "TLB",
+   "capability": "Cut, copy and paste keyframes, with and without a track selection",
+   "status": "partial",
+   "tools": [
+    "set_keyframe",
+    "delete_keyframe"
+   ],
+   "note": "retime, duplicate and paste are a delete and a set"
+  },
+  {
+   "id": "TLB-11",
+   "surface": "TLB",
+   "capability": "Delete keyframes, tracks, folders and nested timelines",
+   "status": "partial",
+   "tools": [
+    "delete_keyframe",
+    "remove_timeline_track",
+    "delete_timeline_folder"
+   ],
+   "note": "nested timelines have no tool"
+  },
+  {
+   "id": "TLB-12",
+   "surface": "TLB",
+   "capability": "Enable and disable timeline elements and keyframes",
+   "status": "covered",
+   "tools": [
+    "update_track",
+    "update_timeline"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-13",
+   "surface": "TLB",
+   "capability": "Add a value track, an audio track, a track folder, a property track folder and a timeline folder",
+   "status": "partial",
+   "tools": [
+    "add_value_track",
+    "add_audio_track",
+    "add_timeline_folder"
+   ],
+   "note": "property-track folders cannot be created"
+  },
+  {
+   "id": "TLB-14",
+   "surface": "TLB",
+   "capability": "Add property tracks explicitly via the Add properties dialog",
+   "status": "covered",
+   "tools": [
+    "add_property_track"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-15",
+   "surface": "TLB",
+   "capability": "Add property tracks by shortcut: position, size, Z elevation, angle, opacity, color",
+   "status": "covered",
+   "tools": [
+    "add_property_track"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-16",
+   "surface": "TLB",
+   "capability": "Convert width and height tracks to scale, and back to size, singly or for the whole timeline",
+   "status": "partial",
+   "tools": [
+    "add_property_track",
+    "remove_property_track"
+   ],
+   "note": "size and scale tracks exist; the conversion is the caller's"
+  },
+  {
+   "id": "TLB-17",
+   "surface": "TLB",
+   "capability": "Swap the instance a track drives",
+   "status": "open",
+   "tools": [],
+   "note": "swapping the instance a track drives has no tool"
+  },
+  {
+   "id": "TLB-18",
+   "surface": "TLB",
+   "capability": "Use the four toggle columns: visibility, lock, enable, show UI elements, per row and per whole column",
+   "status": "covered",
+   "tools": [
+    "update_track"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-19",
+   "surface": "TLB",
+   "capability": "Play, pause and stop a timeline preview, and jump to first, previous, next and last keyframe",
+   "status": "editor-only",
+   "tools": [],
+   "note": "preview"
+  },
+  {
+   "id": "TLB-20",
+   "surface": "TLB",
+   "capability": "Set the Ease property on a keyframe, track or timeline, including inheritance from Default",
+   "status": "covered",
+   "tools": [
+    "set_keyframe",
+    "update_track",
+    "update_timeline"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-21",
+   "surface": "TLB",
+   "capability": "Create a custom ease in the Ease editor and apply it",
+   "status": "covered",
+   "tools": [
+    "create_ease",
+    "update_ease"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-22",
+   "surface": "TLB",
+   "capability": "Set Path mode, and edit cubic bezier handles in the Layout View",
+   "status": "partial",
+   "tools": [
+    "update_track"
+   ],
+   "note": "path mode; the bezier handles are keyframe values"
+  },
+  {
+   "id": "TLB-23",
+   "surface": "TLB",
+   "capability": "Drag the large blue X and Y keyframe handles in the Layout View",
+   "status": "partial",
+   "tools": [
+    "set_keyframe"
+   ],
+   "note": "values instead of handles"
+  },
+  {
+   "id": "TLB-24",
+   "surface": "TLB",
+   "capability": "Nest a timeline: drag from the Project Bar, or use Timeline > Add timelines",
+   "status": "open",
+   "tools": [],
+   "note": "nested timelines have no sample and no tool"
+  },
+  {
+   "id": "TLB-25",
+   "surface": "TLB",
+   "capability": "Focus a nested timeline, and navigate with the previous and next timeline arrows",
+   "status": "editor-only",
+   "tools": [],
+   "note": "navigation"
+  },
+  {
+   "id": "TLB-26",
+   "surface": "TLB",
+   "capability": "Drag the starting offset handle of a nested timeline",
+   "status": "open",
+   "tools": [],
+   "note": "nested timelines have no sample and no tool"
+  },
+  {
+   "id": "TLB-27",
+   "surface": "TLB",
+   "capability": "Set timeline-level properties: animation mode, result mode, total time",
+   "status": "covered",
+   "tools": [
+    "update_timeline"
+   ],
+   "note": ""
+  },
+  {
+   "id": "TLB-28",
+   "surface": "TLB",
+   "capability": "Rename tracks, folders and timelines",
+   "status": "partial",
+   "tools": [
+    "update_track",
+    "rename_timeline_folder"
+   ],
+   "note": "timelines themselves cannot be renamed"
+  },
+  {
+   "id": "TLB-29",
+   "surface": "TLB",
+   "capability": "Scale the timeline UI with Ctrl plus wheel, and clear highlighting with Escape",
+   "status": "editor-only",
+   "tools": [],
+   "note": "UI scale"
+  },
+  {
+   "id": "FCV-01",
+   "surface": "FCV",
+   "capability": "Create a flowchart in the project",
+   "status": "covered",
+   "tools": [
+    "create_flowchart"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-02",
+   "surface": "FCV",
+   "capability": "Add a node",
+   "status": "covered",
+   "tools": [
+    "add_flowchart_node"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-03",
+   "surface": "FCV",
+   "capability": "Delete a node",
+   "status": "covered",
+   "tools": [
+    "delete_flowchart_node"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-04",
+   "surface": "FCV",
+   "capability": "Add an output, via context menu, node Add link, or Properties Bar",
+   "status": "covered",
+   "tools": [
+    "add_flowchart_output"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-05",
+   "surface": "FCV",
+   "capability": "Delete an output",
+   "status": "covered",
+   "tools": [
+    "delete_flowchart_output"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-06",
+   "surface": "FCV",
+   "capability": "Edit a node caption, by double-click, context menu, or Properties Bar",
+   "status": "covered",
+   "tools": [
+    "update_flowchart_node"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-07",
+   "surface": "FCV",
+   "capability": "Edit node tags, including multiple space-separated tags",
+   "status": "covered",
+   "tools": [
+    "update_flowchart_node"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-08",
+   "surface": "FCV",
+   "capability": "Edit an output name and value",
+   "status": "covered",
+   "tools": [
+    "update_flowchart_output"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-09",
+   "surface": "FCV",
+   "capability": "Reorder outputs within a node by drag and drop",
+   "status": "covered",
+   "tools": [
+    "reorder_flowchart_outputs"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-10",
+   "surface": "FCV",
+   "capability": "Connect nodes by dragging from an output icon to an input icon, and the reverse",
+   "status": "covered",
+   "tools": [
+    "connect_flowchart_nodes"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-11",
+   "surface": "FCV",
+   "capability": "Drag from an output to empty space to create a connected node from the menu",
+   "status": "covered",
+   "tools": [
+    "add_flowchart_node",
+    "connect_flowchart_nodes"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-12",
+   "surface": "FCV",
+   "capability": "Unlink nodes, and select and delete a link",
+   "status": "covered",
+   "tools": [
+    "disconnect_flowchart_nodes"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-13",
+   "surface": "FCV",
+   "capability": "Set the Parent Index where several outputs share one input",
+   "status": "covered",
+   "tools": [
+    "update_flowchart_node"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-14",
+   "surface": "FCV",
+   "capability": "Move and resize nodes",
+   "status": "covered",
+   "tools": [
+    "update_flowchart_node"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-15",
+   "surface": "FCV",
+   "capability": "Set Start node and node Color from the Properties Bar only",
+   "status": "covered",
+   "tools": [
+    "update_flowchart_node"
+   ],
+   "note": ""
+  },
+  {
+   "id": "FCV-16",
+   "surface": "FCV",
+   "capability": "Select all with Ctrl+A, Shift-select nodes, pan and zoom",
+   "status": "editor-only",
+   "tools": [],
+   "note": "selection, pan and zoom"
+  },
+  {
+   "id": "MEN-01",
+   "surface": "MEN",
+   "capability": "Open the main menu",
+   "status": "editor-only",
+   "tools": [],
+   "note": ""
+  },
+  {
+   "id": "MEN-02",
+   "surface": "MEN",
+   "capability": "Project > Save, and Save As with its five destinations",
+   "status": "partial",
+   "tools": [
+    "pack_project",
+    "open_project"
+   ],
+   "note": "a .c3p is written and served; the other destinations are the editor's"
+  },
+  {
+   "id": "MEN-03",
+   "surface": "MEN",
+   "capability": "Project > Preview, Remote Preview, Debug, Export",
+   "status": "editor-only",
+   "tools": [],
+   "note": "preview, debug and export; serve_preview runs an export the editor produced"
+  },
+  {
+   "id": "MEN-04",
+   "surface": "MEN",
+   "capability": "Project > Close project, New, Open",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-05",
+   "surface": "MEN",
+   "capability": "Project > Guided tours",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-06",
+   "surface": "MEN",
+   "capability": "View > Bars submenu: show or hide every bar",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-07a",
+   "surface": "MEN",
+   "capability": "View > Start page and Example browser",
+   "status": "editor-only",
+   "tools": [],
+   "note": "start page"
+  },
+  {
+   "id": "MEN-07b",
+   "surface": "MEN",
+   "capability": "View > Start page and Example browser",
+   "status": "editor-only",
+   "tools": [],
+   "note": "start page"
+  },
+  {
+   "id": "MEN-07c",
+   "surface": "MEN",
+   "capability": "View > Start page and Example browser",
+   "status": "editor-only",
+   "tools": [],
+   "note": "start page"
+  },
+  {
+   "id": "MEN-08",
+   "surface": "MEN",
+   "capability": "View > Addon manager",
+   "status": "partial",
+   "tools": [
+    "register_addon",
+    "unregister_addon"
+   ],
+   "note": "registration in the project, not installation"
+  },
+  {
+   "id": "MEN-09",
+   "surface": "MEN",
+   "capability": "View > Export manager",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-10",
+   "surface": "MEN",
+   "capability": "Account menu: register, log in, enter access code, view details",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-11",
+   "surface": "MEN",
+   "capability": "Get addons and Asset Store links",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-12",
+   "surface": "MEN",
+   "capability": "Settings dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-13",
+   "surface": "MEN",
+   "capability": "Help and About",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-14",
+   "surface": "MEN",
+   "capability": "Main toolbar Save button",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-15",
+   "surface": "MEN",
+   "capability": "Main toolbar Undo and Redo, plus their dropdown history lists for multi-step undo",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-16",
+   "surface": "MEN",
+   "capability": "Main toolbar Preview button and its dropdown, including changing the button's default action",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-17",
+   "surface": "MEN",
+   "capability": "Drag a bar by its caption to dock, float, tab or split it",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-18",
+   "surface": "MEN",
+   "capability": "Pin a bar into auto-hide mode and restore it",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-19",
+   "surface": "MEN",
+   "capability": "Open a floating bar into a popup window, and close it back",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-20",
+   "surface": "MEN",
+   "capability": "Reset bars and dialogs, then reload",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-21",
+   "surface": "MEN",
+   "capability": "Switch, close and recolor view tabs; move between tabs with Ctrl+Shift+arrows",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-22",
+   "surface": "MEN",
+   "capability": "Use right-click context menus generally, in every view and bar",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "MEN-23",
+   "surface": "MEN",
+   "capability": "Confirm whether keyboard shortcuts reach the editor at all from synthetic events",
+   "status": "editor-only",
+   "tools": [],
+   "note": "menus, bars, tabs and settings"
+  },
+  {
+   "id": "DLG-01",
+   "surface": "DLG",
+   "capability": "New Project dialog: name, preset, viewport size, orientations, start with, optimize for pixel art",
+   "status": "open",
+   "tools": [],
+   "note": "no tool creates a project from scratch"
+  },
+  {
+   "id": "DLG-02",
+   "surface": "DLG",
+   "capability": "Create New Object Type dialog: categories, search, pin to top, name field",
+   "status": "covered",
+   "tools": [
+    "create_object"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-03",
+   "surface": "DLG",
+   "capability": "Add Condition / Add Action dialog, all three steps with Next and Back",
+   "status": "editor-only",
+   "tools": [],
+   "note": "dialogs whose outcomes EVC and EVA cover"
+  },
+  {
+   "id": "DLG-04",
+   "surface": "DLG",
+   "capability": "Parameters dialog, including Done and Cancel",
+   "status": "editor-only",
+   "tools": [],
+   "note": "dialogs whose outcomes EVC and EVA cover"
+  },
+  {
+   "id": "DLG-05",
+   "surface": "DLG",
+   "capability": "Expressions Dictionary panel, including its Back button and search",
+   "status": "editor-only",
+   "tools": [],
+   "note": "dialogs whose outcomes EVC and EVA cover"
+  },
+  {
+   "id": "DLG-06",
+   "surface": "DLG",
+   "capability": "Add/Edit Event Group dialog",
+   "status": "covered",
+   "tools": [
+    "update_event_group"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-07",
+   "surface": "DLG",
+   "capability": "Add/Edit Event Variable dialog",
+   "status": "covered",
+   "tools": [
+    "update_event_variable"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-08",
+   "surface": "DLG",
+   "capability": "Add/Edit Function dialog",
+   "status": "covered",
+   "tools": [
+    "update_function"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-09",
+   "surface": "DLG",
+   "capability": "Add/Edit Function Parameter dialog",
+   "status": "covered",
+   "tools": [
+    "update_function"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-10",
+   "surface": "DLG",
+   "capability": "Add/Edit Custom Action dialog, including its object picker button",
+   "status": "covered",
+   "tools": [
+    "add_custom_action"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-11",
+   "surface": "DLG",
+   "capability": "Add/Edit Instance Variable dialog",
+   "status": "covered",
+   "tools": [
+    "update_instance_variable"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-12",
+   "surface": "DLG",
+   "capability": "Object Behaviors dialog: add, remove and reorder behaviors",
+   "status": "covered",
+   "tools": [
+    "update_object_properties",
+    "reorder_behaviors"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-13",
+   "surface": "DLG",
+   "capability": "Effects dialog: add, remove and reorder effects, and set blend mode",
+   "status": "covered",
+   "tools": [
+    "add_effect",
+    "remove_effect",
+    "reorder_effects",
+    "update_instance"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-14",
+   "surface": "DLG",
+   "capability": "Edit Family dialog: transfer object types in and out, multi-select",
+   "status": "covered",
+   "tools": [
+    "update_family"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-15",
+   "surface": "DLG",
+   "capability": "Container object picker dialog",
+   "status": "covered",
+   "tools": [
+    "update_container"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-16",
+   "surface": "DLG",
+   "capability": "Import Audio dialog: file picker, drag and drop area, encode progress, Import button",
+   "status": "partial",
+   "tools": [
+    "register_project_file"
+   ],
+   "note": "no encoding"
+  },
+  {
+   "id": "DLG-17",
+   "surface": "DLG",
+   "capability": "Ease editor: drag start, end and anchor points, add mid-curve ease keyframes",
+   "status": "covered",
+   "tools": [
+    "update_ease"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-18",
+   "surface": "DLG",
+   "capability": "Tilemap Brush Editor",
+   "status": "covered",
+   "tools": [
+    "update_tilemap_brush"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-19",
+   "surface": "DLG",
+   "capability": "Image Format dialog: lossless or lossy",
+   "status": "partial",
+   "tools": [
+    "update_frame"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-20a",
+   "surface": "DLG",
+   "capability": "Resize image dialog, with apply-to-animation options",
+   "status": "partial",
+   "tools": [
+    "replace_sprite_image"
+   ],
+   "note": "the caller resizes"
+  },
+  {
+   "id": "DLG-20b",
+   "surface": "DLG",
+   "capability": "Resize image dialog, with apply-to-animation options",
+   "status": "partial",
+   "tools": [
+    "replace_sprite_image"
+   ],
+   "note": "the caller resizes"
+  },
+  {
+   "id": "DLG-20c",
+   "surface": "DLG",
+   "capability": "Resize image dialog, with apply-to-animation options",
+   "status": "partial",
+   "tools": [
+    "replace_sprite_image"
+   ],
+   "note": "the caller resizes"
+  },
+  {
+   "id": "DLG-21",
+   "surface": "DLG",
+   "capability": "Import from sprite sheet dialog: slicing and image selection",
+   "status": "editor-only",
+   "tools": [],
+   "note": "sprite-sheet slicing"
+  },
+  {
+   "id": "DLG-22",
+   "surface": "DLG",
+   "capability": "Settings dialog: user interface, text and code editor, save and backup, default properties, updates",
+   "status": "editor-only",
+   "tools": [],
+   "note": "settings, addon and export managers, storage"
+  },
+  {
+   "id": "DLG-23",
+   "surface": "DLG",
+   "capability": "Addon Manager: list, search, show built-in, show updates only, update individually, update all",
+   "status": "editor-only",
+   "tools": [],
+   "note": "settings, addon and export managers, storage"
+  },
+  {
+   "id": "DLG-24",
+   "surface": "DLG",
+   "capability": "Export Manager: list, download, delete, Build for Cordova",
+   "status": "editor-only",
+   "tools": [],
+   "note": "settings, addon and export managers, storage"
+  },
+  {
+   "id": "DLG-25",
+   "surface": "DLG",
+   "capability": "Export dialog: target choice plus common options",
+   "status": "editor-only",
+   "tools": [],
+   "note": "settings, addon and export managers, storage"
+  },
+  {
+   "id": "DLG-26",
+   "surface": "DLG",
+   "capability": "Cordova options dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "settings, addon and export managers, storage"
+  },
+  {
+   "id": "DLG-27",
+   "surface": "DLG",
+   "capability": "Windows wrapper options dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "settings, addon and export managers, storage"
+  },
+  {
+   "id": "DLG-28",
+   "surface": "DLG",
+   "capability": "Storage cleanup dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "settings, addon and export managers, storage"
+  },
+  {
+   "id": "DLG-29",
+   "surface": "DLG",
+   "capability": "Timeline dialogs: Add instances, Add timelines, Add properties, Swap instance",
+   "status": "partial",
+   "tools": [
+    "add_timeline_track",
+    "add_property_track"
+   ],
+   "note": "swap instance has no tool"
+  },
+  {
+   "id": "DLG-30",
+   "surface": "DLG",
+   "capability": "Move global variable to event sheet dialog",
+   "status": "covered",
+   "tools": [
+    "move_events_between_sheets"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-31",
+   "surface": "DLG",
+   "capability": "Cloud save service chooser, and the third-party sign-in flow it opens",
+   "status": "editor-only",
+   "tools": [],
+   "note": "cloud, pickers, permissions, prompts"
+  },
+  {
+   "id": "DLG-32",
+   "surface": "DLG",
+   "capability": "Browser-native file picker and folder picker",
+   "status": "editor-only",
+   "tools": [],
+   "note": "cloud, pickers, permissions, prompts"
+  },
+  {
+   "id": "DLG-33",
+   "surface": "DLG",
+   "capability": "Browser permission prompts: file access, popups, multi-monitor",
+   "status": "editor-only",
+   "tools": [],
+   "note": "cloud, pickers, permissions, prompts"
+  },
+  {
+   "id": "DLG-34",
+   "surface": "DLG",
+   "capability": "Unsaved-changes confirmation when closing a project or tab",
+   "status": "editor-only",
+   "tools": [],
+   "note": "cloud, pickers, permissions, prompts"
+  },
+  {
+   "id": "DLG-35",
+   "surface": "DLG",
+   "capability": "Text object initial text dialog",
+   "status": "covered",
+   "tools": [
+    "update_instance"
+   ],
+   "note": ""
+  },
+  {
+   "id": "DLG-36",
+   "surface": "DLG",
+   "capability": "Palette pick dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "palette"
+  },
+  {
+   "id": "DLG-37",
+   "surface": "DLG",
+   "capability": "Asset import dialogs raised by drag and drop: as object types, as single object type, as icons; audio destination chooser",
+   "status": "partial",
+   "tools": [
+    "create_object",
+    "replace_sprite_image"
+   ],
+   "note": "the outcome, not the drop"
+  },
+  {
+   "id": "DLG-38",
+   "surface": "DLG",
+   "capability": "Migration, recovery, addon-installation, account, payment and destructive-save prompts",
+   "status": "editor-only",
+   "tools": [],
+   "note": "prompts"
+  },
+  {
+   "id": "OUT-01",
+   "surface": "OUT",
+   "capability": "Preview the current layout, and the project from its first layout",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-02",
+   "surface": "OUT",
+   "capability": "Choose the preview mode: popup window, browser tab, or in-editor dialog",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-03",
+   "surface": "OUT",
+   "capability": "Open additional simultaneous preview windows",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-04",
+   "surface": "OUT",
+   "capability": "Restart a running preview with the latest project state",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-05",
+   "surface": "OUT",
+   "capability": "Start a Remote Preview and read its URL or QR code",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-06",
+   "surface": "OUT",
+   "capability": "Start a debug preview",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-07",
+   "surface": "OUT",
+   "capability": "Use the debugger Inspect tab to browse objects and edit live values",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-08",
+   "surface": "OUT",
+   "capability": "Use the Watch tab",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-09",
+   "surface": "OUT",
+   "capability": "Use the CPU Profiler tab",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-10",
+   "surface": "OUT",
+   "capability": "Use the GPU Profiler tab",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-11",
+   "surface": "OUT",
+   "capability": "Pause, resume and single-step the running project",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-12",
+   "surface": "OUT",
+   "capability": "Save and load a temporary runtime state in the debugger",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-13",
+   "surface": "OUT",
+   "capability": "Pop the debugger panel out into its own window and restore it",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-14",
+   "surface": "OUT",
+   "capability": "Continue and Next when paused on a breakpoint, including F10",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-15",
+   "surface": "OUT",
+   "capability": "Resize or collapse the debugger panel",
+   "status": "editor-only",
+   "tools": [],
+   "note": "the editor's preview and debugger; serve_preview, connect_to_game, wait_for_condition, simulate_input and screenshot_game drive an export the editor produced"
+  },
+  {
+   "id": "OUT-16",
+   "surface": "OUT",
+   "capability": "Save to the last saved location",
+   "status": "editor-only",
+   "tools": [],
+   "note": "save destinations"
+  },
+  {
+   "id": "OUT-17",
+   "surface": "OUT",
+   "capability": "Save as cloud save to Google Drive, OneDrive or Dropbox",
+   "status": "editor-only",
+   "tools": [],
+   "note": "save destinations"
+  },
+  {
+   "id": "OUT-18",
+   "surface": "OUT",
+   "capability": "Save as a single .c3p file",
+   "status": "covered",
+   "tools": [
+    "pack_project"
+   ],
+   "note": ""
+  },
+  {
+   "id": "OUT-19",
+   "surface": "OUT",
+   "capability": "Save as a project folder",
+   "status": "partial",
+   "tools": [
+    "open_project"
+   ],
+   "note": "a .c3p is unpacked into a working folder; the tools edit folder projects directly"
+  },
+  {
+   "id": "OUT-20",
+   "surface": "OUT",
+   "capability": "Save to local browser storage",
+   "status": "editor-only",
+   "tools": [],
+   "note": "browser storage and download"
+  },
+  {
+   "id": "OUT-21",
+   "surface": "OUT",
+   "capability": "Download a copy",
+   "status": "editor-only",
+   "tools": [],
+   "note": "browser storage and download"
+  },
+  {
+   "id": "OUT-22",
+   "surface": "OUT",
+   "capability": "Open a project from cloud, local file, local folder, browser storage or Recent projects",
+   "status": "partial",
+   "tools": [
+    "open_project"
+   ],
+   "note": "folder and .c3p projects from disk"
+  },
+  {
+   "id": "OUT-23",
+   "surface": "OUT",
+   "capability": "Configure periodic automatic backup: enable, backup location, local backup folder, interval",
+   "status": "editor-only",
+   "tools": [],
+   "note": "backups and recents"
+  },
+  {
+   "id": "OUT-24",
+   "surface": "OUT",
+   "capability": "Download all local browser saves as a zip",
+   "status": "editor-only",
+   "tools": [],
+   "note": "backups and recents"
+  },
+  {
+   "id": "OUT-25",
+   "surface": "OUT",
+   "capability": "Clear recent projects",
+   "status": "editor-only",
+   "tools": [],
+   "note": "backups and recents"
+  },
+  {
+   "id": "OUT-26",
+   "surface": "OUT",
+   "capability": "Export the project and set common options: deduplicate images, lossless format, lossy format, optimize images, minify script",
+   "status": "editor-only",
+   "tools": [],
+   "note": "export"
+  },
+  {
+   "id": "OUT-27",
+   "surface": "OUT",
+   "capability": "Choose an export target: HTML5 web, Cordova Android or iOS, Windows, macOS, Linux wrappers",
+   "status": "editor-only",
+   "tools": [],
+   "note": "export"
+  },
+  {
+   "id": "OUT-28",
+   "surface": "OUT",
+   "capability": "Enable offline support on a web export",
+   "status": "editor-only",
+   "tools": [],
+   "note": "export"
+  },
+  {
+   "id": "OUT-29",
+   "surface": "OUT",
+   "capability": "Trigger a Cordova build from the Export Manager",
+   "status": "editor-only",
+   "tools": [],
+   "note": "export"
+  },
+  {
+   "id": "OUT-30",
+   "surface": "OUT",
+   "capability": "Close the project, handling the save prompt correctly",
+   "status": "editor-only",
+   "tools": [],
+   "note": "close, reload and sharing"
+  },
+  {
+   "id": "OUT-31",
+   "surface": "OUT",
+   "capability": "Reload all script files from disk",
+   "status": "editor-only",
+   "tools": [],
+   "note": "close, reload and sharing"
+  },
+  {
+   "id": "OUT-32",
+   "surface": "OUT",
+   "capability": "Share with admin, for education accounts",
+   "status": "editor-only",
+   "tools": [],
+   "note": "close, reload and sharing"
+  },
+  {
+   "id": "SCR-01",
+   "surface": "SCR",
+   "capability": "Add a JavaScript or TypeScript script block in the event sheet",
+   "status": "covered",
+   "tools": [
+    "add_event_to_sheet"
+   ],
+   "note": ""
+  },
+  {
+   "id": "SCR-02",
+   "surface": "SCR",
+   "capability": "Add a JavaScript or TypeScript script action",
+   "status": "covered",
+   "tools": [
+    "add_event_block"
+   ],
+   "note": ""
+  },
+  {
+   "id": "SCR-03",
+   "surface": "SCR",
+   "capability": "Type into the built-in code editor and have the change register",
+   "status": "covered",
+   "tools": [
+    "update_script_event"
+   ],
+   "note": ""
+  },
+  {
+   "id": "SCR-04",
+   "surface": "SCR",
+   "capability": "Add a script file, and import existing .js or .ts files",
+   "status": "covered",
+   "tools": [
+    "register_script_file"
+   ],
+   "note": ""
+  },
+  {
+   "id": "SCR-05",
+   "surface": "SCR",
+   "capability": "Set script file properties, including which script is the main script",
+   "status": "covered",
+   "tools": [
+    "set_main_script",
+    "register_script_file"
+   ],
+   "note": ""
+  },
+  {
+   "id": "SCR-06",
+   "surface": "SCR",
+   "capability": "Work in a TypeScript-only project and confirm .js output is generated behind the scenes",
+   "status": "partial",
+   "tools": [
+    "update_project_properties"
+   ],
+   "note": "scriptsType; the generated output is the editor's"
+  },
+  {
+   "id": "SCR-07",
+   "surface": "SCR",
+   "capability": "Import .d.ts definition files",
+   "status": "partial",
+   "tools": [
+    "register_script_file"
+   ],
+   "note": "a .d.ts is a script file"
+  },
+  {
+   "id": "SCR-08",
+   "surface": "SCR",
+   "capability": "Use the external editor workflow with F9 reload",
+   "status": "editor-only",
+   "tools": [],
+   "note": "external editor and devtools"
+  },
+  {
+   "id": "SCR-09",
+   "surface": "SCR",
+   "capability": "Debug scripts in browser devtools from a debug preview",
+   "status": "editor-only",
+   "tools": [],
+   "note": "external editor and devtools"
+  },
+  {
+   "id": "SCR-10",
+   "surface": "SCR",
+   "capability": "Use the Array editor",
+   "status": "partial",
+   "tools": [
+    "create_data_file"
+   ],
+   "note": "creates the file; there is no edit tool for an existing one"
+  },
+  {
+   "id": "SCR-11",
+   "surface": "SCR",
+   "capability": "Use the Dictionary editor",
+   "status": "partial",
+   "tools": [
+    "create_data_file"
+   ],
+   "note": "creates the file; there is no edit tool for an existing one"
+  },
+  {
+   "id": "SCR-12",
+   "surface": "SCR",
+   "capability": "Use the Text editor for HTML, CSS, JSON and plain text project files",
+   "status": "partial",
+   "tools": [
+    "create_data_file"
+   ],
+   "note": "creates the file; there is no edit tool for an existing one"
+  },
+  {
+   "id": "SCR-13",
+   "surface": "SCR",
+   "capability": "Change code editor settings: font size, automatic indentation, word wrap, code folding, sticky scrolling, minimap",
+   "status": "editor-only",
+   "tools": [],
+   "note": "code editor settings"
+  },
+  {
+   "id": "SCR-14",
+   "surface": "SCR",
+   "capability": "Add the Multiplayer object and confirm its editor-side surface is ordinary object configuration",
+   "status": "covered",
+   "tools": [
+    "create_object"
+   ],
+   "note": ""
+  }
+ ]
+}

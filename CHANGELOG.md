@@ -6,6 +6,8 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
+- Editor checklist coverage: `scripts/editor-coverage.json` maps every item of the 425-item Construct editor acceptance checklist to a status (covered, partial, open, editor-only) and the tools that produce the same end state; `scripts/editor-coverage.mjs` prints the per-surface table and keeps the copy in `FORK.md` current, and a test refuses a stale table or an unregistered tool name. At this build: 187 items have no file representation; of the 238 that do, 177 are covered, 45 partly and 16 not at all.
+
 - `serve_preview` and `stop_preview`: serve an exported HTML5 game folder over loopback HTTP (a source project folder or a `.c3p` is refused, since Construct exports only from its editor) and optionally launch Chrome or Edge on it with a remote-debugging port, a fresh temporary profile and, when asked, headless software WebGL; the browser ends with the MCP server or on `stop_preview`, which asks it to close over CDP and kills it otherwise. Every preview server is stopped on shutdown.
 - `screenshot_game`: capture the connected page, or only its canvas rectangle, as a PNG or JPEG file.
 - `simulate_input` takes `coordinateSpace: "layout"` with a `layer`: every point is converted by the game itself through the new bridge commands `layerToCssPx` and `cssPxToLayer` (`{ layer?, x, y }`, viewport CSS pixels on the other side), so scaling, letterboxing, the canvas offset and the device pixel ratio are Construct's arithmetic. A game running an older bridge answers with an unknown-command error and nothing is dispatched.

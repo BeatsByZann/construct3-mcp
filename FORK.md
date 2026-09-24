@@ -115,6 +115,52 @@ which branch you are on.
 - Upstream: <https://github.com/liauw-media/construct3-mcp>
 - This fork's issues: <https://github.com/BeatsByZann/construct3-mcp/issues>
 
+## How much of the editor the tools reach
+
+The tools edit project files with the project closed, so the question "which of the editor's
+capabilities can an agent reproduce through the tools" has a measurable answer: each item of
+the Construct editor acceptance checklist is mapped, in `scripts/editor-coverage.json`, to a
+status and the tools that produce the same end state in the files.
+
+| Status | Meaning |
+|---|---|
+| Covered | A tool writes or reads the same end state in the project files |
+| Partial | Part of it; the item's note in the mapping says which part is the caller's |
+| Open | The end state lives in project files, but no tool writes it yet |
+| Editor-only | No file representation: a menu, dialog, selection gesture, view, preview, debugger, export or drawing operation |
+
+<!-- editor-coverage:start -->
+Measured against the 425-item editor acceptance checklist (c3-editor-acceptance version 1, Construct r495.2 (baselines)) by `node scripts/editor-coverage.mjs`.
+
+| Surface | Items | Covered | Partial | Open | Editor-only |
+|---|---|---|---|---|---|
+| EVC Event sheet conditions | 26 | 17 | 1 | 1 | 7 |
+| EVA Event sheet actions and parameters | 22 | 14 | 0 | 1 | 7 |
+| EVS Event sheet structure and navigation | 34 | 19 | 0 | 2 | 13 |
+| EVV Event variables, functions and custom actions | 15 | 14 | 0 | 0 | 1 |
+| PB Project Bar | 24 | 14 | 2 | 1 | 7 |
+| PRB Properties Bar | 19 | 10 | 0 | 1 | 8 |
+| LVT Layout View tools | 46 | 10 | 5 | 3 | 28 |
+| LYR Layers Bar, Z Order Bar and Instances Bar | 17 | 7 | 4 | 1 | 5 |
+| ANE Animations Editor | 42 | 11 | 6 | 2 | 23 |
+| TMB Tilemap Bar | 24 | 12 | 3 | 0 | 9 |
+| TLB Timeline Bar | 29 | 12 | 8 | 3 | 6 |
+| FCV Flowchart View | 16 | 15 | 0 | 0 | 1 |
+| MEN Main menu, main toolbar, bars and tabs | 25 | 0 | 2 | 0 | 23 |
+| DLG Dialogs the editor can raise | 40 | 15 | 7 | 1 | 17 |
+| OUT Preview, debug, export, save and backups | 32 | 1 | 2 | 0 | 29 |
+| SCR Scripting, code and file editors | 14 | 6 | 5 | 0 | 3 |
+| **All** | **425** | **177** | **45** | **16** | **187** |
+
+Of the 238 items that have a file representation, 177 are covered by a tool, 45 partly, and 16 not at all. The 187 editor-only items are menus, dialogs, selection gestures, views, preview, debugging, export and drawing, which no project-file edit can reproduce.
+
+Open items: EVC-23 (breakpoints live in the sheet's uistate file, which no tool writes); EVA-12 (breakpoints live in uistate); EVS-14 (breakpoints live in uistate); EVS-15 (bookmarks live in uistate); PB-15 (icon purpose has no tool); PRB-17 (mesh points have one sample and no tool); LVT-25 (3D models have no sample and no tool); LVT-29 (meshes have one sample and no tool); LVT-30 (meshes have one sample and no tool); LYR-15 (instance folders live in uistate); ANE-40 (3D model textures have no sample and no tool); ANE-41 (per-tile collision polygons have no tool); TLB-17 (swapping the instance a track drives has no tool); TLB-24 (nested timelines have no sample and no tool); TLB-26 (nested timelines have no sample and no tool); DLG-01 (no tool creates a project from scratch).
+<!-- editor-coverage:end -->
+
+`node scripts/editor-coverage.mjs --list open` (or `partial`) prints the items of one status
+with their notes. A test keeps the table above equal to the mapping and refuses a tool name
+that is not registered.
+
 ## Caveats
 
 - Verified against Construct 3 r495.2 on folder-format projects. Other releases are untested.

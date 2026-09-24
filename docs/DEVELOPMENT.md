@@ -152,6 +152,16 @@ The script reads three public files the Construct editor loads for that release 
 
 After regenerating for a new release, run the tests, then check the catalogue against projects that release saved, as was done for r495.2: 8,191 built-in conditions and actions across C3-ACE and three reference packages, 0 problems.
 
+## Editor Checklist Coverage
+
+`scripts/editor-coverage.json` maps every item of the 425-item Construct editor acceptance
+checklist to a status (`covered`, `partial`, `open`, `editor-only`) and the tools that produce
+the same end state in project files. `node scripts/editor-coverage.mjs` prints the per-surface
+table, `--write` rewrites the block in `FORK.md`, `--check` fails when that block is stale, and
+`--list <status>` lists one status with notes. When a tool is added, renamed or extended, update
+the mapping and run `--write`; `test/docs/editor-coverage.test.ts` fails on a stale table or an
+unregistered tool name.
+
 ## Cache Invalidation
 
 After any write operation, three caches must be cleared:
