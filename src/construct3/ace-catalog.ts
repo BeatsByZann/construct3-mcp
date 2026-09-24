@@ -21,9 +21,19 @@ export interface AceParam {
   items?: string[];
 }
 
+/** An expression as an expression string names it: its name, parameter types, and whether more arguments may follow. */
+export interface ExpressionDef {
+  name: string;
+  params: string[];
+  variadic?: boolean;
+  returns?: string;
+}
+
 export interface AceSet {
   conditions: Record<string, AceParam[]>;
   actions: Record<string, AceParam[]>;
+  /** Expressions by ID; the `name` is the form written in expression strings. */
+  expressions: Record<string, ExpressionDef>;
 }
 
 export interface AceCatalog {

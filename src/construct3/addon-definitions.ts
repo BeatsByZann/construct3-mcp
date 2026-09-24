@@ -17,7 +17,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
 import { readZip } from '../runtime/zip-reader.js';
-import type { AceParam, AceSet } from './ace-catalog.js';
+import type { AceParam, AceSet, ExpressionDef } from './ace-catalog.js';
 
 export interface AddonDefinition {
   id: string;
@@ -26,14 +26,13 @@ export interface AddonDefinition {
   version?: string;
   /** Where it was read from. */
   source: string;
+  /** Conditions, actions and expressions, in the catalogue's shape. */
   aces: AceSet;
-  /** Expression IDs with their parameter counts, kept for expression checks. */
-  expressions: Record<string, AceParam[]>;
   counts: { conditions: number; actions: number; expressions: number };
 }
 
 export interface LoadReport {
-  loaded: Array<Omit<AddonDefinition, 'aces' | 'expressions'>>;
+  loaded: Array<Omit<AddonDefinition, 'aces'>>;
   skipped: Array<{ path: string; reason: string }>;
 }
 
@@ -85,8 +84,7 @@ export function parseAddonDefinition(addonJson: string, acesJson: string, source
   if (typeof addon.id !== 'string' || addon.id.length === 0) throw new Error('addon.json has no id');
   const aces = parseJson(acesJson, 'aces.json') as Record<string, unknown>;
   if (!aces || typeof aces !== 'object') throw new Error('aces.json is not an object');
-  const set: AceSet = { conditions: {}, actions: {} };
-  const expressions: Record<string, AceParam[]> = {};
+  const set: AceSet = { conditions: {}, actions: {}, expressions: {} };
   for (const value of Object.values(aces)) {
     // A category is an object; the "$schema" entry is a string and falls out here.
     if (!value || typeof value !== 'object') continue;
@@ -97,7 +95,14 @@ export function parseAddonDefinition(addonJson: string, acesJson: string, source
       }
     }
     for (const ace of Array.isArray(group.expressions) ? group.expressions as Array<Record<string, unknown>> : []) {
-      if (typeof ace.id === 'string') expressions[ace.id] = params(ace);
+      if (typeof ace.id !== 'string') continue;
+      const def: ExpressionDef = {
+        name: typeof ace.expressionName === 'string' ? ace.expressionName : ace.id,
+        params: params(ace).map(p => p.type),
+      };
+      if (ace.isVariadicParameters === true) def.variadic = true;
+      if (typeof ace.returnType === 'string') def.returns = ace.returnType;
+      set.expressions[ace.id] = def;
     }
   }
   return {
@@ -107,18 +112,17 @@ export function parseAddonDefinition(addonJson: string, acesJson: string, source
     version: typeof addon.version === 'string' ? addon.version : undefined,
     source,
     aces: set,
-    expressions,
     counts: {
       conditions: Object.keys(set.conditions).length,
       actions: Object.keys(set.actions).length,
-      expressions: Object.keys(expressions).length,
+      expressions: Object.keys(set.expressions).length,
     },
   };
 }
 
 function register(definition: AddonDefinition, report: LoadReport): void {
   registry.set(`${definition.type}:${definition.id}`, definition);
-  const { aces: _aces, expressions: _expressions, ...summary } = definition;
+  const { aces: _aces, ...summary } = definition;
   report.loaded.push(summary);
 }
 

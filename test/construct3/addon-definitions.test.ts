@@ -58,7 +58,7 @@ describe('loading definitions', () => {
     expect(Object.keys(definition.aces.conditions)).toEqual(['on-timer', 'is-running']);
     expect(definition.aces.actions['start-timer'].map(p => p.id)).toEqual(['duration', 'tag', 'mode']);
     expect(definition.aces.actions['start-timer'][2].items).toEqual(['once', 'regular']);
-    expect(definition.expressions.elapsed.map(p => p.id)).toEqual(['tag']);
+    expect(definition.aces.expressions.elapsed).toEqual({ name: 'Elapsed', params: ['string'], returns: 'number' });
   });
 
   it('reads a .c3addon, at its root or under one folder', async () => {
@@ -157,7 +157,7 @@ describe('validate_project names addons whose ACEs cannot be checked', () => {
 
   it('lists the unloaded plugin or behavior as info, and drops it once loaded', async () => {
     const before = await validateProjectIntegrity(reader());
-    expect(before.summary.checksRun).toBe(17);
+    expect(before.summary.checksRun).toBe(18);
     const unavailable = before.info.filter(i => i.check === 'ace-definitions-unavailable');
     expect(unavailable).toHaveLength(1);
     expect(unavailable[0].entity).toBe('usedAddons/Probe_Timer');

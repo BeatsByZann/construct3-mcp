@@ -694,7 +694,7 @@ We welcome contributions! Here's how to get started:
 
 - **One Writer at a Time for a .c3p**: The server writes a `.c3p` back after each change and refuses to overwrite one Construct saved in the meantime. Do not edit the same archive in Construct and through the server at once.
 - **The game must be exported first**: `serve_preview` serves and launches an HTML5 export, and `connect_to_game` reaches any browser started with a remote-debugging port, but Construct exports only from its editor; the tools cannot produce the export, and the editor's own preview is not reachable over CDP.
-- **ACE validation needs definitions**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a third-party addon's against its own `aces.json` once loaded (`C3_ADDON_DEFINITIONS` or `load_addon_definitions`); `validate_project` names the addons still unloaded. A problem is a warning, not a refusal. Expressions inside parameter values and parameter values other than combo choices are not checked ([details](docs/API.md#ace-validation))
+- **ACE validation needs definitions**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a third-party addon's against its own `aces.json` once loaded (`C3_ADDON_DEFINITIONS` or `load_addon_definitions`); `validate_project` names the addons still unloaded. A problem is a warning, not a refusal. Expressions inside parameter values are parsed and their names resolved against the project ([details](docs/API.md#expression-checking)); the type a parameter expects is not checked against the expression's type
 
 ## License
 

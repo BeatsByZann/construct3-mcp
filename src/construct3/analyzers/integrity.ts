@@ -16,6 +16,7 @@ import { getImageFileName } from '../png-generator.js';
 import { collectLayers } from '../layout-walk.js';
 import { ACE_CATALOG_RELEASE, buildAceContext, checkEventAces, describeEventAceProblem, isBuiltInAddon } from '../ace-catalog.js';
 import { addonDefinition } from '../addon-definitions.js';
+import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../expression-check.js';
 
 /** Image file extensions by declared fileType, from the r495.2 samples. */
 const IMAGE_EXTENSIONS: Record<string, string> = {
@@ -109,6 +110,7 @@ export async function validateProjectIntegrity(
   checkLegacyEventKeys(eventSheets, warnings);
   checkMissingAddons(objects, reader, warnings);
   await checkEventAceDefinitions(reader, eventSheets, warnings);
+  await checkEventExpressionText(reader, eventSheets, warnings);
 
   // Info checks
   await checkOrphanedFiles(reader, registeredObjects, registeredSheets, registeredLayouts, info);
@@ -116,7 +118,7 @@ export async function validateProjectIntegrity(
   checkAddonDefinitions(reader, info);
   await checkOrphanedObjects(reader, info);
 
-  const checksRun = 17;
+  const checksRun = 18;
 
   return {
     valid: errors.length === 0,
@@ -654,6 +656,32 @@ async function checkEventAceDefinitions(
         entity: `eventSheets/${name}${problem.sid !== undefined ? `/sid:${problem.sid}` : ''}`,
         message: describeEventAceProblem(problem),
         suggestion: `Compare with the ${problem.kind === 'conditions' ? 'condition' : 'action'} as Construct ${ACE_CATALOG_RELEASE} writes it, or fix it with update_event_block`,
+      });
+    }
+  }
+}
+
+// ─── Check: expressions inside parameters ───────────────────
+
+/**
+ * Parse every expression-typed parameter and resolve its names against the
+ * project and the catalogue: an unknown object, member, function or bare
+ * name, a wrong argument count, or text that does not parse.
+ */
+async function checkEventExpressionText(
+  reader: Construct3ProjectReader,
+  sheets: Map<string, EventSheet>,
+  warnings: IntegrityIssue[]
+): Promise<void> {
+  const aceContext = await buildAceContext(reader);
+  const context = await buildExpressionContext(reader);
+  for (const [name, sheet] of sheets) {
+    for (const problem of checkEventExpressions(sheet.events, context, aceContext)) {
+      warnings.push({
+        check: problem.code,
+        entity: `eventSheets/${name}${problem.sid !== undefined ? `/sid:${problem.sid}` : ''}`,
+        message: describeEventExpressionProblem(problem),
+        suggestion: 'Check the name against list_objects, the object\'s instance variables and behaviors, get_function_map and the sheet\'s variables, then fix the parameter with update_event_block or update_event_block_action',
       });
     }
   }

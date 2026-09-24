@@ -31,6 +31,7 @@ import type { EventSheet, C3Event } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError } from './shared.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
 import { aceTreeSnapshot, buildAceContext, changedAceSidsInTree, checkEventAces, describeEventAceProblem } from '../construct3/ace-catalog.js';
+import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../construct3/expression-check.js';
 import {
   collectObjectNameRefsInSheet,
   countUnrewrittenObjectMentions,
@@ -485,6 +486,7 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
         const skipped: SkippedEvent[] = [];
         let unrewritten = 0;
         let aceContext: Awaited<ReturnType<typeof buildAceContext>> | undefined;
+        let expressionContext: Awaited<ReturnType<typeof buildExpressionContext>> | undefined;
         for (const name of scope) {
           const file = reader.getEntityRelativePath('eventSheets', name);
           let sheet: EventSheet;
@@ -502,8 +504,13 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
           if (!args.dryRun && result.sites.length > 0) {
             // The swapped conditions and actions, against Construct's own definitions.
             aceContext ??= await buildAceContext(reader);
-            for (const problem of checkEventAces(sheet.events, aceContext, changedAceSidsInTree(acesBefore, sheet.events))) {
+            expressionContext ??= await buildExpressionContext(reader);
+            const changed = changedAceSidsInTree(acesBefore, sheet.events);
+            for (const problem of checkEventAces(sheet.events, aceContext, changed)) {
               warnings.push(`${name}: ${describeEventAceProblem(problem)}`);
+            }
+            for (const problem of checkEventExpressions(sheet.events, expressionContext, aceContext, changed)) {
+              warnings.push(`${name}: ${describeEventExpressionProblem(problem)}`);
             }
             const subfolder = writer.getSubfolderForEntity('eventSheets', name);
             await writer.writeEntityFile('eventSheets', name, sheet, subfolder);
@@ -684,10 +691,16 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
           // The rewritten parameters, against Construct's own definitions (a
           // combo value changed through parameterKeys can stop being a choice).
           const aceContext = await buildAceContext(reader);
+          const expressionContext = await buildExpressionContext(reader);
           for (const [index] of touched) {
             const { name, data } = sheets[index];
-            for (const problem of checkEventAces(data.events, aceContext, changedAceSidsInTree(acesBefore[index], data.events))) {
+            const changed = changedAceSidsInTree(acesBefore[index], data.events);
+            for (const problem of checkEventAces(data.events, aceContext, changed)) {
               warnings.push(`${name}: ${describeEventAceProblem(problem)}`);
+            }
+            // The rewritten text itself: a replacement can leave a name nothing defines.
+            for (const problem of checkEventExpressions(data.events, expressionContext, aceContext, changed)) {
+              warnings.push(`${name}: ${describeEventExpressionProblem(problem)}`);
             }
           }
         }

@@ -129,6 +129,34 @@ describe('validateProjectIntegrity', () => {
     expect(legacy[3].entity).toBe('eventSheets/MainSheet (event SID 204)');
   });
 
+  it('reports an expression whose name nothing in the project defines', async () => {
+    const reader = createReader({
+      objects: new Map([
+        ['Sprite', { name: 'Sprite', 'plugin-id': 'Sprite', sid: 100, instanceVariables: [{ name: 'hp', type: 'number', sid: 101 }] }],
+      ]),
+      eventSheets: new Map([
+        ['MainSheet', {
+          name: 'MainSheet', sid: 200,
+          events: [{
+            eventType: 'block', sid: 201,
+            conditions: [{ id: 'every-tick', objectClass: 'System', sid: 202 }],
+            actions: [{ id: 'set-position', objectClass: 'Sprite', sid: 203, parameters: { x: 'Sprite.hp + 1', y: 'Sprite.speeed' } }],
+          }],
+        }],
+      ]),
+      layouts: new Map([
+        ['Layout 1', { name: 'Layout 1', sid: 300, eventSheet: 'MainSheet', layers: [{ name: 'Main', sid: 301, instances: [] }] }],
+      ]),
+      usedAddons: [
+        { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
+      ],
+    });
+    const result = await validateProjectIntegrity(reader);
+    const expression = result.warnings.filter(w => w.check.startsWith('expression-'));
+    expect(expression.map(w => [w.check, w.entity])).toEqual([['expression-unknown-member', 'eventSheets/MainSheet/sid:203']]);
+    expect(expression[0].message).toContain('parameter "y" = "Sprite.speeed"');
+  });
+
   // ─── Clean project ───────────────────────────────────────
 
   it('returns valid: true for a clean project', async () => {
@@ -137,7 +165,7 @@ describe('validateProjectIntegrity', () => {
     expect(result.valid).toBe(true);
     expect(result.complete).toBe(true);
     expect(result.summary.errors).toBe(0);
-    expect(result.summary.checksRun).toBe(17);
+    expect(result.summary.checksRun).toBe(18);
     expect(result.summary.entitiesScanned).toBeGreaterThan(0);
   });
 

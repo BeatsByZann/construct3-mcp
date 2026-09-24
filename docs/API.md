@@ -212,7 +212,7 @@ Heuristic performance audit with categorized issues (info/warning/critical).
 
 ### `validate_project`
 
-Run integrity checks: file existence, required fields, duplicate SIDs/UIDs (on every layer, sub-layers included), broken references, missing addons, conditions and actions against Construct's own definitions ([ACE validation](#ace-validation)), event keys Construct does not read, orphaned files. No parameters.
+Run integrity checks: file existence, required fields, duplicate SIDs/UIDs (on every layer, sub-layers included), broken references, missing addons, conditions and actions against Construct's own definitions ([ACE validation](#ace-validation)), the expressions inside their parameters ([expression checking](#expression-checking)), event keys Construct does not read, addons whose definitions are not loaded, orphaned files. No parameters.
 
 **Result:**
 
@@ -246,8 +246,25 @@ What is checked and what is not:
 - `objectClass` is resolved to its object type's or family's plugin, and `behaviorType` to the behavior of that name on the object, on a family it belongs to, or on a family's member. `System` is the System object.
 - The common ACEs Construct adds to plugin objects by capability (instance variables, position, size, angle, appearance, Z order, hierarchy, effects, picking, destroy) are accepted on any plugin object, not only those that have the capability.
 - A third-party addon is checked the same way once its definitions are loaded: set `C3_ADDON_DEFINITIONS` (paths separated by the platform's path delimiter, each an unpacked addon folder, a `.c3addon`, or a folder holding several) before starting the server, or call [`load_addon_definitions`](#load_addon_definitions). Until then its ACEs are skipped, and `validate_project` lists it as an `ace-definitions-unavailable` info entry.
-- Skipped: ACEs of addons with no definitions loaded, of objects the project does not declare, function and custom action calls, scripts, comments, and positional parameters. Expressions inside parameter values are not parsed.
-- Parameter values other than combo choices are not checked.
+- Skipped: ACEs of addons with no definitions loaded, of objects the project does not declare, function and custom action calls, scripts, comments, and positional parameters.
+- Parameter values other than combo choices are checked only as expressions, below; a number or string value is not checked for its type.
+
+### Expression checking
+
+The value of every parameter whose declared type holds an expression (`number`, `string`, `any`, `layer`, `animation`, `keyb`, `functionname`, `flowchart-string`; a `layout`, `object`, variable or combo value is a bare name or choice and is not one), and every argument of a function or custom action call, is parsed as a Construct expression and its names are resolved against the project and the catalogue. The same tools report these as warnings, and `validate_project` reports them across the project under these checks:
+
+| Check | Meaning | Example |
+|---------|------------------|---------|
+| `expression-syntax` | The text does not parse: an unbalanced parenthesis or quote, a `?` without its `:`, or a character that is not part of an expression | `Player.X +` |
+| `expression-unknown-object` | The name before a dot is not an object type or family of the project | `Ghost.X` |
+| `expression-unknown-member` | The object has no expression, instance variable or behavior of that name (a family's instance variables count for its members), or a behavior is named without one of its expressions | `Player.Speeed`, `Player.Platform.Vector` |
+| `expression-unknown-function` | A call to a name that is not a system expression, or `Functions.Name(...)` naming no function of any sheet | `distanse(1, 2, 3, 4)` |
+| `expression-unknown-name` | A bare name that is not a system expression, an event variable, a function or custom action parameter, or an object | `Scor + 1` |
+| `expression-argument-count` | A system, plugin or behavior expression, or a function, called with the wrong number of arguments (a variadic one with too few) | `distance(1, 2)` |
+
+What is resolved: plugin and behavior expressions and the editor's common expressions (`X`, `UID`, `Count`, ...) by their written names, without case; instance variables of the object and of its families; behaviors by name, then their expressions; the functions namespace (`Functions`, or the project's `functionsName`) with each function's parameter count and `CallMapped`; `Self` as the object the condition or action belongs to; event variables and function or custom action parameters declared anywhere, without scope analysis; an instance index after an object name (`Player(2).X`). A third-party plugin or behavior without loaded definitions accepts any member. Checked against C3-ACE's 4,757 parameter values: 0 problems.
+
+Not checked: the type a parameter expects against the type an expression yields, string contents, and which variables are in scope at a given event.
 
 The catalogue is `src/construct3/ace-catalog-data.ts`, generated by `scripts/build-ace-catalog.mjs` (see [DEVELOPMENT.md](DEVELOPMENT.md#ace-catalogue)).
 

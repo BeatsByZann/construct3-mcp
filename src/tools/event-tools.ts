@@ -4,6 +4,7 @@
 
 import { z } from 'zod';
 import { aceSnapshot, buildAceContext, changedAceSids, checkEventAces, describeEventAceProblem } from '../construct3/ace-catalog.js';
+import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../construct3/expression-check.js';
 import type { MutationToolDeps } from './shared.js';
 import type { C3Event, EventSheet, FunctionBlockEvent, WriteResult } from '../construct3/types.js';
 import { validateName, validateSubfolder, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord } from './shared.js';
@@ -387,7 +388,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         // Conditions and actions of built-in plugins and behaviors are checked
         // against Construct's own definitions; the block is still written.
-        warnings.push(...checkEventAces([blockEvent], await buildAceContext(reader)).map(describeEventAceProblem));
+        const aceContext = await buildAceContext(reader);
+        warnings.push(...checkEventAces([blockEvent], aceContext).map(describeEventAceProblem));
+        warnings.push(...checkEventExpressions([blockEvent], await buildExpressionContext(reader), aceContext).map(describeEventExpressionProblem));
 
         // Commit deferred children-array creation only after all validation and
         // block construction have succeeded.
@@ -771,7 +774,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
         action.parameters = { ...args.parameters };
         await applyCustomEaseParameter(reader, action.parameters);
-        const warnings = checkEventAces([{ actions: [action] }], await buildAceContext(reader)).map(describeEventAceProblem);
+        const aceContext = await buildAceContext(reader);
+        const warnings = checkEventAces([{ actions: [action] }], aceContext).map(describeEventAceProblem);
+        warnings.push(...checkEventExpressions([{ actions: [action] }], await buildExpressionContext(reader), aceContext).map(describeEventExpressionProblem));
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
@@ -1433,11 +1438,19 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         // Check the conditions and actions this call added or changed against
         // Construct's own definitions; the block is still written.
+        const aceContext = await buildAceContext(reader);
+        const changed = changedAceSids(aceBefore, event);
         warnings.push(...checkEventAces(
           [{ conditions: event.conditions, actions: event.actions }],
-          await buildAceContext(reader),
-          changedAceSids(aceBefore, event),
+          aceContext,
+          changed,
         ).map(describeEventAceProblem));
+        warnings.push(...checkEventExpressions(
+          [{ conditions: event.conditions, actions: event.actions }],
+          await buildExpressionContext(reader),
+          aceContext,
+          changed,
+        ).map(describeEventExpressionProblem));
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
