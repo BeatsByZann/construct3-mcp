@@ -27,6 +27,7 @@
  */
 
 import { z } from 'zod';
+import { backupOnce, recordWrite } from '../construct3/change-journal.js';
 import { readFile, writeFile, copyFile, unlink, rename, mkdir, stat } from 'fs/promises';
 import { dirname } from 'path';
 import type { MutationToolDeps } from './shared.js';
@@ -199,15 +200,7 @@ async function readBrushFile(absolutePath: string): Promise<{ brushes: TilemapBr
 }
 
 async function backupIfPresent(filePath: string): Promise<string> {
-  const bak = filePath + '.bak';
-  try {
-    await stat(filePath);
-    await copyFile(filePath, bak);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT') return bak;
-    throw e;
-  }
-  return bak;
+  return (await backupOnce(filePath)).backupPath;
 }
 
 /**
@@ -216,6 +209,8 @@ async function backupIfPresent(filePath: string): Promise<string> {
  * which is preserved here.
  */
 async function writeBrushFile(absolutePath: string, brushes: TilemapBrush[]): Promise<void> {
+  let existed = true;
+  try { await stat(absolutePath); } catch { existed = false; }
   await mkdir(dirname(absolutePath), { recursive: true });
   const tmpPath = absolutePath + '.tmp';
   await writeFile(tmpPath, JSON.stringify(brushes), 'utf-8');
@@ -230,6 +225,7 @@ async function writeBrushFile(absolutePath: string, brushes: TilemapBrush[]): Pr
       throw e;
     }
   }
+  await recordWrite(absolutePath, existed);
 }
 
 // ─── Registration ──────────────────────────────────────────

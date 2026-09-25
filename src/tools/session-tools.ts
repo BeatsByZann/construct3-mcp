@@ -12,7 +12,7 @@ import type { IdGenerator } from '../construct3/id-generator.js';
 import type { ProjectSession } from '../construct3/project-session.js';
 import { toolResult, toolError } from './shared.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
-import { changedSinceSeen, clearStamps, journalEntries, lastEntry, revertEntry, supersededBy, type JournalEntry } from '../construct3/change-journal.js';
+import { changedSinceEntry, changedSinceSeen, clearStamps, journalEntries, lastEntry, revertEntry, supersededBy, type JournalEntry } from '../construct3/change-journal.js';
 import { relative, sep } from 'node:path';
 
 export function registerSessionTools(server: McpServer, session: ProjectSession, idGen: IdGenerator): void {
@@ -66,8 +66,9 @@ export function registerSessionTools(server: McpServer, session: ProjectSession,
   server.tool(
     'revert_last_change',
     'Undo the most recent tool call that changed files, from the .bak backups its writes left: written files are restored, created files '
-      + 'removed, deleted files restored, moved files moved back. Refused when a later call touched the same files, because their backups '
-      + 'then hold that later state. A change without a backup (a placeholder image overwritten) is reported as not restorable.',
+      + 'removed, deleted files restored, moved files moved back. Refused when a later call touched the same files, or when any of the files '
+      + 'or their backups changed since the call in a way the journal did not record, because the backups would then not restore the state '
+      + 'before the call. A change without a backup (a placeholder image overwritten) is reported as not restorable.',
     {},
     async () => {
       try {
@@ -76,6 +77,10 @@ export function registerSessionTools(server: McpServer, session: ProjectSession,
         const later = supersededBy(entry);
         if (later.length > 0) {
           return toolError(`The last change (call ${entry.id}, ${entry.tool}) cannot be reverted: later call(s) ${later.map(e => `${e.id} (${e.tool})`).join(', ')} touched the same file(s), and the backups now hold that later state. Revert those first, or restore the .bak files by hand.`);
+        }
+        const moved = await changedSinceEntry(entry);
+        if (moved.length > 0) {
+          return toolError(`The last change (call ${entry.id}, ${entry.tool}) cannot be reverted: ${moved.map(rel).join(', ')} changed after that call by something the change journal does not record (Construct, another program, or a tool write outside the journal), so restoring the backups would not return the project to its state before the call. Nothing was restored. Restore the .bak files by hand if that is still what you want.`);
         }
         const report = await revertEntry(entry);
         clearStamps();

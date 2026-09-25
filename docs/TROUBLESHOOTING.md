@@ -12,6 +12,7 @@ Common issues and solutions for the Construct3 MCP Server.
 - Pass the path directly to the `.c3proj` file: `node dist/index.js /path/to/project.c3proj`
 - Or pass the directory that contains it: `node dist/index.js /path/to/project-folder/`
 - For a single-file project, pass the `.c3p` file itself: `node dist/index.js /path/to/game.c3p`
+- With no argument, the server uses `C3_PROJECT_PATH`, and without that the current working directory, so this error also means the directory the MCP client started the server in holds no project
 
 ### "The project was NOT saved to ...: ... was changed by something else"
 
@@ -30,14 +31,6 @@ Common issues and solutions for the Construct3 MCP Server.
 - Open the project in Construct 3 editor and re-save it
 - Check the file isn't corrupted (open it in a text editor — it should be valid JSON)
 - Ensure it has required top-level fields: `name`, `objectTypes`, `eventSheets`, `layouts`
-
-### "Usage: construct3-mcp <project-path>"
-
-**Cause**: No project path was provided.
-
-**Solutions**:
-- Pass the path as the first argument: `node dist/index.js /path/to/project`
-- Or set the environment variable: `C3_PROJECT_PATH=/path/to/project node dist/index.js`
 
 ## Connection Issues
 
@@ -79,6 +72,12 @@ Same as above — use the corresponding `list_` tool to find the correct name.
 
 **Solution**: Call `reload_project`, which re-reads the project and lists the files that had changed, then repeat the call. A call that reads the file fresh does not hit this; its result carries a `Note:` naming the file instead.
 
+### "cannot be reverted: ... changed after that call by something the change journal does not record"
+
+**Cause**: A file the last call wrote, or the backup it left, no longer holds what it held when the call ended: Construct saved it, another program or a hand edit changed it, or it was replaced by hand. Restoring the backups would not return the project to its state before the call, so nothing was restored.
+
+**Solution**: Check the files the message names. If you still want the old state, restore the `.bak` files by hand; otherwise leave the project as it is.
+
 ### "cannot be reverted: later call(s) ... touched the same file(s)"
 
 **Cause**: `revert_last_change` works from the single `.bak` beside each file, and a later call (even one already reverted) rewrote that backup.
@@ -99,23 +98,23 @@ Same as above — use the corresponding `list_` tool to find the correct name.
 
 **Solution**: Use `update_object_properties` to modify the existing object, or choose a different name.
 
-### "Plugin X is not registered in usedAddons"
+### "Plugin X is not registered in the project's usedAddons"
 
 **Cause**: The plugin is a third-party addon not in the project's `usedAddons` list. The server can only auto-register known Scirra built-in addons.
 
 **Solution**: Open the project in the Construct 3 editor, add an object using that plugin (which registers it), save, then restart the MCP server.
 
-### "Behavior X is not registered in usedAddons"
+### "Behavior X is not registered in the project's usedAddons"
 
 Same as above but for behaviors. Add a behavior of that type to any object in the C3 editor first.
 
-### "Object X is a global plugin and cannot be placed on layouts"
+### "Object X is a global plugin (id) and cannot be placed on layouts"
 
 **Cause**: Trying to use `add_instance_to_layout` with a global-only plugin like Audio, AJAX, Mouse, etc.
 
 **Solution**: Global plugins use `singleglobal-inst` and don't have layout instances. They're created once and accessible everywhere. Use `create_object` to add them to the project instead.
 
-### "System is a reserved name"
+### "System" is a reserved name in Construct 3 and cannot be used
 
 **Cause**: "System" is used by the C3 engine and can't be used as an object name.
 

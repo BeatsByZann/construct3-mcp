@@ -41,6 +41,7 @@
  */
 
 import { z } from 'zod';
+import { backupOnce, recordDelete, recordWrite } from '../construct3/change-journal.js';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { readFile, writeFile, mkdir, copyFile, unlink, rename, stat } from 'fs/promises';
 import { dirname } from 'path';
@@ -148,6 +149,8 @@ async function readJsonFile<T>(filePath: string): Promise<T> {
 async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
   const json = JSON.stringify(data, null, '\t');
   const tmpPath = filePath + '.tmp';
+  let existed = true;
+  try { await stat(filePath); } catch { existed = false; }
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(tmpPath, json, 'utf-8');
   try {
@@ -161,19 +164,12 @@ async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
       throw e;
     }
   }
+  await recordWrite(filePath, existed);
 }
 
-/** Copy filePath to filePath.bak when it exists; returns the backup path. */
+/** Copy filePath to filePath.bak when it exists, once per tool call; returns the backup path. */
 async function backupFile(filePath: string): Promise<string> {
-  const bak = filePath + '.bak';
-  try {
-    await stat(filePath);
-    await copyFile(filePath, bak);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT') return bak;
-    throw e;
-  }
-  return bak;
+  return (await backupOnce(filePath)).backupPath;
 }
 
 /** Add a flowchart name to the project.c3proj flowcharts container. */
@@ -687,6 +683,7 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
         // and the call retryable, rather than stranding a dangling name.
         try {
           await unlink(filePath);
+          recordDelete(filePath);
         } catch (e: unknown) {
           if (!(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT')) {
             throw e;
@@ -700,6 +697,7 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
           await stat(uistatePath);
           await backupFile(uistatePath);
           await unlink(uistatePath);
+          recordDelete(uistatePath);
           warnings.push(`Also deleted the sibling editor-state file ${args.name}.uistate.json (a .bak was written).`);
         } catch { /* no uistate file, nothing to do */ }
 

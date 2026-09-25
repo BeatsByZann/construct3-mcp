@@ -1,6 +1,7 @@
 /** Registration and lifecycle tools for C3 scripts and imported Project Files. */
 
 import { z } from 'zod';
+import { backupOnce, recordDelete, recordWrite } from '../construct3/change-journal.js';
 import { basename, extname, join } from 'node:path';
 import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import type { MutationToolDeps } from './shared.js';
@@ -231,6 +232,7 @@ export function registerFileTools({ server, reader, writer }: MutationToolDeps):
         await copyFile(sourcePath, destinationPath);
         copied = true;
         const result = await writer.registerFileEntry(folder, name, args.type ?? args.mimeType ?? projectFileType(name), 'file-info', args.purpose, args.subfolder);
+        await recordWrite(destinationPath, false);
         return toolResult({ success: true, entity: name, category: 'project-file', action: result.registered ? 'registered' : 'already_registered', generatedSid: result.sid, folder, subfolder: args.subfolder, path: relativePath });
       } catch (error) {
         if (copied && destinationPath) {
@@ -263,7 +265,7 @@ export function registerFileTools({ server, reader, writer }: MutationToolDeps):
         const removed = await writer.deregisterFileEntry(folder, args.name, args.subfolder);
         if (!removed) return toolError(`Project File "${args.name}" is no longer registered in ${folder}.`);
         const filePath = resolveProjectPath(reader.getProjectDir(), directory, ...(args.subfolder ? [args.subfolder] : []), args.name);
-        try { await unlink(filePath); } catch (error) {
+        try { await backupOnce(filePath); await unlink(filePath); recordDelete(filePath); } catch (error) {
           if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
             return toolError(`Deregistered "${args.name}" but could not remove ${relativePath}: ${error instanceof Error ? error.message : String(error)}. The file is now orphaned; remove it manually.`);
           }
@@ -323,6 +325,7 @@ export function registerFileTools({ server, reader, writer }: MutationToolDeps):
         written = true;
 
         const result = await writer.registerFileEntry('general', args.name, args.type ?? built.type, 'file-info', args.purpose, args.subfolder);
+        await recordWrite(destinationPath, false);
         return toolResult({
           success: true,
           entity: args.name,

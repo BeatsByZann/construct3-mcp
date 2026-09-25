@@ -15,7 +15,7 @@ import { addFileEntry, findFileEntry, removeFileEntry } from './file-registratio
 import { resetProjectIndex } from './analyzers/index-builder.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from './templates.js';
 import { generatePlaceholderPng, getImageFileName } from './png-generator.js';
-import { assertUnchanged, forgetStamp, recordChange, restamp } from './change-journal.js';
+import { assertUnchanged, forgetStamp, recordChange, restamp, backupOnce } from './change-journal.js';
 
 /** Maximum entity file size we'll write (5MB — well above any real C3 entity) */
 const MAX_WRITE_SIZE = 5 * 1024 * 1024;
@@ -119,22 +119,17 @@ export class Construct3ProjectWriter {
    * Refuses a file that changed on disk since this process last read it.
    */
   private async createBackup(filePath: string): Promise<string> {
-    const backupPath = filePath + '.bak';
     await assertUnchanged(filePath);
+    // Once per tool call: a second write of the same file in one call keeps
+    // the backup of the state before the call, which is what a revert needs.
+    let backup;
     try {
-      await stat(filePath);
+      backup = await backupOnce(filePath);
     } catch (e: unknown) {
-      // File doesn't exist yet (new entity) — no backup needed
-      if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') {
-        this.pendingBackups.set(filePath, { backupPath, existed: false });
-        return backupPath;
-      }
       throw new Error(`Cannot access file for backup: ${e instanceof Error ? e.message : String(e)}`);
     }
-    // File exists — backup must succeed or we abort
-    await copyFile(filePath, backupPath);
-    this.pendingBackups.set(filePath, { backupPath, existed: true });
-    return backupPath;
+    this.pendingBackups.set(filePath, backup);
+    return backup.backupPath;
   }
 
   /**

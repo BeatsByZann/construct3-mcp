@@ -16,6 +16,8 @@
  */
 
 import { z } from 'zod';
+import { backupOnce, recordDelete, recordWrite } from '../construct3/change-journal.js';
+import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { readFile, writeFile, mkdir, copyFile, unlink, rename, stat } from 'fs/promises';
 import { dirname } from 'path';
 import type { MutationToolDeps } from './shared.js';
@@ -131,10 +133,12 @@ function isTimelineData(data: unknown): data is Timeline {
   return !!data && typeof data === 'object' && Array.isArray((data as Timeline).tracks);
 }
 
-/** Write JSON with tab indentation through a temp file and a rename. */
+/** Write JSON with tab indentation through a temp file and a rename, and record it in the change journal. */
 export async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
   const json = JSON.stringify(data, null, '\t');
   const tmpPath = filePath + '.tmp';
+  let existed = true;
+  try { await stat(filePath); } catch { existed = false; }
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(tmpPath, json, 'utf-8');
   try {
@@ -148,19 +152,12 @@ export async function atomicWriteJson(filePath: string, data: unknown): Promise<
       throw e;
     }
   }
+  await recordWrite(filePath, existed);
 }
 
-/** Copy filePath to filePath.bak when it exists; returns the backup path. */
+/** Copy filePath to filePath.bak when it exists, once per tool call; returns the backup path. */
 export async function backupFile(filePath: string): Promise<string> {
-  const bak = filePath + '.bak';
-  try {
-    await stat(filePath);
-    await copyFile(filePath, bak);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT') return bak;
-    throw e;
-  }
-  return bak;
+  return (await backupOnce(filePath)).backupPath;
 }
 
 type ContainerFolder = { name?: string; items: string[]; subfolders: ContainerFolder[] };
@@ -201,6 +198,7 @@ async function addTimelineToProject(
     if (!container.items.includes(name)) container.items.push(name);
   }
 
+  upgradeProjectShape(project);
   await atomicWriteJson(projectPath, project);
 }
 
@@ -225,6 +223,7 @@ async function removeTimelineFromProject(projectPath: string, name: string): Pro
     removeFromSubfolders(timelineSubfolders(container));
   }
 
+  upgradeProjectShape(project);
   await atomicWriteJson(projectPath, project);
 }
 
@@ -959,6 +958,7 @@ export function registerTimelineTools(deps: MutationToolDeps) {
         const backupPath = await backupFile(filePath);
         try {
           await unlink(filePath);
+          recordDelete(filePath);
         } catch (e: unknown) {
           if (!(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT')) throw e;
         }

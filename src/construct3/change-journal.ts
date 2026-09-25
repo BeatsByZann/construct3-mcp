@@ -16,7 +16,8 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { copyFile, mkdir, rename, stat, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdir, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { platform } from 'node:os';
 
@@ -35,6 +36,10 @@ export interface Change {
   backupPath?: string;
   /** For a move: where the file was. */
   from?: string;
+  /** SHA-256 of the file when the call ended (null: absent). A revert refuses when the file no longer matches. */
+  afterHash?: string | null;
+  /** SHA-256 of the backup when the call ended. A revert refuses when a later write replaced it. */
+  backupHash?: string | null;
 }
 
 export interface JournalEntry {
@@ -157,10 +162,102 @@ export async function withJournalEntry<T>(tool: string, run: () => Promise<T>): 
     return { result, entry };
   } finally {
     if (entry.changes.length > 0) {
+      await captureEndState(entry);
       entries.push(entry);
       if (entries.length > MAX_ENTRIES) entries.splice(0, entries.length - MAX_ENTRIES);
     }
   }
+}
+
+/** SHA-256 of a file's bytes, or null when it does not exist. */
+async function hashOf(path: string): Promise<string | null> {
+  try {
+    return createHash('sha256').update(await readFile(path)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/** Record what every changed file and backup held when the call ended. */
+async function captureEndState(entry: JournalEntry): Promise<void> {
+  for (const change of entry.changes) {
+    change.afterHash = await hashOf(change.path);
+    if (change.backupPath) change.backupHash = await hashOf(change.backupPath);
+  }
+}
+
+/**
+ * Files an entry changed, or backups it relies on, that no longer hold what
+ * they held when the call ended: something the journal does not track wrote
+ * them since, so restoring from the backups would not return the project to
+ * its state before the call.
+ */
+export async function changedSinceEntry(entry: JournalEntry): Promise<string[]> {
+  const out = new Set<string>();
+  for (const change of entry.changes) {
+    if (change.afterHash !== undefined && (await hashOf(change.path)) !== change.afterHash) out.add(resolve(change.path));
+    if (change.backupPath && change.backupHash !== undefined && (await hashOf(change.backupPath)) !== change.backupHash) {
+      out.add(resolve(change.backupPath));
+    }
+  }
+  return [...out];
+}
+
+// ─── Writes made outside the project writer ───────────────
+
+const callBackups = new WeakMap<JournalEntry, Map<string, { backupPath: string; existed: boolean }>>();
+
+/**
+ * Back `path` up to `path.bak` once per tool call. A second backup in the
+ * same call would replace the content from before the call with the call's
+ * own intermediate write, and a revert would then restore that. Returns the
+ * backup path and whether the file existed before the call.
+ */
+export async function backupOnce(path: string): Promise<{ backupPath: string; existed: boolean }> {
+  const backupPath = path + '.bak';
+  const entry = context.getStore();
+  const known = entry ? callBackups.get(entry)?.get(key(path)) : undefined;
+  if (known) return known;
+  let existed = true;
+  try {
+    await stat(path);
+  } catch (e: unknown) {
+    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT') existed = false;
+    else throw e;
+  }
+  if (existed) await copyFile(path, backupPath);
+  const record = { backupPath, existed };
+  if (entry) {
+    let map = callBackups.get(entry);
+    if (!map) { map = new Map(); callBackups.set(entry, map); }
+    map.set(key(path), record);
+  }
+  return record;
+}
+
+/**
+ * Record a write this process just made to `path`, and stamp the file so the
+ * write is not mistaken for an outside one. `existed` is whether the file
+ * was there before this write; a file backed up earlier in the call keeps
+ * the state from before the call.
+ */
+export async function recordWrite(path: string, existed: boolean): Promise<void> {
+  const entry = context.getStore();
+  const backup = entry ? callBackups.get(entry)?.get(key(path)) : undefined;
+  if (backup) {
+    recordChange(backup.existed ? { kind: 'write', path, backupPath: backup.backupPath } : { kind: 'create', path });
+  } else {
+    recordChange(existed ? { kind: 'overwrite-no-backup', path } : { kind: 'create', path });
+  }
+  await restamp(path);
+}
+
+/** Record that `path` was deleted; a revert can restore it only when it was backed up earlier in the call. */
+export function recordDelete(path: string): void {
+  const entry = context.getStore();
+  const backup = entry ? callBackups.get(entry)?.get(key(path)) : undefined;
+  recordChange(backup?.existed ? { kind: 'delete', path, backupPath: backup.backupPath } : { kind: 'delete', path });
+  forgetStamp(path);
 }
 
 /** The entry of the tool call in progress, if any (none outside a gated call, such as in unit tests). */

@@ -15,6 +15,8 @@
  * C5 load check), while a project r495.2 itself saved keeps "normalized"
  * (the timeline-properties fixture). The editor's cut-off release lies
  * somewhere between; projects saved between 44903 and 49502 are left alone.
+ * Releases before 44903 are inferred, not observed: an editor migration keyed
+ * on the saved release applies to every older release too.
  *
  * Deliberately not done:
  * - `usedAddons` pruning: it removes entries, and the owner ruled it out.
@@ -77,7 +79,8 @@ function moveKey(target: Json, key: string, anchor: string | null): boolean {
     if (at < 0) return false;
     order = [...rest.slice(0, at + 1), key, ...rest.slice(at + 1)];
   }
-  if (order.every((k, i) => k === Object.keys(target)[i])) return false;
+  const current = Object.keys(target);
+  if (order.every((k, i) => k === current[i])) return false;
   reorderKeys(target, order);
   return true;
 }

@@ -9,6 +9,8 @@
  */
 
 import { z } from 'zod';
+import { recordDelete } from '../construct3/change-journal.js';
+import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { readFile, unlink, stat } from 'fs/promises';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { listFileEntries, getFileFolderDirectory } from '../construct3/file-registration.js';
@@ -62,6 +64,7 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
       const folder = easesFolder(container);
       if (folder) folder.items = folder.items.filter(item => item !== name);
     }
+    upgradeProjectShape(project);
     await backupFile(projectPath);
     await atomicWriteJson(projectPath, project);
     await reader.reloadProject();
@@ -329,7 +332,7 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
 
         const filePath = kit.easeFilePath(args.name);
         const backupPath = await backupFile(filePath);
-        try { await unlink(filePath); } catch (e: unknown) {
+        try { await unlink(filePath); recordDelete(filePath); } catch (e: unknown) {
           if (!(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT')) throw e;
         }
         const uistate = filePath.replace(/\.json$/, '.uistate.json');
@@ -337,6 +340,7 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
           await stat(uistate);
           await backupFile(uistate);
           await unlink(uistate);
+          recordDelete(uistate);
           warnings.push(`Also deleted ${args.name}.uistate.json (a .bak was written).`);
         } catch { /* none */ }
 

@@ -19,6 +19,7 @@
  */
 
 import { z } from 'zod';
+import { backupOnce, recordWrite } from '../construct3/change-journal.js';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { readFile, writeFile, copyFile, unlink, rename, stat } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
@@ -40,15 +41,7 @@ async function readProjectJson(projectPath: string): Promise<ProjectJson> {
 }
 
 async function backupProjectFile(projectPath: string): Promise<string> {
-  const bak = projectPath + '.bak';
-  try {
-    await stat(projectPath);
-    await copyFile(projectPath, bak);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT') return bak;
-    throw e;
-  }
-  return bak;
+  return (await backupOnce(projectPath)).backupPath;
 }
 
 async function atomicWriteProjectJson(projectPath: string, project: ProjectJson): Promise<void> {
@@ -66,6 +59,7 @@ async function atomicWriteProjectJson(projectPath: string, project: ProjectJson)
       throw e;
     }
   }
+  await recordWrite(projectPath, true);
 }
 
 // ─── Container helpers ─────────────────────────────────────

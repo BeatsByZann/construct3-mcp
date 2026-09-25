@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { backupOnce, recordDelete, recordWrite } from '../construct3/change-journal.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Construct3ProjectReader } from '../construct3/project-reader.js';
 import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
@@ -158,6 +159,13 @@ function ensureBridgeImport(source: string): string {
   return `${trimmed}${trimmed ? newline : ''}${BRIDGE_IMPORT}${newline}`;
 }
 
+/** Write a text file inside the served project with a backup and a change-journal record. */
+async function writeProjectText(filePath: string, content: string): Promise<void> {
+  const { existed } = await backupOnce(filePath);
+  await writeFile(filePath, content, 'utf-8');
+  await recordWrite(filePath, existed);
+}
+
 /** Remove every bridge import while preserving all other main.js content. */
 function removeBridgeImports(source: string): string {
   return source.replace(/^\s*import\s+["']\.\/c3-runtime-bridge\.js["'];?\s*\r?\n?/gm, '');
@@ -172,7 +180,7 @@ async function ensureBridgeFiles(reader: Construct3ProjectReader, writer: Constr
   let mainSource = '';
   try { mainSource = await readFile(mainPath, 'utf-8'); } catch { /* create below */ }
   const updatedMain = ensureBridgeImport(mainSource);
-  if (updatedMain !== mainSource) await writeFile(mainPath, updatedMain, 'utf-8');
+  if (updatedMain !== mainSource) await writeProjectText(mainPath, updatedMain);
   return registration;
 }
 
@@ -198,7 +206,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
         }
 
         // Write the bridge script
-        await writeFile(bridgePath, generateBridgeScript(), 'utf-8');
+        await writeProjectText(bridgePath, generateBridgeScript());
 
         // Register through the same shared script registration used by W64.
         const registration = await ensureBridgeFiles(reader, writer);
@@ -236,7 +244,9 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
         // Remove the file
         const { unlink } = await import('node:fs/promises');
         try {
+          await backupOnce(bridgePath);
           await unlink(bridgePath);
+          recordDelete(bridgePath);
         } catch {
           // File might not exist
         }
@@ -246,7 +256,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
         try {
           const mainSource = await readFile(mainPath, 'utf-8');
           const updatedMain = removeBridgeImports(mainSource);
-          if (updatedMain !== mainSource) await writeFile(mainPath, updatedMain, 'utf-8');
+          if (updatedMain !== mainSource) await writeProjectText(mainPath, updatedMain);
         } catch { /* main.js might not exist in a minimal project */ }
 
         return toolResult({
@@ -779,7 +789,7 @@ print(json.dumps({
             await mkdir(bridgeDir, { recursive: true });
           }
 
-          await writeFile(bridgePath, generateBridgeScript(), 'utf-8');
+          await writeProjectText(bridgePath, generateBridgeScript());
 
           await ensureBridgeFiles(reader, writer);
 
@@ -881,7 +891,7 @@ print(json.dumps({
           if (!existsSync(bridgeDir)) {
             await mkdir(bridgeDir, { recursive: true });
           }
-          await writeFile(bridgePath, generateBridgeScript(), 'utf-8');
+          await writeProjectText(bridgePath, generateBridgeScript());
 
           await ensureBridgeFiles(reader, writer);
         }

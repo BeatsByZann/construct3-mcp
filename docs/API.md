@@ -138,7 +138,7 @@ The server starts on the project its command line names. These tools report it, 
 
 The server remembers the size and modification time of every project file it reads or writes. A call that reads a file Construct or another program saved since then says so in its result (`Note: 1 file(s) changed on disk since this server last read them ...`) and works from the file's current content. A write that starts from a stale bulk read (the caches `validate_project` and the analyzers fill) is refused with the same wording until `reload_project` runs, so a stale copy never overwrites an editor save.
 
-Every call also gets a journal entry: the files it wrote, created, deleted or moved, and the `.bak` backup each write or delete left beside the file. A mutation result ends with `Changed N file(s): ...` naming them. `list_changes` shows the entries and `revert_last_change` undoes the most recent one from those backups. A placeholder image overwritten by `create_object` or `add_frame_to_animation` has no backup and is reported as not restorable.
+Every call also gets a journal entry: the files it wrote, created, deleted or moved, and the `.bak` backup each write or delete left beside the file. A file written twice in one call keeps one backup, holding its content from before the call. A mutation result ends with `Changed N file(s): ...` naming them. `list_changes` shows the entries and `revert_last_change` undoes the most recent one from those backups. A placeholder image overwritten by `create_object` or `add_frame_to_animation` has no backup and is reported as not restorable. Files outside the served project (a `clone_project` target, a screenshot) and the `.c3p` write-back, which its own line reports, are not journaled.
 
 ### `reload_project`
 
@@ -154,7 +154,7 @@ Returns `calls`: for each call that changed a file, its `id`, `tool`, `at`, `rev
 
 ### `revert_last_change`
 
-Undo the most recent call that changed files, last change first: a written or deleted file is restored from its `.bak`, a created or copied file removed, a moved file moved back. No parameters. Refused when a later call, reverted or not, touched any of the same files, because their backups then hold that later state; the message names those calls. Returns `reverted` (the entry), `restored` (file and how) and `notRestored` (file and why) when a change had no backup. The project is re-read afterwards.
+Undo the most recent call that changed files, last change first: a written or deleted file is restored from its `.bak`, a created or copied file removed, a moved file moved back. No parameters. Refused when a later call, reverted or not, touched any of the same files, because their backups then hold that later state; the message names those calls. Also refused, before anything is restored, when any of the call's files or backups no longer holds what it held when the call ended (Construct, another program or a hand edit changed it), because restoring would then not return the project to its state before the call; the message names those files. Returns `reverted` (the entry), `restored` (file and how) and `notRestored` (file and why) when a change had no backup. The project is re-read afterwards.
 
 ### `get_open_project`
 
@@ -331,7 +331,7 @@ References inside script actions, script files, and names built by string concat
 
 All mutation tools follow the safety pipeline: validate → backup → write → verify → invalidate caches. They return a `WriteResult` object on success.
 
-Before a file is backed up, its size and modification time must still match what the server last saw, so a write never overwrites a save Construct made meanwhile (see [File stamps and the change journal](#file-stamps-and-the-change-journal)). Every result ends with the files the call changed.
+For a write through the project writer or a rename tool, the file's size and modification time must still match what the server last saw before it is backed up, so such a write never overwrites a save Construct made meanwhile (see [File stamps and the change journal](#file-stamps-and-the-change-journal)). Tools that read and write their own files (timelines, eases, flowcharts, containers, tilemap brushes, addon registration, script and project files) read the file fresh instead. Every result ends with the files the call changed.
 
 Every tool that writes `project.c3proj` leaves it in the shape Construct r495.2 saves, so the editor's next save shows only its own changes. Script entries carry `script-info` instead of `file-info`, and an empty `models3d` folder is added after `flowcharts`. For a project an older release saved, `uidAllocationMode` is placed after `preloadSounds` and `scriptsType` last in `properties`, and a release-44903-or-older project's `zAxisScale` "normalized" is written as "regular", which r495.2 itself shows and saves for such a project. A project saved by r495.2 or later keeps its own order. `savedWithRelease` is never changed and `usedAddons` is never pruned.
 

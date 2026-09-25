@@ -107,7 +107,7 @@ server.tool(
    - Generate IDs with `idGen.generateSid()` / `idGen.generateUid()`
    - Build data from templates in `templates.ts`
    - Write with `writer.writeEntityFile()` (handles stamp check, backup, validate, verify and the change journal)
-   - Change `project.c3proj` through `writer.addToProject()` or `writer.mutateProjectJson()`, which also apply the r495.2 save shape (`project-shape.ts`). A tool that writes the file itself must call `upgradeProjectShape()`, `assertUnchanged()` before its backup and `recordChange()` after the write, as the rename and container tools do
+   - Change `project.c3proj` through `writer.addToProject()` or `writer.mutateProjectJson()`, which also apply the r495.2 save shape (`project-shape.ts`). A tool that writes `project.c3proj` itself must call `upgradeProjectShape()` first. Any tool that writes a project file itself backs it up with `backupOnce()` and records the write with `recordWrite()` or `recordDelete()` (all in `change-journal.ts`), as the timeline, flowchart and container tools do; an unrecorded write is missing from the call's changed-files line and is not undone by `revert_last_change`
    - Return a `WriteResult`
 3. Add the tool to `docs/API.md`, the README tool tables, `FORK.md` and `CHANGELOG.md`, and map it in `scripts/editor-coverage.json` where it reproduces an editor checklist item (a test refuses an unregistered tool name there)
 

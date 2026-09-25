@@ -135,7 +135,8 @@ class Construct3ProjectWriter {
 **Safety guarantees:**
 - **Path traversal protection**: All paths resolved and checked against project directory
 - **Pre-write validation**: JSON round-trip test, null/type checks, 5MB size limit
-- **Stamp check**: the file must still have the size and modification time the server last saw, or the write is refused (`ExternalChangeError`) until `reload_project`
+- **Stamp check**: for writes through the project writer and the rename tools, the file must still have the size and modification time the server last saw, or the write is refused (`ExternalChangeError`) until `reload_project`
+- **Journal record**: every write, create, delete and move is recorded for the call's changed-files line and `revert_last_change`, with one backup per file per call; at the end of the call the content hash of each changed file and backup is kept, and a revert refuses when any of them changed since
 - **Backup**: `.bak` file created before every overwrite
 - **Project shape**: `project.c3proj` is put in the shape Construct r495.2 saves before it is written (`project-shape.ts`)
 - **Post-write verification**: File read back and re-parsed after writing
@@ -202,7 +203,7 @@ The cross-reference index (`ProjectIndex`) is cached and reset when writes occur
 |--------|---------|
 | `project-session.ts` | The project served: a folder, or a `.c3p` unpacked to a working folder; `open_project` switches it |
 | `c3p-project.ts` | The tool gate: runs each call inside a journal entry, appends the changed-files line, and writes a `.c3p` back after a call that changed files |
-| `change-journal.ts` | Per-file size and modification stamps, the record of what each call wrote, created, deleted or moved, and `revert_last_change` |
+| `change-journal.ts` | Per-file size and modification stamps, the record of what each call wrote, created, deleted or moved, the helpers tools use to back up and record their own writes, and `revert_last_change` with its end-of-call content hashes |
 | `project-shape.ts` | Brings `project.c3proj` to the shape Construct r495.2 saves (script metadata key, `models3d`, and for older releases property order and `zAxisScale`), never pruning `usedAddons` |
 | `references.ts` | Reference scanning and rewriting for the rename tools |
 

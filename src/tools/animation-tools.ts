@@ -19,7 +19,7 @@ import type {
   ImagePoint,
 } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError, validateSubfolder } from './shared.js';
-import { forgetChange, recordChange } from '../construct3/change-journal.js';
+import { backupOnce, forgetChange, recordChange, recordDelete, recordWrite } from '../construct3/change-journal.js';
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
 import { getImageFileName } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
@@ -1116,13 +1116,20 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         const { mkdir, writeFile } = await import('fs/promises');
         const { dirname } = await import('path');
         await mkdir(dirname(filePath), { recursive: true });
+        const { existed: imageExisted } = await backupOnce(filePath);
         await writeFile(filePath, pngBuffer);
+        await recordWrite(filePath, imageExisted);
 
         // A frame that was a GIF keeps its record truthful: the new image is a
         // PNG, so the declared type changes and the old file is removed.
         const previousExtension = frameExtension(frame);
         if (previousExtension !== 'png') {
-          await unlink(frameImagePath(reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, previousExtension)).catch(() => undefined);
+          const oldImage = frameImagePath(reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, previousExtension);
+          const { existed: oldExisted } = await backupOnce(oldImage);
+          if (oldExisted) {
+            await unlink(oldImage);
+            recordDelete(oldImage);
+          }
           frame.fileType = 'image/png';
         }
 
@@ -1193,7 +1200,9 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         const { dirname } = await import('path');
         await mkdir(dirname(filePath), { recursive: true });
         const previous = await readFile(filePath).catch(() => undefined);
+        const { existed: imageExisted } = await backupOnce(filePath);
         await writeFile(filePath, png);
+        await recordWrite(filePath, imageExisted);
 
         image.width = size.width;
         image.height = size.height;

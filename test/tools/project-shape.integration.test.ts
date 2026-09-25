@@ -17,6 +17,7 @@ import { registerProjectTools } from '../../src/tools/project-tools.js';
 import { registerRenameTools } from '../../src/tools/rename-tools.js';
 import { registerFlowchartTools } from '../../src/tools/flowchart-tools.js';
 import { registerContainerTools } from '../../src/tools/container-tools.js';
+import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
 
 const FIXTURES = join(__dirname, '..', 'fixtures');
 
@@ -39,6 +40,7 @@ async function open(fixture: string, prepare?: (dir: string) => Promise<void>): 
   registerRenameTools(deps);
   registerFlowchartTools(deps);
   registerContainerTools(deps);
+  registerTimelineTools(deps);
 }
 
 async function readProject(dir = tmpDir): Promise<Record<string, any>> {
@@ -58,7 +60,8 @@ function expectR495Shape(p: Record<string, any>, before: Record<string, any>, ad
   expect(keys.indexOf('uidAllocationMode')).toBe(keys.indexOf('preloadSounds') + 1);
   expect(p.models3d).toEqual({ items: [], subfolders: [] });
   expect(p.usedAddons).toHaveLength(before.usedAddons.length + addonDelta);
-  // Both fixtures predate release 44903 and hold "normalized", which r495.2 reads as "regular".
+  // Both fixtures were saved at release 44903 or earlier and hold "normalized", which r495.2 reads as
+  // "regular": observed for 44903, inferred for the 44000 fixture (see project-shape.ts).
   expect(before.properties.zAxisScale).toBe('normalized');
   expect(p.properties.zAxisScale).toBe('regular');
   expect(p.savedWithRelease).toBe(before.savedWithRelease);
@@ -124,6 +127,45 @@ describe('tool writes of project.c3proj on the release-44903 fixture', () => {
     const p = await readProject();
     expectR495Shape(p, before);
     expect(p.flowcharts.items).toEqual([]);
+  });
+});
+
+describe('timeline and ease writes of project.c3proj on the release-44903 fixture', () => {
+  const EASE = { name: 'E1', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] };
+  let before: Record<string, any>;
+  beforeEach(async () => {
+    before = await readProject(join(FIXTURES, 'c3-loadable-minimal'));
+  });
+
+  it.each([
+    ['create_timeline', { name: 'T1' }],
+    ['create_ease', EASE],
+  ])('through %s', async (tool, args) => {
+    await open('c3-loadable-minimal');
+    await call(tool, args);
+    expectR495Shape(await readProject(), before);
+  });
+
+  it.each([
+    ['delete_timeline', 'create_timeline', { name: 'T1' }, join('timelines', 'T1.json')],
+    ['delete_ease', 'create_ease', EASE, join('timelines', 'transitions', 'E1.json')],
+  ])('through %s', async (tool, make, args, file) => {
+    // Make the entity with the tools once, then register it in a fresh old-shape copy.
+    await open('c3-loadable-minimal');
+    await call(make, args);
+    const content = await readFile(join(tmpDir, file), 'utf-8');
+    const tree = (await readProject()).timelines;
+    await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+
+    await open('c3-loadable-minimal', async (dir) => {
+      await mkdir(join(dir, file, '..'), { recursive: true });
+      await writeFile(join(dir, file), content, 'utf-8');
+      const p = await readProject(dir);
+      p.timelines = tree;
+      await writeFile(join(dir, 'project.c3proj'), JSON.stringify(p, null, '	'), 'utf-8');
+    });
+    await call(tool, { name: (args as { name: string }).name });
+    expectR495Shape(await readProject(), before);
   });
 });
 

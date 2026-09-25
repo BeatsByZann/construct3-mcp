@@ -33,6 +33,7 @@
  */
 
 import { z } from 'zod';
+import { forgetStamp, recordChange, restamp } from '../construct3/change-journal.js';
 import { readdir, copyFile, unlink, mkdir, stat, readFile, writeFile, rename } from 'fs/promises';
 import { dirname } from 'path';
 import type { MutationToolDeps } from './shared.js';
@@ -263,9 +264,15 @@ async function removeCopies(projectDir: string, relocations: Relocation[]): Prom
 
 async function removeSources(projectDir: string, relocations: Relocation[], warnings: string[]): Promise<void> {
   for (const r of relocations) {
+    const from = resolveProjectPath(projectDir, ...r.from);
+    const to = resolveProjectPath(projectDir, ...r.to);
     try {
-      await unlink(resolveProjectPath(projectDir, ...r.from));
+      await unlink(from);
+      recordChange({ kind: 'move', path: to, from });
+      forgetStamp(from);
+      await restamp(to);
     } catch (e) {
+      recordChange({ kind: 'copy', path: to });
       warnings.push(`Could not delete the old file ${rel(r.from)} after copying it: ${e instanceof Error ? e.message : String(e)}. Delete it manually.`);
     }
   }
@@ -1115,6 +1122,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         await writer.writeEntityFile('objectTypes', args.newName, copy, subfolder);
         written.push(resolveProjectPath(projectDir, 'objectTypes', ...parts, `${args.newName}.json`));
         const backupPath = await registerAfter(writer, 'objectTypes', args.objectName, args.newName);
+        for (const c of copies) recordChange({ kind: 'copy', path: resolveProjectPath(projectDir, ...c.to) });
         written.length = 0;
         resetProjectIndex();
 
@@ -1209,6 +1217,8 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
           try { await unlink(targetPath); } catch { /* best-effort */ }
           throw e;
         }
+        recordChange({ kind: 'create', path: targetPath });
+        await restamp(targetPath);
         resetProjectIndex();
 
         const tracks = Array.isArray(copy.tracks) ? copy.tracks as Json[] : [];
