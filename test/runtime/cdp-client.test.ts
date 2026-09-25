@@ -683,6 +683,62 @@ describe("wait_for_condition", () => {
   });
 });
 
+describe("subscribe_events, read_events and unsubscribe_events", () => {
+  it("travel through the retained connection with the upstream result names and defaults", async () => {
+    const fake = await startFakeCdp({
+      commandValues: {
+        subscribeEvents: [{ subscription_id: "sub-1" }],
+        readEvents: [
+          { events: [{ type: "globalVarChange", name: "Score", value: 5, previousValue: 0, timestamp: 1, tick: 4 }], count: 1 },
+          { events: [], count: 0 },
+        ],
+        unsubscribeEvents: [{ subscription_id: "sub-1", unsubscribed: true }],
+      },
+    });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+
+    const made = parseToolResult(await server.callTool("subscribe_events", {
+      connectionId: connected.connectionId, eventType: "globalVarChange", filter: { variable: "Score" },
+    }));
+    expect(made).toEqual({ subscription_id: "sub-1", eventType: "globalVarChange", filter: { variable: "Score" }, bufferSize: 100 });
+
+    const read = parseToolResult(await server.callTool("read_events", { connectionId: connected.connectionId, subscriptionId: "sub-1", clear: false }));
+    expect(read).toEqual({ events: [{ type: "globalVarChange", name: "Score", value: 5, previousValue: 0, timestamp: 1, tick: 4 }], count: 1 });
+    const cleared = parseToolResult(await server.callTool("read_events", { connectionId: connected.connectionId, subscriptionId: "sub-1" }));
+    expect(cleared).toEqual({ events: [], count: 0 });
+
+    const gone = parseToolResult(await server.callTool("unsubscribe_events", { connectionId: connected.connectionId, subscriptionId: "sub-1" }));
+    expect(gone).toEqual({ subscription_id: "sub-1", unsubscribed: true });
+    expect(fake.commandCount("subscribeEvents")).toBe(1);
+    expect(fake.commandCount("readEvents")).toBe(2);
+    expect(fake.commandCount("unsubscribeEvents")).toBe(1);
+  });
+
+  it("refuse a global subscription without its variable before any command, and surface bridge errors", async () => {
+    const fake = await startFakeCdp({ bridgeResult: { ok: false, error: "Unknown subscription: sub-9" } });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+
+    const missing = await server.callTool("subscribe_events", { connectionId: connected.connectionId, eventType: "globalVarChange" });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toContain("needs filter.variable");
+    expect(fake.commandCount("subscribeEvents")).toBe(0);
+
+    const unknown = await server.callTool("unsubscribe_events", { connectionId: connected.connectionId, subscriptionId: "sub-9" });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0].text).toContain("Unknown subscription: sub-9");
+
+    const closed = await server.callTool("read_events", { connectionId: "00000000-0000-4000-8000-000000000000", subscriptionId: "sub-1" });
+    expect(closed.isError).toBe(true);
+    expect(closed.content[0].text).toContain("Unknown or closed connection");
+  });
+});
+
 describe("screenshot_game", () => {
   it("writes the page or only the canvas rectangle to a file", async () => {
     const geometry = {

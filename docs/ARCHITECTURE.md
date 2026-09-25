@@ -182,7 +182,7 @@ The cross-reference index (`ProjectIndex`) is cached and reset when writes occur
 | Query Tools | `tools/query.ts` | 9 | List, search, get details |
 | Analysis Tools | `tools/analysis.ts` | 6 | Deep analysis and visualization |
 | Mutation Tools | `tools/mutations.ts` | 14 | Safe create, update, delete |
-| Runtime Tools | `tools/runtime-tools.ts`, `runtime/cdp-client.ts` | 12 | Bridge injection, persistent CDP connections, live game calls, condition waits, and input dispatch |
+| Runtime Tools | `tools/runtime-tools.ts`, `runtime/cdp-client.ts`, `runtime/preview-server.ts` | 19 | Bridge injection, serving an export and launching Chrome on it, persistent CDP connections, live game calls, condition waits, event subscriptions, input dispatch (viewport, canvas or layout coordinates) and screenshots |
 | Prompts | `prompts/workflows.ts` | 6 | Workflow templates |
 
 ## Data Flow

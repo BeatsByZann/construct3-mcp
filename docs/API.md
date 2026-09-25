@@ -2966,7 +2966,7 @@ discovered connection, the selected page target metadata.
 
 ### `call_bridge`
 
-Submit one of the 13 commands listed by `get_bridge_commands`, poll the bridge
+Submit one of the 16 commands listed by `get_bridge_commands`, poll the bridge
 for its result, and return `commandId`, `result`, and `elapsedMs`. The two
 coordinate commands, `layerToCssPx` and `cssPxToLayer` (`{ layer?, x, y }`),
 convert between layout coordinates on a layer and CSS pixels relative to the
@@ -3061,6 +3061,53 @@ Read the geometry of the connected page's first `canvas` element. Parameter:
 viewport), `cssWidth` and `cssHeight`, `backingWidth` and `backingHeight`
 (canvas pixel buffer), `devicePixelRatio`, and `viewportWidth` and
 `viewportHeight`. The tool returns an error when the page has no canvas.
+
+### `subscribe_events`
+
+Start observing the running game through its bridge, so a test sees what
+happened between polls instead of polling fast or missing it. Three event
+types, from documented runtime state only:
+
+| Event type | What it reports | Filter |
+|------------|-----------------|--------|
+| `globalVarChange` | Each change of one global variable, compared on every tick with `Object.is` | `filter.variable`, required: the global's name |
+| `layoutChange` | Each change of the current layout's name | none |
+| `custom` | Each call of `globalThis.__c3bridge.emit(name, data)` from the game's own script or a page evaluation | `filter.name`, optional: only that name |
+
+There is no documented Construct interface that observes every event-sheet
+signal or plugin trigger, so a generic "signal" subscription is not offered;
+a game that wants a trigger observed emits a custom event where it fires.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
+| `eventType` | enum | Yes | `globalVarChange`, `layoutChange` or `custom` |
+| `filter` | object | No* | `{ variable? , name? }` as above; *required with `variable` for `globalVarChange` |
+| `bufferSize` | integer | No | Events kept per subscription, 1 to 1000 (default 100); the oldest is dropped when full |
+
+Returns `subscription_id` (a bridge-local id such as `sub-1`) with the type,
+filter and buffer size. Subscribing captures the current value as the
+baseline and emits no initial event; the bridge processes queued commands
+before comparing baselines on each tick, so a subscription made on one
+tick starts observing on the next. Events carry `type`, `name`, `value`,
+`previousValue` (global and layout changes), `timestamp` (`Date.now()`) and
+`tick` (`runtime.tickCount`). The game must run the current bridge.
+
+### `read_events`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
+| `subscriptionId` | string | Yes | The `subscription_id` returned by `subscribe_events` |
+| `clear` | boolean | No | Empty the buffer after reading (default `true`); `false` returns a copy and keeps the events |
+
+Returns `events`, oldest first, and `count`. An unknown subscription is an error.
+
+### `unsubscribe_events`
+
+Stop a subscription and release its buffer. Parameters: `connectionId` and
+`subscriptionId`. Returns `subscription_id` and `unsubscribed: true`; an
+unknown subscription is an error rather than a claimed cleanup.
 
 ### `screenshot_game`
 

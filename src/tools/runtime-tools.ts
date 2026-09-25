@@ -58,6 +58,9 @@ const BRIDGE_COMMANDS = [
   'evaluateExpression',
   'layerToCssPx',
   'cssPxToLayer',
+  'subscribeEvents',
+  'readEvents',
+  'unsubscribeEvents',
   'listObjects',
   'listGlobalVars',
   'ping',
@@ -304,6 +307,18 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
           description: 'Convert CSS pixels relative to the page viewport to layout coordinates on a layer',
           args: { layer: 'string or number (layer name or index; default 0)', x: 'number', y: 'number' },
         },
+        subscribeEvents: {
+          description: 'Start observing global-variable changes, layout changes or custom events into a bounded buffer; the subscribe_events tool wraps it',
+          args: { eventType: '"globalVarChange" | "layoutChange" | "custom"', filter: 'object (variable for globalVarChange, optional name for custom)', bufferSize: 'number 1-1000 (default 100)' },
+        },
+        readEvents: {
+          description: 'Read a subscription\'s buffered events, clearing the buffer unless clear is false',
+          args: { subscriptionId: 'string', clear: 'boolean (default true)' },
+        },
+        unsubscribeEvents: {
+          description: 'Stop a subscription and release its buffer',
+          args: { subscriptionId: 'string' },
+        },
         goToLayout: {
           description: 'Navigate to a different layout',
           args: { name: 'string (layout name)' },
@@ -408,6 +423,78 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
       } catch (error) {
         console.error('[call_bridge] failed:', error);
         return toolError(`Failed to call runtime bridge: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  // -- subscribe_events / read_events / unsubscribe_events --
+
+  // The bridge answers a bad subscription id with { error } rather than throwing; that is a failure here.
+  const subscriptionCall = async (connectionId: string, command: string, args: Record<string, unknown>) => {
+    const result = (await connections.callBridge({ connectionId, command, args, pollIntervalMs: 50, timeoutMs: 5_000 })).result as Record<string, unknown> | null;
+    if (result && typeof result.error === 'string') throw new Error(result.error);
+    return result ?? {};
+  };
+
+  server.tool(
+    'subscribe_events',
+    'Start observing a running game through its bridge: changes of one global variable, changes of the current layout, or custom events the game\'s script emits with globalThis.__c3bridge.emit(name, data). Events go into a bounded per-subscription buffer (oldest dropped when full) read by read_events, so a test can see what happened between polls.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+      eventType: z.enum(['globalVarChange', 'layoutChange', 'custom']).describe('What to observe'),
+      filter: z.object({
+        variable: z.string().min(1).max(200).optional().describe('For globalVarChange: the global variable to watch (required)'),
+        name: z.string().min(1).max(200).optional().describe('For custom: only events emitted with this name (default: every custom event)'),
+      }).strict().optional().describe('What to filter on, by event type'),
+      bufferSize: z.number().int().min(1).max(1_000).optional().default(100).describe('Events kept per subscription; the oldest is dropped when full (default 100)'),
+    },
+    async ({ connectionId, eventType, filter, bufferSize }) => {
+      try {
+        if (eventType === 'globalVarChange' && !filter?.variable) {
+          return toolError('subscribe_events with eventType "globalVarChange" needs filter.variable, the global variable to watch.');
+        }
+        const result = await subscriptionCall(connectionId, 'subscribeEvents', { eventType, filter: filter ?? {}, bufferSize });
+        return toolResult({ subscription_id: result.subscription_id, eventType, filter: filter ?? {}, bufferSize });
+      } catch (error) {
+        console.error('[subscribe_events] failed:', error);
+        return toolError(`Failed to subscribe: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  server.tool(
+    'read_events',
+    'Read the events a subscription buffered since the last read, oldest first: { type, name, value, previousValue (global and layout changes), timestamp, tick }. Clears the buffer unless clear is false.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+      subscriptionId: z.string().min(1).max(100).describe('The subscription_id returned by subscribe_events'),
+      clear: z.boolean().optional().default(true).describe('Empty the buffer after reading (default true); false leaves the events for a later read'),
+    },
+    async ({ connectionId, subscriptionId, clear }) => {
+      try {
+        const result = await subscriptionCall(connectionId, 'readEvents', { subscriptionId, clear });
+        return toolResult({ events: result.events, count: result.count });
+      } catch (error) {
+        console.error('[read_events] failed:', error);
+        return toolError(`Failed to read events: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  server.tool(
+    'unsubscribe_events',
+    'Stop a subscription and release its buffer. An unknown subscription is an error, not a silent success.',
+    {
+      connectionId: z.string().uuid().describe('Connection ID returned by connect_to_game'),
+      subscriptionId: z.string().min(1).max(100).describe('The subscription_id returned by subscribe_events'),
+    },
+    async ({ connectionId, subscriptionId }) => {
+      try {
+        const result = await subscriptionCall(connectionId, 'unsubscribeEvents', { subscriptionId });
+        return toolResult({ subscription_id: result.subscription_id, unsubscribed: result.unsubscribed === true });
+      } catch (error) {
+        console.error('[unsubscribe_events] failed:', error);
+        return toolError(`Failed to unsubscribe: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
   );

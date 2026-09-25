@@ -13,7 +13,7 @@
 ## This is a fork
 
 This branch is a fork of [liauw-media/construct3-mcp](https://github.com/liauw-media/construct3-mcp)
-and has diverged from it: **182 MCP tools instead of upstream's 66**, with 116 added and none
+and has diverged from it: **185 MCP tools instead of upstream's 66**, with 119 added and none
 removed or renamed. It adds whole areas upstream does not cover (flowcharts, timeline tracks and
 keyframes, custom eases, tilemap data and brushes, effects, containers, templates, renames with
 reference rewriting, find and replace, Project Bar moves and duplicates, script and project file
@@ -27,7 +27,7 @@ how this relates to upstream.** Read it before filing an issue, and note which b
 | Branch | What it is |
 |---|---|
 | `main` | Close to upstream on purpose. It is the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), so it carries only those correctness fixes. Upstream's 66 tools. |
-| `claude/w84-editor-gap` | The diverged line described in this README. All 182 tools. |
+| `claude/w84-editor-gap` | The diverged line described in this README. All 185 tools. |
 
 Everything below this notice describes `claude/w84-editor-gap`.
 
@@ -321,6 +321,9 @@ Each rename rewrites the references to the name across the project, not just the
 | `simulate_input` | Send mouse, touch, keyboard, and text input through CDP, in viewport, canvas or layout coordinates |
 | `get_canvas_size` | Read the game canvas position, CSS size, backing size, and device pixel ratio |
 | `screenshot_game` | Save the connected page, or only its canvas, as a PNG or JPEG file |
+| `subscribe_events` | Observe a global variable, the current layout, or custom events the game emits, into a bounded buffer |
+| `read_events` | Read a subscription's buffered events, clearing them unless asked not to |
+| `unsubscribe_events` | Stop a subscription and release its buffer |
 | `serve_preview` | Serve an exported game folder over loopback HTTP and optionally launch Chrome on it with a debugging port |
 | `stop_preview` | Stop a preview server and the browser it launched |
 | `generate_bridge_eval_script` | Generate a curl/python script to execute a bridge command via browser remote debugging |
@@ -588,7 +591,7 @@ construct3-mcp/
 │   │   ├── template-tools.ts       # 3 instance template tools
 │   │   ├── tilemap-brush-tools.ts  # 4 tilemap brush tools
 │   │   ├── tilemap-data-tools.ts   # 3 tilemap data tools
-│   │   └── runtime-tools.ts        # 16 runtime control tools
+│   │   └── runtime-tools.ts        # 19 runtime control tools
 │   └── prompts/
 │       └── workflows.ts            # 6 workflow prompts
 ├── dist/                           # Compiled JavaScript (generated)
@@ -683,6 +686,7 @@ We welcome contributions! Here's how to get started:
 - [x] Bridge eval script generation (curl/python for browser CDP)
 - [x] Persistent CDP connection discovery and cleanup
 - [x] Serve an exported game and launch Chrome on it; screenshots; input in layout coordinates
+- [x] Event subscriptions: global-variable changes, layout changes and custom events in bounded buffers
 - [x] Direct runtime bridge command execution with bounded polling
 - [x] Runtime condition waits with bounded polling and graceful timeout results
 - [x] Mouse, touch, keyboard, and text input simulation over CDP
