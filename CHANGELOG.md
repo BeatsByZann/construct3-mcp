@@ -211,6 +211,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Changed
 
+- `project.c3proj` written by any tool is left in the shape Construct r495.2 saves, so the next editor save no longer shows changes the tool did not make (HANDOFF W94). Scripts carry `script-info` instead of `file-info`, and an empty `models3d` folder is added after `flowcharts`. For a project an older release saved, `uidAllocationMode` moves after `preloadSounds` and `scriptsType` to the end of `properties`, and a release-44903-or-older project's `zAxisScale` "normalized" becomes "regular", which r495.2 itself shows and saves for such a project. A project saved by r495.2 or later keeps its own order, `zAxisScale` otherwise stays as written, `savedWithRelease` is never changed, and `usedAddons` is never pruned.
 - `update_object_properties` refuses to remove a behavior that event conditions or actions still use unless `force` is true, and removes the removed behaviors' settings from placed instances.
 
 ### Fixed

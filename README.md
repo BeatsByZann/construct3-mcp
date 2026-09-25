@@ -358,7 +358,7 @@ All mutation tools follow a strict safety protocol:
 1. **Validation** — Names checked for reserved words, path traversal, format. Plugin/behavior IDs validated against `usedAddons`.
 2. **Backup** — Every file is backed up to `<filename>.bak` before modification.
 3. **ID Generation** — SIDs (15-digit random), UIDs (sequential), and imageSpriteIds (7-digit) are collision-checked against the entire project.
-4. **Write** — JSON is pre-validated (round-trip test, size limit) before writing.
+4. **Write** — JSON is pre-validated (round-trip test, size limit) before writing. `project.c3proj` is first put in the shape Construct r495.2 saves (script metadata key, `models3d`, and for older releases the property order and `zAxisScale`), without pruning `usedAddons`; see `src/construct3/project-shape.ts`.
 5. **Verify** — Files are read back and re-parsed after writing to confirm integrity.
 6. **Cache Invalidation** — All reader caches and indexes are cleared so subsequent reads see fresh data.
 

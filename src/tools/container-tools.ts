@@ -19,6 +19,7 @@
  */
 
 import { z } from 'zod';
+import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { readFile, writeFile, copyFile, unlink, rename, stat } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, ObjectContainer } from '../construct3/types.js';
@@ -51,6 +52,7 @@ async function backupProjectFile(projectPath: string): Promise<string> {
 }
 
 async function atomicWriteProjectJson(projectPath: string, project: ProjectJson): Promise<void> {
+  upgradeProjectShape(project as unknown as Record<string, unknown>);
   const tmpPath = projectPath + '.tmp';
   await writeFile(tmpPath, JSON.stringify(project, null, '\t'), 'utf-8');
   try {

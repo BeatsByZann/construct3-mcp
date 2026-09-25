@@ -4,6 +4,7 @@
  */
 
 import { readFile, writeFile, copyFile, unlink, mkdir, stat, rename } from 'fs/promises';
+import { upgradeProjectShape } from './project-shape.js';
 import { dirname } from 'path';
 import { resolveProjectPath } from './path-utils.js';
 import type { Construct3ProjectReader } from './project-reader.js';
@@ -139,6 +140,17 @@ export class Construct3ProjectWriter {
   /**
    * Validate JSON data before writing — ensures we won't write garbage.
    */
+  /**
+   * Serialize project.c3proj for writing: first bring an older release's
+   * file to the r495.2 save shape (project-shape.ts), then validate.
+   */
+  private serializeProject(project: unknown): string {
+    if (project !== null && typeof project === 'object' && !Array.isArray(project)) {
+      upgradeProjectShape(project as Record<string, unknown>);
+    }
+    return this.validateJsonData(project, 'project.c3proj');
+  }
+
   private validateJsonData(data: unknown, entityName: string): string {
     if (data === null || data === undefined) {
       throw new Error(`Cannot write null/undefined data for "${entityName}"`);
@@ -263,7 +275,7 @@ export class Construct3ProjectWriter {
         }
       }
 
-      const json = this.validateJsonData(project, 'project.c3proj');
+      const json = this.serializeProject(project);
       await this.atomicWrite(projectPath, json);
       await this.verifyWrittenFile(projectPath, 'project.c3proj');
       await this.reader.reloadProject();
@@ -297,7 +309,7 @@ export class Construct3ProjectWriter {
         this.removeFromSubfolders(container.subfolders, name);
       }
 
-      const json = this.validateJsonData(project, 'project.c3proj');
+      const json = this.serializeProject(project);
       await this.atomicWrite(projectPath, json);
       await this.verifyWrittenFile(projectPath, 'project.c3proj');
       await this.reader.reloadProject();
@@ -339,7 +351,7 @@ export class Construct3ProjectWriter {
           if (duplicateCount > 1) {
             existing.folder.items = existing.folder.items.filter((candidate, index) => candidate.name !== name || index === existing.index);
           }
-          const json = this.validateJsonData(project, 'project.c3proj');
+          const json = this.serializeProject(project);
           await this.atomicWrite(projectPath, json);
           await this.verifyWrittenFile(projectPath, 'project.c3proj');
           await this.reader.reloadProject();
@@ -350,7 +362,7 @@ export class Construct3ProjectWriter {
 
       const sid = await this.idGen.generateSid(this.reader);
       addFileEntry(project, folder, { name, type, sid, purpose }, infoKey, subfolder);
-      const json = this.validateJsonData(project, 'project.c3proj');
+      const json = this.serializeProject(project);
       await this.atomicWrite(projectPath, json);
       await this.verifyWrittenFile(projectPath, 'project.c3proj');
       await this.reader.reloadProject();
@@ -373,7 +385,7 @@ export class Construct3ProjectWriter {
       if (!removeFileEntry(project, folder, name, subfolder)) {
         return false;
       }
-      const json = this.validateJsonData(project, 'project.c3proj');
+      const json = this.serializeProject(project);
       await this.atomicWrite(projectPath, json);
       await this.verifyWrittenFile(projectPath, 'project.c3proj');
       await this.reader.reloadProject();
@@ -414,7 +426,7 @@ export class Construct3ProjectWriter {
         }
       }
 
-      const json = this.validateJsonData(project, 'project.c3proj');
+      const json = this.serializeProject(project);
       await this.atomicWrite(projectPath, json);
       await this.verifyWrittenFile(projectPath, 'project.c3proj');
       await this.reader.reloadProject();
@@ -441,7 +453,7 @@ export class Construct3ProjectWriter {
       const content = await readFile(projectPath, 'utf-8');
       const project = JSON.parse(content) as Record<string, unknown>;
       const result = await mutate(project);
-      const json = this.validateJsonData(project, 'project.c3proj');
+      const json = this.serializeProject(project);
       const backupPath = await this.createBackup(projectPath);
       await this.atomicWrite(projectPath, json);
       try {
@@ -528,7 +540,7 @@ export class Construct3ProjectWriter {
       };
       project.usedAddons.push(newAddon);
 
-      const json = this.validateJsonData(project, 'project.c3proj');
+      const json = this.serializeProject(project);
       await this.atomicWrite(projectPath, json);
       await this.verifyWrittenFile(projectPath, 'project.c3proj');
       await this.reader.reloadProject();

@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { readFile, writeFile, rename, unlink } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, Addon } from '../construct3/types.js';
@@ -214,6 +215,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
         };
         project.usedAddons.push(newAddon);
 
+        upgradeProjectShape(project);
         const tmpPath = projectPath + '.tmp';
         await writeFile(tmpPath, JSON.stringify(project, null, '\t'), 'utf-8');
         try {
@@ -276,6 +278,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
           project.usedAddons.splice(projIdx, 1);
         }
 
+        upgradeProjectShape(project);
         const tmpPath = projectPath + '.tmp';
         await writeFile(tmpPath, JSON.stringify(project, null, '\t'), 'utf-8');
         try {

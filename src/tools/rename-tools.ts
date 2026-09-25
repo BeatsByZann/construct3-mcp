@@ -22,6 +22,7 @@
  */
 
 import { z } from 'zod';
+import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { readFile, writeFile, copyFile, unlink, rename as renameFile, readdir, stat } from 'fs/promises';
 import type { Dirent } from 'fs';
 import type { MutationToolDeps } from './shared.js';
@@ -604,6 +605,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         collectContainerMemberRefs(project, name, newName, true);
         renameTreeItem(project.objectTypes as { items?: unknown; subfolders?: unknown }, name, newName, true);
         const backupPath = await backupFileIfPresent(reader.getProjectPath());
+        upgradeProjectShape(project as unknown as Record<string, unknown>);
         await atomicWriteJson(reader.getProjectPath(), project);
         await reader.reloadProject();
         resetProjectIndex();
@@ -717,6 +719,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         const project = await readProjectJson(reader.getProjectPath());
         renameTreeItem(project.families as { items?: unknown; subfolders?: unknown }, name, newName, true);
         const backupPath = await backupFileIfPresent(reader.getProjectPath());
+        upgradeProjectShape(project as unknown as Record<string, unknown>);
         await atomicWriteJson(reader.getProjectPath(), project);
         await reader.reloadProject();
         resetProjectIndex();
@@ -810,6 +813,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         if (project.firstLayout === name) project.firstLayout = newName;
         renameTreeItem(project.layouts as { items?: unknown; subfolders?: unknown }, name, newName, true);
         const backupPath = await backupFileIfPresent(reader.getProjectPath());
+        upgradeProjectShape(project as unknown as Record<string, unknown>);
         await atomicWriteJson(reader.getProjectPath(), project);
         await reader.reloadProject();
         resetProjectIndex();
@@ -901,6 +905,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         const project = await readProjectJson(reader.getProjectPath());
         renameTreeItem(project.eventSheets as { items?: unknown; subfolders?: unknown }, name, newName, true);
         const backupPath = await backupFileIfPresent(reader.getProjectPath());
+        upgradeProjectShape(project as unknown as Record<string, unknown>);
         await atomicWriteJson(reader.getProjectPath(), project);
         await reader.reloadProject();
         resetProjectIndex();

@@ -41,6 +41,7 @@
  */
 
 import { z } from 'zod';
+import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { readFile, writeFile, mkdir, copyFile, unlink, rename, stat } from 'fs/promises';
 import { dirname } from 'path';
 import type { MutationToolDeps } from './shared.js';
@@ -204,6 +205,7 @@ async function addFlowchartToProject(
     if (!container.items.includes(name)) container.items.push(name);
   }
 
+  upgradeProjectShape(project as unknown as Record<string, unknown>);
   await writeJsonFile(projectPath, project);
 }
 
@@ -228,6 +230,7 @@ async function removeFlowchartFromProject(projectPath: string, name: string): Pr
     removeFrom(container.subfolders);
   }
 
+  upgradeProjectShape(project as unknown as Record<string, unknown>);
   await writeJsonFile(projectPath, project);
 }
 
