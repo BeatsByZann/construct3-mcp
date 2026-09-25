@@ -331,6 +331,10 @@ References inside script actions, script files, and names built by string concat
 
 All mutation tools follow the safety pipeline: validate → backup → write → verify → invalidate caches. They return a `WriteResult` object on success.
 
+Before a file is backed up, its size and modification time must still match what the server last saw, so a write never overwrites a save Construct made meanwhile (see [File stamps and the change journal](#file-stamps-and-the-change-journal)). Every result ends with the files the call changed.
+
+Every tool that writes `project.c3proj` leaves it in the shape Construct r495.2 saves, so the editor's next save shows only its own changes. Script entries carry `script-info` instead of `file-info`, and an empty `models3d` folder is added after `flowcharts`. For a project an older release saved, `uidAllocationMode` is placed after `preloadSounds` and `scriptsType` last in `properties`, and a release-44903-or-older project's `zAxisScale` "normalized" is written as "regular", which r495.2 itself shows and saves for such a project. A project saved by r495.2 or later keeps its own order. `savedWithRelease` is never changed and `usedAddons` is never pruned.
+
 ### `create_object`
 
 Create a new object type in the project.

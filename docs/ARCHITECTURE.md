@@ -6,36 +6,42 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 
 ```
                         MCP Protocol (stdio)
-                              │
-┌─────────────────────────────▼──────────────────────────────────┐
-│  Construct3 MCP Server (v1.5.0)                                │
-│                                                                │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  MCP Protocol Layer                                      │  │
-│  │  Resources (7) · Query Tools (9) · Analysis (6)          │  │
-│  │  Mutations (14) · Prompts (6)                            │  │
-│  └──────────┬───────────────────────────────────────────────┘  │
-│             │                                                  │
-│  ┌──────────▼──────────────────────────────────────────────┐   │
-│  │  Business Logic Layer                                    │  │
-│  │  ProjectReader · ProjectWriter · IdGenerator             │  │
-│  │  Templates · Analyzers (6) · Cross-Reference Index       │  │
-│  └──────────┬───────────────────────────────────────────────┘  │
-│             │                                                  │
-│  ┌──────────▼──────────────────────────────────────────────┐   │
-│  │  File System Layer                                       │  │
-│  │  JSON parsing · Backup · Validate · Write · Verify       │  │
-│  └──────────┬───────────────────────────────────────────────┘  │
-└─────────────┼──────────────────────────────────────────────────┘
-              │
-┌─────────────▼─────────────────┐
-│  Construct 3 Project Files     │
-│  project.c3proj                │
-│  objectTypes/*.json            │
-│  eventSheets/*.json            │
-│  layouts/*.json                │
-│  families/*.json               │
-└────────────────────────────────┘
+                              |
++-----------------------------v----------------------------------+
+|  Construct3 MCP Server (1.8.2, fork)                           |
+|                                                                |
+|  +----------------------------------------------------------+  |
+|  |  MCP Protocol Layer                                      |  |
+|  |  Resources (8) - Tools (185, 23 files) - Prompts (6)     |  |
+|  |  Every tool runs through the session's gate              |  |
+|  +----------+-----------------------------------------------+  |
+|             |                                                  |
+|  +----------v-----------------------------------------------+  |
+|  |  Business Logic Layer                                    |  |
+|  |  ProjectSession - ProjectReader - ProjectWriter          |  |
+|  |  IdGenerator - Templates - References - Analyzers (7)    |  |
+|  |  ACE catalogue - Addon definitions - Expression checker  |  |
+|  |  Change journal - Project shape                          |  |
+|  +----------+-----------------------------------------------+  |
+|             |                                                  |
+|  +----------v-----------------------------------------------+  |
+|  |  File System Layer                                       |  |
+|  |  Stamp check - Backup - Validate - Write - Verify        |  |
+|  |  .c3p write-back (single-file projects)                  |  |
+|  +----------+-----------------------------------------------+  |
+|             |                                                  |
+|  +----------v-----------------------------------------------+  |
+|  |  Runtime Layer                                           |  |
+|  |  Bridge script - CDP client - Preview server             |  |
+|  +----------------------------------------------------------+  |
++-------------+--------------------------------------------------+
+              |
++-------------v-----------------+     +---------------------------+
+|  Construct 3 project files    |     |  Exported game in Chrome  |
+|  project.c3proj, objectTypes/ |     |  or Edge, over loopback   |
+|  eventSheets/, layouts/, ...  |     |  HTTP and CDP             |
+|  or one .c3p archive          |     +---------------------------+
++-------------------------------+
 ```
 
 ## Core Components
@@ -45,10 +51,16 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 Initializes the MCP server, creates all core instances, and registers handlers:
 
 ```
-reader  → registerProjectResources, registerDocsResources, registerQueryTools
-          registerWorkflowPrompts, registerAnalysisTools
-writer  → registerMutationTools (also needs reader + idGen)
-idGen   → shared between writer and mutations
+session  = ProjectSession.start(path)   folder, .c3proj or .c3p (unpacked to a working folder)
+session.install(server)                 every tool handler runs through the session's gate
+reader   → registerProjectResources, registerDocsResources, registerQueryTools,
+           registerWorkflowPrompts, registerAnalysisTools, registerUsageTools
+writer   → registerMutationTools (object, event, layout, project, animation, timeline,
+           file, effect, flowchart, container, rename, template, tilemap, structure,
+           replace tools; also needs reader + idGen)
+session  → registerSessionTools (get_open_project, open_project, reload_project,
+           list_changes, revert_last_change)
+runtime  → registerRuntimeTools (bridge, preview server, CDP connections)
 ```
 
 ### 2. Project Reader (`src/construct3/project-reader.ts`)
@@ -123,7 +135,9 @@ class Construct3ProjectWriter {
 **Safety guarantees:**
 - **Path traversal protection**: All paths resolved and checked against project directory
 - **Pre-write validation**: JSON round-trip test, null/type checks, 5MB size limit
+- **Stamp check**: the file must still have the size and modification time the server last saw, or the write is refused (`ExternalChangeError`) until `reload_project`
 - **Backup**: `.bak` file created before every overwrite
+- **Project shape**: `project.c3proj` is put in the shape Construct r495.2 saves before it is written (`project-shape.ts`)
 - **Post-write verification**: File read back and re-parsed after writing
 - **Cache invalidation**: Reader caches, project index, and ID generator all reset
 
@@ -160,29 +174,48 @@ Builders for valid C3 JSON structures. All field names and defaults validated ag
 
 ### 6. Analyzers (`src/construct3/analyzers/`)
 
-Six analysis modules powered by a shared cross-reference index:
+Seven analysis modules, most powered by a shared cross-reference index:
 
 | Module | Purpose |
 |--------|---------|
 | `index-builder.ts` | Builds and caches project-wide cross-reference index |
-| `eventsheet-flow.ts` | Include hierarchy and layout bindings (Mermaid output) |
-| `function-map.ts` | Function definitions and call sites |
-| `object-deps.ts` | Object usage across event sheets, layouts, families |
-| `orphan-finder.ts` | Objects not referenced anywhere |
+| `event-flow.ts` | Include hierarchy, layout bindings (Mermaid output), function definitions and call sites |
+| `object-deps.ts` | Object usage across event sheets, layouts, families; orphaned objects |
 | `asset-usage.ts` | Sound, image, font, video asset tracking |
 | `performance.ts` | Heuristic performance audit (info/warning/critical) |
+| `group-settings.ts` | Event group activation settings |
+| `integrity.ts` | `validate_project`: 18 checks, including ACE, expression and legacy-key checks |
 
 The cross-reference index (`ProjectIndex`) is cached and reset when writes occur via `resetProjectIndex()`.
 
-### 7. MCP Layers
+### 7. Validation (`ace-catalog.ts`, `addon-definitions.ts`, `expression-check.ts`)
+
+| Module | Purpose |
+|--------|---------|
+| `ace-catalog.ts`, `ace-catalog-data.ts` | Conditions, actions and expressions of built-in plugins and behaviors, generated from Construct r495.2's own definitions by `scripts/build-ace-catalog.mjs` |
+| `addon-definitions.ts` | Registry of third-party addon definitions read from `addon.json` and `aces.json` (a folder or a `.c3addon`), loaded by `load_addon_definitions` or `C3_ADDON_DEFINITIONS` |
+| `expression-check.ts` | Tokenizer and parser for Construct expressions; resolves object, family, member, function and variable names against the project and the catalogue |
+
+### 8. Session, change journal and project shape
+
+| Module | Purpose |
+|--------|---------|
+| `project-session.ts` | The project served: a folder, or a `.c3p` unpacked to a working folder; `open_project` switches it |
+| `c3p-project.ts` | The tool gate: runs each call inside a journal entry, appends the changed-files line, and writes a `.c3p` back after a call that changed files |
+| `change-journal.ts` | Per-file size and modification stamps, the record of what each call wrote, created, deleted or moved, and `revert_last_change` |
+| `project-shape.ts` | Brings `project.c3proj` to the shape Construct r495.2 saves (script metadata key, `models3d`, and for older releases property order and `zAxisScale`), never pruning `usedAddons` |
+| `references.ts` | Reference scanning and rewriting for the rename tools |
+
+### 9. MCP Layers
 
 | Layer | File(s) | Count | Purpose |
 |-------|---------|-------|---------|
-| Resources | `resources/project.ts`, `resources/docs.ts` | 7 | Read-only data access |
-| Query Tools | `tools/query.ts` | 9 | List, search, get details |
-| Analysis Tools | `tools/analysis.ts` | 6 | Deep analysis and visualization |
-| Mutation Tools | `tools/mutations.ts` | 14 | Safe create, update, delete |
-| Runtime Tools | `tools/runtime-tools.ts`, `runtime/cdp-client.ts`, `runtime/preview-server.ts` | 19 | Bridge injection, serving an export and launching Chrome on it, persistent CDP connections, live game calls, condition waits, event subscriptions, input dispatch (viewport, canvas or layout coordinates) and screenshots |
+| Resources | `resources/project.ts`, `resources/docs.ts` | 8 | Read-only data access |
+| Query tools | `tools/query.ts`, `tools/usage-tools.ts` | 15 | List, search, get details, usage queries |
+| Analysis tools | `tools/analysis.ts` | 8 | Flow, functions, dependencies, orphans, assets, performance, validation, group settings |
+| Session tools | `tools/session-tools.ts` | 5 | Which project is served, reload, change journal and revert |
+| Mutation tools | `tools/*-tools.ts` (18 files, registered by `tools/mutations.ts`) | 138 | Safe create, update, delete, rename, move and replace |
+| Runtime tools | `tools/runtime-tools.ts`, `runtime/cdp-client.ts`, `runtime/preview-server.ts`, `runtime/bridge.ts` | 19 | Bridge injection, serving an export and launching Chrome on it, persistent CDP connections, live game calls, condition waits, event subscriptions, input dispatch (viewport, canvas or layout coordinates) and screenshots |
 | Prompts | `prompts/workflows.ts` | 6 | Workflow templates |
 
 ## Data Flow
@@ -208,6 +241,7 @@ Claude → create_object({ name: "Enemy", pluginId: "Sprite" })
   → build template: createSpriteObject("Enemy", sid, animSid)
   → writer.writeEntityFile("objectTypes", "Enemy", data)
       → validateJsonData(data)     ← pre-write check
+      → assertUnchanged(filePath)   ← refuse if changed on disk since last seen
       → createBackup(filePath)      ← .bak copy
       → writeFile(filePath, json)   ← actual write
       → verifyWrittenFile(filePath) ← post-write read-back
@@ -215,8 +249,11 @@ Claude → create_object({ name: "Enemy", pluginId: "Sprite" })
   → writer.addToProject("objectTypes", "Enemy")
       → createBackup(c3proj)
       → add "Enemy" to objectTypes.items
+      → upgradeProjectShape(project) ← r495.2 save shape
       → atomicWrite + verify + reader.reloadProject() + invalidateAll()
   → return WriteResult to Claude
+  → the gate appends "Changed N file(s): ..." from the journal entry
+    and, for a .c3p, writes the archive back
 ```
 
 ### Analysis Flow
@@ -275,7 +312,9 @@ The mutation tools provide extra context on errors:
 - **Input validation**: Zod schemas on all tool parameters with length limits
 - **Addon gating**: Unknown third-party plugins/behaviors blocked from auto-registration
 - **Size limits**: 5MB maximum for any generated JSON file
+- **Loopback by default**: `connect_to_game` accepts only this machine unless `allowRemoteHost` is set, and `serve_preview` binds to loopback, because the bridge runs script in the page it reaches
+- **Path redaction**: absolute filesystem paths are removed from error text returned to the client
 
 ---
 
-**Last Updated**: 2026-02-21
+**Last Updated**: 2026-09-24

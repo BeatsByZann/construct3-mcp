@@ -39,36 +39,26 @@ C3_PROJECT_PATH=/path/to/project npm start
 ```
 construct3-mcp/
 ├── src/
-│   ├── index.ts                    # Entry point — server init, registration
-│   ├── construct3/                 # Core project logic
-│   │   ├── project-reader.ts       # Read-only file access with caching
-│   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify)
-│   │   ├── id-generator.ts         # SID/UID generation with collision avoidance
-│   │   ├── templates.ts            # Entity templates and known addon maps
-│   │   ├── types.ts                # TypeScript type definitions
-│   │   └── analyzers/              # Analysis modules
-│   │       ├── index-builder.ts    # Cross-reference index (cached)
-│   │       ├── eventsheet-flow.ts  # Include hierarchy visualization
-│   │       ├── function-map.ts     # Function definition/call mapping
-│   │       ├── object-deps.ts      # Object dependency tracking
-│   │       ├── orphan-finder.ts    # Unused object detection
-│   │       ├── asset-usage.ts      # Asset tracking
-│   │       └── performance.ts      # Performance heuristics
-│   ├── resources/                  # MCP resource handlers
-│   │   ├── project.ts              # Project data resources (6)
-│   │   └── docs.ts                 # C3 documentation resource (1)
-│   ├── tools/                      # MCP tool handlers
-│   │   ├── query.ts                # Query tools (9)
-│   │   ├── analysis.ts             # Analysis tools (6)
-│   │   └── mutations.ts            # Mutation tools (14)
-│   └── prompts/                    # MCP prompt handlers
-│       └── workflows.ts            # Workflow prompts (6)
-├── docs/                           # Documentation
-├── dist/                           # Compiled output (gitignored)
-├── package.json
-├── tsconfig.json
+│   ├── index.ts           # Entry point: session start, gate, registration
+│   ├── construct3/        # Project logic: reader, writer, ID generator, templates,
+│   │                      # session and .c3p serving, change journal, project shape,
+│   │                      # ACE catalogue, addon definitions, expression checker,
+│   │                      # references, timelines, tilemaps
+│   │   └── analyzers/     # Index, event flow, object dependencies, assets,
+│   │                      # performance, group settings, integrity (validate_project)
+│   ├── resources/         # MCP resources (8)
+│   ├── runtime/           # Bridge script, CDP client, preview server, zip reader/writer
+│   ├── tools/             # MCP tools (185 in 23 files; mutations.ts registers the
+│   │                      # 18 mutation-tool files)
+│   └── prompts/           # MCP prompts (6)
+├── scripts/               # build-ace-catalog.mjs, editor-coverage.mjs and its mapping
+├── test/                  # Vitest: unit tests by area, *.integration.test.ts against
+│   │                      # copied fixtures, runtime tests against a vm harness
+│   └── fixtures/          # Small projects; several saved by Construct r495.2
+├── docs/                  # API, architecture, development, examples, troubleshooting
+├── FORK.md                # How this fork differs from upstream
 ├── CHANGELOG.md
-└── README.md
+└── README.md              # Includes the per-file source listing
 ```
 
 ## Key Patterns
@@ -110,15 +100,16 @@ server.tool(
 
 ### Adding a New Mutation Tool
 
-1. Add the tool in `src/tools/mutations.ts` inside `registerMutationTools()`
+1. Add the tool to the area's `src/tools/<area>-tools.ts`; `src/tools/mutations.ts` registers every area file
 2. Follow the safety pattern:
    - Validate inputs (use `validateName()`, `validateSubfolder()`)
    - Check addon registration with `writer.ensureAddonRegistered()`
    - Generate IDs with `idGen.generateSid()` / `idGen.generateUid()`
    - Build data from templates in `templates.ts`
-   - Write with `writer.writeEntityFile()` (handles backup/validate/verify)
-   - Update c3proj with `writer.addToProject()` if needed
+   - Write with `writer.writeEntityFile()` (handles stamp check, backup, validate, verify and the change journal)
+   - Change `project.c3proj` through `writer.addToProject()` or `writer.mutateProjectJson()`, which also apply the r495.2 save shape (`project-shape.ts`). A tool that writes the file itself must call `upgradeProjectShape()`, `assertUnchanged()` before its backup and `recordChange()` after the write, as the rename and container tools do
    - Return a `WriteResult`
+3. Add the tool to `docs/API.md`, the README tool tables, `FORK.md` and `CHANGELOG.md`, and map it in `scripts/editor-coverage.json` where it reproduces an editor checklist item (a test refuses an unregistered tool name there)
 
 ### Adding a New Template
 
@@ -174,12 +165,23 @@ The `ProjectWriter.invalidateAll()` method handles all three. After writing and 
 
 ## Testing
 
-Currently tested manually against real C3 projects. To test:
+```bash
+npm test               # Vitest, once
+npm run test:watch     # Vitest in watch mode
+npm run test:coverage  # With coverage
+npx tsc --noEmit       # Type check without building
+```
+
+- Integration tests copy a fixture from `test/fixtures/` to a temporary folder and call the tools through `test/mocks/mock-server.ts`.
+- A fix to a guard or a file shape needs a regression test that fails when the fix is reverted. The fork's changes were checked by reverting each guard in turn and confirming a test fails.
+- A change to what the tools write should also be loaded in the Construct editor on a throwaway project, and where it matters saved again and compared with the tool's output.
+
+To try the server by hand:
 
 1. Build: `npm run build`
 2. Start with a test project: `node dist/index.js /path/to/test-project`
 3. Connect via Claude Code or Claude Desktop
-4. Run through the verification steps in the CHANGELOG
+4. Run through the checklist below
 
 ### Manual Test Checklist
 
@@ -228,6 +230,11 @@ Currently tested manually against real C3 projects. To test:
 5. Commit with clear message
 6. Push and open a Pull Request
 
+### Documentation
+
+- A change to the tools updates the documentation in the same commit: the README tool tables and counts, `FORK.md`, `CHANGELOG.md`, and each `docs/` page the change affects.
+- A push of this fork carries the matching README and `FORK.md` update in the same push, so what GitHub shows describes the pushed code, including `FORK.md`'s branch table and measures.
+
 ### Code Style
 
 - TypeScript strict mode
@@ -238,4 +245,4 @@ Currently tested manually against real C3 projects. To test:
 
 ---
 
-**Last Updated**: 2026-02-21
+**Last Updated**: 2026-09-24

@@ -26,26 +26,26 @@ node dist/index.js /path/to/your/project.c3proj
 
 ## How far it has diverged
 
-Measured at `claude/w84-editor-gap` (`e3e4051`) against `upstream/main` (`b6d7d58`).
+Measured at `d4eaea4` (2026-09-24) against `upstream/main` (`b6d7d58`).
 
 | Measure | Upstream | This fork |
 |---|---|---|
-| MCP tools registered | 66 | 173 |
-| Source files under `src/` | 32 | 54 |
-| Test files | 16 | 56 |
-| Tests | not measured here | 1304 passing in 56 files |
+| MCP tools registered | 66 | 185 |
+| Source files under `src/` | 32 | 66 |
+| Test files | 16 | 71 |
+| Tests | not measured here | 1470 passing in 71 files |
 | Package version | 1.8.1 | 1.8.2 |
 
-The branch is 78 commits ahead of upstream and one commit behind it (`b6d7d58`, a `.gitignore`
-chore). The common ancestor is `6957fcb` (2026-07-27). The diff is 136 files changed,
-42,227 insertions and 1,148 deletions.
+At that commit the branch is 90 commits ahead of upstream and one commit behind it (`b6d7d58`, a
+`.gitignore` chore). The common ancestor is `6957fcb` (2026-07-27). The diff is 171 files changed,
+79,192 insertions and 1,292 deletions.
 
 No upstream tool was removed or renamed. All 66 upstream tools are still registered under their
-upstream names, so an existing configuration keeps working. The fork adds 107 tools alongside them.
+upstream names, so an existing configuration keeps working. The fork adds 119 tools alongside them.
 
 ## What the fork adds
 
-107 new tools, grouped by the area they cover.
+119 new tools, grouped by the area they cover.
 
 | Area | Tools |
 |---|---|
@@ -65,13 +65,19 @@ upstream names, so an existing configuration keeps working. The fork adds 107 to
 | Layouts, layers and hierarchy | `move_instance`, `add_instances_to_layout`, `update_instances`, `move_instances`, `delete_instances_from_layout`, `move_layer`, `reorder_layers`, `set_instance_parent`, `remove_instance_children` |
 | Objects and animation | `reorder_behaviors`, `update_instance_variable`, `replace_object_image`, `create_animation_folder`, `move_animation_to_folder`, `duplicate_frame`, `reorder_frames`, `reverse_frames` |
 | Live runtime control over CDP | `connect_to_game`, `disconnect_from_game`, `call_bridge`, `wait_for_condition`, `simulate_input`, `get_canvas_size` |
+| Play-testing an exported game (new area) | `serve_preview`, `stop_preview`, `screenshot_game` |
+| Runtime event subscriptions (new area) | `subscribe_events`, `read_events`, `unsubscribe_events` |
+| Working beside the open editor (new area) | `reload_project`, `list_changes`, `revert_last_change` |
+| Single-file projects | `get_open_project`, `open_project` |
+| Third-party addon validation | `load_addon_definitions` |
 | Project settings | `update_project_properties` |
 
-The largest change in kind is the last one. Upstream generates a bridge script and leaves you to
-drive it from a browser console or an external tool. This fork keeps a persistent Chrome DevTools
-Protocol connection to a running preview, calls bridge commands directly, polls for a condition
-with a bounded timeout, and sends mouse, touch and keyboard input in viewport or canvas
-coordinates.
+The largest change in kind is live runtime control. Upstream generates a bridge script and leaves
+you to drive it from a browser console or an external tool. This fork serves an exported game over
+loopback and launches Chrome or Edge on it, keeps a persistent Chrome DevTools Protocol connection
+to the running game, calls bridge commands directly, polls for a condition with a bounded timeout,
+buffers global-variable, layout and custom events between calls, sends mouse, touch and keyboard
+input in viewport, canvas or layout coordinates, and saves screenshots.
 
 ## What the fork changes in existing tools
 
@@ -97,6 +103,24 @@ These are behavior changes, not additions. They matter if you already depend on 
   unknown IDs, unknown or missing parameters and invalid combo choices.
 - Object types backed by an image or a plugin table (3D Shape, Particles, Sprite Font, Tilemap,
   9-patch) are created with the files and tables Construct needs, so the project still opens.
+- Every expression in a parameter is parsed and its names resolved against the project;
+  `validate_project` reports `expression-*` warnings and the event tools warn about what they
+  write. Conditions and actions of a third-party addon are checked once its definitions are loaded
+  (`load_addon_definitions` or `C3_ADDON_DEFINITIONS`); until then `validate_project` lists it as
+  `ace-definitions-unavailable` instead of skipping it silently. `validate_project` runs 18 checks,
+  including `event-legacy-key` for keys Construct neither writes nor reads.
+- Every tool result ends with the files that call changed. A write is refused when the file
+  changed on disk since the server read it (Construct saved it, for example) until
+  `reload_project` re-reads the project.
+- `project.c3proj` is written in the shape Construct r495.2 saves (script metadata key, a
+  `models3d` folder and, for older projects, property order and `zAxisScale`), so the editor's
+  next save does not show changes the tool did not make. `usedAddons` is never pruned.
+- `connect_to_game` accepts only this machine unless `allowRemoteHost` is set, because the bridge
+  runs script in whatever page it reaches.
+- Renames compare names without case, and a rename that changes only the case of a file-backed
+  name is refused: on Windows it overwrote or deleted the file. `delete_layer` counts instances on
+  sub-layers, frame tools follow each frame's real file type (GIF included), and
+  `rename_event_variable` stays inside the declaring scope.
 
 The per-change detail, including the r495.2 sample sizes the shapes were derived from, is in
 [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`. The per-tool reference is in
@@ -104,7 +128,7 @@ The per-change detail, including the r495.2 sample sizes the shapes were derived
 
 ## Relationship to upstream
 
-Seven correctness commits were offered upstream as PR #15 and are on this fork's `main`. The 107
+Seven correctness commits were offered upstream as PR #15 and are on this fork's `main`. The 119
 added tools have not been offered upstream and are not scheduled to be; they were built against
 the needs of one project and against Construct r495.2 specifically.
 
@@ -168,6 +192,8 @@ that is not registered.
   the command line or by `open_project`, which switches a running server to another project; see the
   README's "Single-file (.c3p) projects". Construct saving the same archive meanwhile makes the
   server refuse to write, so do not edit one archive in both at once.
+- `serve_preview` needs Chrome or Edge installed to launch a browser; it serves an exported game
+  (Export > Web (HTML5)), not a source project, because Construct exports only from its editor.
 - The feature branch is a working branch, not a release. It is not published to npm and carries no
   compatibility promise.
 - MIT licensed, the same as upstream. See [LICENSE](LICENSE).

@@ -145,6 +145,76 @@ Every mutation creates `.bak` backup files next to the modified files. If someth
 3. Rename the `.bak` file to remove the `.bak` extension
 4. Restart the MCP server
 
+### "... differs from ... only in case"
+
+**Cause**: `rename_object_type`, `rename_family`, `rename_layout` and `rename_event_sheet` rename files. On a case-insensitive disk (Windows, macOS by default) the new file would replace the old one before the old one is deleted, losing the entity.
+
+**Solution**: Rename to a temporary name first, then to the name you want. The same tools also refuse a new name that matches another entity's name in any case.
+
+### `project.c3proj` changes after the next save in Construct
+
+**Cause**: The tools write `project.c3proj` in the shape Construct r495.2 saves: script entries use `script-info`, a `models3d` folder exists, and for a project an older release saved, `uidAllocationMode` and `scriptsType` sit where r495.2 puts them and a release-44903-or-older `zAxisScale` "normalized" is written as "regular". What the editor still changes on save is its own work: it stamps `savedWithRelease`, removes addons from `usedAddons` that nothing uses (the tools never prune that list), and on an older project may fill defaults such as `fixedFramerate` or change `exportFileStructure`.
+
+**Solution**: Nothing to fix. Commit the editor's save separately from the tool's change if you want the history to show which is which.
+
+## Validation Warnings
+
+### `ace-definitions-unavailable` (info)
+
+**Cause**: A plugin or behavior in `usedAddons` is neither built into Construct r495.2 nor loaded, so its conditions and actions are not checked.
+
+**Solution**: Set `C3_ADDON_DEFINITIONS` to the addon's `.c3addon` file or unpacked folder (several paths separated by `;` on Windows, `:` elsewhere) before starting the server, or call `load_addon_definitions` with that path. The addon's own `addon.json` and `aces.json` are read; nothing is executed.
+
+### `expression-*` warnings
+
+**Cause**: A parameter's expression did not parse (`expression-syntax`) or names something the project and the catalogue do not define (`expression-unknown-object`, `expression-unknown-member`, `expression-unknown-function`, `expression-unknown-name`), or calls a function or custom action with the wrong number of arguments (`expression-argument-count`).
+
+**Solution**: Fix the expression, or load the definitions of the third-party addon it uses. Names match without case, as in Construct. The event is written anyway; the warning does not block the tool.
+
+### `event-legacy-key`
+
+**Cause**: A block, condition or action carries a key Construct neither writes nor reads, such as `object-class` or `behavior-type` (the real keys are `objectClass` and `behaviorType`). Construct then reports the ACE as missing on load.
+
+**Solution**: Delete the event and add it again with `add_event_block`, which writes the correct keys, or rename the key in the sheet file with the project closed in Construct.
+
+## Runtime and Preview Issues
+
+### "No Chrome or Edge executable found in the ... usual locations"
+
+**Cause**: `serve_preview` with `launchBrowser` looked in the standard install folders and found no browser.
+
+**Solution**: Pass `chromePath`, or set `CHROME_PATH` to the browser executable, and call `serve_preview` again. The server log lists the locations it checked.
+
+### "The folder holds a source project (project.c3proj), not an exported game"
+
+**Cause**: `serve_preview` serves an HTML5 export, and Construct exports only from its editor. A source folder or a `.c3p` cannot be served.
+
+**Solution**: In Construct choose Menu > Project > Export > Web (HTML5), then pass the folder that holds the exported `index.html`. To let the tools talk to the game, inject the runtime bridge with `inject_runtime_bridge` before exporting.
+
+### "Refusing to connect to ...: only this machine ... is allowed unless allowRemoteHost is true"
+
+**Cause**: The runtime bridge runs script in whatever page it reaches, so `connect_to_game` and `serve_preview` stay on loopback by default.
+
+**Solution**: Use `localhost` or `127.0.0.1`. Set `allowRemoteHost: true` only for a machine and page you control.
+
+### "Unknown command: layerToCssPx" (or `subscribeEvents`, `readEvents`, `unsubscribeEvents`)
+
+**Cause**: The game was exported with an older bridge script, which does not have the command. `simulate_input` with `coordinateSpace: "layout"` and the event-subscription tools need the current bridge.
+
+**Solution**: Run `inject_runtime_bridge` again on the project, export again, and reconnect. Nothing was dispatched by the failed call.
+
+### "Unknown subscription: sub-N"
+
+**Cause**: The subscription was already removed, or the page reloaded; subscriptions live in the page and end with it.
+
+**Solution**: Call `subscribe_events` again after a reload. `unsubscribe_events` on an unknown id is an error by design, not a silent success.
+
+### "Unknown global variable: ..." from `subscribe_events`
+
+**Cause**: `globalVarChange` subscribes to one global variable, and the running game has none by that name.
+
+**Solution**: Check the name with `call_bridge` and the `listGlobalVars` command. A `globalVarChange` subscription needs `filter.variable`.
+
 ## Build Issues
 
 ### TypeScript compilation errors
@@ -183,9 +253,10 @@ If you get type errors after modifying the code:
 
 ## Getting Help
 
-- **GitHub Issues**: [Report a bug](https://github.com/liauw-media/construct3-mcp/issues)
+- **This fork**: [Report a bug](https://github.com/BeatsByZann/construct3-mcp/issues) in anything the fork changed or added (see [FORK.md](../FORK.md)), saying which branch you are on
+- **Upstream**: [Report a bug](https://github.com/liauw-media/construct3-mcp/issues) in upstream behavior
 - **GitHub Discussions**: [Ask a question](https://github.com/liauw-media/construct3-mcp/discussions)
 
 ---
 
-**Last Updated**: 2026-02-16
+**Last Updated**: 2026-09-24

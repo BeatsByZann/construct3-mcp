@@ -2,7 +2,7 @@
 
 > A Model Context Protocol (MCP) server that enables AI assistants (Claude, Cursor, Antigravity, and any MCP-compatible tool) to safely read, analyze, and modify Construct 3 game engine projects.
 
-> **v1.8.0 (M1 release)** — Full primitive surface complete. See the [Roadmap](#roadmap) and [CHANGELOG](CHANGELOG.md) for details.
+> **Fork build 1.8.2** (upstream M1 release 1.8.0 plus the fork's work). See [This is a fork](#this-is-a-fork), the [Roadmap](#roadmap) and the [CHANGELOG](CHANGELOG.md) for details.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org/)
@@ -135,7 +135,7 @@ node dist/index.js /path/to/your/project.c3proj
 | `get_asset_usage` | Track sound, image, font, and video asset usage |
 | `load_addon_definitions` | Load a third-party addon's conditions and actions (addon.json and aces.json, unpacked or as a .c3addon) so its ACEs are checked like the built-in ones; without a path, list what is loaded |
 | `analyze_performance` | Heuristic performance audit with categorized issues |
-| `validate_project` | Integrity checks: file existence, duplicate SIDs/UIDs, broken references, conditions and actions against Construct r495.2's own definitions, orphaned files; `complete` says whether every object type, event sheet and layout was scanned |
+| `validate_project` | 18 integrity checks: file existence, duplicate SIDs/UIDs, broken references, conditions and actions against Construct r495.2's own definitions or a loaded addon's, expressions inside parameters, legacy event keys, addons without definitions, orphaned files; `complete` says whether every object type, event sheet and layout was scanned |
 | `get_project_properties` | Every project setting: the full `properties` bag and top-level settings such as `bundleAddons` |
 | `search_project` | Find text or a regular expression across event sheets, script files and layout instance values |
 | `find_behavior_usage` | Declarations, event references and per-instance settings of a behavior |
@@ -424,6 +424,14 @@ To target a specific project instead of auto-detecting:
 "args": ["/path/to/construct3-mcp/dist/index.js", "/path/to/your-project"]
 ```
 
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `C3_PROJECT_PATH` | Project folder, `.c3proj` or `.c3p` to serve when no path argument is given (default: the working directory) |
+| `C3_ADDON_DEFINITIONS` | Third-party addon definitions to load at startup: `.c3addon` files or unpacked addon folders, separated by `;` on Windows and `:` elsewhere. Same as calling `load_addon_definitions` |
+| `CHROME_PATH` | Chrome or Edge executable for `serve_preview` to launch, when it is not in a standard install folder |
+
 ### With Claude Code
 
 Add the config above to your project's `.mcp.json` or global `~/.claude/mcp.json`.
@@ -544,17 +552,23 @@ construct3-mcp/
 │   │   ├── id-generator.ts         # SID/UID generation with collision avoidance
 │   │   ├── templates.ts            # Object, event sheet, layout templates
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNG generation
-│   │   ├── ace-catalog.ts          # Condition and action validation
+│   │   ├── ace-catalog.ts          # Condition, action and expression lookup
 │   │   ├── ace-catalog-data.ts     # Construct r495.2 ACE definitions (generated)
+│   │   ├── addon-definitions.ts    # Third-party addon definitions (addon.json, aces.json)
+│   │   ├── expression-check.ts     # Expression parser and name resolution
+│   │   ├── change-journal.ts       # File stamps, per-call change record, revert
+│   │   ├── project-shape.ts        # project.c3proj in the shape Construct r495.2 saves
+│   │   ├── references.ts           # Reference scanning and rewriting for renames
+│   │   ├── file-registration.ts    # Script and project file registration helpers
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
 │   │       ├── index-builder.ts    # Cross-reference index
-│   │       ├── eventsheet-flow.ts  # Event sheet flow analysis
-│   │       ├── function-map.ts     # Function mapping
-│   │       ├── object-deps.ts      # Object dependency analysis
-│   │       ├── orphan-finder.ts    # Orphaned object detection
+│   │       ├── event-flow.ts       # Event sheet flow and function mapping
+│   │       ├── object-deps.ts      # Object dependencies and orphaned objects
 │   │       ├── asset-usage.ts      # Asset usage tracking
-│   │       └── performance.ts      # Performance heuristics
+│   │       ├── performance.ts      # Performance heuristics
+│   │       ├── group-settings.ts   # Event group settings
+│   │       └── integrity.ts        # validate_project checks
 │   ├── resources/
 │   │   ├── project.ts              # MCP resources
 │   │   └── docs.ts                 # Construct 3 documentation access
@@ -691,7 +705,15 @@ We welcome contributions! Here's how to get started:
 - [x] Runtime condition waits with bounded polling and graceful timeout results
 - [x] Mouse, touch, keyboard, and text input simulation over CDP
 
-### Phase 7: Advanced Features
+### Phase 7: Working Beside the Editor and Deeper Validation ✅
+- [x] File stamps: a write from content Construct has since saved is refused until `reload_project`
+- [x] Change journal: every result names the files it changed; `list_changes` and `revert_last_change`
+- [x] `project.c3proj` written in the shape Construct r495.2 saves, without pruning `usedAddons`
+- [x] Third-party addon conditions and actions checked from their own definitions
+- [x] Expressions inside parameters parsed and their names resolved
+- [x] Editor checklist coverage table in [FORK.md](FORK.md)
+
+### Phase 8: Advanced Features
 - [x] Support for .c3p (zipped) projects: pass a `.c3p` path; see [Single-file (.c3p) projects](#single-file-c3p-projects)
 - [x] Rename with reference updates (dry-run preview): the six `rename_*` tools
 - [x] Bulk operations: the four bulk instance tools, plus the many-item edits of the event, object, tilemap and timeline tools

@@ -11,6 +11,9 @@ Real-world examples of using the Construct3 MCP Server with Claude.
 - [Finding References](#finding-references)
 - [Understanding Code](#understanding-code)
 - [Documentation Generation](#documentation-generation)
+- [Play-Testing a Running Game](#play-testing-a-running-game)
+- [Working Beside the Open Editor](#working-beside-the-open-editor)
+- [Validating Third-Party Addons](#validating-third-party-addons)
 - [Advanced Workflows](#advanced-workflows)
 
 ---
@@ -654,6 +657,68 @@ Returns success with a warning that references were NOT cleaned up.
 
 ---
 
+## Play-Testing a Running Game
+
+These tools drive a game exported from Construct (Menu > Project > Export > Web (HTML5)) after
+`inject_runtime_bridge` added the bridge script to the project. They need Chrome or Edge.
+
+### Serve, Connect and Watch a Bonus Round
+
+**Query:**
+> "Run my exported game, click Start, and tell me when the bonus round begins"
+
+**Claude calls:**
+1. `serve_preview({ folder: "C:/exports/MyGame", launchBrowser: true, headless: true, chromeDebuggingPort: 9222 })` returns a `serverId`
+2. `connect_to_game({ host: "127.0.0.1", port: 9222 })` returns a `connectionId`
+3. `subscribe_events({ connectionId, eventType: "globalVarChange", filter: { variable: "BonusActive" } })` returns `sub-1`
+4. `subscribe_events({ connectionId, eventType: "layoutChange" })` returns `sub-2`
+5. `simulate_input({ connectionId, coordinateSpace: "layout", layer: "UI", action: { type: "click", x: 480, y: 320 } })` clicks the Start button at its layout position
+6. `read_events({ connectionId, subscriptionId: "sub-1" })` returns every change since the subscription, oldest first, each with `value`, `previousValue`, `timestamp` and `tick`
+7. `screenshot_game({ connectionId, outputPath: "C:/exports/bonus.png", canvasOnly: true })`
+8. `stop_preview({ serverId })` closes the browser and the server
+
+A game can report its own moments too: event-sheet script that calls
+`globalThis.__c3bridge.emit("bonus-start", { pot: 3 })` reaches a `custom` subscription, optionally
+filtered by `filter.name`.
+
+## Working Beside the Open Editor
+
+### See and Undo What a Call Changed
+
+**Query:**
+> "Rename the Enemy object to Foe, and undo it if anything looks wrong"
+
+**Claude calls:**
+1. `rename_object_type({ name: "Enemy", newName: "Foe" })`. The result ends with the files it changed, for example `Changed 4 file(s): ...`
+2. `list_changes()` shows recent calls with what each wrote, created, deleted or moved, and the `.bak` each write left
+3. `revert_last_change()` restores those files from their backups. It refuses when a later call touched the same files.
+
+### After Saving in Construct
+
+**Query:**
+> "I just saved in Construct. Carry on with the layout changes"
+
+**Claude calls:**
+1. `reload_project()` re-reads the project and lists which files Construct changed
+2. The layout tools continue from the saved content. Without the reload, a write that started from content read before the save is refused instead of overwriting Construct's save.
+
+## Validating Third-Party Addons
+
+### Check Events That Use an Addon
+
+**Query:**
+> "Validate the project, including the Spine addon's actions"
+
+**Claude calls:**
+1. `validate_project()` lists `Spine` as `ace-definitions-unavailable`: its actions are not checked yet
+2. `load_addon_definitions({ path: "C:/addons/spine.c3addon" })` reads the addon's `addon.json` and `aces.json`
+3. `validate_project()` checks the addon's conditions and actions like the built-in ones, and every expression in every parameter (`expression-*` warnings)
+
+To load addons at startup instead, set `C3_ADDON_DEFINITIONS` to the paths, separated by `;` on
+Windows and `:` elsewhere.
+
+---
+
 ## Advanced Workflows
 
 ### Full Feature Creation
@@ -691,4 +756,4 @@ Returns success with a warning that references were NOT cleaned up.
 
 ---
 
-**Last Updated**: 2026-02-21
+**Last Updated**: 2026-09-24
