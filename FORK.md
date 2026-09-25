@@ -9,7 +9,8 @@ behavior, and before filing an issue.
 
 ## Where the code is
 
-The default branch is not the interesting one. The work lives on a feature branch.
+The work lives on `claude/w84-editor-gap`, which is this repository's default branch. `main` is kept
+for the upstream pull request.
 
 | Branch | What it is |
 |---|---|
@@ -26,19 +27,19 @@ node dist/index.js /path/to/your/project.c3proj
 
 ## How far it has diverged
 
-Measured at `d4eaea4` (2026-09-24) against `upstream/main` (`b6d7d58`).
+Measured at `b856ed8` (2026-09-24) against `upstream/main` (`b6d7d58`).
 
 | Measure | Upstream | This fork |
 |---|---|---|
 | MCP tools registered | 66 | 185 |
 | Source files under `src/` | 32 | 66 |
-| Test files | 16 | 71 |
-| Tests | not measured here | 1470 passing in 71 files |
+| Test files | 16 | 72 |
+| Tests | not measured here | 1498 passing in 72 files |
 | Package version | 1.8.1 | 1.8.2 |
 
-At that commit the branch is 90 commits ahead of upstream and one commit behind it (`b6d7d58`, a
-`.gitignore` chore). The common ancestor is `6957fcb` (2026-07-27). The diff is 171 files changed,
-79,192 insertions and 1,292 deletions.
+At that commit the branch is 92 commits ahead of upstream and one commit behind it (`b6d7d58`, a
+`.gitignore` chore). The common ancestor is `6957fcb` (2026-07-27). The diff is 172 files changed,
+79,956 insertions and 1,412 deletions.
 
 No upstream tool was removed or renamed. All 66 upstream tools are still registered under their
 upstream names, so an existing configuration keeps working. The fork adds 119 tools alongside them.
@@ -109,8 +110,10 @@ These are behavior changes, not additions. They matter if you already depend on 
   (`load_addon_definitions` or `C3_ADDON_DEFINITIONS`); until then `validate_project` lists it as
   `ace-definitions-unavailable` instead of skipping it silently. `validate_project` runs 18 checks,
   including `event-legacy-key` for keys Construct neither writes nor reads.
-- Every tool result ends with the files that call changed. A write is refused when the file
-  changed on disk since the server read it (Construct saved it, for example) until
+- Every tool result ends with the files that call changed, and `revert_last_change` undoes the
+  last call from the backups its writes left; it refuses, restoring nothing, when any of those
+  files or backups changed since. A write through the project writer or a rename tool is refused
+  when the file changed on disk since the server read it (Construct saved it, for example) until
   `reload_project` re-reads the project.
 - `project.c3proj` is written in the shape Construct r495.2 saves (script metadata key, a
   `models3d` folder and, for older projects, property order and `zAxisScale`), so the editor's
