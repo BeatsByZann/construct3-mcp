@@ -54,6 +54,7 @@ construct3-mcp/
 │   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify)
 │   │   ├── id-generator.ts         # SID/UID/imageSpriteId generation with collision avoidance
 │   │   ├── templates.ts            # Entity templates and known addon maps
+│   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
@@ -73,6 +74,8 @@ construct3-mcp/
 │   │       ├── integrity.ts        # Project integrity checks (validate_project)
 │   │       ├── load-rules.ts       # Editor load-time rules (validate_project, pre-write checks)
 │   │       ├── legacy-behavior-keys.ts # Legacy "behavior-type" key scan and repair
+│   │       ├── legacy-event-shapes.ts # Legacy isElse/isOr/function call/script shape scan and repair
+│   │       ├── delete-references.ts # Function and variable names an event delete would leave dangling
 │   │       ├── behavior-refs.ts    # Behavior name checks against objects and families
 │   │       ├── group-settings.ts   # Event group settings
 │   │       ├── event-outline.ts    # Editor event numbers, event sheet outline
@@ -91,7 +94,7 @@ construct3-mcp/
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── object-tools.ts         # Object and family tools (6)
-│   │   ├── event-tools.ts          # Event sheet tools (11)
+│   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
@@ -172,6 +175,8 @@ server.tool(
    - Return a `WriteResult` through `toolResult()`, which adds the `editorNote` to completed writes
 3. Add tests in `test/tools/` that call the handler through `test/mocks/mock-server.ts`
 
+`server.tool()` takes a raw shape, which the MCP SDK wraps in an object schema that drops unknown arguments. A tool whose mistyped arguments would lose content (as `add_event_block` and `update_event_block`) is registered with `server.registerTool(name, { description, inputSchema: z.object({ ... }).strict() }, handler)` instead: the SDK parses the arguments with that schema as it is, so unknown ones are refused. The mock server handles both.
+
 ### Adding a New Template
 
 1. Open `src/construct3/templates.ts`
@@ -190,6 +195,7 @@ Key things to know when working with Construct 3 project files:
 - **c3proj containers** use `{ items: string[], subfolders: Subfolder[] }` recursive structure
 - **usedAddons** in c3proj must list every plugin, behavior, and effect used
 - **Global plugins** (Audio, AJAX, Mouse, etc.) use `singleglobal-inst` instead of layout placement
+- **Event shapes** follow editor-saved sheets (`event-shapes.ts`): Else is a System `else` condition at index 0 (conditions after it make an else-if), an OR block has `"isOrBlock": true` on the event, a function call is `{ callFunction, sid, parameters: [positional arguments] }` without `id`/`objectClass`, and a script action is `{ type: "script", language: "javascript", script: [lines] }`. Never write the block-level `isElse` or per-condition `isOr` keys older versions wrote
 - **Behavior conditions/actions** name their behavior under `behaviorType`; a condition or action that names its behavior only under the legacy `behavior-type` key makes the editor refuse to open the project (a leftover `behavior-type` next to a valid `behaviorType` is ignored)
 - **Timelines** are stored under `timelines/`, in folders that mirror their project-bar folders. The first nameless first-level subfolder of the container is the editor's Transitions folder: its items are transitions, stored in `timelines/transitions/` (`timeline-folders.ts`); a nameless folder anywhere else is malformed
 - **JSON formatting**: C3 uses tab indentation (`\t`), LF line endings, no trailing newline and no BOM. Existing files keep whatever style they have on disk (e.g. CRLF from a git `core.autocrlf` checkout)
