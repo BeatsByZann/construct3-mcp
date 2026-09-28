@@ -50,34 +50,9 @@ export function readPngSize(png: Buffer): { width: number; height: number } | un
 
 // ─── Shared animation helpers ────────────────────────────
 
-/** An animation together with the container and folder path that hold it. */
-interface AnimationLocation {
-  anim: Animation;
-  container: AnimationsContainer;
-  index: number;
-  /** Slash-separated folder path, or undefined at the animations root. */
-  folderPath?: string;
-}
-
 /** An animation subfolder's name; C3 types it loosely, so read it defensively. */
 function folderName(container: AnimationsContainer): string {
   return typeof container.name === 'string' ? container.name : '';
-}
-
-/** Every animation in an object, root folder first, depth-first after that. */
-function listAnimations(root: AnimationsContainer, folderPath?: string): AnimationLocation[] {
-  const found: AnimationLocation[] = [];
-  root.items.forEach((anim, index) => found.push({ anim, container: root, index, folderPath }));
-  for (const sub of root.subfolders) {
-    const name = folderName(sub);
-    found.push(...listAnimations(sub, folderPath ? folderPath + '/' + name : name));
-  }
-  return found;
-}
-
-/** Find an animation by name anywhere in the folder tree. */
-function findAnimationAnywhere(root: AnimationsContainer, name: string): AnimationLocation | undefined {
-  return listAnimations(root).find(location => location.anim.name === name);
 }
 
 /** Find the container addressed by a slash-separated folder path. */
@@ -1325,16 +1300,15 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
     const animations = readSpriteAnimations(obj, objectName);
     if (!animations.ok) return animations.error;
 
-    const location = findAnimationAnywhere(animations.root, animationName);
-    if (!location) {
-      const available = listAnimations(animations.root).map(item => item.anim.name).join(', ');
-      return toolError(`Animation "${animationName}" not found on "${objectName}". Available: ${available}`);
+    const anim = findAnimation<Animation>(animations.root, animationName)?.animation;
+    if (!anim) {
+      return toolError(`Animation "${animationName}" not found on "${objectName}". Available: ${describeAvailableAnimations(animations.root)}`);
     }
     // The frame image files are renamed, and their names contain the animation name
-    const nameError = animationNameFileError(location.anim.name, true);
+    const nameError = animationNameFileError(anim.name, true);
     if (nameError) return toolError(nameError);
 
-    const frames = location.anim.frames;
+    const frames = anim.frames;
     const resolved = reverse
       ? frames.map((_unused, index) => frames.length - 1 - index)
       : (order ?? []);
@@ -1355,7 +1329,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
 
     const { moved, journal } = await reorderFrameImages(reader.getProjectDir(), objectName, animationName, resolved, frames);
     try {
-      location.anim.frames = resolved.map(index => frames[index]);
+      anim.frames = resolved.map(index => frames[index]);
 
       const subfolder = writer.getSubfolderForEntity('objectTypes', objectName);
       const backupPath = await writer.writeEntityFile('objectTypes', objectName, obj, subfolder);
@@ -1437,15 +1411,14 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         const animations = readSpriteAnimations(obj, args.objectName);
         if (!animations.ok) return animations.error;
 
-        const location = findAnimationAnywhere(animations.root, args.animationName);
-        if (!location) {
-          const available = listAnimations(animations.root).map(item => item.anim.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${available}`);
+        const anim = findAnimation<Animation>(animations.root, args.animationName)?.animation;
+        if (!anim) {
+          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${describeAvailableAnimations(animations.root)}`);
         }
-        const nameError = animationNameFileError(location.anim.name, true);
+        const nameError = animationNameFileError(anim.name, true);
         if (nameError) return toolError(nameError);
 
-        const frames = location.anim.frames;
+        const frames = anim.frames;
         if (args.frameIndex >= frames.length) {
           return toolError(`Frame index ${args.frameIndex} is out of range. Animation "${args.animationName}" has ${frames.length} frame(s).`);
         }
@@ -1583,23 +1556,24 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         const animations = readSpriteAnimations(obj, args.objectName);
         if (!animations.ok) return animations.error;
 
-        const location = findAnimationAnywhere(animations.root, args.animationName);
-        if (!location) {
-          const available = listAnimations(animations.root).map(item => item.anim.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${available}`);
+        const found = findAnimation<Animation>(animations.root, args.animationName);
+        if (!found) {
+          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${describeAvailableAnimations(animations.root)}`);
         }
+        // Slash-separated folder path of the animation, or undefined at the animations root
+        const fromPath = found.folders.join('/') || undefined;
 
         const target = findAnimationFolder(animations.root, targetPath);
         if (!target) {
           return toolError(`Animation folder "${targetPath}" does not exist on "${args.objectName}". Create it with create_animation_folder first.`);
         }
-        if (location.folderPath === targetPath) {
+        if (fromPath === targetPath) {
           const where = targetPath ? `folder "${targetPath}"` : 'the animations root';
           return toolError(`Animation "${args.animationName}" is already in ${where}.`);
         }
 
-        location.container.items.splice(location.index, 1);
-        target.items.push(location.anim);
+        found.items.splice(found.items.indexOf(found.animation), 1);
+        target.items.push(found.animation);
 
         const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
         const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
@@ -1610,7 +1584,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           category: 'object',
           action: 'updated',
           backupFile: backupPath,
-          warnings: [`Moved "${args.animationName}" from ${location.folderPath ? `"${location.folderPath}"` : 'the animations root'} to ${targetPath ? `"${targetPath}"` : 'the animations root'}.`],
+          warnings: [`Moved "${args.animationName}" from ${fromPath ? `"${fromPath}"` : 'the animations root'} to ${targetPath ? `"${targetPath}"` : 'the animations root'}.`],
         };
         return toolResult(result);
       } catch (error) {

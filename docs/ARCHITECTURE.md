@@ -207,7 +207,7 @@ Supporting modules next to the templates:
 | `construct3/names.ts` | Name comparison the way the editor does it (ignoring case) for names and project-bar folders |
 | `construct3/event-variable-names.ts` | The editor's rules for event variable and function parameter names: scope, System expression names, characters it refuses |
 | `construct3/instance-behaviors.ts` | The behavior entries every layout instance carries (object and family behaviors, with default property values) |
-| `construct3/animation-rename.ts` | Sprite animations in animation folders, and what renaming one changes: frame image file names, `initial-animation` of layout instances, event sheet strings naming it (counted for a warning) |
+| `construct3/animation-rename.ts` | Sprite animations in animation folders (the one walk every animation tool finds animations through), and what renaming one changes: frame image file names, `initial-animation` of layout instances, event sheet strings naming it (counted for a warning) |
 | `construct3/json-format.ts` | On-disk text style: detects and reapplies line endings, trailing newline and BOM |
 | `construct3/layers.ts` | The layer tree of a layout: walks every layer and nested sub-layer and their instances (non-world instances included), finds layers and instances, compares layer names ignoring case; the analyzers and every layout, layer, template, effect, usage and timeline tool walk layers through it, so there is one layer walk in the code |
 | `construct3/path-utils.ts` | `resolveProjectPath()`: joins path segments and rejects paths that leave the project folder |

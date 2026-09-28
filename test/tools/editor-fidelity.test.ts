@@ -516,6 +516,52 @@ describe('animations in animation folders', () => {
     expect(result.content[0].text).toContain('Available: Animation 1, Moves/Walk (animations in animation folders are shown with their folder path');
   });
 
+  it('the frame order and animation folder tools list animations with their folder path when a name is missing', async () => {
+    await spriteWithFolderAnimation();
+    const expected = 'Available: Animation 1, Moves/Walk (animations in animation folders are shown with their folder path';
+    for (const [tool, args] of [
+      ['reorder_frames', { objectName: 'Sprite', animationName: 'Jump', order: [0] }],
+      ['reverse_frames', { objectName: 'Sprite', animationName: 'Jump' }],
+      ['duplicate_frame', { objectName: 'Sprite', animationName: 'Jump', frameIndex: 0 }],
+      ['move_animation_to_folder', { objectName: 'Sprite', animationName: 'Jump', folderPath: 'Moves' }],
+    ] as const) {
+      const result = await server.callTool(tool, args);
+      expect(result.isError, tool).toBe(true);
+      expect(result.content[0].text, tool).toContain(expected);
+    }
+  });
+
+  it('reverses, reorders and duplicates the frames of an animation in a folder, and moves it between folders and the root', async () => {
+    await spriteWithFolderAnimation();
+    const folderWalk = async () => (await readObject()).animations.subfolders[0].items[0];
+
+    await call('duplicate_frame', { objectName: 'Sprite', animationName: 'Walk', frameIndex: 0 });
+    expect((await folderWalk()).frames).toHaveLength(2);
+    await call('reverse_frames', { objectName: 'Sprite', animationName: 'Walk' });
+    await call('reorder_frames', { objectName: 'Sprite', animationName: 'Walk', order: [1, 0] });
+    expect((await folderWalk()).frames).toHaveLength(2);
+
+    const already = await server.callTool('move_animation_to_folder', { objectName: 'Sprite', animationName: 'Walk', folderPath: 'Moves' });
+    expect(already.isError).toBe(true);
+    expect(already.content[0].text).toContain('already in folder "Moves"');
+
+    const toRoot = await call('move_animation_to_folder', { objectName: 'Sprite', animationName: 'Walk', folderPath: null });
+    expect(toRoot.warnings[0]).toContain('Moved "Walk" from "Moves" to the animations root.');
+    let obj = await readObject();
+    expect(obj.animations.items.map((a: { name: string }) => a.name)).toEqual(['Animation 1', 'Walk']);
+    expect(obj.animations.subfolders[0].items).toEqual([]);
+
+    const rootAgain = await server.callTool('move_animation_to_folder', { objectName: 'Sprite', animationName: 'Walk', folderPath: null });
+    expect(rootAgain.isError).toBe(true);
+    expect(rootAgain.content[0].text).toContain('already in the animations root');
+
+    const back = await call('move_animation_to_folder', { objectName: 'Sprite', animationName: 'Walk', folderPath: 'Moves' });
+    expect(back.warnings[0]).toContain('Moved "Walk" from the animations root to "Moves".');
+    obj = await readObject();
+    expect(obj.animations.items.map((a: { name: string }) => a.name)).toEqual(['Animation 1']);
+    expect(obj.animations.subfolders[0].items.map((a: { name: string }) => a.name)).toEqual(['Walk']);
+  });
+
   it('refuses a new or renamed animation named like one in a folder, ignoring case, and keeps its image', async () => {
     await spriteWithFolderAnimation();
     const before = await readFile(objectPath());

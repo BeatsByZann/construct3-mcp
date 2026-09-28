@@ -612,7 +612,7 @@ construct3-mcp/
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
 │   │   ├── ease-params.ts          # Custom eases embedded in event parameters
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
-│   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes
+│   │   ├── animation-rename.ts     # Animation lookup in folders; frame image files and layout instances a rename_animation changes
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
