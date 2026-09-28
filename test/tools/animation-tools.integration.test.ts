@@ -453,12 +453,13 @@ describe('frame tools on GIF-backed frames', () => {
     expect(Object.keys(await imageFiles())).toEqual(['sprite-run-000.png', 'sprite-run-001.gif', 'sprite-run-002.png']);
   });
 
-  it('replace_sprite_image turns a GIF frame into a PNG and removes the old file', async () => {
+  it('replace_sprite_image turns a GIF frame into a PNG and leaves the old file in place', async () => {
     const png = generatePlaceholderPng(8, 8).toString('base64');
-    resultOf(await server.callTool('replace_sprite_image', { objectName: 'Sprite', animationName: ANIMATION, frameIndex: 1, pngBase64: png }));
+    const result = resultOf(await server.callTool('replace_sprite_image', { objectName: 'Sprite', animationName: ANIMATION, frameIndex: 1, pngBase64: png }));
     expect((await readFrames())[1].fileType).toBe('image/png');
     const files = Object.keys(await imageFiles());
     expect(files).toContain(name(1, 'png'));
-    expect(files).not.toContain(name(1, 'gif'));
+    expect(files).toContain(name(1, 'gif'));
+    expect((result.warnings as string[]).join(' ')).toContain(`was stored as "image/gif" (images/${name(1, 'gif')})`);
   });
 });

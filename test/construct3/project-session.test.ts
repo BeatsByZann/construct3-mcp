@@ -111,6 +111,8 @@ describe('open_project', () => {
     const opened = parse(await server.callTool('open_project', { path: otherFolder }));
     expect(opened.opened).toMatchObject({ name: 'RenameProject', format: 'folder' });
     expect(opened.warnings).toBeUndefined();
+    // Opening a project writes nothing in it, so there is no editor reload note.
+    expect(opened.editorNote).toBeUndefined();
     expect(existsSync(workDir)).toBe(false);
     expect(readZip(await readFile(archivePath)).some(e => e.path === 'files-note.txt')).toBe(true);
     expect(parse(await server.callTool('get_open_project', {})).format).toBe('folder');

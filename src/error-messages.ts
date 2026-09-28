@@ -2,7 +2,9 @@
 export function redactFsPaths(message: string): string {
   // Node filesystem errors quote their paths (including both rename/copy operands).
   // Greedy per-line matching also handles apostrophes inside a quoted path.
-  const redacted = message.replace(/(['"`])(?:[A-Za-z]:[\\/]|\\\\|\/)[^\r\n]*\1/g, '[path]');
+  // A quoted lone slash ("/", as messages name a forbidden character) is not a
+  // path: a POSIX path needs a non-space, non-quote character after the slash.
+  const redacted = message.replace(/(['"`])(?:[A-Za-z]:[\\/]|\\\\|\/(?=[^\s'"`]))[^\r\n]*\1/g, '[path]');
   // Other libraries can emit unquoted paths. Their boundary is ambiguous when
   // spaces are legal, so suppress the message rather than returning a fragment.
   if (/(?:[A-Za-z]:[\\/]|\\\\|(?:^|[\s(=])\/[^\s])/m.test(redacted)) {

@@ -14,8 +14,9 @@ for the upstream pull request.
 
 | Branch | What it is |
 |---|---|
-| `main` | Upstream `main` plus the seven correctness commits offered upstream as [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15). It is the head of that pull request, so it is kept close to upstream on purpose. The tool surface here is upstream's. |
+| `main` | Upstream `main` as of July 2026 plus the seven correctness commits offered upstream as [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15). It is the head of that pull request, so it is kept close to upstream on purpose. The tool surface here is upstream's 66 tools of that time; it does not include upstream 1.9.0. |
 | `claude/w84-editor-gap` | The diverged line. Everything described below is on this branch. Use it if you came here for the extra tools. |
+| `claude/sync-upstream-v1.9.0` | Local, not yet pushed. The merge of upstream release 1.9.0 into `claude/w84-editor-gap` at `0eab993`; the measures and behavior below describe this merge, which the default branch takes when it is pushed. |
 
 ```bash
 git clone -b claude/w84-editor-gap https://github.com/BeatsByZann/construct3-mcp.git
@@ -27,22 +28,27 @@ node dist/index.js /path/to/your/project.c3proj
 
 ## How far it has diverged
 
-Measured at `b856ed8` (2026-09-24) against `upstream/main` (`b6d7d58`).
+Measured on the merge of upstream 1.9.0 (`claude/sync-upstream-v1.9.0`, 2026-09-28, before it was
+committed) against `upstream/main` (`f03fa85`, release 1.9.0).
 
 | Measure | Upstream | This fork |
 |---|---|---|
-| MCP tools registered | 66 | 185 |
-| Source files under `src/` | 32 | 66 |
-| Test files | 16 | 72 |
-| Tests | not measured here | 1498 passing in 72 files |
-| Package version | 1.8.1 | 1.8.2 |
+| MCP tools registered | 71 | 190 |
+| MCP resources / prompts | 9 / 7 | 9 / 7 |
+| Source files under `src/` | 51 | 85 |
+| Test files | 46 | 102 |
+| Tests | not measured here | 2612 in 102 files (1 skipped) |
+| Package version | 1.9.0 | 1.9.1 |
 
-At that commit the branch is 92 commits ahead of upstream and one commit behind it (`b6d7d58`, a
-`.gitignore` chore). The common ancestor is `6957fcb` (2026-07-27). The diff is 172 files changed,
-79,956 insertions and 1,412 deletions.
+The merge takes all 17 upstream commits since the common ancestor `6957fcb` (2026-07-27), up to
+release 1.9.0, on top of the fork's 93 commits since that ancestor, so after it the fork is no
+longer behind upstream. Against upstream 1.9.0 it changes 175 files, with about 80,000 insertions
+and 1,700 deletions.
 
-No upstream tool was removed or renamed. All 66 upstream tools are still registered under their
-upstream names, so an existing configuration keeps working. The fork adds 119 tools alongside them.
+No upstream tool was removed or renamed. All 71 upstream tools are registered under their
+upstream names, including the five that 1.9.0 added (`locate_event`, `get_eventsheet_outline`,
+`find_runtime_traps`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`), so an existing
+configuration keeps working. The fork adds 119 tools alongside them.
 
 ## What the fork adds
 
@@ -84,10 +90,17 @@ input in viewport, canvas or layout coordinates, and saves screenshots.
 
 These are behavior changes, not additions. They matter if you already depend on upstream output.
 
-- Event serialization matches what Construct r495 writes for OR blocks, else blocks and function
-  calls. Upstream writes shapes the editor does not round-trip cleanly.
-- `add_event_block` and `update_event_block` write nested blocks, action comments, function calls
-  and custom action calls, and set `isOrBlock` and per-condition `disabled`.
+- Upstream 1.9.0 and the fork now write the same editor shapes for else blocks, OR blocks,
+  function calls and scripts, with `disabled` right after `sid`. On top of upstream,
+  `add_event_block` and `update_event_block` write custom action calls, insert, replace and
+  reorder conditions and actions, edit custom action bodies, and place a block under a parent or
+  beside a sibling by SID; `add_event_to_sheet` adds groups, functions, variables and script
+  blocks inside a group or event, not only at the top level.
+- An else block with no event block before it (comments aside), or after a group, variable or
+  include, is refused; upstream writes it with a warning.
+- `move_events_between_sheets` gives copied events fresh SIDs; upstream keeps them and warns.
+- The fork's event tools take `eventPath` like upstream's SID-addressed tools, and the load-time
+  gate also runs in `move_event_block` and `move_event_block_items`.
 - Instance origin, blend mode and depth are stored the way r495.2 stores them, and new instances
   can be placed on sub-layers.
 - `validate_project` reports a `complete` flag saying whether every object type, event sheet and
@@ -95,8 +108,12 @@ These are behavior changes, not additions. They matter if you already depend on 
   files.
 - The UID and SID generator scans sub-layers and single-image IDs, and no longer stops minting
   UIDs when a file is missing.
-- Delete tools deregister before removing an entity file, so caches stay consistent when a delete
-  fails part way.
+- Delete tools run upstream's reference checks, then deregister before removing an entity file, so
+  caches stay consistent when a delete fails part way.
+- `delete_timeline` of a registered timeline whose file is missing removes the registration;
+  upstream refuses.
+- `rename_animation` records its image file moves in the change journal, so `revert_last_change`
+  undoes the whole rename.
 - Filesystem paths are redacted out of error messages returned to the client.
 - `validate_project`, `add_event_block`, `update_event_block`, `update_event_block_action` and the
   two replace tools check
@@ -108,8 +125,9 @@ These are behavior changes, not additions. They matter if you already depend on 
   `validate_project` reports `expression-*` warnings and the event tools warn about what they
   write. Conditions and actions of a third-party addon are checked once its definitions are loaded
   (`load_addon_definitions` or `C3_ADDON_DEFINITIONS`); until then `validate_project` lists it as
-  `ace-definitions-unavailable` instead of skipping it silently. `validate_project` runs 18 checks,
-  including `event-legacy-key` for keys Construct neither writes nor reads.
+  `ace-definitions-unavailable` instead of skipping it silently. `validate_project` runs 30 checks:
+  upstream's 25 plus object images, `event-legacy-key` (keys Construct neither writes nor reads
+  that no fix tool converts), ACE definitions, expressions and addon definitions.
 - Every tool result ends with the files that call changed, and `revert_last_change` undoes the
   last call from the backups its writes left; it refuses, restoring nothing, when any of those
   files or backups changed since. A write through the project writer or a rename tool is refused
@@ -125,9 +143,12 @@ These are behavior changes, not additions. They matter if you already depend on 
   sub-layers, frame tools follow each frame's real file type (GIF included), and
   `rename_event_variable` stays inside the declaring scope.
 
+- The flowchart, container, tilemap brush, rename and duplicate tools write Construct 3's own text
+  style (tab indent, LF) rather than keeping a file's line endings as upstream's writes do.
+
 The per-change detail, including the r495.2 sample sizes the shapes were derived from, is in
-[CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`. The per-tool reference is in
-[docs/API.md](docs/API.md).
+[CHANGELOG.md](CHANGELOG.md) under `[1.9.1]`, which also lists what the merge of upstream 1.9.0
+decided where the two sides differed. The per-tool reference is in [docs/API.md](docs/API.md).
 
 ## Relationship to upstream
 
@@ -135,8 +156,9 @@ Seven correctness commits were offered upstream as PR #15 and are on this fork's
 added tools have not been offered upstream and are not scheduled to be; they were built against
 the needs of one project and against Construct r495.2 specifically.
 
-This fork does not track upstream automatically. Upstream is the place to file issues about
-upstream behavior. File an issue here only about something this fork changed or added, and say
+This fork does not track upstream automatically; it merges upstream releases, most recently 1.9.0,
+keeping upstream's structure and names where the two sides are equivalent so later releases merge
+cleanly. Upstream is the place to file issues about upstream behavior. File an issue here only about something this fork changed or added, and say
 which branch you are on.
 
 - Upstream: <https://github.com/liauw-media/construct3-mcp>

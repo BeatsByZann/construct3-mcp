@@ -26,11 +26,11 @@ Real-world examples of using the Construct3 MCP Server with Claude.
 > "Are you connected to my Construct 3 project?"
 
 **Response:**
-> Yes! I'm connected to your project "Bonny's Fortune" (version 0.2.6). The project has:
-> - 442 object types
-> - 17 event sheets
-> - 7 layouts
-> - 14 families
+> Yes! I'm connected to your project "My Game" (version 1.0.0). The project has:
+> - 48 object types
+> - 6 event sheets
+> - 4 layouts
+> - 3 families
 >
 > Would you like me to analyze any specific aspect?
 
@@ -288,16 +288,25 @@ Returns an error — the startup layout cannot be deleted.
 
 **Claude uses**: `delete_object` with `name: "Enemy"`
 
-**If referenced** (e.g., placed on LevelSelect layout):
+**If referenced** (e.g., a condition in the Game event sheet, and two instances on the sub-layer Enemies of the layer Main in the LevelSelect layout):
 ```json
 {
   "success": false,
+  "entity": "Enemy",
+  "category": "object",
   "action": "delete_blocked",
-  "message": "Object is still referenced. Use force=true to delete anyway.",
+  "message": "Object is still referenced: used 1 time(s) in events of \"Game\" (1 condition object); 2 instance(s) in layout \"LevelSelect\" (layer \"Main > Enemies\"). Use force=true to delete anyway (references will NOT be cleaned up).",
   "references": {
-    "eventSheets": [],
+    "eventSheets": ["Game"],
     "layouts": ["LevelSelect"],
-    "families": []
+    "families": [],
+    "events": [
+      { "eventSheet": "Game", "path": "block > condition:0", "context": "condition" }
+    ],
+    "instances": [
+      { "layout": "LevelSelect", "layer": "Main > Enemies", "instances": 2 }
+    ],
+    "instanceProperties": []
   }
 }
 ```
@@ -305,14 +314,14 @@ Returns an error — the startup layout cannot be deleted.
 **Force delete:**
 > "Force delete Enemy even though it's referenced"
 
-Returns success with a warning that references were NOT cleaned up.
+Returns success with a warning that names the remaining uses (references are NOT cleaned up). Afterwards `validate_project` reports the leftover instances, object parameters and family memberships as `broken-object-reference`; uses in expressions and scripts are not reported, and a second warning of the delete lists them.
 
 ### Update Project Metadata
 
 **Query:**
-> "Set the project version to 1.1.0 and author to My Studio"
+> "Set the project version to 1.1.0 and author to Example Games"
 
-**Claude uses**: `update_project_metadata` with `version: "1.1.0"`, `author: "My Studio"`
+**Claude uses**: `update_project_metadata` with `version: "1.1.0"`, `author: "Example Games"`
 
 ---
 
@@ -441,6 +450,7 @@ Returns success with a warning that references were NOT cleaned up.
   ]
 }
 ```
+The script is written the way the editor saves it: `{ "type": "script", "language": "javascript", "script": ["console.log('Game started');"] }`, one array entry per line. `script` may also be passed as that array.
 
 ### Sub-Event (Nested Block)
 
@@ -485,23 +495,30 @@ Returns success with a warning that references were NOT cleaned up.
 ### Else Block
 
 **Query:**
-> "If score >= 100, show the WinText. Otherwise, show the TryAgainText."
+> "At the start of the layout: if score >= 100, show the WinText. Otherwise, show the TryAgainText."
+
+An else block belongs after the block it is the else of, at the same level (only comments may stand between them). Else can only follow a normal (non-triggered) event, so here both are sub-events of the trigger rather than an else after the trigger itself.
 
 **Claude uses**: `add_event_block` with:
 ```json
 {
   "sheetName": "GameSheet",
   "conditions": [
-    {
-      "id": "compare-instance-variable",
-      "objectClass": "Player",
-      "parameters": { "variable": "score", "comparison": "≥", "value": "100" }
-    }
-  ],
-  "actions": [
-    { "id": "set-visible", "objectClass": "WinText", "parameters": { "visible": true } }
+    { "id": "on-start-of-layout", "objectClass": "System" }
   ],
   "children": [
+    {
+      "conditions": [
+        {
+          "id": "compare-instance-variable",
+          "objectClass": "Player",
+          "parameters": { "variable": "score", "comparison": "≥", "value": "100" }
+        }
+      ],
+      "actions": [
+        { "id": "set-visible", "objectClass": "WinText", "parameters": { "visible": true } }
+      ]
+    },
     {
       "isElse": true,
       "actions": [
@@ -511,19 +528,23 @@ Returns success with a warning that references were NOT cleaned up.
   ]
 }
 ```
+`isElse` is written the way Construct 3 saves Else: a System condition `{ "id": "else", "objectClass": "System", "sid": ... }` first in the else block's `conditions`. Conditions given together with `isElse` follow it and make an else-if.
 
-### OR Condition
+### Either of Two Triggers
 
 **Query:**
 > "When the player presses Space OR presses the up arrow, jump"
+
+Construct 3 allows one trigger per event, except in an OR block, which may hold several. `isOrBlock: true` makes one.
 
 **Claude uses**: `add_event_block` with:
 ```json
 {
   "sheetName": "PlayerControls",
+  "isOrBlock": true,
   "conditions": [
-    { "id": "on-key-pressed", "objectClass": "Keyboard", "parameters": { "key": "32" } },
-    { "id": "on-key-pressed", "objectClass": "Keyboard", "parameters": { "key": "38" }, "isOr": true }
+    { "id": "on-key-pressed", "objectClass": "Keyboard", "parameters": { "key": 32 } },
+    { "id": "on-key-pressed", "objectClass": "Keyboard", "parameters": { "key": 38 } }
   ],
   "actions": [
     {
@@ -535,6 +556,25 @@ Returns success with a warning that references were NOT cleaned up.
   ]
 }
 ```
+
+### Function Call
+
+**Query:**
+> "On start of layout, call the SpawnWave function with wave 1 and boss mode off"
+
+**Claude uses**: `add_event_block` with:
+```json
+{
+  "sheetName": "GameSheet",
+  "conditions": [
+    { "id": "on-start-of-layout", "objectClass": "System" }
+  ],
+  "actions": [
+    { "callFunction": "SpawnWave", "parameters": ["1", false] }
+  ]
+}
+```
+Arguments follow the order of the function's parameters: expressions as strings, `true`/`false` for boolean parameters. It is written as `{ "callFunction": "SpawnWave", "sid": ..., "parameters": ["1", false] }`, without `id`/`objectClass`, as the editor saves calls.
 
 ### Disabled Action
 
@@ -608,7 +648,7 @@ Returns success with a warning that references were NOT cleaned up.
 ### Find Object Usage
 
 **Query:**
-> "Where is the spin_btn object used?"
+> "Where is the pause_btn object used?"
 
 **Claude uses**: `find_object_usage` prompt + `get_object_dependencies`
 
@@ -626,7 +666,7 @@ Returns success with a warning that references were NOT cleaned up.
 ### Explain Event Sheet
 
 **Query:**
-> "Explain how the SpinMachine event sheet works"
+> "Explain how the PlayerControls event sheet works"
 
 **Claude uses**: `explain_eventsheet` prompt + `get_eventsheet_details`
 

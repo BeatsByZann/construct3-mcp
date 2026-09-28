@@ -216,20 +216,26 @@ describe('Block Event Template', () => {
   });
 
   it('creates disabled block', () => {
-    const block = createBlockEvent(100, [], [], true);
+    const block = createBlockEvent(100, [], [], { disabled: true });
     expect(block.disabled).toBe(true);
   });
 
   it('creates an OR block with the block-level isOrBlock key and never writes isElse', () => {
-    const block = createBlockEvent(100, [], [], undefined, undefined, true);
+    const block = createBlockEvent(100, [], [], { isOrBlock: true });
     expect(block.isOrBlock).toBe(true);
     expect(block).not.toHaveProperty('isElse');
   });
 
   it('creates block with children', () => {
     const child = createBlockEvent(200, [{ id: 'x', objectClass: 'System', sid: 300 }], []);
-    const block = createBlockEvent(100, [{ id: 'y', objectClass: 'System', sid: 400 }], [], undefined, [child]);
+    const block = createBlockEvent(100, [{ id: 'y', objectClass: 'System', sid: 400 }], [], { children: [child] });
     expect(block.children).toHaveLength(1);
+  });
+
+  it('writes keys in the editor order: sid, disabled, children, isOrBlock', () => {
+    const child = createBlockEvent(200, [], []);
+    const block = createBlockEvent(100, [], [], { disabled: true, children: [child], isOrBlock: true });
+    expect(Object.keys(block)).toEqual(['eventType', 'conditions', 'actions', 'sid', 'disabled', 'children', 'isOrBlock']);
   });
 });
 

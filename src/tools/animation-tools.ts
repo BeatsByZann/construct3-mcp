@@ -8,7 +8,6 @@
 
 import { z } from 'zod';
 import { readFile, copyFile, rename, stat, unlink } from 'fs/promises';
-import { basename } from 'path';
 import type { MutationToolDeps } from './shared.js';
 import type {
   WriteResult,
@@ -19,10 +18,24 @@ import type {
   ImagePoint,
 } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError, validateSubfolder } from './shared.js';
-import { backupOnce, forgetChange, recordChange, recordDelete, recordWrite } from '../construct3/change-journal.js';
+import { backupOnce, forgetChange, recordChange, recordWrite } from '../construct3/change-journal.js';
+import { findNameClash } from '../construct3/names.js';
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
-import { getImageFileName } from '../construct3/png-generator.js';
+import { describeCharacter, getImageFileName, invalidImageNameCharacter } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
+import { EntityWriteError } from '../construct3/project-writer.js';
+import {
+  animationsSharingImageFiles,
+  countAnimationNameParameters,
+  describeAvailableAnimations,
+  everyAnimation,
+  familiesContaining,
+  findAnimation,
+  frameImageExtension,
+  planFrameImageRenames,
+  renameInitialAnimation,
+} from '../construct3/animation-rename.js';
+import type { ImageFileRename } from '../construct3/animation-rename.js';
 
 /** Width and height from a PNG's IHDR chunk, or undefined when the data is not a PNG. */
 export function readPngSize(png: Buffer): { width: number; height: number } | undefined {
@@ -117,14 +130,18 @@ function validateImagePoints(points: ImagePoint[], context: string): void {
 
 /**
  * File extension of a frame's image, from the `fileType` its frame record
- * declares. C3-ACE holds 30 `image/gif` frames among its PNGs, and the
- * r495.2 samples show only those two types; anything else takes the MIME
- * subtype as its extension.
+ * declares: "png" for a PNG frame or one without fileType, "jpg" for a JPEG
+ * frame (see frameImageExtension in animation-rename.ts), "gif" for a GIF
+ * frame (sampled r495.2 projects hold GIF frames among their PNGs); anything
+ * else takes the MIME subtype as its extension.
  */
 function frameExtension(frame: { fileType?: string } | undefined): string {
   const type = frame?.fileType;
-  if (type === undefined || type === 'image/png') return 'png';
+  // PNG (also a frame without fileType) and JPEG, whose file is ".jpg"
+  const known = frameImageExtension(type);
+  if (known !== undefined) return known;
   if (type === 'image/gif') return 'gif';
+  if (typeof type !== 'string') return 'png';
   const subtype = type.split('/')[1];
   return subtype && /^[a-z0-9]+$/i.test(subtype) ? subtype.toLowerCase() : 'png';
 }
@@ -320,61 +337,6 @@ async function duplicateFrameImage(
   }
 }
 
-/**
- * Move an animation's frame image files from the old animation name to the new
- * one, so images/<object>-<animation>-NNN.png follows a rename.
- *
- * C3 finds a frame's image by the animation name baked into the file name, so
- * renaming the animation in the JSON alone leaves every frame without an
- * image. The old and new names never share a file, except when they differ
- * only in case: both then map to the same lowercase file and nothing moves.
- *
- * A frame whose old file is missing is skipped, as the other frame tools do.
- * When its new file is already there, that file is adopted, which is how a
- * rename stranded by an earlier version is undone by renaming back. A frame
- * that has both an old file and a new one is refused before anything moves,
- * because moving would overwrite a file this tool did not write.
- *
- * @returns the number of image files moved and a journal that undoes them.
- */
-async function renameAnimationFrameImages(
-  projectDir: string,
-  objectName: string,
-  oldName: string,
-  newName: string,
-  frameCount: number,
-  frames: AnimationFrame[],
-): Promise<{ moved: number; journal: FileMoveJournal }> {
-  const journal = new FileMoveJournal();
-  if (frameCount === 0) return { moved: 0, journal };
-  if (frameImagePath(projectDir, objectName, oldName, 0) === frameImagePath(projectDir, objectName, newName, 0)) {
-    return { moved: 0, journal };
-  }
-
-  const moves: Array<{ from: string; to: string }> = [];
-  for (let index = 0; index < frameCount; index++) {
-    const extension = frameExtension(frames[index]);
-    const from = frameImagePath(projectDir, objectName, oldName, index, extension);
-    const to = frameImagePath(projectDir, objectName, newName, index, extension);
-    if (!(await pathExists(from))) continue;
-    if (await pathExists(to)) {
-      throw new Error(
-        `Frame ${index} already has an image file for "${newName}" (images/${basename(to)}) as well as its own ` +
-        `(images/${basename(from)}). Renaming would overwrite it; move or delete one of them first.`
-      );
-    }
-    moves.push({ from, to });
-  }
-
-  try {
-    for (const step of moves) await journal.move(step.from, step.to);
-    return { moved: moves.length, journal };
-  } catch (error) {
-    await journal.undo();
-    throw error;
-  }
-}
-
 /** An image point as accepted by update_frame; ranges are checked in the handler. */
 const imagePointSchema = z.object({
   name: z.string().min(1).max(200).describe('Image point name'),
@@ -419,17 +381,30 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           return toolError(`Object "${args.objectName}" has no animations structure. It may be corrupted.`);
         }
         const animItems = obj.animations.items;
+        // Animations in animation folders too: their image file names do not
+        // contain the folder, so a new animation of the same name would write
+        // its placeholder images over theirs
+        const allAnims = everyAnimation<Animation>(obj.animations);
 
-        // Check for duplicate animation name
-        if (animItems.some(a => a.name === args.animationName)) {
+        // Check for a duplicate animation name in any animation folder. The editor
+        // compares animation names ignoring case, and image file names are the
+        // lowercased object and animation names, so a case variant would write its
+        // placeholder images over the existing animation's images
+        const nameClash = findNameClash(args.animationName, animationNames(allAnims));
+        if (nameClash === args.animationName) {
           return toolError(`Animation "${args.animationName}" already exists on "${args.objectName}". Use update_animation_properties to modify it.`);
         }
+        if (nameClash) {
+          return toolError(animationCaseClashError(args.objectName, args.animationName, nameClash));
+        }
+        const nameError = animationNameFileError(args.animationName);
+        if (nameError) return toolError(nameError);
 
         // Determine frame dimensions from existing animation if not specified
         let frameWidth = args.frameWidth ?? 100;
         let frameHeight = args.frameHeight ?? 100;
-        if ((!args.frameWidth || !args.frameHeight) && animItems.length > 0) {
-          const existingFrames = animItems[0].frames;
+        if ((!args.frameWidth || !args.frameHeight) && allAnims.length > 0) {
+          const existingFrames = Array.isArray(allAnims[0].frames) ? allAnims[0].frames : [];
           if (existingFrames.length > 0) {
             if (!args.frameWidth) frameWidth = existingFrames[0].width ?? 100;
             if (!args.frameHeight) frameHeight = existingFrames[0].height ?? 100;
@@ -530,13 +505,11 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
           return toolError(`Object "${args.objectName}" has no animations structure.`);
         }
-        const animItems = obj.animations.items;
 
-        // Find the target animation
-        const anim = animItems.find(a => a.name === args.animationName);
+        // Find the target animation (in any animation folder)
+        const anim = findAnimation<Animation>(obj.animations, args.animationName)?.animation;
         if (!anim) {
-          const availableNames = animItems.map(a => a.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available animations: ${availableNames}`);
+          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available animations: ${describeAvailableAnimations(obj.animations)}`);
         }
 
         // Check at least one property is being updated
@@ -605,19 +578,18 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
           return toolError(`Object "${args.objectName}" has no animations structure.`);
         }
-        const animItems = obj.animations.items;
 
-        const animIdx = animItems.findIndex(a => a.name === args.animationName);
-        if (animIdx === -1) {
-          const available = animItems.map(a => a.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${available}`);
+        // The animation can be in an animation folder; it is removed from that folder
+        const found = findAnimation<Animation>(obj.animations, args.animationName);
+        if (!found) {
+          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${describeAvailableAnimations(obj.animations)}`);
         }
 
-        if (animItems.length <= 1) {
+        if (everyAnimation(obj.animations).length <= 1) {
           return toolError(`Cannot delete the last animation on "${args.objectName}". A Sprite must have at least one animation.`);
         }
 
-        animItems.splice(animIdx, 1);
+        found.items.splice(found.items.indexOf(found.animation), 1);
 
         const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
         const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
@@ -641,7 +613,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
 
   server.tool(
     'rename_animation',
-    'Rename an animation on a Sprite object, renaming its frame image files to match',
+    'Rename an animation on a Sprite object, together with its frame image files and the "initial-animation" of layout instances that start with it',
     {
       objectName: z.string().max(200).describe('Sprite object name'),
       animationName: z.string().min(1).max(200).describe('Current animation name'),
@@ -656,6 +628,14 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           return notFoundError('Object', args.objectName, reader.findNearestName(args.objectName, 'objects'), 'list_objects');
         }
 
+        // On Windows and macOS the object file is found under a name that
+        // differs in case, but layout instances and event sheets name the
+        // object exactly, so they would be left naming the old animation
+        if (typeof obj.name === 'string' && obj.name !== args.objectName) {
+          return toolError(`Object "${args.objectName}" is named "${obj.name}" in the project. Object names are case-sensitive: `
+            + `use objectName "${obj.name}". Nothing was changed.`);
+        }
+
         if (obj['plugin-id'] !== 'Sprite') {
           return toolError(`Object "${args.objectName}" is not a Sprite. Only Sprite objects have animations.`);
         }
@@ -663,52 +643,133 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
           return toolError(`Object "${args.objectName}" has no animations structure.`);
         }
-        const animItems = obj.animations.items;
 
-        const anim = animItems.find(a => a.name === args.animationName);
+        // The animation can be in an animation folder, where it stays: its frame
+        // image file names do not contain the folder
+        const anim = findAnimation<Animation>(obj.animations, args.animationName)?.animation;
         if (!anim) {
-          const available = animItems.map(a => a.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${available}`);
+          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${describeAvailableAnimations(obj.animations)}`);
         }
 
-        if (animItems.some(a => a.name === args.newName)) {
+        // Like the editor: another animation's name (in any animation folder, ignoring
+        // case) is taken, changing the case of this one is fine (its lowercase image
+        // file names stay the same)
+        const others = everyAnimation<Animation>(obj.animations).filter(a => a !== anim);
+        const nameClash = args.newName === anim.name ? anim.name : findNameClash(args.newName, animationNames(others));
+        if (nameClash === args.newName) {
           return toolError(`Animation "${args.newName}" already exists on "${args.objectName}".`);
         }
-        // Frame files are named in lowercase, so two animations whose names
-        // differ only in case would share every frame file.
-        const clash = animItems.find(a => a !== anim && a.name.toLowerCase() === args.newName.toLowerCase());
-        if (clash) {
-          return toolError(
-            `Animation "${clash.name}" on "${args.objectName}" differs from "${args.newName}" only in case, ` +
-            'and their frame image files would share names. Choose another name.'
-          );
+        if (nameClash) {
+          return toolError(animationCaseClashError(args.objectName, args.newName, nameClash));
         }
 
-        const frameCount = Array.isArray(anim.frames) ? anim.frames.length : 0;
-        const { moved, journal } = await renameAnimationFrameImages(
-          reader.getProjectDir(), args.objectName, args.animationName, args.newName, frameCount, anim.frames ?? [],
-        );
+        // Construct 3 names the frame image files after the animation
+        const nameError = animationNameFileError(args.newName);
+        if (nameError) return toolError(nameError);
+
+        // Frame image files, layout instances starting with this animation, and
+        // event sheet strings naming it (see animation-rename.ts)
+        const oldName = anim.name;
+        const frames = Array.isArray(anim.frames) ? anim.frames : [];
+        const sharing = animationsSharingImageFiles(obj.animations, anim);
+        if (sharing.length > 0 && frames.length > 0) {
+          return toolError(`Cannot rename "${oldName}" on "${args.objectName}": animation ${sharing.map(n => `"${n}"`).join(', ')} differs from it only in case, `
+            + `so both use the same frame image files (images/${getImageFileName(args.objectName, oldName, 0, 'Sprite')}, …), and renaming them would leave `
+            + `${sharing.length > 1 ? 'those animations' : 'that animation'} without images. Nothing was changed. `
+            + 'Delete the duplicate first (delete_animation leaves the image files in place), then rename.');
+        }
+        const images = planFrameImageRenames(await writer.listImageFiles(), args.objectName, oldName, args.newName, frames);
+        if (images.clashes.length > 0) {
+          return toolError(`Cannot rename "${oldName}" to "${args.newName}" on "${args.objectName}": its frame images would be renamed to `
+            + `${someOf(images.clashes.map(f => `images/${f}`), 5)}, which already exist(s). Nothing was changed. `
+            + 'Renaming would overwrite them. Choose another name, or check these files and remove them if nothing uses them.');
+        }
+        const layoutRefs = [...(await reader.readAllLayouts())]
+          .map(([name, layout]) => ({ name, count: renameInitialAnimation(layout, args.objectName, oldName) }))
+          .filter(ref => ref.count > 0);
+        // Only used for a warning: conditions and actions of the object and of
+        // the families it belongs to that name the animation
+        let families: string[] = [];
         try {
-          anim.name = args.newName;
-
-          const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
-          const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
-
-          const result: WriteResult = {
-            success: true,
-            entity: args.objectName,
-            category: 'object',
-            action: 'updated',
-            backupFile: backupPath,
-            warnings: [moved === 0
-              ? `No frame image files needed renaming under images/ for "${args.animationName}", so only the animation name changed.`
-              : `Renamed ${moved} frame image file(s) under images/ to follow the new animation name.`],
-          };
-          return toolResult(result);
-        } catch (error) {
-          await journal.undo();
-          throw error;
+          families = familiesContaining(args.objectName, await reader.readAllFamilies());
+        } catch {
+          // Count the object's own parameters only
         }
+        const objectClasses = [args.objectName, ...families];
+        let sheetRefs: Array<{ name: string; count: number }> = [];
+        try {
+          sheetRefs = [...(await reader.readAllEventSheets())]
+            .map(([name, sheet]) => ({ name, count: countAnimationNameParameters(sheet, objectClasses, oldName) }))
+            .filter(ref => ref.count > 0);
+        } catch {
+          // Only used for a warning
+        }
+
+        anim.name = args.newName;
+        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+
+        // Image files first (renamed back by the writer if one fails), then the
+        // object and the layouts; a failure there rolls back everything before
+        // it, including the file whose write failed if it was already replaced
+        await writer.renameImageFiles(images.renames);
+        // Journal the moves, so revert_last_change renames the files back too
+        const imagePath = (name: string) => resolveProjectPath(reader.getProjectDir(), 'images', name);
+        for (const r of images.renames) recordChange({ kind: 'move', path: imagePath(r.to), from: imagePath(r.from) });
+        const written: WrittenEntity[] = [];
+        // The file being written, named in the rollback message if its write fails
+        let pending = entityFileLabel('objectTypes', args.objectName, subfolder);
+        let backupPath: string;
+        try {
+          backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+          written.push({ backup: backupPath, file: pending });
+          for (const ref of layoutRefs) {
+            const layout = await reader.readLayout(ref.name);
+            renameInitialAnimation(layout, args.objectName, oldName, args.newName);
+            const layoutSubfolder = writer.getSubfolderForEntity('layouts', ref.name);
+            pending = entityFileLabel('layouts', ref.name, layoutSubfolder);
+            written.push({ backup: await writer.writeEntityFile('layouts', ref.name, layout, layoutSubfolder), file: pending });
+          }
+        } catch (error) {
+          if (error instanceof EntityWriteError) written.push({ backup: error.backupPath, file: pending });
+          const cause = error instanceof Error ? error.message : String(error);
+          throw new Error(`${cause}. ${await rollBackAnimationRename(writer, written, images.renames, imagePath)}`);
+        }
+
+        const warnings: string[] = [];
+        if (images.renames.length > 0) {
+          const [first] = images.renames;
+          warnings.push(`Renamed ${images.renames.length} frame image file(s) in images/ ("${first.from}" → "${first.to}"${images.renames.length > 1 ? ', …' : ''}).`);
+        } else {
+          // A change of case keeps the lowercase file names, and a frame whose
+          // files already carry the new name (left by an earlier rename) is kept
+          warnings.push(`No frame image files needed renaming under images/ for "${oldName}", so only the animation name changed.`);
+        }
+        if (images.missing.length > 0) {
+          warnings.push(`No image file in images/ for ${images.missing.length} frame(s) of "${oldName}" (expected ${someOf(images.missing, 3)}); nothing was renamed for them.`);
+        }
+        if (layoutRefs.length > 0) {
+          const count = layoutRefs.reduce((n, ref) => n + ref.count, 0);
+          warnings.push(`Set "initial-animation" to "${args.newName}" on ${count} instance(s) of "${args.objectName}" in layout(s): ${layoutRefs.map(ref => ref.name).join(', ')}.`);
+        }
+        if (sheetRefs.length > 0) {
+          const count = sheetRefs.reduce((n, ref) => n + ref.count, 0);
+          const owners = families.length > 0
+            ? `"${args.objectName}" and its families (${families.map(f => `"${f}"`).join(', ')})`
+            : `"${args.objectName}"`;
+          warnings.push(`${count} condition/action parameter(s) of ${owners} still name "${oldName}" as a string, in event sheet(s): `
+            + `${sheetRefs.map(ref => ref.name).join(', ')}. rename_animation does not change expressions; update them if they should use "${args.newName}". `
+            + 'Parameters that compute an animation name are not counted.');
+        }
+
+        const result: WriteResult = {
+          success: true,
+          entity: args.objectName,
+          category: 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined,
+        };
+        return toolResult(result);
       } catch (error) {
         console.error('[rename_animation] failed:', error);
         return toolError(`Error renaming animation: ${error instanceof Error ? error.message : String(error)}`);
@@ -745,11 +806,12 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           return toolError(`Object "${args.objectName}" has no animations structure.`);
         }
 
-        const anim = obj.animations.items.find(a => a.name === args.animationName);
+        const anim = findAnimation<Animation>(obj.animations, args.animationName)?.animation;
         if (!anim) {
-          const available = obj.animations.items.map(a => a.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found. Available: ${available}`);
+          return toolError(`Animation "${args.animationName}" not found. Available: ${describeAvailableAnimations(obj.animations)}`);
         }
+        const nameError = animationNameFileError(anim.name, true);
+        if (nameError) return toolError(nameError);
 
         // Infer dimensions from first existing frame
         const frameWidth = args.width ?? (anim.frames[0]?.width ?? 100);
@@ -852,11 +914,13 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           return toolError(`Object "${args.objectName}" has no animations structure.`);
         }
 
-        const anim = obj.animations.items.find(a => a.name === args.animationName);
+        const anim = findAnimation<Animation>(obj.animations, args.animationName)?.animation;
         if (!anim) {
-          const available = obj.animations.items.map(a => a.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found. Available: ${available}`);
+          return toolError(`Animation "${args.animationName}" not found. Available: ${describeAvailableAnimations(obj.animations)}`);
         }
+        // The later frames' image files are renamed, and their names contain the animation name
+        const nameError = animationNameFileError(anim.name, true);
+        if (nameError) return toolError(nameError);
 
         if (args.frameIndex >= anim.frames.length) {
           return toolError(`Frame index ${args.frameIndex} is out of range. Animation "${args.animationName}" has ${anim.frames.length} frame(s) (indices 0–${anim.frames.length - 1}).`);
@@ -960,10 +1024,9 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           return toolError(`Object "${args.objectName}" has no animations structure.`);
         }
 
-        const anim = obj.animations.items.find(a => a.name === args.animationName);
+        const anim = findAnimation<Animation>(obj.animations, args.animationName)?.animation;
         if (!anim) {
-          const available = obj.animations.items.map(a => a.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found. Available: ${available}`);
+          return toolError(`Animation "${args.animationName}" not found. Available: ${describeAvailableAnimations(obj.animations)}`);
         }
 
         if (args.frameIndex >= anim.frames.length) {
@@ -1078,11 +1141,12 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           return toolError(`Object "${args.objectName}" has no animations structure.`);
         }
 
-        const anim = obj.animations.items.find(a => a.name === args.animationName);
+        const anim = findAnimation<Animation>(obj.animations, args.animationName)?.animation;
         if (!anim) {
-          const available = obj.animations.items.map(a => a.name).join(', ');
-          return toolError(`Animation "${args.animationName}" not found. Available: ${available}`);
+          return toolError(`Animation "${args.animationName}" not found. Available: ${describeAvailableAnimations(obj.animations)}`);
         }
+        const nameError = animationNameFileError(anim.name, true);
+        if (nameError) return toolError(nameError);
 
         if (args.frameIndex >= anim.frames.length) {
           return toolError(`Frame index ${args.frameIndex} is out of range. Animation has ${anim.frames.length} frame(s).`);
@@ -1120,22 +1184,19 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         await writeFile(filePath, pngBuffer);
         await recordWrite(filePath, imageExisted);
 
-        // A frame that was a GIF keeps its record truthful: the new image is a
-        // PNG, so the declared type changes and the old file is removed.
-        const previousExtension = frameExtension(frame);
-        if (previousExtension !== 'png') {
-          const oldImage = frameImagePath(reader.getProjectDir(), args.objectName, args.animationName, args.frameIndex, previousExtension);
-          const { existed: oldExisted } = await backupOnce(oldImage);
-          if (oldExisted) {
-            await unlink(oldImage);
-            recordDelete(oldImage);
-          }
-          frame.fileType = 'image/png';
-        }
-
         // Update frame metadata if dimensions provided
         if (args.width !== undefined) frame.width = args.width;
         if (args.height !== undefined) frame.height = args.height;
+
+        // The editor picks the image file's extension from the frame's fileType
+        // (a JPEG frame's image is "<name>.jpg"), so a frame stored in another
+        // format is switched to PNG; otherwise the editor keeps loading the old file
+        const warnings = [`Image written to ${filePath}`];
+        if (typeof frame.fileType === 'string' && frame.fileType !== 'image/png') {
+          const oldFile = ` (images/${fileName.replace(/\.png$/, `.${frameExtension(frame)}`)})`;
+          warnings.push(`Frame ${args.frameIndex} was stored as "${frame.fileType}"${oldFile}. Its fileType is now "image/png", so Construct 3 loads the new PNG; the old file is no longer used and was left in images/.`);
+          frame.fileType = 'image/png';
+        }
 
         const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
         const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
@@ -1146,7 +1207,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           category: 'object',
           action: 'updated',
           backupFile: backupPath,
-          warnings: [`Image written to ${filePath}`],
+          warnings,
         };
         return toolResult(result);
       } catch (error) {
@@ -1269,6 +1330,9 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
       const available = listAnimations(animations.root).map(item => item.anim.name).join(', ');
       return toolError(`Animation "${animationName}" not found on "${objectName}". Available: ${available}`);
     }
+    // The frame image files are renamed, and their names contain the animation name
+    const nameError = animationNameFileError(location.anim.name, true);
+    if (nameError) return toolError(nameError);
 
     const frames = location.anim.frames;
     const resolved = reverse
@@ -1378,6 +1442,8 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           const available = listAnimations(animations.root).map(item => item.anim.name).join(', ');
           return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${available}`);
         }
+        const nameError = animationNameFileError(location.anim.name, true);
+        if (nameError) return toolError(nameError);
 
         const frames = location.anim.frames;
         if (args.frameIndex >= frames.length) {
@@ -1553,4 +1619,90 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
       }
     }
   );
+}
+
+function animationNames(anims: Animation[]): string[] {
+  return anims.map(a => a.name).filter((n): n is string => typeof n === 'string');
+}
+
+/**
+ * Error for an animation name that differs from another animation of the
+ * sprite only in case. The editor compares animation names ignoring case, and
+ * it names image files "<object>-<animation>-NNN" in lowercase, so both
+ * animations would also use the same image files.
+ */
+function animationCaseClashError(objectName: string, requested: string, existing: string): string {
+  const file = getImageFileName(objectName, requested, 0, 'Sprite');
+  return `"${requested}" differs only in case from the existing animation "${existing}" on "${objectName}". `
+    + 'Construct 3 treats animation names that differ only in case as the same name, and it names image files in lowercase '
+    + `("images/${file}"), so both animations would use the same image files. Choose a different name.`;
+}
+
+/**
+ * Why `animationName` cannot be used in frame image file names
+ * (images/<object>-<animation>-NNN.png), or undefined when it can. With
+ * `existing`, the message is for an animation that already has the name.
+ */
+function animationNameFileError(animationName: string, existing = false): string | undefined {
+  const char = invalidImageNameCharacter(animationName);
+  if (char === undefined) return undefined;
+  const subject = existing ? `Animation "${animationName}"` : `The animation name "${animationName}"`;
+  return `${subject} contains ${describeCharacter(char)}. Construct 3 names the frame image files after the animation `
+    + '(images/<object>-<animation>-000.png), and a file name cannot contain a path separator (/ or \\) or a character '
+    + 'Windows does not allow in file names (: * ? " < > | or a control character). '
+    + (existing ? 'Rename the animation first (rename_animation). Nothing was changed.' : 'Choose another name.');
+}
+
+/**
+ * An entity file rename_animation wrote: the backup its write returned, and
+ * the file's project-relative path for messages (client-visible errors never
+ * carry absolute paths).
+ */
+interface WrittenEntity {
+  backup: string;
+  file: string;
+}
+
+/** Project-relative path of an entity file, e.g. "layouts/Levels/Level 1.json". */
+function entityFileLabel(category: string, name: string, subfolder: string | undefined): string {
+  return `${category}/${subfolder ? `${subfolder}/` : ''}${name}.json`;
+}
+
+/** The first `max` items, quoted, and how many more there are. */
+function someOf(items: string[], max: number): string {
+  const shown = items.slice(0, max).map(item => `"${item}"`).join(', ');
+  return items.length > max ? `${shown} and ${items.length - max} more` : shown;
+}
+
+/**
+ * Undo a rename_animation whose JSON writes failed part way: put back the
+ * entity files written so far and the one whose write failed (it may have been
+ * replaced; an unchanged file is left alone), from their backups, newest
+ * first, then rename the image files back. Returns a sentence for the error
+ * message.
+ */
+async function rollBackAnimationRename(
+  writer: MutationToolDeps['writer'],
+  written: WrittenEntity[],
+  renames: ImageFileRename[],
+  imagePath: (name: string) => string,
+): Promise<string> {
+  const failed: string[] = [];
+  for (const { backup, file } of [...written].reverse()) {
+    try {
+      await writer.restoreEntityFile(backup);
+    } catch {
+      failed.push(file);
+    }
+  }
+  try {
+    await writer.renameImageFiles(renames.map(r => ({ from: r.to, to: r.from })));
+    // Undone here, so the call's journal must not offer the moves again
+    for (const r of renames) forgetChange(imagePath(r.to));
+  } catch (error) {
+    failed.push(`image files (${error instanceof Error ? error.message : String(error)})`);
+  }
+  return failed.length === 0
+    ? 'The rename was rolled back: the image files have their old names again, and every JSON file it had written or started to write was restored from its backup.'
+    : `Rolling back the rename failed for: ${failed.join('; ')}. Check these (the .bak files hold the previous JSON).`;
 }

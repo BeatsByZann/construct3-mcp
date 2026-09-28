@@ -4,9 +4,13 @@
  *
  * C3 image filename conventions (verified from real projects):
  * - Animation objects (Sprite, 3D Shape):
- *   `images/{objectname lowercase}-{animation name}-{frameIndex padded to 3}.png`
+ *   `images/{objectname-animationname-NNN}.png` with the frame index padded to
+ *   3 digits and the WHOLE name lowercased. Spaces and other characters of the
+ *   animation name are kept (public example: animation "Kyoto Shop (JP)" of
+ *   object "Signs" → "signs-kyoto shop (jp)-000.png").
  * - Single-image objects (Tiled Background, Particles, Sprite Font, Tilemap,
  *   9-patch): `images/{objectname lowercase}.png`
+ * Only the image file names are lowercased; object JSON files keep their case.
  */
 
 import { SINGLE_IMAGE_PLUGINS } from './templates.js';
@@ -84,16 +88,20 @@ export function generatePlaceholderPng(width = 1, height = 1): Buffer {
 /**
  * Get the image filename that C3 expects for a given object/animation/frame.
  *
+ * The editor writes image file names entirely in lowercase, the animation part
+ * included. On a case-sensitive checkout (Linux CI, build tools) a mixed-case
+ * name would not match the file the editor expects.
+ *
  * @param objectName    Object type name (will be lowercased)
  * @param animationName Animation name (for Sprites; will be lowercased)
  * @param frameIndex    Frame index (0-based, zero-padded to 3 digits)
- * @param pluginId      Plugin ID — 'TiledBg' uses a simpler naming convention
+ * @param pluginId      Plugin ID — single-image plugins (SINGLE_IMAGE_PLUGINS) use one file per object
  * @returns Filename like "hero-walk-000.png" or "tiledbackground.png"
  *
  * Construct saves the whole name in lowercase, the animation part included:
  * r495.2 stored an editor-made Sprite whose animation is "Animation 1" as
  * images/<name>-animation 1-000.png, and none of the 3,279 image files it saved
- * across C3-ACE and the reference packages has an uppercase letter. Looking up
+ * across the sampled projects and reference packages has an uppercase letter. Looking up
  * the lowercase name finds a mixed-case file on Windows, whose lookups ignore
  * case, but not on a case-sensitive filesystem.
  */
@@ -115,4 +123,23 @@ export function getImageFileName(
   // Sprite convention: name-animation-frameIndex(3 digits).png
   const paddedIndex = String(frameIndex).padStart(3, '0');
   return `${lowerName}-${animationName.toLowerCase()}-${paddedIndex}.${extension}`;
+}
+
+/**
+ * The first character of `name` that cannot be part of an image file name
+ * built by getImageFileName, or undefined when there is none: a path
+ * separator (the file would land in a subfolder of images/, or outside it),
+ * one of : * ? " < > | that Windows does not allow in file names (the file
+ * could not be written or checked out there), or a control character. The
+ * animation names of editor-saved projects seen so far use only letters,
+ * digits, spaces, "_" and "-".
+ */
+export function invalidImageNameCharacter(name: string): string | undefined {
+  return /[\\/:*?"<>|\u0000-\u001f]/.exec(name)?.[0];
+}
+
+/** How to show a character found by invalidImageNameCharacter in a message. */
+export function describeCharacter(char: string): string {
+  const code = char.charCodeAt(0);
+  return code < 0x20 ? `control character U+${code.toString(16).toUpperCase().padStart(4, '0')}` : `"${char}"`;
 }

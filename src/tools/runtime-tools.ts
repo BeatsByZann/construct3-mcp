@@ -208,17 +208,19 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
         // Write the bridge script
         await writeProjectText(bridgePath, generateBridgeScript());
 
-        // Register through the same shared script registration used by W64.
+        // Register through the shared script registration that register_script_file uses.
         const registration = await ensureBridgeFiles(reader, writer);
 
+        // The bridge script is rewritten even when it was already registered
         return toolResult({
+          success: true,
           injected: true,
           path: bridgePath,
           registered: registration.registered,
           sid: registration.sid,
           imported: true,
           message: 'Runtime bridge injected, registered with script-info, and imported by scripts/main.js.',
-        });
+        }, { projectWritten: true });
       } catch (error) {
         console.error('[inject_runtime_bridge] failed:', error);
         return toolError(`Failed to inject runtime bridge: ${error instanceof Error ? error.message : String(error)}`);
@@ -260,9 +262,10 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
         } catch { /* main.js might not exist in a minimal project */ }
 
         return toolResult({
+          success: true,
           removed: true,
           message: 'Runtime bridge removed from project.',
-        });
+        }, { projectWritten: true });
       } catch (error) {
         console.error('[remove_runtime_bridge] failed:', error);
         return toolError(`Failed to remove runtime bridge: ${error instanceof Error ? error.message : String(error)}`);
@@ -378,7 +381,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
           return toolError(`Refusing to connect to "${target}": only this machine (localhost, 127.0.0.1, ::1) is allowed unless allowRemoteHost is true. The runtime bridge runs script in whatever page it reaches.`);
         }
         const connected = await connections.connect({ cdpEndpoint, host, port, timeoutMs });
-        return toolResult(connected);
+        return toolResult(connected, { projectWritten: false });
       } catch (error) {
         console.error('[connect_to_game] failed:', error);
         return toolError(`Failed to connect to game: ${error instanceof Error ? error.message : String(error)}`);
@@ -398,7 +401,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
       try {
         const stopped = await connections.disconnect(connectionId);
         if (!stopped) return toolError(`Unknown or closed connection: ${connectionId}`);
-        return toolResult({ connectionId, disconnected: true });
+        return toolResult({ connectionId, disconnected: true }, { projectWritten: false });
       } catch (error) {
         console.error('[disconnect_from_game] failed:', error);
         return toolError(`Failed to disconnect from game: ${error instanceof Error ? error.message : String(error)}`);
@@ -429,7 +432,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
           pollIntervalMs,
           timeoutMs,
         });
-        return toolResult(result);
+        return toolResult(result, { projectWritten: false });
       } catch (error) {
         console.error('[call_bridge] failed:', error);
         return toolError(`Failed to call runtime bridge: ${error instanceof Error ? error.message : String(error)}`);
@@ -464,7 +467,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
           return toolError('subscribe_events with eventType "globalVarChange" needs filter.variable, the global variable to watch.');
         }
         const result = await subscriptionCall(connectionId, 'subscribeEvents', { eventType, filter: filter ?? {}, bufferSize });
-        return toolResult({ subscription_id: result.subscription_id, eventType, filter: filter ?? {}, bufferSize });
+        return toolResult({ subscription_id: result.subscription_id, eventType, filter: filter ?? {}, bufferSize }, { projectWritten: false });
       } catch (error) {
         console.error('[subscribe_events] failed:', error);
         return toolError(`Failed to subscribe: ${error instanceof Error ? error.message : String(error)}`);
@@ -483,7 +486,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
     async ({ connectionId, subscriptionId, clear }) => {
       try {
         const result = await subscriptionCall(connectionId, 'readEvents', { subscriptionId, clear });
-        return toolResult({ events: result.events, count: result.count });
+        return toolResult({ events: result.events, count: result.count }, { projectWritten: false });
       } catch (error) {
         console.error('[read_events] failed:', error);
         return toolError(`Failed to read events: ${error instanceof Error ? error.message : String(error)}`);
@@ -501,7 +504,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
     async ({ connectionId, subscriptionId }) => {
       try {
         const result = await subscriptionCall(connectionId, 'unsubscribeEvents', { subscriptionId });
-        return toolResult({ subscription_id: result.subscription_id, unsubscribed: result.unsubscribed === true });
+        return toolResult({ subscription_id: result.subscription_id, unsubscribed: result.unsubscribed === true }, { projectWritten: false });
       } catch (error) {
         console.error('[unsubscribe_events] failed:', error);
         return toolError(`Failed to unsubscribe: ${error instanceof Error ? error.message : String(error)}`);
@@ -534,7 +537,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
           met: result.met,
           elapsed_ms: result.elapsedMs,
           final_value: result.finalValue,
-        });
+        }, { projectWritten: false });
       } catch (error) {
         console.error('[wait_for_condition] failed:', error);
         return toolError(`Failed to wait for condition: ${error instanceof Error ? error.message : String(error)}`);
@@ -566,7 +569,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
           coordinateSpace,
           layer,
         });
-        return toolResult(result);
+        return toolResult(result, { projectWritten: false });
       } catch (error) {
         console.error('[simulate_input] failed:', error);
         return toolError(`Failed to simulate input: ${error instanceof Error ? error.message : String(error)}`);
@@ -584,7 +587,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
     },
     async ({ connectionId }) => {
       try {
-        return toolResult(await connections.getCanvasGeometry(connectionId));
+        return toolResult(await connections.getCanvasGeometry(connectionId), { projectWritten: false });
       } catch (error) {
         console.error('[get_canvas_size] failed:', error);
         return toolError(`Failed to read canvas size: ${error instanceof Error ? error.message : String(error)}`);
@@ -609,7 +612,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
         const shot = await connections.captureScreenshot({ connectionId, format, quality, canvasOnly });
         await mkdir(dirname(outputPath), { recursive: true });
         await writeFile(outputPath, shot.data);
-        return toolResult({ success: true, path: outputPath, bytes: shot.data.length, format: shot.format, clip: shot.clip });
+        return toolResult({ success: true, path: outputPath, bytes: shot.data.length, format: shot.format, clip: shot.clip }, { projectWritten: false });
       } catch (error) {
         console.error('[screenshot_game] failed:', error);
         return toolError(`Failed to capture a screenshot: ${error instanceof Error ? error.message : String(error)}`);
@@ -659,7 +662,7 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
           next: info.browser
             ? `connect_to_game with host "127.0.0.1" and port ${info.browser.cdpPort}; the game must carry the runtime bridge (inject_runtime_bridge before the export).`
             : `Open ${info.url} in a browser started with --remote-debugging-port, then connect_to_game; or call again with launchBrowser: true.`,
-        });
+        }, { projectWritten: false });
       } catch (error) {
         console.error('[serve_preview] failed:', error);
         return toolError(`Failed to serve the preview: ${error instanceof Error ? error.message : String(error)}`);
@@ -678,10 +681,10 @@ export function registerRuntimeTools({ server, reader, writer }: RuntimeToolDeps
         if (serverId === undefined) {
           const stopped = previews.list();
           await previews.closeAll();
-          return toolResult({ success: true, stopped });
+          return toolResult({ success: true, stopped }, { projectWritten: false });
         }
         const stopped = await previews.stop(serverId);
-        return toolResult({ success: true, stopped: [stopped] });
+        return toolResult({ success: true, stopped: [stopped] }, { projectWritten: false });
       } catch (error) {
         console.error('[stop_preview] failed:', error);
         return toolError(`Failed to stop the preview: ${error instanceof Error ? error.message : String(error)}`);
@@ -797,6 +800,7 @@ print(json.dumps({
         }
 
         return toolResult({
+          success: true,
           projectName: metadata.name,
           projectDir,
           runtime: projectData.runtime ?? 'c3',
@@ -809,7 +813,7 @@ print(json.dumps({
             'Access via: globalThis.__c3bridge.submit("ping", {})',
             'Or use Playwright or any CDP-capable tool to automate the entire flow',
           ],
-        });
+        }, { projectWritten: injectBridge });
       } catch (error) {
         console.error('[export_for_preview] failed:', error);
         return toolError(`Failed to prepare for preview: ${error instanceof Error ? error.message : String(error)}`);
@@ -858,12 +862,14 @@ print(json.dumps({
           }
         }
 
+        // Only the new copy was written, not the open project
         return toolResult({
+          success: true,
           cloned: true,
           source: sourceDir,
           target: targetDir,
           bridgeIncluded: includeBridge,
-        });
+        }, { projectWritten: false });
       } catch (error) {
         console.error('[clone_project] failed:', error);
         return toolError(`Failed to clone project: ${error instanceof Error ? error.message : String(error)}`);
@@ -905,14 +911,16 @@ print(json.dumps({
 
         const outputStat = await stat(outputPath);
 
+        // The .c3p goes outside the project; only bridge injection writes to it
         return toolResult({
+          success: true,
           packed: true,
           outputPath,
           fileCount: files.length,
           sizeBytes: outputStat.size,
           sizeMB: (outputStat.size / 1024 / 1024).toFixed(2),
           bridgeInjected: injectBridge,
-        });
+        }, { projectWritten: injectBridge });
       } catch (error) {
         console.error('[pack_project] failed:', error);
         return toolError(`Failed to pack project: ${error instanceof Error ? error.message : String(error)}`);

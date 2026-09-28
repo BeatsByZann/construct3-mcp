@@ -157,7 +157,7 @@ describe('validate_project names addons whose ACEs cannot be checked', () => {
 
   it('lists the unloaded plugin or behavior as info, and drops it once loaded', async () => {
     const before = await validateProjectIntegrity(reader());
-    expect(before.summary.checksRun).toBe(18);
+    expect(before.summary.checksRun).toBe(30);
     const unavailable = before.info.filter(i => i.check === 'ace-definitions-unavailable');
     expect(unavailable).toHaveLength(1);
     expect(unavailable[0].entity).toBe('usedAddons/Probe_Timer');

@@ -398,7 +398,7 @@ export function registerFileTools({ server, reader, writer }: MutationToolDeps):
           warnings: changes.length > 0
             ? [`script-info purpose changes: ${changes.join('; ')}.`]
             : [`"${args.name}" was already the main script.`],
-        });
+        }, { projectWritten: changes.length > 0 });
       } catch (error) {
         console.error('[set_main_script] failed:', error);
         return toolError(`Error setting the main script: ${error instanceof Error ? error.message : String(error)}`);

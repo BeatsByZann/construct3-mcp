@@ -1,0 +1,3 @@
+# Node scripts with a shebang must keep LF endings on every platform; a CRLF
+# checkout breaks the "#!" line for Node and for the test runner that imports them.
+*.mjs text eol=lf

@@ -6,13 +6,15 @@
 import { z } from 'zod';
 import { backupOnce, recordWrite } from '../construct3/change-journal.js';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
-import { readFile, writeFile, rename, unlink } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, Addon } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError, boundedRecord } from './shared.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from '../construct3/templates.js';
 import { PROJECT_PROPERTY_KEYS, PROJECT_TOP_LEVEL_KEYS } from '../construct3/project-writer.js';
 import { loadAddonDefinitions, loadedAddonDefinitions } from '../construct3/addon-definitions.js';
+import { jsonTextStyleOf, parseJsonText, serializeJson } from '../construct3/json-format.js';
+import { atomicReplace } from '../construct3/atomic-write.js';
 
 export function registerProjectTools({ server, reader, writer }: MutationToolDeps) {
   server.tool(
@@ -160,7 +162,8 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
           id: d.id, type: d.type, name: d.name, version: d.version, source: d.source, counts: d.counts,
         });
         if (path === undefined) {
-          return toolResult({ success: true, loaded: loadedAddonDefinitions().map(summary) });
+          // Addon definitions are loaded into the server, not written to the project
+          return toolResult({ success: true, loaded: loadedAddonDefinitions().map(summary) }, { projectWritten: false });
         }
         const report = await loadAddonDefinitions(path);
         const warnings = report.skipped.map(s => `${s.path}: ${s.reason}`);
@@ -169,7 +172,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
           loaded: report.loaded,
           nowLoaded: loadedAddonDefinitions().map(d => `${d.type}:${d.id}`),
           warnings: warnings.length > 0 ? warnings : undefined,
-        });
+        }, { projectWritten: false });
       } catch (error) {
         console.error('[load_addon_definitions] failed:', error);
         return toolError(`Error loading addon definitions: ${error instanceof Error ? error.message : String(error)}`);
@@ -200,12 +203,12 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
             category: 'addon',
             action: 'already_registered',
             warnings: [`Addon "${args.id}" (${args.type}) is already registered in usedAddons.`],
-          });
+          }, { projectWritten: false });
         }
 
         const projectPath = reader.getProjectPath();
         const content = await readFile(projectPath, 'utf-8');
-        const project = JSON.parse(content);
+        const project = parseJsonText(content);
 
         const newAddon: Addon = {
           type: args.type,
@@ -218,19 +221,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
 
         upgradeProjectShape(project);
         await backupOnce(projectPath);
-        const tmpPath = projectPath + '.tmp';
-        await writeFile(tmpPath, JSON.stringify(project, null, '\t'), 'utf-8');
-        try {
-          await rename(tmpPath, projectPath);
-        } catch (e: unknown) {
-          if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'EEXIST') {
-            await unlink(projectPath);
-            await rename(tmpPath, projectPath);
-          } else {
-            try { await unlink(tmpPath); } catch { /* best-effort */ }
-            throw e;
-          }
-        }
+        await atomicReplace(projectPath, serializeJson(project, jsonTextStyleOf(content)));
         await recordWrite(projectPath, true);
         await reader.reloadProject();
 
@@ -274,7 +265,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
 
         const projectPath = reader.getProjectPath();
         const content = await readFile(projectPath, 'utf-8');
-        const project = JSON.parse(content);
+        const project = parseJsonText(content);
 
         const projIdx = (project.usedAddons as Addon[]).findIndex(a => a.type === args.type && a.id === args.id);
         if (projIdx !== -1) {
@@ -283,19 +274,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
 
         upgradeProjectShape(project);
         await backupOnce(projectPath);
-        const tmpPath = projectPath + '.tmp';
-        await writeFile(tmpPath, JSON.stringify(project, null, '\t'), 'utf-8');
-        try {
-          await rename(tmpPath, projectPath);
-        } catch (e: unknown) {
-          if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'EEXIST') {
-            await unlink(projectPath);
-            await rename(tmpPath, projectPath);
-          } else {
-            try { await unlink(tmpPath); } catch { /* best-effort */ }
-            throw e;
-          }
-        }
+        await atomicReplace(projectPath, serializeJson(project, jsonTextStyleOf(content)));
         await recordWrite(projectPath, true);
         await reader.reloadProject();
 

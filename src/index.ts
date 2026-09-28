@@ -28,7 +28,7 @@ import { delimiter } from 'node:path';
 const projectPath: string = process.argv[2] || process.env.C3_PROJECT_PATH || process.cwd();
 
 const server = new McpServer(
-  { name: 'construct3-mcp-server', version: '1.8.2' },
+  { name: 'construct3-mcp-server', version: '1.9.1' },
   { capabilities: { resources: {}, tools: {}, prompts: {} } }
 );
 

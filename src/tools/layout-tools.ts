@@ -11,7 +11,10 @@ import type { MutationToolDeps } from './shared.js';
 import type {
   WriteResult, Layout, Layer, Instance, SceneGraphData, SceneGraphFlags, SceneGraphPreview,
 } from '../construct3/types.js';
-import { validateName, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord } from './shared.js';
+import {
+  validateName, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord, caseClashError,
+} from './shared.js';
+import { findNameClash } from '../construct3/names.js';
 import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
   collectInstances, collectLayers, collectSubLayers, ensureSubLayers, findLayerLocation,
@@ -23,6 +26,75 @@ import {
   createLayer,
 } from '../construct3/templates.js';
 import type { InstanceOverrides } from '../construct3/templates.js';
+import {
+  buildInstanceBehaviors,
+  expectedInstanceBehaviors,
+  readFamiliesForInstances,
+} from '../construct3/instance-behaviors.js';
+import {
+  countInstancesInLayerTree,
+  findInstanceByUid,
+  instancesOf,
+  findLayerNameClash,
+  findLayersByName,
+  layerEntries,
+  layerPathLabel,
+  type LayerEntry,
+} from '../construct3/layers.js';
+
+/** Every layer of a layout for messages, sub-layers as paths: "Background, Main, Main > HUD". */
+function layerList(layout: Layout): string {
+  return layerEntries(layout.layers).map(layerPathLabel).join(', ');
+}
+
+/**
+ * The layer with this name anywhere in the layout's layer tree (sub-layers
+ * included), or the error text when there is none, or several. A sub-layer can
+ * also be given by its path as messages list it ("Main > HUD"): that picks one
+ * of several layers with the same name, e.g. to rename it with update_layer.
+ */
+function resolveLayer(layout: Layout, layerName: string, layoutName: string): { entry: LayerEntry } | { error: string } {
+  const matches = findLayersByName(layout.layers, layerName);
+  if (matches.length === 1) return { entry: matches[0] };
+  if (layerName.includes(' > ')) {
+    const byPath = layerEntries(layout.layers).filter(e => e.depth > 0 && layerPathLabel(e) === layerName);
+    if (byPath.length === 1) return { entry: byPath[0] };
+  }
+  if (matches.length === 0) {
+    return { error: `Layer "${layerName}" not found in layout "${layoutName}". Available layers: ${layerList(layout)}` };
+  }
+  const paths = matches.map(layerPathLabel);
+  // Sub-layers whose path tells them apart can be picked by that path
+  const pickable = matches.filter((e, i) => e.depth > 0 && paths.indexOf(paths[i]) === paths.lastIndexOf(paths[i]));
+  const how = pickable.length > 0
+    ? `Give a sub-layer by its path to pick it (e.g. "${layerPathLabel(pickable[0])}") and rename it with update_layer.`
+    : 'Their paths are the same too: rename all but one of them in the layout file.';
+  return {
+    error: `Layer name "${layerName}" is used by ${matches.length} layers in layout "${layoutName}" (${paths.join('; ')}). ` +
+      `Layer names must be unique within a layout, sub-layers included. ${how}`,
+  };
+}
+
+/**
+ * Error text for a layer name that another layer of the layout (`clash`, from
+ * findLayerNameClash) already uses, exactly or ignoring case.
+ */
+function layerNameClashError(name: string, clash: LayerEntry, layoutName: string): string {
+  const where = clash.depth > 0 ? ` (sub-layer "${layerPathLabel(clash)}")` : '';
+  if (clash.layer.name === name) {
+    return `Layer "${name}" already exists in layout "${layoutName}"${where}. ` +
+      'Layer names must be unique within a layout, sub-layers included.';
+  }
+  return `Layer "${name}" differs only in case from the existing layer "${String(clash.layer.name)}"${where} ` +
+    `in layout "${layoutName}". Construct 3 treats layer names that differ only in case as the same name ` +
+    '(sub-layers included). Choose a different name.';
+}
+
+/** Where an instance sits, for messages: 'layer "Main"', 'sub-layer "Main > Sub"' or 'the non-world instances'. */
+function describeInstancePlace(entry: LayerEntry | undefined): string {
+  if (!entry) return 'the non-world instances';
+  return `${entry.depth > 0 ? 'sub-layer' : 'layer'} "${layerPathLabel(entry)}"`;
+}
 
 /**
  * Behavior and effect names an instance of `objectType` may carry: those on
@@ -325,7 +397,7 @@ function hasAncestor(byUid: Map<number, Instance>, startUid: number, ancestorUid
 
 /** Fields of one placement, shared by add_instance_to_layout and add_instances_to_layout. */
 const placeInstanceShape = {
-  layerName: z.string().max(200).describe('Target layer within layout'),
+  layerName: z.string().max(200).describe('Target layer within layout (any layer or sub-layer, by name; a sub-layer can also be given by its path, e.g. "Main > HUD")'),
   objectType: z.string().max(200).describe('Object type name to place'),
   x: z.number().describe('X position'),
   y: z.number().describe('Y position'),
@@ -347,7 +419,7 @@ const placeInstanceShape = {
     .refine(obj => Object.keys(obj).length <= 50, 'Too many behaviors (max 50)')
     .refine(obj => JSON.stringify(obj).length <= 50_000, 'Behaviors payload too large (max 50KB)')
     .optional()
-    .describe('Behavior runtime state as {behaviorName: {prop: val}} (each behavior props: max 100 keys, depth 6)'),
+    .describe('Behavior property values as {behaviorName: {properties: {prop: val}}} (the shape get_layout_details returns) or {behaviorName: {prop: val}}. Every behavior of the object and its families gets an entry with the built-in defaults; values given here override them. Use the property ids the editor writes (e.g. "max-speed"). Each behavior: max 100 keys, depth 6'),
   tags: z.string().max(500).regex(/^[a-zA-Z0-9_, ]*$/).optional()
     .describe('Comma-separated instance tags (default: empty)'),
   showing: z.boolean().optional().describe('Whether instance is initially visible (default: true)'),
@@ -503,6 +575,8 @@ function moveInstanceInLayout(layout: Layout, layoutName: string, args: MoveInst
 interface InstanceRemoval {
   removedType: string | undefined;
   detachedChildren: number[];
+  /** The layer it was on; undefined for a non-world instance */
+  entry?: LayerEntry;
 }
 
 /**
@@ -527,45 +601,21 @@ function removeInstanceFromLayout(layout: Layout, layoutName: string, uid: numbe
     }
   }
 
-  // Search every layer, sub-layers included
-  let found = false;
-  let removedType: string | undefined;
-
-  for (const layer of collectLayers(layout)) {
-    if (!Array.isArray(layer.instances)) continue;
-    const idx = layer.instances.findIndex(inst => inst.uid === uid);
-    if (idx !== -1) {
-      removedType = layer.instances[idx].type;
-      layer.instances.splice(idx, 1);
-      found = true;
-      break;
-    }
-  }
-
-  // Search nonworld-instances
-  if (!found) {
-    const nonworld = layout['nonworld-instances'] as Array<Record<string, unknown>> | undefined;
-    if (Array.isArray(nonworld)) {
-      const idx = nonworld.findIndex(inst => inst.uid === uid);
-      if (idx !== -1) {
-        removedType = nonworld[idx].type as string;
-        nonworld.splice(idx, 1);
-        found = true;
-      }
-    }
-  }
-
+  // Search every layer and sub-layer, then the non-world instances
+  const found = findInstanceByUid(layout, uid);
   if (!found) {
     return { error: `Instance with UID ${uid} not found in layout "${layoutName}". Use get_layout_details to see all instance UIDs.` };
   }
-  return { removedType, detachedChildren };
+  const removedType = typeof found.instance.type === 'string' ? found.instance.type : undefined;
+  found.list.splice(found.index, 1);
+  return { removedType, detachedChildren, entry: found.entry };
 }
 
 /** The warnings a removal reports, as delete_instance_from_layout words them. */
 function removalWarnings(uid: number, removal: InstanceRemoval): string[] {
   if (!removal.removedType) return [];
   return [
-    `Removed instance of "${removal.removedType}" (UID ${uid}).`,
+    `Removed instance of "${removal.removedType}" (UID ${uid}) from ${describeInstancePlace(removal.entry)}.`,
     ...(removal.detachedChildren.length > 0 ? [`Detached its hierarchy children: ${removal.detachedChildren.join(', ')}.`] : []),
   ];
 }
@@ -621,15 +671,13 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       }
     }
 
-    // Validate behaviors keys against object type definition
-    if (args.behaviors && objData) {
-      const definedBehaviors = new Set((objData.behaviorTypes ?? []).map(b => b.name));
-      for (const key of Object.keys(args.behaviors)) {
-        if (!definedBehaviors.has(key)) {
-          warnings.push(`Behavior "${key}" is not defined on "${args.objectType}". Defined behaviors: ${[...definedBehaviors].join(', ') || '(none)'}. It may be inherited from a family.`);
-        }
-      }
-    }
+    // One behavior entry per behavior of the object and its families, like
+    // the editor writes them; caller values override the defaults
+    const expectedBehaviors = expectedInstanceBehaviors(
+      args.objectType, objData, await readFamiliesForInstances(reader),
+    );
+    const instanceBehaviors = buildInstanceBehaviors(args.objectType, expectedBehaviors, args.behaviors);
+    warnings.push(...instanceBehaviors.warnings);
 
     // Build overrides from optional params
     const overrides: InstanceOverrides = {};
@@ -639,11 +687,10 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
     if (args.originX !== undefined) overrides.originX = args.originX;
     if (args.originY !== undefined) overrides.originY = args.originY;
     if (args.instanceVariables !== undefined) overrides.instanceVariables = args.instanceVariables;
-    if (args.behaviors !== undefined) overrides.behaviors = args.behaviors;
+    overrides.behaviors = instanceBehaviors.behaviors;
     if (args.tags !== undefined) overrides.tags = args.tags;
     if (args.showing !== undefined) overrides.showing = args.showing;
     if (args.locked !== undefined) overrides.locked = args.locked;
-    const hasOverrides = Object.keys(overrides).length > 0;
 
     if (isNonworld) {
       if (!layout['nonworld-instances']) layout['nonworld-instances'] = [];
@@ -654,18 +701,17 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
         sid,
         tags: overrides.tags ?? '',
         instanceVariables: overrides.instanceVariables ?? {},
-        behaviors: overrides.behaviors ?? {},
+        behaviors: instanceBehaviors.behaviors,
         showing: overrides.showing ?? true,
         locked: overrides.locked ?? false,
       });
       warnings.push(`"${args.objectType}" is a global (nonworld) object — placed in nonworld-instances instead of on a layer. Layer and position parameters were ignored.`);
     } else {
-      // Sub-layers hold instances too.
-      const targetLayer = collectLayers(layout).find(l => l.name === args.layerName);
-      if (!targetLayer) {
-        const layerNames = collectLayers(layout).map(l => l.name).join(', ');
-        return { error: `Layer "${args.layerName}" not found in layout "${layoutName}". Available layers: ${layerNames}` };
-      }
+      // Any layer or sub-layer of the layout
+      const resolved = resolveLayer(layout, args.layerName, layoutName);
+      if ('error' in resolved) return { error: resolved.error };
+      const targetLayer = resolved.entry.layer;
+      if (!Array.isArray(targetLayer.instances)) targetLayer.instances = [];
 
       // Copied, not aliased: the instance keeps this object, so handing out
       // the shared table would let a later edit of one instance change the
@@ -680,7 +726,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
       const instance = createInstance(
         args.objectType, uid, sid, args.x, args.y, args.width, args.height,
         pluginProps,
-        hasOverrides ? overrides : undefined,
+        overrides,
       );
       if (instance.world) {
         const origin = resolveInstanceOrigin(
@@ -708,7 +754,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
     layout: Layout, layoutName: string, args: UpdateInstanceArgs,
   ): Promise<{ warnings: string[] } | { error: string }> {
     // Instances live in nested layers and in nonworld-instances alike.
-    const inst: Instance | undefined = collectInstances(layout).find(i => i.uid === args.uid);
+    const inst: Instance | undefined = findInstanceByUid(layout, args.uid)?.instance;
     if (!inst) {
       return { error: `Instance with UID ${args.uid} not found in layout "${layoutName}". Use get_layout_details to see all instance UIDs.` };
     }
@@ -837,21 +883,34 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
     'create_layout',
     'Create a new layout in the project',
     {
-      name: z.string().max(200).describe('Layout name'),
+      name: z.string().max(200).describe('Layout name (must not match an existing layout name, ignoring case)'),
       width: z.number().int().positive().optional().describe('Width in pixels (default: project viewport width)'),
       height: z.number().int().positive().optional().describe('Height in pixels (default: project viewport height)'),
       eventSheet: z.string().max(200).optional().describe('Linked event sheet name'),
-      layers: z.array(z.string()).optional().describe('Layer names (default: single "Layer 0")'),
+      layers: z.array(z.string()).optional().describe('Layer names, different from each other ignoring case (default: single "Layer 0")'),
     },
     async (args) => {
       try {
         validateName(args.name);
 
-        // Check uniqueness
+        // Check uniqueness: the editor compares layout names ignoring case, project-wide
         const existing = await reader.listLayouts();
         if (existing.includes(args.name)) {
           return toolError(`Layout "${args.name}" already exists.`);
         }
+        const nameClash = findNameClash(args.name, existing);
+        if (nameClash) {
+          return toolError(caseClashError('layout', args.name, nameClash));
+        }
+        // The editor refuses a layer name used by another layer of the layout, ignoring case
+        const newLayerNames = args.layers ?? [];
+        for (let i = 1; i < newLayerNames.length; i++) {
+          const layerClash = findLayerNameClash(newLayerNames.slice(0, i).map(name => ({ name })), newLayerNames[i]);
+          if (layerClash) return toolError(layerNameClashError(newLayerNames[i], layerClash, args.name));
+        }
+        // Never replace an existing file
+        const fileRefusal = await writer.entityFileRefusal('layouts', args.name);
+        if (fileRefusal) return toolError(fileRefusal);
 
         // Validate event sheet
         if (args.eventSheet) {
@@ -881,7 +940,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
         const data = createLayout(args.name, layoutSid, width, height, args.eventSheet, layerDefs);
 
-        await writer.writeEntityFile('layouts', args.name, data);
+        await writer.writeEntityFile('layouts', args.name, data, undefined, { createOnly: true });
         await writer.addToProject('layouts', args.name);
 
         const result: WriteResult = {
@@ -903,7 +962,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'add_instance_to_layout',
-    'Place an object instance on a layout layer. For copying instances between layouts, read the source with get_layout_details and pass instance properties here — all visual and behavioral properties (angle, color, instanceVariables, behaviors, etc.) are preserved when specified.',
+    'Place an object instance on a layout layer or sub-layer. For copying instances between layouts, read the source with get_layout_details and pass instance properties here — all visual and behavioral properties (angle, color, instanceVariables, behaviors, etc.) are preserved when specified.',
     {
       layoutName: z.string().max(200).describe('Target layout'),
       ...placeInstanceShape,
@@ -1113,11 +1172,11 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'add_layer',
-    'Add a new layer to an existing layout, optionally as a sub-layer of another layer',
+    'Add a new layer to an existing layout, at the top level or as a sub-layer of another layer',
     {
       layoutName: z.string().max(200).describe('Layout to add the layer to'),
-      layerName: z.string().max(200).describe('New layer name (must be unique across every layer of the layout, sub-layers included)'),
-      parentLayer: z.string().max(200).optional().describe("Create the layer inside this layer's subLayers (default: top level)"),
+      layerName: z.string().max(200).describe('New layer name (must not match any layer of the layout, sub-layers included, ignoring case)'),
+      parentLayer: z.string().max(200).optional().describe("Create the layer inside this layer's subLayers (default: top level); a sub-layer can also be given by its path, e.g. \"Main > HUD\""),
       index: z.number().int().min(0).optional().describe('Insert at this position among its siblings (0 = bottom, default: append to top)'),
       isInitiallyVisible: z.boolean().optional().default(true).describe('Layer starts visible (default: true)'),
       isTransparent: z.boolean().optional().default(true).describe('Layer is transparent (default: true)'),
@@ -1134,20 +1193,22 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        // Layer names must be unique across the whole layout, sub-layers included
-        if (collectLayers(layout).some(l => l.name === args.layerName)) {
-          return toolError(`Layer "${args.layerName}" already exists in layout "${args.layoutName}".`);
+        // Check for a layer name used anywhere in this layout (sub-layers included), ignoring case like the editor
+        const layerClash = findLayerNameClash(layout.layers, args.layerName);
+        if (layerClash) {
+          return toolError(layerNameClashError(args.layerName, layerClash, args.layoutName));
         }
 
         // Resolve the sibling list: a parent layer's subLayers, or the top level
         let siblings: Layer[] = layout.layers;
         if (args.parentLayer !== undefined) {
-          const parentLocation = findLayerLocation(layout, args.parentLayer);
-          if (!parentLocation) {
-            const available = collectLayers(layout).map(l => l.name).join(', ');
-            return toolError(`Parent layer "${args.parentLayer}" not found in layout "${args.layoutName}". Available layers: ${available}`);
+          const parent = resolveLayer(layout, args.parentLayer, args.layoutName);
+          if ('error' in parent) {
+            return toolError(findLayersByName(layout.layers, args.parentLayer).length === 0
+              ? `Parent layer "${args.parentLayer}" not found in layout "${args.layoutName}". Available layers: ${layerList(layout)}`
+              : parent.error);
           }
-          siblings = ensureSubLayers(parentLocation.layer);
+          siblings = ensureSubLayers(parent.entry.layer);
         }
 
         const layerSid = await idGen.generateSid(reader);
@@ -1189,10 +1250,10 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'delete_layer',
-    'Delete a layer from a layout, at the top level or nested in another layer (must not be the last top-level layer)',
+    'Delete a layer or sub-layer from a layout, together with its sub-layers (a layout must keep at least one top-level layer)',
     {
       layoutName: z.string().max(200).describe('Layout name'),
-      layerName: z.string().max(200).describe('Layer name to delete (searched at every nesting level)'),
+      layerName: z.string().max(200).describe('Layer name to delete (any layer or sub-layer; a sub-layer can also be given by its path, e.g. "Main > HUD")'),
       force: z.boolean().optional().default(false).describe('Delete even if the layer or its sub-layers contain instances, or it has sub-layers at all (they are lost with it)'),
     },
     async (args) => {
@@ -1206,22 +1267,19 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
         // Layers nest through subLayers, so the layer may sit at any depth
         // and may itself hold sub-layers whose instances go with it.
-        const location = findLayerLocation(layout, args.layerName);
-        if (!location) {
-          const available = collectLayers(layout).map(l => l.name).join(', ');
-          return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}" at any nesting level. Available layers: ${available}`);
-        }
-        const { layer, siblings, index, parent } = location;
+        const resolved = resolveLayer(layout, args.layerName, args.layoutName);
+        if ('error' in resolved) return toolError(resolved.error);
+        const { entry } = resolved;
 
         // Prevent deleting the last top-level layer
-        if (parent === undefined && layout.layers.length <= 1) {
+        if (entry.depth === 0 && entry.siblings.length <= 1) {
           return toolError(`Cannot delete the last layer in layout "${args.layoutName}". A layout must have at least one layer.`);
         }
 
-        const subLayers = collectSubLayers(layer);
-        const ownInstances = Array.isArray(layer.instances) ? layer.instances.length : 0;
-        const nestedInstances = subLayers.reduce((n, l) => n + (Array.isArray(l.instances) ? l.instances.length : 0), 0);
-        const instanceCount = ownInstances + nestedInstances;
+        const subLayers = layerEntries(entry.layer.subLayers).map(e => e.layer);
+        const ownInstances = instancesOf(entry.layer).length;
+        const instanceCount = countInstancesInLayerTree(entry.layer);
+        const nestedInstances = instanceCount - ownInstances;
         const subLayerNames = subLayers.map(l => l.name);
 
         if ((instanceCount > 0 || subLayers.length > 0) && !args.force) {
@@ -1236,10 +1294,11 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
             message: `Layer "${args.layerName}" contains ${ownInstances} instance(s) of its own${nested}. Use force=true to delete the layer, its sub-layers and all their instances.`,
             instanceCount,
             subLayers: subLayerNames,
+            ...(subLayers.length > 0 ? { subLayerCount: subLayers.length } : {}),
           });
         }
 
-        siblings.splice(index, 1);
+        entry.siblings.splice(entry.index, 1);
 
         const subfolder = writer.getSubfolderForEntity('layouts', args.layoutName);
         const backupPath = await writer.writeEntityFile('layouts', args.layoutName, layout, subfolder);
@@ -1271,11 +1330,11 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'update_layer',
-    'Update properties of an existing layer, at the top level or nested in another layer (name, visibility, parallax, blend mode, color, sampling, render settings)',
+    'Update properties of an existing layer or sub-layer (name, visibility, parallax, blend mode, color, sampling, render settings)',
     {
       layoutName: z.string().max(200).describe('Layout name'),
-      layerName: z.string().max(200).describe('Layer name to update (searched at every nesting level)'),
-      newName: z.string().max(200).optional().describe('Rename the layer'),
+      layerName: z.string().max(200).describe('Layer name to update (any layer or sub-layer; a sub-layer can also be given by its path, e.g. "Main > HUD")'),
+      newName: z.string().max(200).optional().describe('Rename the layer (must not match another layer of the layout, sub-layers included, ignoring case)'),
       isInitiallyVisible: z.boolean().optional().describe('Change initial visibility'),
       isInitiallyInteractive: z.boolean().optional().describe('Change initial interactivity'),
       isTransparent: z.boolean().optional().describe('Change transparency'),
@@ -1316,18 +1375,17 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        // Layers nest through subLayers; search every level.
-        const allLayers = collectLayers(layout);
-        const layer = allLayers.find(l => l.name === args.layerName);
-        if (!layer) {
-          const available = allLayers.map(l => l.name).join(', ');
-          return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Available layers: ${available}`);
-        }
+        // Any layer or sub-layer of the layout
+        const resolved = resolveLayer(layout, args.layerName, args.layoutName);
+        if ('error' in resolved) return toolError(resolved.error);
+        const layer = resolved.entry.layer;
 
-        // Check new name uniqueness across every layer, sub-layers included
-        if (args.newName !== undefined && args.newName !== args.layerName) {
-          if (allLayers.some(l => l.name === args.newName)) {
-            return toolError(`Layer "${args.newName}" already exists in layout "${args.layoutName}".`);
+        // Check new name uniqueness like the editor: another layer's name (ignoring case, sub-layers
+        // included) is taken, changing the case of this layer's own name is fine
+        if (args.newName !== undefined && args.newName !== layer.name) {
+          const layerClash = findLayerNameClash(layout.layers, args.newName, layer);
+          if (layerClash) {
+            return toolError(layerNameClashError(args.newName, layerClash, args.layoutName));
           }
           layer.name = args.newName;
         }
@@ -1523,7 +1581,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'delete_instance_from_layout',
-    'Remove a placed object instance from a layout by its UID',
+    'Remove a placed object instance (on any layer or sub-layer, or a non-world instance) from a layout by its UID',
     {
       layoutName: z.string().max(200).describe('Layout name'),
       uid: z.number().int().describe('UID of the instance to remove'),
@@ -1564,7 +1622,7 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'update_instance',
-    'Update properties of a placed instance on a layout (position, size, angle, visibility, etc.)',
+    'Update properties of a placed instance on a layout, on any layer or sub-layer (position, size, angle, visibility, etc.; non-world instances ignore the spatial ones)',
     {
       layoutName: z.string().max(200).describe('Layout name'),
       ...updateInstanceShape,

@@ -3,7 +3,7 @@
  * No filesystem I/O — all data supplied via constructor.
  */
 
-import type { Construct3Project, EventSheet, ObjectType, Layout } from '../../src/construct3/types.js';
+import type { Construct3Project, EventSheet, ObjectType, Layout, FileItem } from '../../src/construct3/types.js';
 import { scanIdsInText, type EntityCategory, type ReadFailure } from '../../src/construct3/project-reader.js';
 
 export interface MockReaderData {
@@ -22,7 +22,32 @@ export interface MockReaderData {
     firstLayout?: string;
   };
   usedAddons?: Array<{ type: string; id: string; name: string; author: string; bundled: boolean }>;
+  /**
+   * Project script files, listed under rootFileFolders.script. `path` is
+   * relative to scripts/ ("importsForEvents.js" or "sub/x.ts"); `purpose` goes
+   * into `script-info` (default "none").
+   */
+  scriptFiles?: Array<{ path: string; source: string; purpose?: string; type?: string }>;
+  /**
+   * Media and project files, listed under rootFileFolders.<folder>. `path` is
+   * relative to the folder ("click.webm" or "sub/a.png"); `purpose` goes into
+   * `file-info` (`icon-info` for icons; default "none", "app-icon" for icons);
+   * `text` is what readProjectFileText returns for a general file (reading
+   * fails without it).
+   */
+  files?: Array<{ folder: MockFileFolderKey; path: string; purpose?: string; text?: string }>;
+  /** c3proj "containers" */
+  containers?: unknown[];
+  /**
+   * Files below flowcharts/ and timelines/ (`path` relative to the folder);
+   * reading one fails when it has no `text`.
+   */
+  dataFiles?: Array<{ folder: 'flowcharts' | 'timelines'; path: string; text?: string }>;
 }
+
+export type MockFileFolderKey = 'sound' | 'music' | 'video' | 'font' | 'icon' | 'general';
+
+type MockScriptFolder = { items: FileItem[]; subfolders: Array<MockScriptFolder & { name: string }> };
 
 export class MockReader {
   private objects: Map<string, Record<string, unknown>>;
@@ -31,6 +56,10 @@ export class MockReader {
   private families: Map<string, Record<string, unknown>>;
   private meta: NonNullable<MockReaderData['metadata']>;
   private addons: NonNullable<MockReaderData['usedAddons']>;
+  private scriptFiles: NonNullable<MockReaderData['scriptFiles']>;
+  private files: NonNullable<MockReaderData['files']>;
+  private containers: unknown[];
+  private dataFiles: NonNullable<MockReaderData['dataFiles']>;
   // Names registered in c3proj but without corresponding data (for file-existence testing)
   private registeredOnly: { objects: string[]; eventSheets: string[]; layouts: string[] } = {
     objects: [], eventSheets: [], layouts: [],
@@ -58,6 +87,10 @@ export class MockReader {
       firstLayout: 'Layout 1',
       ...data.metadata,
     };
+    this.scriptFiles = data.scriptFiles ?? [];
+    this.files = data.files ?? [];
+    this.containers = data.containers ?? [];
+    this.dataFiles = data.dataFiles ?? [];
     this.addons = data.usedAddons ?? [
       { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
     ];
@@ -142,14 +175,15 @@ export class MockReader {
       layouts: { items: [...Array.from(this.layouts.keys()), ...this.registeredOnly.layouts], subfolders: [] },
       eventSheets: { items: [...Array.from(this.eventSheets.keys()), ...this.registeredOnly.eventSheets], subfolders: [] },
       rootFileFolders: {
-        script: { items: [], subfolders: [] },
-        sound: { items: [], subfolders: [] },
-        music: { items: [], subfolders: [] },
-        video: { items: [], subfolders: [] },
-        font: { items: [], subfolders: [] },
-        icon: { items: [], subfolders: [] },
-        general: { items: [], subfolders: [] },
+        script: this.scriptFolder(),
+        sound: this.mediaFolder('sound'),
+        music: this.mediaFolder('music'),
+        video: this.mediaFolder('video'),
+        font: this.mediaFolder('font'),
+        icon: this.mediaFolder('icon'),
+        general: this.mediaFolder('general'),
       },
+      containers: this.containers,
       timelines: { items: [], subfolders: [] },
       properties: {
         description: this.meta.description!,
@@ -202,6 +236,81 @@ export class MockReader {
 
   getProjectPath(): string {
     return '/mock/project/project.c3proj';
+  }
+
+  async readScriptFile(relativePath: string): Promise<string> {
+    const file = this.scriptFiles.find(f => f.path === relativePath);
+    if (!file) throw new Error(`Failed to read script "${relativePath}"`);
+    return file.source;
+  }
+
+  /** rootFileFolders.script built from `scriptFiles` (subfolders from the path). */
+  private scriptFolder(): MockScriptFolder {
+    const root: MockScriptFolder = { items: [], subfolders: [] };
+    for (const [i, file] of this.scriptFiles.entries()) {
+      const parts = file.path.split('/');
+      const name = parts.pop()!;
+      let folder = root;
+      for (const part of parts) {
+        let sub = folder.subfolders.find(s => s.name === part);
+        if (!sub) {
+          sub = { name: part, items: [], subfolders: [] };
+          folder.subfolders.push(sub);
+        }
+        folder = sub;
+      }
+      folder.items.push({
+        name,
+        type: file.type ?? (name.endsWith('.ts') ? 'application/typescript' : 'application/javascript'),
+        sid: 900_000_000_000_000 + i,
+        'script-info': { purpose: file.purpose ?? 'none' },
+      });
+    }
+    return root;
+  }
+
+  async readProjectFileText(relativePath: string): Promise<string> {
+    const file = this.files.find(f => f.folder === 'general' && f.path === relativePath);
+    if (file?.text === undefined) throw new Error(`Failed to read project file "${relativePath}"`);
+    return file.text;
+  }
+
+  async listDataFiles(folder: 'flowcharts' | 'timelines'): Promise<string[]> {
+    return this.dataFiles.filter(f => f.folder === folder).map(f => f.path).sort();
+  }
+
+  async readDataFileText(folder: 'flowcharts' | 'timelines', relativePath: string): Promise<string> {
+    const file = this.dataFiles.find(f => f.folder === folder && f.path === relativePath);
+    if (file?.text === undefined) throw new Error(`Failed to read ${folder} file "${relativePath}"`);
+    return file.text;
+  }
+
+  /** rootFileFolders.<key> built from `files` (subfolders from the path). */
+  private mediaFolder(key: MockFileFolderKey): MockScriptFolder {
+    const root: MockScriptFolder = { items: [], subfolders: [] };
+    for (const [i, file] of this.files.entries()) {
+      if (file.folder !== key) continue;
+      const parts = file.path.split('/');
+      const name = parts.pop()!;
+      let folder = root;
+      for (const part of parts) {
+        let sub = folder.subfolders.find(s => s.name === part);
+        if (!sub) {
+          sub = { name: part, items: [], subfolders: [] };
+          folder.subfolders.push(sub);
+        }
+        folder = sub;
+      }
+      folder.items.push({
+        name,
+        type: 'application/octet-stream',
+        sid: 910_000_000_000_000 + i,
+        ...(key === 'icon'
+          ? { 'icon-info': { purpose: file.purpose ?? 'app-icon' } }
+          : { 'file-info': { purpose: file.purpose ?? 'none' } }),
+      });
+    }
+    return root;
   }
 
   findNearestName(_name: string, _category: 'objects' | 'eventsheets' | 'layouts'): string[] {

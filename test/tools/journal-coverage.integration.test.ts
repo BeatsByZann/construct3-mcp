@@ -163,6 +163,7 @@ describe('revert_last_change returns every file to its state before the call', (
     ['rename-project', [], ['add_tilemap_brush', BRUSH]],
     ['minimal-project', [['create_object', { name: 'Hero', pluginId: 'Sprite' }]], ['replace_sprite_image', { objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0, pngBase64: PNG }]],
     ['minimal-project', [['create_object', { name: 'Floor', pluginId: 'TiledBg' }]], ['replace_object_image', { objectName: 'Floor', pngBase64: PNG }]],
+    ['minimal-project', [['create_object', { name: 'Hero', pluginId: 'Sprite' }]], ['rename_animation', { objectName: 'Hero', animationName: 'Animation 1', newName: 'Run' }]],
   ] as Array<[string, Array<[string, Record<string, unknown>]>, [string, Record<string, unknown>]]>)('%s: %j then %j', async (fixture, setup, [tool, args]) => {
     if (fixture !== 'minimal-project') {
       await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });

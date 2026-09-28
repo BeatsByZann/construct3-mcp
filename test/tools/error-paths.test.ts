@@ -20,6 +20,12 @@ describe('client error path redaction', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).not.toMatch(/private|secret|Users|server|target/i);
   });
+  it('keeps a quoted lone slash that names a character, not a path', () => {
+    const message = 'Animation "Walk/Left" contains "/". A file name cannot contain \\ / : * ? " < > | or a control character.';
+    expect(redactFsPaths(message)).toBe(message);
+    expect(redactFsPaths('Name contains "/" and open "/home/private/secret.json" failed'))
+      .toBe('Name contains "/" and open [path] failed');
+  });
   it('preserves ordinary diagnostics and project-relative recovery paths', () => {
     const message = 'Cannot delete layouts/Outer/Inner/Nested.json: EACCES: permission denied';
     expect(redactFsPaths(message)).toBe(message);

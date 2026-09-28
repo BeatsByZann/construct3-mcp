@@ -128,12 +128,34 @@ Same as above but for behaviors. Add a behavior of that type to any object in th
 
 ### "Object is still referenced"
 
-**Cause**: `delete_object` found references in event sheets, layouts, or families.
+**Cause**: `delete_object` found references in event sheets, layouts (instances on any layer or sub-layer, non-world instances, object properties of other instances), or families.
 
 **Solutions**:
 - Remove all references first, then delete
-- Use `force: true` to delete anyway (references will NOT be cleaned up — you'll need to fix them manually)
+- Use `force: true` to delete anyway (references will NOT be cleaned up — you'll need to fix them manually; `validate_project` then reports the leftover instances, object parameters, family memberships and Particles object properties as `broken-object-reference`; uses in expressions and scripts are not reported, so fix the ones the force warning lists)
 - The error response lists all locations where the object is referenced
+
+### "Family is still referenced"
+
+**Cause**: `delete_family` found events or object properties that name the family, or conditions, actions and expressions that use its instance variables or behaviors through a member object type (`references.memberUses`).
+
+**Solutions**:
+- Remove those uses first, then delete
+- Use `force: true` to delete anyway (references will NOT be cleaned up; `validate_project` reports the uses through members as `missing-behavior-or-variable`, but not the uses in expressions and scripts and not `Member.name` in expressions, so fix the ones the force warning lists)
+
+### "Events still use what this update removes"
+
+**Cause**: `update_object_properties` (`removeVariables`, `removeBehaviors`) or `update_family` (`removeVariables`, `removeBehaviors`, `removeMembers`) would take away an instance variable or behavior that conditions, actions or expressions still use (`references.uses`, each with its event path, the JSON path of its event as `eventPath` and the condition's or action's `sid`). Nothing was changed.
+
+**Solutions**:
+- Change or delete those conditions, actions and expressions first, then remove it
+- Use `force: true` to remove it anyway (the uses are NOT changed; `validate_project` then reports them as `missing-behavior-or-variable`, except `Object.name` and `Self.name` in expressions, which the force warning lists)
+
+### "... not found: names are matched with their letter case"
+
+**Cause**: `update_object_properties` or `update_family` was given a name that differs from the registered object type or family name only in letter case. On Windows and macOS such a name would open the file too, but the checks and the layout updates know the entity by its registered name only, so the call is refused.
+
+**Solution**: Use the registered name the error suggests (`list_objects`, `list_families`).
 
 ### Backup files (.bak)
 
@@ -172,7 +194,7 @@ Every mutation creates `.bak` backup files next to the modified files. If someth
 
 ### `event-legacy-key`
 
-**Cause**: A block, condition or action carries a key Construct neither writes nor reads, such as `object-class` or `behavior-type` (the real keys are `objectClass` and `behaviorType`). Construct then reports the ACE as missing on load.
+**Cause**: A condition or action carries a key Construct neither writes nor reads, `object-class` or `is-inverted` (the real keys are `objectClass` and `isInverted`), or a block carries `isOr` (an OR block is marked with `isOrBlock`). With `object-class`, Construct reports the ACE as missing on load. The legacy `behavior-type` key, a block-level `isElse` and a condition-level `isOr` are reported as `legacy-behavior-key` and `legacy-event-shape` instead; `fix_legacy_behavior_keys` and `fix_legacy_event_shapes` convert them.
 
 **Solution**: Delete the event and add it again with `add_event_block`, which writes the correct keys, or rename the key in the sheet file with the project closed in Construct.
 

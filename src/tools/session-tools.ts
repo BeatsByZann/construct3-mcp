@@ -46,7 +46,7 @@ export function registerSessionTools(server: McpServer, session: ProjectSession,
           success: true,
           project: session.reader.getMetadata().name,
           changedOnDisk: changed.map(c => ({ file: rel(c.path), state: c.state })),
-        });
+        }, { projectWritten: false });
       } catch (error) {
         return toolError(`Could not reload the project: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -136,7 +136,7 @@ export function registerSessionTools(server: McpServer, session: ProjectSession,
           opened: { ...opened, format: opened.archivePath ? 'c3p' : 'folder' },
           closed: { name: closed.name, projectFile: closed.projectFile, ...(closed.archivePath ? { archivePath: closed.archivePath } : {}) },
           ...(warnings.length ? { warnings } : {}),
-        });
+        }, { projectWritten: false });
       } catch (error) {
         return toolError(`The server still serves the project it had. Could not open the new one: ${error instanceof Error ? error.message : String(error)}`);
       }

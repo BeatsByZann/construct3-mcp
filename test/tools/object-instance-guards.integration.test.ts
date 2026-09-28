@@ -130,7 +130,7 @@ describe('behavior use inside expressions', () => {
   it('blocks removing an object behavior used only in an expression', async () => {
     const r = parse(await server.callTool('update_object_properties', { name: 'Player', removeBehaviors: ['Platform'] }));
     expect(r).toMatchObject({ success: false, action: 'update_blocked' });
-    expect(r.references[0].expressions[0]).toMatchObject({ eventSheet: 'Main', eventSid: 700000000000030 });
+    expect(r.references.uses[0]).toMatchObject({ eventSheet: 'Main', sid: 700000000000031, kind: 'behavior', name: 'Platform', context: 'expression' });
     expect((await readJson('objectTypes/Actors/Player.json')).behaviorTypes).toHaveLength(1);
   });
 

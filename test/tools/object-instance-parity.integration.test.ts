@@ -223,7 +223,8 @@ describe('behavior removal guard', () => {
     expect(ok.success).toBe(true);
     const layout = await level1();
     expect(Object.keys(byUid(layout, 1).behaviors)).toEqual(['Platform']);
-    expect(byUid(layout, 3).behaviors).toEqual({}); // sub-layer instance cleaned too
+    // Sub-layer instance cleaned too: only the entry of the behavior the object still has.
+    expect(Object.keys(byUid(layout, 3).behaviors)).toEqual(['Platform']);
 
     const forced = parse(await server.callTool('update_object_properties', { name: 'Player', removeBehaviors: ['Platform'], force: true }));
     expect(forced.success).toBe(true);
@@ -239,7 +240,8 @@ describe('family behaviors (B3)', () => {
     const family = await readJson('families/Groups/Hostiles.json');
     expect(family.behaviorTypes).toEqual([{ behaviorId: 'Sin', name: 'Wobble', sid: expect.any(Number) }]);
     expect(Object.keys(family)).toEqual(['name', 'plugin-id', 'sid', 'instanceVariables', 'behaviorTypes', 'effectTypes', 'members']);
-    expect(byUid(await level1(), 3).behaviors).toEqual({});
+    // Every instance carries an entry for each behavior of its object and its families.
+    expect(Object.keys(byUid(await level1(), 3).behaviors).sort()).toEqual(['Platform', 'Timer', 'Wobble']);
     const project = await readJson('project.c3proj');
     expect(project.usedAddons.some((a: any) => a.type === 'behavior' && a.id === 'Sin')).toBe(true);
   });
@@ -262,7 +264,7 @@ describe('family behaviors (B3)', () => {
     await editJson('layouts/Level 1.json', l => { l.layers[0].instances[1].behaviors = { Wobble: { properties: {} } }; });
     const blocked = parse(await server.callTool('update_family', { name: 'Hostiles', removeBehaviors: ['Wobble'] }));
     expect(blocked).toMatchObject({ success: false, action: 'update_blocked' });
-    expect(blocked.references[0].sample[0]).toMatchObject({ objectClass: 'Enemy' });
+    expect(blocked.references.uses[0]).toMatchObject({ objectClass: 'Enemy', kind: 'behavior', name: 'Wobble' });
 
     const forced = parse(await server.callTool('update_family', { name: 'Hostiles', removeBehaviors: ['Wobble'], force: true }));
     expect(forced.success).toBe(true);

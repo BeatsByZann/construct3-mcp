@@ -88,7 +88,7 @@ describe('add_event_block with every action kind', () => {
     expect(comment).toEqual({ type: 'comment', text: 'Explain the next call', 'text-color': [1, 0, 0, 1], 'background-color': [0, 0, 0, 1] });
     expect(Object.keys(fn)).toEqual(['callFunction', 'sid', 'parameters']);
     expect(fn.parameters).toEqual(['1', '"x"']);
-    expect(Object.keys(qualified)).toEqual(['customAction', 'objectClass', 'customActionObjectClass', 'sid', 'parameters', 'disabled']);
+    expect(Object.keys(qualified)).toEqual(['customAction', 'objectClass', 'customActionObjectClass', 'sid', 'disabled', 'parameters']);
     expect(Object.keys(plain)).toEqual(['customAction', 'objectClass', 'sid']);
   });
 
@@ -167,7 +167,7 @@ describe('update_event_block on comment rows, calls and conditions', () => {
     expect(text.content[0].text).toContain('not an action comment');
     const keyed = await server.callTool('update_event_block', { sheetName: 'Main', sid, updateActions: [{ index: 1, parameters: { a: '1' } }] });
     expect(keyed.isError).toBe(true);
-    expect(keyed.content[0].text).toContain('does not take keyed parameters');
+    expect(keyed.content[0].text).toContain('neither an argument position nor a parameter name');
     const args = await server.callTool('update_event_block', { sheetName: 'Main', sid, updateActions: [{ index: 2, arguments: ['1'] }] });
     expect(args.isError).toBe(true);
     expect(JSON.stringify(await sheet())).toBe(before);

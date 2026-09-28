@@ -2,7 +2,10 @@
  * TypeScript type definitions for Construct 3 project structures.
  *
  * Field names match the real C3 JSON format (camelCase for most fields,
- * kebab-case for legacy keys like 'plugin-id').
+ * kebab-case for a few keys like 'plugin-id').
+ * Note: behavior conditions/actions use camelCase 'behaviorType' — the
+ * kebab-case 'behavior-type' written by older versions of this server is
+ * not part of the format (issue #16).
  *
  * All entity interfaces keep `[key: string]: unknown` index signatures
  * for backwards compatibility — real C3 files may contain fields not
@@ -123,6 +126,7 @@ export interface FileItem {
   name: string;
   type: string;
   sid: number;
+  /** Script files: purpose "main", "imports-for-events" or "none" */
   'script-info'?: {
     purpose: string;
   };
@@ -265,15 +269,22 @@ export interface EventSheet {
   [key: string]: unknown;
 }
 
-/** Condition within an event block */
+/**
+ * Condition within an event block. Else is the System condition
+ * { id: "else", objectClass: "System", sid } at index 0; conditions after it
+ * make an else-if.
+ */
 export interface Condition {
   id: string;
   objectClass: string;
   sid: number;
+  disabled?: boolean;
+  /** Behavior name (as defined on the object type or one of its families) for behavior conditions */
   behaviorType?: string;
   parameters?: Record<string, unknown>;
   isInverted?: boolean;
-  disabled?: boolean;
+  /** Legacy per-condition OR flag written by construct3-mcp 1.8.1 and earlier; Construct 3 uses the block's isOrBlock. */
+  isOr?: boolean;
   [key: string]: unknown;
 }
 
@@ -282,33 +293,39 @@ export interface StandardAction {
   id: string;
   objectClass: string;
   sid: number;
+  disabled?: boolean;
+  /** Behavior name (as defined on the object type or one of its families) for behavior actions */
   behaviorType?: string;
   parameters?: Record<string, unknown>;
-  disabled?: boolean;
   [key: string]: unknown;
 }
 
-/** Function call action */
+/** Function call action, as the editor saves it: no id/objectClass, positional parameters */
 export interface FunctionCallAction {
-  id: string;
-  objectClass: string;
+  callFunction: string;
   sid: number;
-  callFunction?: string;
-  parameters?: Record<string, unknown>;
   disabled?: boolean;
+  parameters?: Array<string | number | boolean>;
   [key: string]: unknown;
 }
 
-/** Script action — C3 serializes these with a language tag and the script as an array of lines */
+/** Script action. The current editor saves a language tag and the code as an array of lines; older Construct 3 releases (and construct3-mcp 1.8.1 and earlier) saved one string. */
 export interface ScriptAction {
   type: 'script';
-  language: string;
-  script: string[];
+  language?: string;
+  script: string | string[];
   disabled?: boolean;
   [key: string]: unknown;
 }
 
-export type Action = StandardAction | FunctionCallAction | ScriptAction;
+/** Comment row among a block's actions */
+export interface CommentAction {
+  type: 'comment';
+  text: string;
+  [key: string]: unknown;
+}
+
+export type Action = StandardAction | FunctionCallAction | ScriptAction | CommentAction;
 
 /** Block event — the most common: has conditions, actions, optional children */
 export interface BlockEvent {
@@ -318,8 +335,10 @@ export interface BlockEvent {
   children?: C3Event[];
   sid?: number;
   disabled?: boolean;
-  /** OR block: C3 stores OR at block level. An else block is a leading System "else" condition. */
+  /** OR block: the conditions are ORed instead of ANDed */
   isOrBlock?: boolean;
+  /** Legacy block flag written by construct3-mcp 1.8.1 and earlier; Construct 3 uses a System "else" condition. */
+  isElse?: boolean;
   [key: string]: unknown;
 }
 
@@ -415,11 +434,11 @@ export interface CommentEvent {
   [key: string]: unknown;
 }
 
-/** Script block event — inline JavaScript. Same on-disk shape as ScriptAction: a language tag and the script as an array of lines */
+/** Script block event — inline JavaScript. The editor saves a language tag and the script as an array of lines; older Construct 3 releases (and construct3-mcp 1.8.1 and earlier) saved one string. */
 export interface ScriptEvent {
   eventType: 'script';
-  language: string;
-  script: string[];
+  language?: string;
+  script: string | string[];
   [key: string]: unknown;
 }
 
@@ -480,6 +499,7 @@ export interface Layer {
   sid: number;
   instances: Instance[];
   overriden?: number;
+  /** Nested layers of the same shape, to any depth (see layers.ts) */
   subLayers?: Layer[];
   effectTypes?: Array<Record<string, unknown>>;
   isInitiallyVisible?: boolean;
@@ -823,8 +843,14 @@ export interface Timeline {
 export interface ObjectReference {
   objectName: string;
   eventSheet: string;
-  path: string; // e.g., "group:CheckBigWin > block:3 > action:2"
-  context: 'condition' | 'action';
+  path: string; // e.g., "group:Movement > block > action:2"
+  /**
+   * How the object is used: as the object of a condition/action, as a whole
+   * parameter value (object parameters), inside a parameter expression
+   * ("Name.X"), from a script action/event (runtime.objects.Name), or as the
+   * object a custom action block defines a custom action for.
+   */
+  context: 'condition' | 'action' | 'parameter' | 'expression' | 'script' | 'custom-action';
 }
 
 /** Node in the event sheet flow graph */
@@ -861,12 +887,36 @@ export interface PerformanceIssue {
 
 /** Asset usage information */
 export interface AssetUsageInfo {
+  /** File name with its folder path (file assets) or object type name (images) */
   name: string;
   type: 'sound' | 'music' | 'image' | 'font' | 'video' | 'icon' | 'general';
+  /**
+   * used: a reference was found; unused: every place this kind of asset can be
+   * named was searched and none names it; not-analysed: the use cannot be
+   * decided (see `reason`)
+   */
+  status: 'used' | 'unused' | 'not-analysed';
   referencedIn: {
     eventSheets: string[];
     layouts: string[];
+    /** Object types and families whose properties name the file */
+    objectTypes?: string[];
+    /** Script files (inline scripts count under eventSheets) */
+    scripts?: string[];
+    /** Flowcharts and timelines holding a string that names the file (path below flowcharts/ or timelines/, no .json) */
+    flowcharts?: string[];
+    timelines?: string[];
+    /** Project files (files/ folder) whose text names the file */
+    projectFiles?: string[];
   };
+  /** How the asset is referenced, e.g. "audio-file", "play-by-name", "string", "property", "script" */
+  via?: string[];
+  /** Why the asset is not analysed, or a note on an unused one */
+  reason?: string;
+  /** Images: animations of a sprite object type (absent for a single-image object type) */
+  animations?: number;
+  /** Images: frames of the object type (1 for a single-image object type such as a Tiled Background) */
+  frames?: number;
   isGlobal: boolean;
 }
 

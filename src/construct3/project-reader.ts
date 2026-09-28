@@ -13,8 +13,50 @@ import type {
 } from './types.js';
 import { resolveProjectPath } from './path-utils.js';
 import { noteSeen } from './change-journal.js';
+import { parseJsonText, stripBom } from './json-format.js';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+/** Limits for listing flowcharts/ and timelines/ */
+const MAX_DATA_FOLDER_DEPTH = 20;
+const MAX_DATA_FILES = 5000;
+
+/**
+ * Name → project-bar folder path for one project.c3proj container: "" for
+ * root items, "A/B" for items in folder A > B. Construct 3 mirrors these
+ * folders on disk, and the reader loads <category>/<folder path>/<name>.json.
+ * A name listed twice keeps its last position.
+ */
+export function entityFolderPaths(container: { items: string[]; subfolders: Subfolder[] }): Map<string, string> {
+  const map = new Map<string, string>();
+
+  // Root items have no subfolder prefix. A malformed container (a folder
+  // without items or subfolders, which validate_project reports) is walked as
+  // far as it goes instead of throwing.
+  for (const item of Array.isArray(container.items) ? container.items : []) {
+    map.set(item, '');
+  }
+
+  // Recursively walk subfolders
+  const walkSubfolders = (subfolders: Subfolder[], prefix: string) => {
+    if (!Array.isArray(subfolders)) return;
+    for (const subfolder of subfolders) {
+      if (!subfolder || typeof subfolder !== 'object') continue;
+      const folderPath = prefix ? `${prefix}/${subfolder.name}` : subfolder.name;
+      for (const item of Array.isArray(subfolder.items) ? subfolder.items : []) {
+        map.set(item, folderPath);
+      }
+      walkSubfolders(subfolder.subfolders, folderPath);
+    }
+  };
+
+  walkSubfolders(container.subfolders, '');
+  return map;
+}
+
+/** Project-relative path of a registered entity's file, e.g. "layouts/Menus/Title.json". */
+export function entityFilePath(category: string, folderPath: string, name: string): string {
+  return folderPath ? `${category}/${folderPath}/${name}.json` : `${category}/${name}.json`;
+}
 
 export type EntityCategory = 'objectTypes' | 'eventSheets' | 'layouts' | 'families';
 
@@ -108,6 +150,7 @@ export class Construct3ProjectReader {
 
   /**
    * Read a file safely within project bounds, with size check.
+   * A leading BOM is dropped so the text can go straight to JSON.parse.
    */
   private async readProjectFile(filePath: string): Promise<string> {
     const stats = await stat(filePath);
@@ -119,7 +162,7 @@ export class Construct3ProjectReader {
     }
     // Remember the file as read, so a later write notices an outside change.
     noteSeen(filePath, stats);
-    return readFile(filePath, 'utf-8');
+    return stripBom(await readFile(filePath, 'utf-8'));
   }
 
   /**
@@ -129,33 +172,10 @@ export class Construct3ProjectReader {
   private buildPathMaps(): void {
     const project = this.getProject();
 
-    this.objectPathMap = this.buildPathMapFromContainer(project.objectTypes);
-    this.eventSheetPathMap = this.buildPathMapFromContainer(project.eventSheets);
-    this.layoutPathMap = this.buildPathMapFromContainer(project.layouts);
-    this.familyPathMap = this.buildPathMapFromContainer(project.families);
-  }
-
-  private buildPathMapFromContainer(container: { items: string[]; subfolders: Subfolder[] }): Map<string, string> {
-    const map = new Map<string, string>();
-
-    // Root items have no subfolder prefix
-    for (const item of container.items) {
-      map.set(item, '');
-    }
-
-    // Recursively walk subfolders
-    const walkSubfolders = (subfolders: Subfolder[], prefix: string) => {
-      for (const subfolder of subfolders) {
-        const folderPath = prefix ? `${prefix}/${subfolder.name}` : subfolder.name;
-        for (const item of subfolder.items) {
-          map.set(item, folderPath);
-        }
-        walkSubfolders(subfolder.subfolders, folderPath);
-      }
-    };
-
-    walkSubfolders(container.subfolders, '');
-    return map;
+    this.objectPathMap = entityFolderPaths(project.objectTypes);
+    this.eventSheetPathMap = entityFolderPaths(project.eventSheets);
+    this.layoutPathMap = entityFolderPaths(project.layouts);
+    this.familyPathMap = entityFolderPaths(project.families);
   }
 
   /**
@@ -164,7 +184,7 @@ export class Construct3ProjectReader {
   async loadProject(): Promise<Construct3Project> {
     try {
       const projectFile = await readFile(this.projectPath, 'utf-8');
-      this.projectData = JSON.parse(projectFile) as Construct3Project;
+      this.projectData = parseJsonText(projectFile) as Construct3Project;
       this.buildPathMaps();
       return this.projectData;
     } catch (error) {
@@ -291,6 +311,86 @@ export class Construct3ProjectReader {
         classifyReadError(error),
         `Failed to read family "${name}": ${error instanceof Error ? error.message : String(error)}`,
         { cause: error }
+      );
+    }
+  }
+
+  /**
+   * Read a project script file as text.
+   * @param relativePath  Path inside the project's scripts/ folder, e.g. "importsForEvents.js" or "base/utils.ts"
+   */
+  async readScriptFile(relativePath: string): Promise<string> {
+    const scriptsDir = resolveProjectPath(this.getProjectDir(), 'scripts');
+    const scriptPath = resolveProjectPath(scriptsDir, ...relativePath.split('/'));
+    try {
+      return await this.readProjectFile(scriptPath);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Path traversal')) throw error;
+      throw new Error(
+        `Failed to read script "${relativePath}": ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Read a project file (rootFileFolders.general, saved in the project's
+   * files/ folder) as text.
+   * @param relativePath  Path inside files/, e.g. "data.json" or "sub/page.html"
+   */
+  async readProjectFileText(relativePath: string): Promise<string> {
+    const filesDir = resolveProjectPath(this.getProjectDir(), 'files');
+    const filePath = resolveProjectPath(filesDir, ...relativePath.split('/'));
+    try {
+      return await this.readProjectFile(filePath);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Path traversal')) throw error;
+      throw new Error(
+        `Failed to read project file "${relativePath}": ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /**
+   * List the JSON files below the project's flowcharts/ or timelines/ folder
+   * (subfolders included, editor UI state files "*.uistate.json" excluded).
+   * A missing folder lists nothing.
+   * @returns Paths relative to the folder, e.g. "Flow 1.json" or "sub/Intro.json"
+   */
+  async listDataFiles(folder: 'flowcharts' | 'timelines'): Promise<string[]> {
+    const root = resolveProjectPath(this.getProjectDir(), folder);
+    const out: string[] = [];
+    const walk = async (dir: string, prefix: string, depth: number): Promise<void> => {
+      if (depth > MAX_DATA_FOLDER_DEPTH || out.length >= MAX_DATA_FILES) return;
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          await walk(join(dir, entry.name), `${prefix}${entry.name}/`, depth + 1);
+        } else if (entry.isFile() && entry.name.endsWith('.json') && !entry.name.endsWith('.uistate.json')) {
+          if (out.length < MAX_DATA_FILES) out.push(prefix + entry.name);
+        }
+      }
+    };
+    await walk(root, '', 0);
+    return out.sort();
+  }
+
+  /**
+   * Read a file listed by listDataFiles as text.
+   * @param relativePath  Path inside the folder, e.g. "Flow 1.json"
+   */
+  async readDataFileText(folder: 'flowcharts' | 'timelines', relativePath: string): Promise<string> {
+    const root = resolveProjectPath(this.getProjectDir(), folder);
+    const filePath = resolveProjectPath(root, ...relativePath.split('/'));
+    try {
+      return await this.readProjectFile(filePath);
+    } catch (error) {
+      throw new Error(
+        `Failed to read ${folder} file "${relativePath}": ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
@@ -458,7 +558,7 @@ export class Construct3ProjectReader {
   async switchProject(projectPath: string): Promise<void> {
     let data: Construct3Project;
     try {
-      data = JSON.parse(await readFile(projectPath, 'utf-8')) as Construct3Project;
+      data = parseJsonText(await readFile(projectPath, 'utf-8')) as Construct3Project;
     } catch (error) {
       throw new Error(`Failed to load Construct3 project: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -552,7 +652,7 @@ export class Construct3ProjectReader {
         return false;
       }
       const content = await readFile(projectPath, 'utf-8');
-      const data = JSON.parse(content);
+      const data = parseJsonText(content);
       return (
         typeof data === 'object' &&
         data !== null &&

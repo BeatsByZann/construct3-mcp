@@ -143,6 +143,8 @@ describe('a file changed outside the server', () => {
     await changeOutside();
     const reloaded = parse(await server.callTool('reload_project', {}));
     expect(reloaded.changedOnDisk).toEqual([{ file: 'layouts/Layout 1.json', state: 'changed' }]);
+    // Reloading reads the project; it writes nothing, so there is no editor reload note.
+    expect(reloaded.editorNote).toBeUndefined();
     expect(parse(await server.callTool('reload_project', {})).changedOnDisk).toEqual([]);
   });
 

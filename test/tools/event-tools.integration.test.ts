@@ -225,7 +225,7 @@ describe('event structure tools (real project on disk)', () => {
     await server.callTool('add_event_block', {
       sheetName: 'MainSheet',
       conditions: [{ id: 'every-tick', objectClass: 'System' }],
-      actions: [{ id: 'call-function', objectClass: 'System', callFunction: 'doThing', parameters: { p0: '"x"' } }],
+      actions: [{ id: 'call-function', objectClass: 'System', callFunction: 'doThing', parameters: { first: '"x"' } }],
     });
 
     const refused = await server.callTool('update_function', {

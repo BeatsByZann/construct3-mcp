@@ -535,7 +535,7 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
           filesWritten,
           dryRun: args.dryRun,
           warnings: warnings.length > 0 ? [...new Set(warnings)] : undefined,
-        });
+        }, { projectWritten: filesWritten.length > 0 });
       } catch (error) {
         console.error('[replace_object_in_events] failed:', error);
         const written = filesWritten.length > 0 ? ` Files already written: ${filesWritten.join(', ')}.` : '';
@@ -728,7 +728,7 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
           filesWritten,
           dryRun: args.dryRun,
           warnings: warnings.length > 0 ? warnings : undefined,
-        });
+        }, { projectWritten: filesWritten.length > 0 });
       } catch (error) {
         console.error('[replace_in_expressions] failed:', error);
         const written = filesWritten.length > 0 ? ` Files already written: ${filesWritten.join(', ')}.` : '';

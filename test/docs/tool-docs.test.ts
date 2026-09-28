@@ -120,11 +120,11 @@ describe('tool documentation matches the registered tools', () => {
     for (const m of readme.matchAll(/[├└]── ([a-z-]+\.ts)\s+# (\d+) /g)) stated.set(m[1], Number(m[2]));
     let total = 0;
     for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
-      const count = (readFileSync(join(dir, file), 'utf-8').match(/server\.tool\(/g) ?? []).length;
+      const count = (readFileSync(join(dir, file), 'utf-8').match(/server\.(?:tool|registerTool)\(\s*['"]/g) ?? []).length;
       total += count;
       if (count === 0) continue;
       expect(stated.get(file), `README's tree gives ${file} no count, or the wrong one`).toBe(count);
     }
-    expect(total, 'a tool is registered some other way than server.tool(, so the per-file counts no longer add up').toBe(registered.length);
+    expect(total, 'a tool is registered some other way than server.tool( or server.registerTool(, so the per-file counts no longer add up').toBe(registered.length);
   });
 });
