@@ -392,6 +392,10 @@ describe('checkEventLoadRules — else placement', () => {
     expect(disabled).toHaveLength(1);
     expect(disabled[0].rule).toBe('trigger-placement');
     expect(disabled[0].message).toContain('is condition 1, but a trigger must be the first condition');
+    expect(disabled[0].suggestion).toContain('update_event_block with isElse: false');
+    expect(disabled[0].suggestion).not.toMatch(/^Put the trigger first/);
+    const plain = check([block(1, [cond('compare-two-values', 2), cond('on-start-of-layout', 3)])]);
+    expect(plain[0].suggestion).toBe('Put the trigger first and the other conditions after it.');
     const enabled = check([block(1, [cond('every-tick', 2)]), elseBlock(3, cond('on-start-of-layout', 5))]);
     expect(enabled.map(i => i.rule)).toEqual(['else-placement']);
   });

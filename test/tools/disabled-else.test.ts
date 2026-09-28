@@ -71,6 +71,7 @@ describe('update_event_block isElse on a block with a disabled else condition', 
   it('warns about removing an enabled else by index but not a disabled one, and refuses an insert before either', async () => {
     const disabled = setup(sheetWith(block30(disabledElse())));
     const removed = parseResult(await disabled.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 30, removeConditionIndices: [0] }));
+    expect(removed.success).toBe(true);
     expect((removed.warnings ?? []).join('\n')).not.toContain('turns the block into an ordinary block');
     const enabled = setup(sheetWith(block30(enabledElse())));
     const warned = parseResult(await enabled.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 30, removeConditionIndices: [0] }));
@@ -81,7 +82,16 @@ describe('update_event_block isElse on a block with a disabled else condition', 
       sheetName: 'Sheet1', sid: 30, insertConditions: [{ index: 0, condition: { id: 'is-visible', objectClass: 'Sprite1' } }],
     });
     expect(refused.isError).toBe(true);
-    expect(refused.content[0].text).toContain('must stay first');
+    expect(refused.content[0].text).toContain('must stay first in an else block (also when it is disabled)');
+  });
+
+  it('move_event_block_items refuses a target index 0 before a disabled else, saying so', async () => {
+    const { server } = setup([block30(disabledElse()), { eventType: 'block', sid: 40, conditions: [everyTick], actions: [] }]);
+    const refused = await server.callTool('move_event_block_items', {
+      sheetName: 'Sheet1', itemType: 'conditions', sourceBlockSid: 40, targetBlockSid: 30, indices: [0], targetIndex: 0, copy: true,
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain('must stay first in an else block (also when it is disabled)');
   });
 });
 
@@ -148,6 +158,19 @@ describe('move_event_block with a disabled else condition', () => {
     const data = parseResult(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 30, position: 'start' }));
     expect(data.success).toBe(true);
     expect(writtenEvents(writer).map((e: any) => e.sid)).toEqual([30, 20, 40]);
+  });
+
+  it('treats a block with the legacy isElse key and a disabled else as ordinary: it moves to the start and its neighbour gets no warning', async () => {
+    const legacy = { ...block30(disabledElse()), isElse: true };
+    const start = setup([topLevel()[0], legacy, topLevel()[2]]);
+    const moved = parseResult(await start.server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 30, position: 'start' }));
+    expect(moved.success).toBe(true);
+    expect(writtenEvents(start.writer).map((e: any) => e.sid)).toEqual([30, 20, 40]);
+
+    const neighbour = setup([topLevel()[0], legacy, topLevel()[2]]);
+    const away = parseResult(await neighbour.server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, position: 'end' }));
+    expect(away.success).toBe(true);
+    expect((away.warnings ?? []).join('\n')).not.toContain('no longer follows an event block');
   });
 
   it('still refuses to move a block with an enabled else to the start', async () => {

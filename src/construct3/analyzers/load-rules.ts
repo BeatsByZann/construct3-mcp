@@ -14,7 +14,7 @@
 
 import type { C3Event, Subfolder } from '../types.js';
 import { findNameClash, nameKey } from '../names.js';
-import { isActiveElseCondition, DEFAULT_FUNCTIONS_OBJECT_NAME } from '../event-shapes.js';
+import { isActiveElseCondition, isElseCondition, DEFAULT_FUNCTIONS_OBJECT_NAME } from '../event-shapes.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -310,7 +310,9 @@ function checkTriggers(
         severity: 'warning',
         location: `${location} > condition ${t.i} "${String(t.c.id)}"`,
         message: `Trigger "${String(t.c.id)}" is condition ${t.i}, but a trigger must be the first condition of its event${t.kind === 'trigger' ? '' : ' (if this addon condition is a trigger)'}. Construct 3 moves it to the top when it opens the project, so the conditions before it will be tested after it.`,
-        suggestion: 'Put the trigger first and the other conditions after it.',
+        suggestion: isElseCondition(conditions[0])
+          ? 'A tool cannot put the trigger before the disabled "else" condition, which stays first. Remove that condition (update_event_block with isElse: false) and put the trigger first, or put the trigger in its own event.'
+          : 'Put the trigger first and the other conditions after it.',
         key: `trigger-block|${keyBase}`,
       });
     }

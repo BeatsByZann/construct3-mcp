@@ -1366,7 +1366,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
         if (args.itemType === 'conditions' && args.targetIndex === 0
           && (isElseOrLegacyElseBlock(targetFound.event) || isElseCondition((targetFound.event.conditions as unknown[] | undefined)?.[0]))) {
-          return toolError('The else condition must stay first in an else block; use targetIndex 1 or later.');
+          return toolError('The else condition must stay first in an else block (also when it is disabled); use targetIndex 1 or later.');
         }
         if (args.itemType === 'conditions'
           && args.indices.some(index => isElseCondition((sourceFound.event.conditions as unknown[] | undefined)?.[index]))) {
@@ -1605,7 +1605,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // block an else block), but removing it changes nothing about how the block runs.
         if (isElseCondition(conditions[0])) {
           if ((args.insertConditions ?? []).some(item => item.index === 0)) {
-            return refuse('The else condition must stay first in an else block; insert at index 1 or later.');
+            return refuse('The else condition must stay first in an else block (also when it is disabled); insert at index 1 or later.');
           }
           if (isActiveElseCondition(conditions[0])
             && ((args.replaceConditions ?? []).some(item => item.index === 0) || (args.removeConditionIndices ?? []).includes(0))) {

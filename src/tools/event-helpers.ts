@@ -1842,11 +1842,14 @@ export { isElseCondition, isActiveElseCondition, toScriptLines };
  * True for an else block: a leading System "else" condition that is not
  * disabled, or the block-level isElse key that older versions of this server
  * wrote (which update_event_block converts, see normalizeLegacyBlock). A block
- * whose else condition is disabled is an ordinary block.
+ * that starts with an else condition is decided by that condition alone: with
+ * it disabled the block is ordinary, even when the legacy isElse key is also
+ * present (update_event_block and fix_legacy_event_shapes drop the key there).
  */
 export function isElseOrLegacyElseBlock(event: Readonly<Record<string, unknown>>): boolean {
   const conditions = event.conditions as unknown[] | undefined;
-  return (Array.isArray(conditions) && isActiveElseCondition(conditions[0])) || event.isElse === true;
+  if (Array.isArray(conditions) && isElseCondition(conditions[0])) return isActiveElseCondition(conditions[0]);
+  return event.isElse === true;
 }
 
 /**
