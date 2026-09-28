@@ -9,8 +9,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MockReader } from '../mocks/mock-reader.js';
 import {
   allLayers,
+  allLayoutInstances,
   countInstancesInLayerTree,
+  ensureSubLayers,
   findInstanceByUid,
+  findLayerEntry,
   findLayerNameClash,
   findLayersByName,
   forEachLayoutInstance,
@@ -102,6 +105,27 @@ describe('layer walker', () => {
     forEachLayoutInstance({ name: 'L', sid: 0, layers } as unknown as Layout, (i, e) => seen.push(`${i.type}@${e ? layerPathLabel(e) : 'nonworld'}`));
     expect(seen).toEqual(['T@B > C']);
     expect(layerEntries(undefined)).toEqual([]);
+  });
+
+  it('finds the first layer of a name with its live sibling array, and lists every instance of a layout', () => {
+    const layout = nestedLayout() as unknown as Layout;
+    const hud = findLayerEntry(layout.layers, 'HUD')!;
+    expect(hud.layer.name).toBe('HUD');
+    expect(hud.parent?.layer.name).toBe('Main');
+    expect(hud.siblings[hud.index]).toBe(hud.layer);
+    expect(findLayerEntry(layout.layers, 'Missing')).toBeUndefined();
+    expect(allLayoutInstances(layout).map(i => i.uid)).toEqual([1, 2, 3, 9, 4]);
+    expect(allLayoutInstances({ layers: [null, { instances: [null, { uid: 5 }] }], 'nonworld-instances': [3, { uid: 6 }] })
+      .map(i => i.uid)).toEqual([5, 6]);
+    expect(allLayoutInstances(undefined)).toEqual([]);
+  });
+
+  it('creates a missing subLayers array and keeps an existing one', () => {
+    const bare = { name: 'A', sid: 1 } as unknown as Layout['layers'][number];
+    const made = ensureSubLayers(bare);
+    expect(made).toEqual([]);
+    expect(bare.subLayers).toBe(made);
+    expect(ensureSubLayers(bare)).toBe(made);
   });
 
   it('visits layer, sub-layer and non-world instances of a malformed layout and skips entries that are not objects', () => {

@@ -43,7 +43,7 @@ import type { Layer, Instance, ObjectType } from '../construct3/types.js';
 import { validateName, validateSubfolder, validateFileName, toolResult, toolError, notFoundError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
-import { collectLayers, collectInstances, findLayerLocation } from '../construct3/layout-walk.js';
+import { allLayers, allLayoutInstances, findLayerEntry } from '../construct3/layers.js';
 import { reassignSids } from './event-helpers.js';
 
 type Reader = MutationToolDeps['reader'];
@@ -784,7 +784,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         }
 
         const copy = deepClone(await reader.readLayout(args.layoutName));
-        const instances = collectInstances(copy);
+        const instances = allLayoutInstances(copy);
         const templates = templateInstances(instances);
         if (templates.length > 0) {
           return toolError(
@@ -836,7 +836,7 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
           action: 'duplicated',
           source: args.layoutName,
           folder: subfolder ?? '',
-          layers: collectLayers(copy).length,
+          layers: allLayers(copy.layers).length,
           instances: instances.length,
           uidRange: newUids.length > 0 ? [Math.min(...newUids), Math.max(...newUids)] : undefined,
           freshSids: sids.map.size,
@@ -870,12 +870,12 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
         const layout = await reader.readLayout(args.layoutName);
-        const location = findLayerLocation(layout, args.layerName);
+        const location = findLayerEntry(layout.layers, args.layerName);
         if (!location) {
-          const names = collectLayers(layout).map(l => l.name).join(', ');
+          const names = allLayers(layout.layers).map(l => l.name).join(', ');
           return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Layers in this layout: ${names || '(none)'}.`);
         }
-        if (collectLayers(layout).some(l => l.name === args.newName)) {
+        if (allLayers(layout.layers).some(l => l.name === args.newName)) {
           return toolError(`Layout "${args.layoutName}" already has a layer named "${args.newName}". Layer names must be unique within a layout.`);
         }
         if (Array.isArray(location.layer.subLayers) && location.layer.subLayers.length > 0) {

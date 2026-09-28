@@ -33,7 +33,7 @@ import { validateName, toolResult, toolError, notFoundError } from './shared.js'
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
 import { assertUnchanged, recordChange, restamp } from '../construct3/change-journal.js';
-import { findLayer, collectLayers } from '../construct3/layout-walk.js';
+import { allLayers, findLayerEntry } from '../construct3/layers.js';
 import { findEventBySid } from './event-helpers.js';
 import {
   collectObjectNameRefsInSheet,
@@ -940,12 +940,12 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
           return notFoundError('Layout', layoutName, reader.findNearestName(layoutName, 'layouts'), 'list_layouts');
         }
         const layout = await reader.readLayout(layoutName);
-        const layer = findLayer(layout, layerName);
+        const layer = findLayerEntry(layout.layers, layerName)?.layer;
         if (!layer) {
-          const names = collectLayers(layout).map(l => l.name).join(', ');
+          const names = allLayers(layout.layers).map(l => l.name).join(', ');
           return toolError(`Layer "${layerName}" not found in layout "${layoutName}". Layers in this layout: ${names || '(none)'}.`);
         }
-        if (collectLayers(layout).some(l => l.name === newName)) {
+        if (allLayers(layout.layers).some(l => l.name === newName)) {
           return toolError(`Layout "${layoutName}" already has a layer named "${newName}". Layer names must be unique within a layout.`);
         }
 
@@ -960,7 +960,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
             .filter(other => other !== layoutName)
             .map(async other => {
               try {
-                return collectLayers(await reader.readLayout(other)).some(l => l.name === layerName) ? other : null;
+                return allLayers((await reader.readLayout(other)).layers).some(l => l.name === layerName) ? other : null;
               } catch {
                 return null;
               }
@@ -1005,7 +1005,7 @@ export function registerRenameTools({ server, reader, writer }: MutationToolDeps
         }
 
         const fresh = await reader.readLayout(layoutName);
-        const freshLayer = findLayer(fresh, layerName);
+        const freshLayer = findLayerEntry(fresh.layers, layerName)?.layer;
         if (!freshLayer) {
           return toolError(`Layer "${layerName}" disappeared from layout "${layoutName}" while renaming.`);
         }

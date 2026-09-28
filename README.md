@@ -615,7 +615,6 @@ construct3-mcp/
 │   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
-│   │   ├── layout-walk.ts          # Layer and non-world instance walks used by the fork's layout tools
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
 │   │   ├── event-variable-names.ts # Editor name rules for event variables and function parameters

@@ -88,6 +88,14 @@ export function findLayersByName(layers: unknown, name: string): LayerEntry[] {
 }
 
 /**
+ * The first layer (in file order) with this exact name anywhere in the tree,
+ * with where it sits (its live sibling array and position), or undefined.
+ */
+export function findLayerEntry(layers: unknown, name: string): LayerEntry | undefined {
+  return findLayersByName(layers, name)[0];
+}
+
+/**
  * Comparison key for layer names: the shared name key of names.ts
  * (Unicode-normalized, NFC, and lowercased). The editor (projectResources.js of
  * release r495.2) looks layer names up over all layers of a layout, sub-layers
@@ -138,6 +146,12 @@ export function forEachLayerInstance(layers: unknown, visit: (instance: Instance
   }
 }
 
+/** The layer's `subLayers` array, creating it when the layer has none yet. */
+export function ensureSubLayers(layer: Layer): Layer[] {
+  if (!Array.isArray(layer.subLayers)) layer.subLayers = [];
+  return layer.subLayers;
+}
+
 /** The layout's non-world instances ("nonworld-instances", e.g. Array, Dictionary). */
 export function nonWorldInstances(layout: Layout): Instance[] {
   const list = layout['nonworld-instances'];
@@ -153,6 +167,16 @@ export function forEachLayoutInstance(layout: unknown, visit: (instance: Instanc
   if (!isRecord(layout)) return;
   forEachLayerInstance(layout.layers, visit);
   for (const instance of nonWorldInstances(layout as Layout)) visit(instance, undefined);
+}
+
+/**
+ * Every instance of a layout in one list: all layers and sub-layers in file
+ * order, then the non-world instances (see forEachLayoutInstance).
+ */
+export function allLayoutInstances(layout: unknown): Instance[] {
+  const out: Instance[] = [];
+  forEachLayoutInstance(layout, instance => { out.push(instance); });
+  return out;
 }
 
 /** Number of instances on a layer and all of its sub-layers. */

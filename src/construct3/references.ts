@@ -12,7 +12,7 @@
  */
 
 import type { EventSheet, Layout, C3Event, Subfolder } from './types.js';
-import { collectLayers } from './layout-walk.js';
+import { allLayers } from './layers.js';
 
 /** Guard against cyclic or pathological event nesting. */
 const MAX_DEPTH = 60;
@@ -409,7 +409,7 @@ export function collectInstanceTypeRefsInLayout(
 ): RefSite[] {
   const sites: RefSite[] = [];
 
-  const layers = collectLayers(layout);
+  const layers = allLayers(layout.layers);
   for (let li = 0; li < layers.length; li++) {
     const instances = layers[li].instances;
     if (!Array.isArray(instances)) continue;

@@ -13,7 +13,7 @@ import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { Instance, Layout, WriteResult } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError } from './shared.js';
-import { collectInstances } from '../construct3/layout-walk.js';
+import { allLayoutInstances } from '../construct3/layers.js';
 import {
   decodeTileData,
   encodeTileData,
@@ -76,7 +76,7 @@ export function registerTilemapDataTools({ server, reader, writer }: MutationToo
     } catch {
       return { error: notFoundError('Layout', layoutName, reader.findNearestName(layoutName, 'layouts'), 'list_layouts') };
     }
-    const inst = collectInstances(layout).find(i => i.uid === uid);
+    const inst = allLayoutInstances(layout).find(i => i.uid === uid);
     if (!inst) {
       return { error: toolError(`Instance with UID ${uid} not found in layout "${layoutName}". Use get_layout_details to see all instance UIDs.`) };
     }

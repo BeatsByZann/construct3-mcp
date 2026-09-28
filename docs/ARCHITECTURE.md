@@ -209,11 +209,10 @@ Supporting modules next to the templates:
 | `construct3/instance-behaviors.ts` | The behavior entries every layout instance carries (object and family behaviors, with default property values) |
 | `construct3/animation-rename.ts` | Sprite animations in animation folders, and what renaming one changes: frame image file names, `initial-animation` of layout instances, event sheet strings naming it (counted for a warning) |
 | `construct3/json-format.ts` | On-disk text style: detects and reapplies line endings, trailing newline and BOM |
-| `construct3/layers.ts` | The layer tree of a layout: walks every layer and nested sub-layer and their instances (non-world instances included), finds layers and instances, compares layer names ignoring case; the analyzers and most layout tools walk layers through it (see `layout-walk.ts`) |
+| `construct3/layers.ts` | The layer tree of a layout: walks every layer and nested sub-layer and their instances (non-world instances included), finds layers and instances, compares layer names ignoring case; the analyzers and every layout, layer, template, effect, usage and timeline tool walk layers through it, so there is one layer walk in the code |
 | `construct3/path-utils.ts` | `resolveProjectPath()`: joins path segments and rejects paths that leave the project folder |
 | `construct3/png-generator.ts` | Zero-dependency placeholder PNGs and C3 image file names (all lowercase) |
 | `construct3/timeline-folders.ts` | The editor's Transitions folder in the timelines container (first nameless first-level folder, files in `timelines/transitions/`), shared by the timeline tools and `validate_project` |
-| `construct3/layout-walk.ts` | The older layer and instance walk still used by `reorder_layers`, `move_layer`, `move_instance` and the hierarchy tools; `layers.ts` is used everywhere else |
 | `construct3/ease-params.ts` | Custom eases embedded in event parameters, as Construct r495.2 saves them |
 | `construct3/tilemap-data.ts` | Codec for a Tilemap instance's tile data |
 | `construct3/timeline-model.ts` | Track kinds, track and property-track folders, and custom eases in timeline files |

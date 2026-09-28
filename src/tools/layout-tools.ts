@@ -17,9 +17,6 @@ import {
 import { findNameClash } from '../construct3/names.js';
 import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
-  collectInstances, collectLayers, collectSubLayers, ensureSubLayers, findLayerLocation,
-} from '../construct3/layout-walk.js';
-import {
   DEFAULT_INSTANCE_PROPERTIES,
   createLayout,
   createInstance,
@@ -32,9 +29,13 @@ import {
   readFamiliesForInstances,
 } from '../construct3/instance-behaviors.js';
 import {
+  allLayers,
+  allLayoutInstances,
   countInstancesInLayerTree,
+  ensureSubLayers,
   findInstanceByUid,
   instancesOf,
+  findLayerEntry,
   findLayerNameClash,
   findLayersByName,
   layerEntries,
@@ -313,7 +314,7 @@ function createScenePreview(): SceneGraphPreview {
 /** World instances of a layout keyed by UID (hierarchy applies to these only). */
 function worldInstancesByUid(layout: Layout): Map<number, Instance> {
   const map = new Map<number, Instance>();
-  for (const inst of collectInstances(layout)) {
+  for (const inst of allLayoutInstances(layout)) {
     if (inst.world) map.set(inst.uid, inst);
   }
   return map;
@@ -515,10 +516,10 @@ interface InstanceMove {
  * caller must then discard it.
  */
 function moveInstanceInLayout(layout: Layout, layoutName: string, args: MoveInstanceArgs): InstanceMove | { error: string } {
-  const layers = collectLayers(layout);
+  const layers = allLayers(layout.layers);
   const source = layers.find(l => Array.isArray(l.instances) && l.instances.some(i => i.uid === args.uid));
   if (!source) {
-    const nonworld = collectInstances(layout).some(i => i.uid === args.uid);
+    const nonworld = allLayoutInstances(layout).some(i => i.uid === args.uid);
     return {
       error: nonworld
         ? `Instance ${args.uid} is a non-world instance; it has no layer or Z order.`
@@ -1448,9 +1449,9 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
         let siblings: Layer[] = layout.layers;
         let scope = `layout "${args.layoutName}"`;
         if (args.parentLayer !== undefined) {
-          const parentLocation = findLayerLocation(layout, args.parentLayer);
+          const parentLocation = findLayerEntry(layout.layers, args.parentLayer);
           if (!parentLocation) {
-            const available = collectLayers(layout).map(l => l.name).join(', ');
+            const available = allLayers(layout.layers).map(l => l.name).join(', ');
             return toolError(`Parent layer "${args.parentLayer}" not found in layout "${args.layoutName}". Available layers: ${available}`);
           }
           siblings = ensureSubLayers(parentLocation.layer);
@@ -1517,9 +1518,9 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
 
-        const location = findLayerLocation(layout, args.layerName);
+        const location = findLayerEntry(layout.layers, args.layerName);
         if (!location) {
-          const available = collectLayers(layout).map(l => l.name).join(', ');
+          const available = allLayers(layout.layers).map(l => l.name).join(', ');
           return toolError(`Layer "${args.layerName}" not found in layout "${args.layoutName}". Available layers: ${available}`);
         }
 
@@ -1535,14 +1536,14 @@ export function registerLayoutTools({ server, reader, writer, idGen }: MutationT
           target = layout.layers;
           destination = 'the top level';
         } else {
-          const parentLocation = findLayerLocation(layout, parentName);
+          const parentLocation = findLayerEntry(layout.layers, parentName);
           if (!parentLocation) {
-            const available = collectLayers(layout).map(l => l.name).join(', ');
+            const available = allLayers(layout.layers).map(l => l.name).join(', ');
             return toolError(`Parent layer "${parentName}" not found in layout "${args.layoutName}". Available layers: ${available}`);
           }
           // A layer cannot become a child of one of its own descendants: that
           // would detach the whole branch from the layout.
-          if (collectSubLayers(location.layer).some(l => l.name === parentName)) {
+          if (allLayers(location.layer.subLayers).some(l => l.name === parentName)) {
             return toolError(`Cannot move layer "${args.layerName}" into "${parentName}", which is one of its own sub-layers.`);
           }
           target = ensureSubLayers(parentLocation.layer);

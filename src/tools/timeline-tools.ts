@@ -43,7 +43,7 @@ import type {
 import { newProjectFolder } from '../construct3/project-writer.js';
 import { validateName, validateSubfolder, toolResult, toolError, notFoundError, folderCaseClashError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
-import { collectInstances } from '../construct3/layout-walk.js';
+import { allLayoutInstances } from '../construct3/layers.js';
 import {
   WORLD_PROPERTIES,
   resolveTimelineProperty,
@@ -582,7 +582,7 @@ function findInstanceAnywhere(
   uid: number,
 ): { instance: Instance; layoutName: string } | undefined {
   for (const [layoutName, layout] of layouts) {
-    const instance = collectInstances(layout).find(inst => inst.uid === uid);
+    const instance = allLayoutInstances(layout).find(inst => inst.uid === uid);
     if (instance) return { instance, layoutName };
   }
   return undefined;
@@ -1224,7 +1224,7 @@ export function registerTimelineTools(deps: MutationToolDeps) {
           );
         }
 
-        const instance = collectInstances(layout).find(inst => inst.uid === args.instanceUid);
+        const instance = allLayoutInstances(layout).find(inst => inst.uid === args.instanceUid);
         if (!instance) {
           return toolError(`Instance UID ${args.instanceUid} not found in layout "${args.layoutName}". Use get_layout_details to list its instances.`);
         }

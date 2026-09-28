@@ -17,7 +17,7 @@ import type { WriteResult, Layout, ObjectType } from '../construct3/types.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
 import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
 import { validateName, toolResult, toolError, notFoundError, boundedRecord } from './shared.js';
-import { collectInstances, findLayer } from '../construct3/layout-walk.js';
+import { allLayoutInstances, findLayerEntry } from '../construct3/layers.js';
 
 export interface EffectTypeEntry {
   effectId: string;
@@ -106,7 +106,7 @@ async function loadTarget(
       if (targetType === 'layout') {
         return { effectTypes: ensureArray(layout as Record<string, unknown>), instanceOwners: [], save, describe: `layout "${targetName}"` };
       }
-      const layer = findLayer(layout, targetName);
+      const layer = findLayerEntry(layout.layers, targetName)?.layer;
       if (!layer) {
         return toolError(`Layer "${targetName}" not found in layout "${owningLayout}". Use get_layout_details to see its layers.`);
       }
@@ -134,7 +134,7 @@ async function updateInstanceEffects(
   const written: string[] = [];
   for (const [layoutName, layout] of await reader.readAllLayouts()) {
     let modified = false;
-    for (const instance of collectInstances(layout)) {
+    for (const instance of allLayoutInstances(layout)) {
       if (!ownerSet.has(instance.type)) continue;
       const inst = instance as Record<string, unknown>;
       if (!inst.effects || typeof inst.effects !== 'object') inst.effects = {};

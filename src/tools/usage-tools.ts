@@ -14,7 +14,7 @@ import type { Construct3ProjectReader } from '../construct3/project-reader.js';
 import type { Layout, Layer, Instance } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError } from './shared.js';
 import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
-import { collectInstances, collectLayers } from '../construct3/layout-walk.js';
+import { allLayers, allLayoutInstances } from '../construct3/layers.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { buildInstanceVariablePattern } from './object-tools.js';
 
@@ -202,7 +202,7 @@ export function registerUsageTools(server: McpServer, reader: Construct3ProjectR
 
         if (args.scopes.includes('layouts')) {
           for (const [name, layout] of await reader.readAllLayouts()) {
-            collectInstances(layout).forEach(instance => {
+            allLayoutInstances(layout).forEach(instance => {
               walkStrings({ properties: instance.properties, instanceVariables: instance.instanceVariables, tags: instance.tags }, (text, path, field) => {
                 scan(text, (index, length) => ({
                   where: 'layout', file: name, path: `instance uid ${instance.uid} (${instance.type}) ${path}`, field, text: snippet(text, index, length),
@@ -280,7 +280,7 @@ export function registerUsageTools(server: McpServer, reader: Construct3ProjectR
 
         const instanceSettings: Array<{ layout: string; uid: number; type: string; behavior: string; properties: Record<string, unknown> }> = [];
         for (const [layoutName, layout] of await reader.readAllLayouts()) {
-          for (const instance of collectInstances(layout)) {
+          for (const instance of allLayoutInstances(layout)) {
             const names = scopes.get(instance.type);
             if (!names || !instance.behaviors) continue;
             for (const name of names) {
@@ -351,12 +351,12 @@ export function registerUsageTools(server: McpServer, reader: Construct3ProjectR
           for (const e of effectEntries(layout as unknown as Record<string, unknown>)) {
             if (matches(e)) uses.push({ targetType: 'layout', target: layoutName, name: String(e.name), effectId: e.effectId });
           }
-          for (const layer of collectLayers(layout as Layout)) {
+          for (const layer of allLayers((layout as Layout).layers)) {
             for (const e of effectEntries(layer as unknown as Record<string, unknown>)) {
               if (matches(e)) uses.push({ targetType: 'layer', target: (layer as Layer).name, layout: layoutName, name: String(e.name), effectId: e.effectId });
             }
           }
-          for (const instance of collectInstances(layout)) {
+          for (const instance of allLayoutInstances(layout)) {
             const names = instanceNames.get(instance.type);
             const effects = (instance as Record<string, unknown>).effects as Record<string, { isEnabled?: boolean }> | undefined;
             if (!names || !effects) continue;
@@ -446,7 +446,7 @@ export function registerUsageTools(server: McpServer, reader: Construct3ProjectR
 
         const storedValues: Array<{ layout: string; uid: number; type: string; value: unknown }> = [];
         for (const [layoutName, layout] of await reader.readAllLayouts()) {
-          for (const instance of collectInstances(layout) as Instance[]) {
+          for (const instance of allLayoutInstances(layout)) {
             if (!affected.has(instance.type)) continue;
             const values = instance.instanceVariables as Record<string, unknown> | undefined;
             if (values && Object.prototype.hasOwnProperty.call(values, args.variableName)) {

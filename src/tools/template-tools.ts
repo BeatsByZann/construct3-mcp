@@ -30,7 +30,7 @@ import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, Layout, Instance, ObjectType } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError } from './shared.js';
-import { collectLayers, collectInstances } from '../construct3/layout-walk.js';
+import { allLayers, allLayoutInstances } from '../construct3/layers.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
 
 // ─── Template block shape ──────────────────────────────────
@@ -180,7 +180,7 @@ interface FoundInstance {
 }
 
 function findInstanceByUid(layout: Layout, uid: number): FoundInstance | null {
-  for (const layer of collectLayers(layout)) {
+  for (const layer of allLayers(layout.layers)) {
     if (!Array.isArray(layer.instances)) continue;
     for (const instance of layer.instances) {
       if (instance.uid === uid) return { instance, layer: layer.name };
@@ -247,7 +247,7 @@ export function registerTemplateTools({ server, reader, writer }: MutationToolDe
             warnings.push(`Layout "${layoutName}" could not be read: ${e instanceof Error ? e.message : String(e)}`);
             continue;
           }
-          for (const instance of collectInstances(layout)) {
+          for (const instance of allLayoutInstances(layout)) {
             const block = readTemplate(instance);
             if (!block) continue;
             if (args.objectType && instance.type !== args.objectType) continue;
@@ -475,7 +475,7 @@ async function findTemplateLocation(
     } catch {
       continue;
     }
-    for (const instance of collectInstances(layout)) {
+    for (const instance of allLayoutInstances(layout)) {
       if (instance.type !== objectType) continue;
       const block = readTemplate(instance);
       if (!block || block.mode !== 'template' || block.templateName !== templateName) continue;
