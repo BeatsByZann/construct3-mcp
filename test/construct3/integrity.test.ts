@@ -678,6 +678,28 @@ describe('validateProjectIntegrity', () => {
     expect(result.warnings.filter(w => w.check === 'trigger-placement')).toEqual([]);
   });
 
+  it('does not report else-placement for a block whose else condition is disabled, and still does with it enabled', async () => {
+    const sheet = (elseExtra: Record<string, unknown>) => projectWithSheet([
+      { eventType: 'block', sid: 240, conditions: [{ id: 'every-tick', objectClass: 'System', sid: 241 }], actions: [], children: [
+        { eventType: 'comment', text: 'c' },
+        {
+          eventType: 'block', sid: 242, actions: [],
+          conditions: [
+            { id: 'else', objectClass: 'System', sid: 243, ...elseExtra },
+            { id: 'compare-two-values', objectClass: 'System', sid: 244 },
+          ],
+        },
+        { eventType: 'block', sid: 245, conditions: [{ id: 'else', objectClass: 'System', sid: 246 }], actions: [] },
+      ] },
+    ]);
+    const disabled = await validateProjectIntegrity(sheet({ disabled: true }));
+    expect(disabled.warnings.filter(w => w.check === 'else-placement')).toEqual([]);
+    const enabled = await validateProjectIntegrity(sheet({}));
+    const warns = enabled.warnings.filter(w => w.check === 'else-placement');
+    expect(warns).toHaveLength(1);
+    expect(warns[0].entity).toContain('sid 242');
+  });
+
   it('does not warn about the shapes Construct 3 writes', async () => {
     const reader = projectWithSheet([
       { eventType: 'function-block', functionName: 'fn1', functionParameters: [], sid: 205, conditions: [], actions: [] },

@@ -14,7 +14,7 @@
 
 import type { C3Event, Subfolder } from '../types.js';
 import { findNameClash, nameKey } from '../names.js';
-import { isElseCondition, DEFAULT_FUNCTIONS_OBJECT_NAME } from '../event-shapes.js';
+import { isActiveElseCondition, DEFAULT_FUNCTIONS_OBJECT_NAME } from '../event-shapes.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -291,7 +291,7 @@ function checkTriggers(
   // triggers (a partial fix) is not mistaken for a new problem. A trigger after
   // the "else" condition of an else block is reported by rule 4 instead, since
   // "put the trigger first" would take Else off its first place.
-  const elseBlock = isElseCondition(conditions[0]);
+  const elseBlock = isActiveElseCondition(conditions[0]);
   if (ev.isOrBlock !== true) {
     if (triggers.length > 1) {
       const confirmed = triggers.every(t => t.kind === 'trigger');
@@ -357,6 +357,8 @@ export function previousNonComment(list: readonly unknown[], i: number): unknown
  * "else" condition, see rule 3). `previous` is the nearest sibling before the
  * else block that is not a comment, `conditions` the else block's own,
  * starting with the "else" condition. Triggers are recognised by id (`on-`).
+ * Only a block whose "else" condition is enabled is an else block (see
+ * isActiveElseCondition): a disabled else is ignored when the event runs.
  */
 export function elsePlacementProblem(previous: unknown, conditions: ReadonlyArray<unknown>): ElsePlacementProblem | null {
   const findTrigger = (list: unknown): Record<string, unknown> | undefined =>
@@ -405,7 +407,7 @@ function checkElsePlacement(
   aceOrigin: AceOriginResolver,
   out: LoadRuleIssue[],
 ): void {
-  if (ev.eventType !== 'block' || !Array.isArray(ev.conditions) || !isElseCondition(ev.conditions[0])) return;
+  if (ev.eventType !== 'block' || !Array.isArray(ev.conditions) || !isActiveElseCondition(ev.conditions[0])) return;
   // Looked up only for else blocks: the comment runs before distinct else
   // blocks do not overlap, so the walk stays linear in the sheet size.
   const problem = elsePlacementProblem(previousNonComment(siblings, index), ev.conditions);

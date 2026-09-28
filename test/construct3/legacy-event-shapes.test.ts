@@ -33,6 +33,23 @@ describe('scanLegacyEventShapes: isElse', () => {
     expect((events[1] as any).conditions).toEqual([{ id: 'else', objectClass: 'System', sid: 5000 }]);
   });
 
+  it('drops isElse on a block that starts with a disabled else condition, leaving the condition disabled and adding none', async () => {
+    const disabledElse = cond('else', 3, { disabled: true });
+    const events = [block(1, [cond('x', 2)]), block(4, [disabledElse, cond('y', 5)], { isElse: true })] as unknown as C3Event[];
+    const dry = await scanLegacyEventShapes(events);
+    expect(dry.manual).toHaveLength(0);
+    expect(dry.fixable).toHaveLength(1);
+    expect(dry.fixable[0].detail).toContain('already starts with the System "else" condition, which is disabled and stays disabled');
+    expect(dry.fixable[0].changesBehavior).toBeUndefined();
+
+    nextSid = 5000;
+    const applied = await scanLegacyEventShapes(events, { apply: true, newSid });
+    expect(applied.fixable).toHaveLength(1);
+    expect(events[1]).not.toHaveProperty('isElse');
+    expect((events[1] as any).conditions.map((c: any) => [c.id, c.sid, c.disabled])).toEqual([['else', 3, true], ['y', 5, undefined]]);
+    expect(nextSid).toBe(5000);
+  });
+
   it('reports an isElse block with no block before it, not counting comments', async () => {
     const events = [
       block(3, [], { isElse: true }),

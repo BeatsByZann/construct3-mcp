@@ -368,6 +368,34 @@ describe('checkEventLoadRules — else placement', () => {
     expect(issues[0].suggestion).not.toMatch(/Put the trigger first/);
   });
 
+  it('treats a block whose else condition is disabled as an ordinary block: no block is needed before it', () => {
+    // A comment, then the block with a disabled else, then an enabled else: as an editor-saved sheet has it
+    const disabledElse = (sid: number, ...rest: unknown[]) => block(sid, [cond('else', sid + 1, 'System', { disabled: true }), ...rest]);
+    const events = (first: unknown) => [
+      block(1, [cond('every-tick', 2)], [], { children: [
+        { eventType: 'comment', text: 'c' },
+        first,
+        elseBlock(20),
+      ] }),
+    ];
+    expect(check(events(disabledElse(10, cond('is-overlapping-another-object', 12), cond('pick-by-highest-lowest-value', 13))))).toEqual([]);
+    const enabled = check(events(elseBlock(10, cond('is-overlapping-another-object', 12), cond('pick-by-highest-lowest-value', 13))));
+    expect(enabled).toHaveLength(1);
+    expect(enabled[0]).toMatchObject({ rule: 'else-placement', key: 'else-placement|eventSheets/Main|10' });
+    expect(enabled[0].message).toContain('no event comes before it (comments aside)');
+    // Not after a trigger either: a disabled else is not an else block, so nothing follows a triggered block
+    expect(check([block(1, [cond('on-start-of-layout', 2)]), disabledElse(3)])).toEqual([]);
+  });
+
+  it('reports a trigger after a disabled else as an ordinary block does, and one after an enabled else as else-placement', () => {
+    const disabled = check([block(1, [cond('every-tick', 2)]), block(3, [cond('else', 4, 'System', { disabled: true }), cond('on-start-of-layout', 5)])]);
+    expect(disabled).toHaveLength(1);
+    expect(disabled[0].rule).toBe('trigger-placement');
+    expect(disabled[0].message).toContain('is condition 1, but a trigger must be the first condition');
+    const enabled = check([block(1, [cond('every-tick', 2)]), elseBlock(3, cond('on-start-of-layout', 5))]);
+    expect(enabled.map(i => i.rule)).toEqual(['else-placement']);
+  });
+
   it('marks third-party addon triggers as possible triggers', () => {
     const addon: AceOriginResolver = ace => (ace.objectClass === 'System' ? 'builtin' : 'addon');
     const issues = check([block(1, [cond('on-thing', 2, 'AddonObj')]), elseBlock(3)], addon);

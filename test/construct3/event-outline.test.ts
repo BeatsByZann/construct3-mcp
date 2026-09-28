@@ -57,6 +57,29 @@ describe('buildEventOutline', () => {
     ]);
   });
 
+  it('shows a block whose else condition is disabled as an ordinary block, and an enabled else as ELSE', () => {
+    const events = [
+      { eventType: 'block', sid: 1, conditions: [{ id: 'every-tick', objectClass: 'System', sid: 2 }], actions: [], children: [
+        { eventType: 'comment', text: 'c' },
+        {
+          eventType: 'block', sid: 3, actions: [],
+          conditions: [
+            { id: 'else', objectClass: 'System', sid: 4, disabled: true },
+            { id: 'compare-two-values', objectClass: 'System', sid: 5 },
+          ],
+        },
+        { eventType: 'block', sid: 6, conditions: [{ id: 'else', objectClass: 'System', sid: 7 }], actions: [] },
+      ] },
+    ];
+    const outline = buildEventOutline('es_game', events);
+    const [, disabledElse, enabledElse] = outline.nodes.filter(n => n.number !== null);
+    expect(disabledElse.kind).toBe('block');
+    expect(disabledElse.header).toMatch(/^IF System\.else\(\) \[disabled\] AND System\.compare-two-values/);
+    expect(disabledElse.header).not.toMatch(/^ELSE/);
+    expect(enabledElse.kind).toBe('else');
+    expect(enabledElse.header).toMatch(/^ELSE/);
+  });
+
   it.each([
     ['FirstPersonShooter1 Main (groups, sub-events, else, functions in groups)', FPS1_MAIN_SKELETON, 25],
     ['FirstPersonShooter2 aPlayer (custom ACE bodies with variables and else chains)', FPS2_APLAYER_SKELETON, 21],

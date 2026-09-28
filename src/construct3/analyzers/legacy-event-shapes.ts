@@ -20,6 +20,7 @@
 import type { C3Event } from '../types.js';
 import {
   createElseCondition,
+  isActiveElseCondition,
   isElseCondition,
   isFunctionCall,
   isLegacyFunctionCall,
@@ -175,7 +176,10 @@ async function scanIsElse(
     return;
   }
   if (isElseCondition(conditions[0])) {
-    result.fixable.push({ ...hit, detail: 'drop "isElse" (the block already starts with the System "else" condition)' });
+    // A disabled else condition stays disabled: Construct 3 never read the key, so dropping it
+    // leaves the block running as it did, while enabling the condition would change that.
+    const disabledNote = isActiveElseCondition(conditions[0]) ? '' : ', which is disabled and stays disabled';
+    result.fixable.push({ ...hit, detail: `drop "isElse" (the block already starts with the System "else" condition${disabledNote})` });
     if (options.apply) delete event.isElse;
     return;
   }

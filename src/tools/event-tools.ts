@@ -76,6 +76,7 @@ import {
 } from './event-helpers.js';
 import {
   isElseCondition,
+  isActiveElseCondition,
   createElseCondition,
   setKeyAfterSid,
   setConditionParameters,
@@ -545,7 +546,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if ('error' in resolution) return toolError(resolution.error);
         const container = resolution.container;
 
-        if (args.isElse || isElseCondition(args.conditions[0])) {
+        if (args.isElse || isActiveElseCondition(args.conditions[0])) {
           const placement = elsePlacementError(container, args.position);
           if (placement) return toolError(placement);
         }
@@ -1363,7 +1364,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (!BLOCK_LIKE.has(targetType)) {
           return toolError(`Target event with SID ${args.targetBlockSid} is a "${targetType}", not a block, function-block or custom action.`);
         }
-        if (args.itemType === 'conditions' && args.targetIndex === 0 && isElseOrLegacyElseBlock(targetFound.event)) {
+        if (args.itemType === 'conditions' && args.targetIndex === 0
+          && (isElseOrLegacyElseBlock(targetFound.event) || isElseCondition((targetFound.event.conditions as unknown[] | undefined)?.[0]))) {
           return toolError('The else condition must stay first in an else block; use targetIndex 1 or later.');
         }
         if (args.itemType === 'conditions'
@@ -1589,7 +1591,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         } catch (error) {
           return refuse(error instanceof Error ? error.message : String(error));
         }
-        if (legacyElse === true) {
+        if (legacyElse === true && conditions[0] !== undefined && isElseCondition(conditions[0]) && !isActiveElseCondition(conditions[0])) {
+          warnings.push(`${where}: dropped the block-level "isElse" key written by older builds of this server (Construct 3 does not read it). The block starts with a System "else" condition that is disabled, so it stays an ordinary block; isElse: true enables that condition.`);
+        } else if (legacyElse === true) {
           warnings.push(`${where}: dropped the block-level "isElse" key written by older builds of this server; Construct 3 marks an else block with a System "else" first condition, which was written instead before this update was applied, so condition indexes count it.`);
         } else if (legacyElse !== undefined) {
           warnings.push(`${where}: dropped the block-level "isElse" key written by older builds of this server (Construct 3 does not read it).`);
@@ -1597,12 +1601,14 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (hadLegacyOr) {
           warnings.push(`${where}: the condition-level isOr flags older builds of this server wrote were dropped${event.isOrBlock === true ? '; the block is an OR block (isOrBlock), the key Construct 3 reads' : ''}.`);
         }
-        const elseBlock = isElseCondition(conditions[0]);
-        if (elseBlock) {
+        // A disabled else condition is still kept in first place (enabling it later makes the
+        // block an else block), but removing it changes nothing about how the block runs.
+        if (isElseCondition(conditions[0])) {
           if ((args.insertConditions ?? []).some(item => item.index === 0)) {
             return refuse('The else condition must stay first in an else block; insert at index 1 or later.');
           }
-          if ((args.replaceConditions ?? []).some(item => item.index === 0) || (args.removeConditionIndices ?? []).includes(0)) {
+          if (isActiveElseCondition(conditions[0])
+            && ((args.replaceConditions ?? []).some(item => item.index === 0) || (args.removeConditionIndices ?? []).includes(0))) {
             warnings.push('Condition 0 of this block is its else condition; replacing or removing it turns the block into an ordinary block.');
           }
         }
@@ -1908,6 +1914,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           delete event.isElse;
           if (args.isElse && !isElseCondition(conditions[0])) {
             conditions.unshift(createElseCondition(await idGen.generateSid(reader)));
+          } else if (args.isElse && !isActiveElseCondition(conditions[0])) {
+            // The block starts with a disabled else: enable it rather than add a second one
+            delete conditions[0].disabled;
+            warnings.push(`${where}: enabled the disabled System "else" condition; the block is now an else block.`);
           } else if (!args.isElse && isElseCondition(conditions[0])) {
             conditions.shift();
             removedConditions = true;

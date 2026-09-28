@@ -5,7 +5,9 @@
  * - Else: the System condition { id: "else", objectClass: "System", sid } at
  *   condition index 0 of a block, always after another block (directly, or
  *   with comments between). Conditions after it make an else-if. There is no
- *   block-level "isElse" key.
+ *   block-level "isElse" key. A disabled else condition ("disabled": true,
+ *   saved in place) is ignored when the event runs, so its block is an
+ *   ordinary block: only an active else makes an else block.
  * - OR blocks: the block key "isOrBlock": true. Conditions carry no OR flag.
  * - Function calls: { callFunction, sid, disabled?, parameters?: [...] } with no
  *   id/objectClass. Parameters are positional, one per function parameter:
@@ -27,16 +29,33 @@ const MAX_DEPTH = 50;
 
 // ─── Else ────────────────────────────────────────────────────
 
-/** True for the System "else" condition, which Construct 3 saves as condition 0 of an else block. */
+/**
+ * True for the System "else" condition, enabled or disabled: the condition
+ * Construct 3 saves as condition 0 of an else block. Use it where the question
+ * is whether a condition is an else condition (placement of the condition,
+ * duplicates); use isActiveElseCondition for whether a block is an else block.
+ */
 export function isElseCondition(cond: unknown): boolean {
   if (typeof cond !== 'object' || cond === null) return false;
   const rec = cond as Record<string, unknown>;
   return rec.id === 'else' && rec.objectClass === 'System';
 }
 
-/** True when a stored event is an else block: its first condition is the System "else". */
+/**
+ * True for a System "else" condition that is in effect, which is one not saved
+ * with "disabled": true. A disabled else is ignored when the event runs, so
+ * its block is an ordinary block and needs no block before it.
+ */
+export function isActiveElseCondition(cond: unknown): boolean {
+  return isElseCondition(cond) && (cond as Record<string, unknown>).disabled !== true;
+}
+
+/**
+ * True when a stored event is an else block: its first condition is an active
+ * System "else". A block whose first condition is a disabled else is ordinary.
+ */
 export function isElseBlock(event: Readonly<Record<string, unknown>>): boolean {
-  return Array.isArray(event.conditions) && isElseCondition(event.conditions[0]);
+  return Array.isArray(event.conditions) && isActiveElseCondition(event.conditions[0]);
 }
 
 /** The System "else" condition, in the editor's key order. */

@@ -8,7 +8,32 @@ import {
   toScriptLines,
   isLegacyScript,
   findExpressionIdentifiers,
+  isElseCondition,
+  isActiveElseCondition,
+  isElseBlock,
 } from '../../src/construct3/event-shapes.js';
+
+describe('else detection', () => {
+  const enabled = { id: 'else', objectClass: 'System', sid: 1 };
+  const disabled = { ...enabled, disabled: true };
+
+  it('isElseCondition matches an else condition whether or not it is disabled', () => {
+    expect(isElseCondition(enabled)).toBe(true);
+    expect(isElseCondition(disabled)).toBe(true);
+    expect(isElseCondition({ id: 'else', objectClass: 'Sprite' })).toBe(false);
+    expect(isElseCondition(null)).toBe(false);
+  });
+
+  it('isActiveElseCondition and isElseBlock ignore a disabled else condition', () => {
+    expect(isActiveElseCondition(enabled)).toBe(true);
+    expect(isActiveElseCondition({ ...enabled, disabled: false })).toBe(true);
+    expect(isActiveElseCondition(disabled)).toBe(false);
+    expect(isActiveElseCondition({ id: 'every-tick', objectClass: 'System' })).toBe(false);
+    expect(isElseBlock({ conditions: [enabled] })).toBe(true);
+    expect(isElseBlock({ conditions: [disabled, { id: 'x', objectClass: 'System' }] })).toBe(false);
+    expect(isElseBlock({})).toBe(false);
+  });
+});
 
 describe('findExpressionIdentifiers', () => {
   it('returns bare names, lower-cased, once per use', () => {

@@ -47,6 +47,7 @@
  * numbers are 1-based. These are stated in tool notes and docs/API.md.
  */
 
+import { isActiveElseCondition } from '../event-shapes.js';
 import { BEHAVIOR_TYPE_KEY, LEGACY_BEHAVIOR_TYPE_KEY, isBehaviorName } from './legacy-behavior-keys.js';
 
 const MAX_NODES = 100_000;
@@ -251,10 +252,13 @@ function describeAction(action: Raw, kind: OutlineItemKind): string {
   }
 }
 
-/** Real sheets mark an else block with a System "else" first condition. */
+/**
+ * Real sheets mark an else block with a System "else" first condition. A disabled
+ * else condition is ignored when the event runs, so that block is an ordinary
+ * block (its header still lists the condition, marked [disabled]).
+ */
 function isElseBlock(conditions: Raw[]): boolean {
-  const first = conditions[0];
-  return first !== undefined && first.id === 'else' && first.objectClass === 'System';
+  return isActiveElseCondition(conditions[0]);
 }
 
 function renderFunctionParams(node: Raw): string {

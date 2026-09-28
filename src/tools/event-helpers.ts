@@ -21,6 +21,7 @@ import type {
 import { createBlockEvent, createCommentEvent } from '../construct3/templates.js';
 import {
   isElseCondition,
+  isActiveElseCondition,
   createElseCondition,
   isFunctionCall,
   collectFunctionSignatures,
@@ -1767,8 +1768,11 @@ export async function buildBlockEvent(
   const where = locationLabel(depth);
 
   // Else is the System "else" condition at index 0; conditions after it make an else-if.
+  // An else condition given disabled makes an ordinary block, unless isElse: true
+  // asks for an else block, which enables that condition instead of adding another.
   const hasElseCondition = isElseCondition(block.conditions[0]);
-  const isElse = block.isElse === true || hasElseCondition;
+  const enablesElse = block.isElse === true && hasElseCondition && block.conditions[0].disabled === true;
+  const isElse = block.isElse === true || isActiveElseCondition(block.conditions[0]);
   // A block holds one "else" condition, first. In an else block a further one
   // is a duplicate and is dropped; elsewhere it is written, with a warning.
   const conditions = block.conditions.filter((c, i) => {
@@ -1781,6 +1785,11 @@ export async function buildBlockEvent(
     counter.warnings.push(`${where}: the System "else" condition is condition ${i}. Construct 3 saves Else as the first condition of a block; use isElse: true or put it first.`);
     return true;
   });
+
+  if (enablesElse) {
+    conditions[0] = { ...conditions[0], disabled: undefined };
+    counter.warnings.push(`${where}: enabled the disabled System "else" condition given first, since isElse: true makes the block an else block.`);
+  }
 
   const isOrBlock = resolveOrBlock(block.isOrBlock, conditions, where, counter.warnings);
   if (isElse && isOrBlock) {
@@ -1827,16 +1836,17 @@ export async function buildBlockEvent(
 // ─── Else blocks written by older versions ──────────────────
 
 /** Re-exported for the event tools: the editor's else condition and script lines (see event-shapes.ts). */
-export { isElseCondition, toScriptLines };
+export { isElseCondition, isActiveElseCondition, toScriptLines };
 
 /**
- * True for an else block: a leading System "else" condition, or the
- * block-level isElse key that older versions of this server wrote (which
- * update_event_block converts, see normalizeLegacyBlock).
+ * True for an else block: a leading System "else" condition that is not
+ * disabled, or the block-level isElse key that older versions of this server
+ * wrote (which update_event_block converts, see normalizeLegacyBlock). A block
+ * whose else condition is disabled is an ordinary block.
  */
 export function isElseOrLegacyElseBlock(event: Readonly<Record<string, unknown>>): boolean {
   const conditions = event.conditions as unknown[] | undefined;
-  return (Array.isArray(conditions) && isElseCondition(conditions[0])) || event.isElse === true;
+  return (Array.isArray(conditions) && isActiveElseCondition(conditions[0])) || event.isElse === true;
 }
 
 /**
