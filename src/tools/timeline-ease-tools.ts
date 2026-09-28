@@ -207,7 +207,8 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
 
         const ease = createCustomEase(args.name, args.points, args.linear, 'any');
         const backupPath = await backupFile(filePath);
-        await atomicWriteJson(filePath, ease);
+        // A new ease file follows project.c3proj's text style, not an older ease file's.
+        await atomicWriteJson(filePath, ease, reader.getProjectPath());
         await updateEaseRegistration(args.name, true);
         return result(args.name, 'created', backupPath, {}, unsampledPointsWarning(args.points.length));
       } catch (error) {

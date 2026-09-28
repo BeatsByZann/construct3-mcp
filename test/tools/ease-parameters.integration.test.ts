@@ -182,11 +182,11 @@ describe('custom eases in event parameters (real project on disk)', () => {
   /** Put a byte order mark in front of a project file, as some editors and tools save them. */
   async function addBom(...segments: string[]): Promise<void> {
     const path = join(tmpDir, ...segments);
-    await writeFile(path, '﻿' + await readFile(path, 'utf-8'), 'utf-8');
+    await writeFile(path, '\uFEFF' + await readFile(path, 'utf-8'), 'utf-8');
   }
 
   async function hasBom(...segments: string[]): Promise<boolean> {
-    return (await readFile(join(tmpDir, ...segments), 'utf-8')).startsWith('﻿');
+    return (await readFile(join(tmpDir, ...segments), 'utf-8')).startsWith('\uFEFF');
   }
 
   it('create_ease and delete_ease work on a project.c3proj that starts with a BOM, and keep the BOM', async () => {
@@ -198,6 +198,19 @@ describe('custom eases in event parameters (real project on disk)', () => {
     await ok('delete_ease', { name: 'Second' });
     expect(await hasBom('project.c3proj')).toBe(true);
     expect((await ok('list_eases', {})).eases.map((e: Json) => e.name)).toEqual(['Bouncy']);
+  });
+
+  it('create_ease writes a new ease file in the text style of project.c3proj, not of an existing ease file', async () => {
+    const projectFile = join(tmpDir, 'project.c3proj');
+    await writeFile(projectFile, '\uFEFF' + (await readFile(projectFile, 'utf-8')).replace(/\r?\n/g, '\r\n'), 'utf-8');
+    // The existing ease file, the other place a style could come from, is LF with no BOM.
+    const bouncy = join(tmpDir, 'timelines', 'transitions', 'Bouncy.json');
+    await writeFile(bouncy, (await readFile(bouncy, 'utf-8')).replace(/\r\n/g, '\n'), 'utf-8');
+    await ok('create_ease', { name: 'Third', points: POINTS });
+    const text = await readFile(join(tmpDir, 'timelines', 'transitions', 'Third.json'), 'utf-8');
+    expect(text.startsWith('\uFEFF')).toBe(true);
+    expect(text).toContain('\r\n');
+    expect(text.replace(/\r\n/g, '')).not.toContain('\n');
   });
 
   it('list_eases, update_ease and an ease parameter read an ease file that starts with a BOM, and keep the BOM', async () => {
