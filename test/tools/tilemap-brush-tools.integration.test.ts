@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, cp, rm, readFile, stat } from 'fs/promises';
+import { mkdtemp, cp, rm, readFile, stat, readdir, rename } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
@@ -14,8 +14,10 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerTilemapBrushTools } from '../../src/tools/tilemap-brush-tools.js';
+import { isCaseInsensitiveFs } from '../helpers/fs-case.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'rename-project');
+const caseInsensitive = isCaseInsensitiveFs();
 
 const auto16 = [
   [0, 1, 2, 3],
@@ -225,5 +227,22 @@ describe('delete_tilemap_brush', () => {
     const noFile = await server.callTool('delete_tilemap_brush', { objectName: 'Player', name: 'Nope' });
     expect(noFile.isError).toBe(true);
     expect(noFile.content[0].text).toContain('has no brush file');
+  });
+});
+
+describe.skipIf(!caseInsensitive)('a brush file spelled differently on disk from the object name', () => {
+  it('keeps its name on disk and is backed up under it', async () => {
+    const dir = join(tmpDir, 'tilemapBrushes', 'objectTypes');
+    await rename(join(dir, 'Tiles.brush.json'), join(dir, 'TILES.brush.json'));
+    const result = parseResult(await server.callTool('add_tilemap_brush', {
+      objectName: 'Tiles', name: 'Second', type: 'auto16', data: auto16,
+    }));
+    expect(result.success).toBe(true);
+    const entries = await readdir(dir);
+    expect(entries).toContain('TILES.brush.json');
+    expect(entries).toContain('TILES.brush.json.bak');
+    expect(entries).not.toContain('Tiles.brush.json');
+    expect(entries).not.toContain('Tiles.brush.json.bak');
+    expect(JSON.parse(await readFile(join(dir, 'TILES.brush.json'), 'utf-8'))).toHaveLength(2);
   });
 });

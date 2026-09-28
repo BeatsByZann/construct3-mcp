@@ -26,7 +26,7 @@ import { registerStructureTools } from '../../src/tools/structure-tools.js';
 import { registerTilemapBrushTools, brushFileText } from '../../src/tools/tilemap-brush-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'rename-project');
-const BOM = '﻿';
+const BOM = '\uFEFF';
 
 type Eol = '\n' | '\r\n';
 
@@ -50,7 +50,7 @@ const read = (...segments: string[]) => readFile(join(tmpDir, ...segments), 'utf
 
 /** Rewrite a file's text in the given style; `indent` re-indents its JSON (default: keep the fixture's tabs). */
 async function restyle(rel: string[], style: Style, indent?: string): Promise<void> {
-  let text = (await read(...rel)).replace(/^﻿/, '').replace(/\r\n/g, '\n').replace(/\s+$/, '');
+  let text = (await read(...rel)).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\s+$/, '');
   if (indent !== undefined) text = JSON.stringify(JSON.parse(text), null, indent || undefined);
   const out = (style.eol === '\r\n' ? text.replace(/\n/g, '\r\n') : text) + (style.trailing ?? '');
   await writeFile(join(tmpDir, ...rel), (style.bom ? BOM : '') + out, 'utf-8');
@@ -59,7 +59,7 @@ async function restyle(rel: string[], style: Style, indent?: string): Promise<vo
 /** Assert the exact line endings, trailing whitespace and BOM of a file's text. */
 function expectStyle(text: string, style: Style): void {
   expect(text.startsWith(BOM)).toBe(style.bom === true);
-  const body = text.replace(/^﻿/, '');
+  const body = text.replace(/^\uFEFF/, '');
   const closed = body.replace(/\s+$/, '');
   expect(body.slice(closed.length)).toBe(style.trailing ?? '');
   const crlf = (closed.match(/\r\n/g) || []).length;
@@ -72,7 +72,7 @@ function expectStyle(text: string, style: Style): void {
   }
 }
 
-const parseText = (text: string) => JSON.parse(text.replace(/^﻿/, ''));
+const parseText = (text: string) => JSON.parse(text.replace(/^\uFEFF/, ''));
 
 async function boot(): Promise<void> {
   resetProjectIndex();
@@ -258,7 +258,7 @@ describe('tilemap brush tools keep the text style', () => {
 
     const text = await read(...BRUSH);
     expectStyle(text, CRLF_BOM);
-    expect(text.replace(/^﻿/, '')).toContain('\r\n\t{\r\n\t\t"name": "Brush 0"');
+    expect(text.replace(/^\uFEFF/, '')).toContain('\r\n\t{\r\n\t\t"name": "Brush 0"');
     expect(parseText(text)).toHaveLength(2);
   });
 

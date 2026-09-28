@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, cp, rm, readFile, writeFile, stat } from 'fs/promises';
+import { mkdtemp, cp, rm, readFile, writeFile, stat, readdir, rename } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
@@ -17,8 +17,10 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerFlowchartTools } from '../../src/tools/flowchart-tools.js';
 import type { Flowchart } from '../../src/construct3/types.js';
+import { isCaseInsensitiveFs } from '../helpers/fs-case.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
+const caseInsensitive = isCaseInsensitiveFs();
 
 const FLOWCHART_PLUGIN = {
   type: 'plugin',
@@ -587,5 +589,35 @@ describe('flowchart tools (real project on disk)', () => {
     const previous = JSON.parse(await readFile(bak, 'utf-8')) as Flowchart;
     expect(previous.nodes[0].c).toBe('A');
     expect((await onDisk('Graph')).nodes[0].c).toBe('B');
+  });
+
+  // ─── file names on a case-insensitive file system ────────
+
+  describe.skipIf(!caseInsensitive)('when the file on disk is spelled differently from the registered name', () => {
+    // Registered as "graph", stored as Graph.json (with its editor-state file Graph.uistate.json)
+    beforeEach(async () => {
+      expect(parseResult(await server.callTool('create_flowchart', { name: 'graph' })).success).toBe(true);
+      await rename(join(tmpDir, 'flowcharts', 'graph.json'), join(tmpDir, 'flowcharts', 'Graph.json'));
+      await writeFile(join(tmpDir, 'flowcharts', 'Graph.uistate.json'), '{}', 'utf-8');
+    });
+
+    it('backs up under the file name on disk when a node is added', async () => {
+      const result = parseResult(await server.callTool('add_flowchart_node', {
+        flowchartName: 'graph', caption: 'A', x: 0, y: 0,
+      }));
+      expect(result.backupFile).toBe(join(tmpDir, 'flowcharts', 'Graph.json.bak'));
+      const entries = await readdir(join(tmpDir, 'flowcharts'));
+      expect(entries).toContain('Graph.json.bak');
+      expect(entries).not.toContain('graph.json');
+      expect(entries).not.toContain('graph.json.bak');
+    });
+
+    it('deletes the flowchart and backs up its files under the names on disk', async () => {
+      const result = parseResult(await server.callTool('delete_flowchart', { name: 'graph' }));
+      expect(result.success).toBe(true);
+      expect(result.backupFile).toBe(join(tmpDir, 'flowcharts', 'Graph.json.bak'));
+      const entries = (await readdir(join(tmpDir, 'flowcharts'))).sort();
+      expect(entries).toEqual(['Graph.json.bak', 'Graph.uistate.json.bak']);
+    });
   });
 });

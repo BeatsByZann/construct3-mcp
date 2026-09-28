@@ -1,8 +1,9 @@
 /**
  * Custom ease tools: list_eases, create_ease, update_ease, delete_ease.
  *
- * A custom ease is timelines/transitions/<name>.json, registered in the first,
- * nameless subfolder of the project.c3proj `timelines` container, and copied
+ * A custom ease is timelines/transitions/<name>.json, registered in the
+ * Transitions folder of the project.c3proj `timelines` container (its first
+ * first-level subfolder without a name, wherever it sits), and copied
  * into the `transitionsData` of every timeline that uses it (sample:
  * tasty-cappuccino "LightOutBack", used by 4 of its 15 timelines). Shapes are
  * documented in ../construct3/timeline-model.ts.
@@ -11,6 +12,7 @@
 import { z } from 'zod';
 import { recordDelete } from '../construct3/change-journal.js';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
+import { parseJsonText } from '../construct3/json-format.js';
 import { readFile, unlink, stat } from 'fs/promises';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { listFileEntries, getFileFolderDirectory } from '../construct3/file-registration.js';
@@ -46,7 +48,7 @@ type ContainerFolder = { name?: string; items: string[]; subfolders: unknown[] }
 
 export function registerTimelineEaseTools({ server, reader, writer }: MutationToolDeps, kit: TimelineToolkit) {
   async function readJson<T>(filePath: string): Promise<T> {
-    return JSON.parse(await readFile(filePath, 'utf-8')) as T;
+    return parseJsonText(await readFile(filePath, 'utf-8')) as T;
   }
 
   /** Register or deregister an ease name in project.c3proj. */

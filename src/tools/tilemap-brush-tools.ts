@@ -30,7 +30,7 @@ import { z } from 'zod';
 import { backupOnce, recordWrite } from '../construct3/change-journal.js';
 import { readFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
-import { atomicReplace } from '../construct3/atomic-write.js';
+import { atomicReplace, existingSpelling } from '../construct3/atomic-write.js';
 import { applyJsonTextStyle, jsonTextStyleOf, parseJsonText, stripBom } from '../construct3/json-format.js';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult } from '../construct3/types.js';
@@ -202,7 +202,7 @@ async function readBrushFile(absolutePath: string): Promise<{ brushes: TilemapBr
 }
 
 async function backupIfPresent(filePath: string): Promise<string> {
-  return (await backupOnce(filePath)).backupPath;
+  return (await backupOnce(await existingSpelling(filePath))).backupPath;
 }
 
 /**
@@ -228,8 +228,8 @@ async function writeBrushFile(absolutePath: string, brushes: TilemapBrush[]): Pr
   let existingText: string | undefined;
   try { existingText = await readFile(absolutePath, 'utf-8'); } catch { /* new file */ }
   await mkdir(dirname(absolutePath), { recursive: true });
-  await atomicReplace(absolutePath, brushFileText(brushes, existingText));
-  await recordWrite(absolutePath, existingText !== undefined);
+  const written = await atomicReplace(absolutePath, brushFileText(brushes, existingText));
+  await recordWrite(written, existingText !== undefined);
 }
 
 // ─── Registration ──────────────────────────────────────────

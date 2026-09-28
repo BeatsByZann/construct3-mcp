@@ -1560,14 +1560,19 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
         if (!found) {
           return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${describeAvailableAnimations(animations.root)}`);
         }
-        // Slash-separated folder path of the animation, or undefined at the animations root
-        const fromPath = found.folders.join('/') || undefined;
+        // Where the animation is now, for the message. Whether it is at the animations
+        // root is a question about the container that holds it, not about the joined
+        // folder path: a folder with no name joins to an empty path too.
+        const atRoot = found.items === animations.root.items;
+        const fromLabel = atRoot ? 'the animations root'
+          : found.folders.join('/') ? `"${found.folders.join('/')}"`
+          : 'a folder with no name';
 
         const target = findAnimationFolder(animations.root, targetPath);
         if (!target) {
           return toolError(`Animation folder "${targetPath}" does not exist on "${args.objectName}". Create it with create_animation_folder first.`);
         }
-        if (fromPath === targetPath) {
+        if (found.items === target.items) {
           const where = targetPath ? `folder "${targetPath}"` : 'the animations root';
           return toolError(`Animation "${args.animationName}" is already in ${where}.`);
         }
@@ -1584,7 +1589,7 @@ export function registerAnimationTools({ server, reader, writer, idGen }: Mutati
           category: 'object',
           action: 'updated',
           backupFile: backupPath,
-          warnings: [`Moved "${args.animationName}" from ${fromPath ? `"${fromPath}"` : 'the animations root'} to ${targetPath ? `"${targetPath}"` : 'the animations root'}.`],
+          warnings: [`Moved "${args.animationName}" from ${fromLabel} to ${targetPath ? `"${targetPath}"` : 'the animations root'}.`],
         };
         return toolResult(result);
       } catch (error) {

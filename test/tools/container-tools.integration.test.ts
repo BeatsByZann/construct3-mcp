@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, cp, rm, readFile, stat } from 'fs/promises';
+import { mkdtemp, cp, rm, readFile, stat, readdir, rename } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
@@ -20,8 +20,10 @@ import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.
 import { MockServer } from '../mocks/mock-server.js';
 import { registerContainerTools } from '../../src/tools/container-tools.js';
 import { registerObjectTools } from '../../src/tools/object-tools.js';
+import { isCaseInsensitiveFs } from '../helpers/fs-case.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
+const caseInsensitive = isCaseInsensitiveFs();
 
 function parseResult(result: { content: Array<{ type: string; text: string }>; isError?: boolean }) {
   return JSON.parse(result.content[0].text);
@@ -215,5 +217,18 @@ describe('container tools (real project on disk)', () => {
     expect(after.containers).toBeDefined();
     delete after.containers;
     expect(after).toEqual(before);
+  });
+
+  it.skipIf(!caseInsensitive)('backs up under the project file name on disk when it is spelled differently from the requested path', async () => {
+    await rename(join(tmpDir, 'project.c3proj'), join(tmpDir, 'Project.c3proj'));
+    await rm(join(tmpDir, 'project.c3proj.bak'), { force: true }); // left by the setup's create_object calls
+    const result = parseResult(await server.callTool('create_container', { members: ['Enemy', 'Weapon'] }));
+    expect(result.success).toBe(true);
+    expect(result.backupFile).toBe(join(tmpDir, 'Project.c3proj.bak'));
+    const entries = await readdir(tmpDir);
+    expect(entries).toContain('Project.c3proj');
+    expect(entries).toContain('Project.c3proj.bak');
+    expect(entries).not.toContain('project.c3proj');
+    expect(entries).not.toContain('project.c3proj.bak');
   });
 });

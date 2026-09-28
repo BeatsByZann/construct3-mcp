@@ -16,6 +16,7 @@
 
 import { readFile } from 'fs/promises';
 import { resolveProjectPath } from './path-utils.js';
+import { parseJsonText } from './json-format.js';
 import { isBuiltinEaseName, type CustomEase } from './timeline-model.js';
 import { TRANSITIONS_DIR, transitionsFolder } from './timeline-folders.js';
 
@@ -35,7 +36,7 @@ export async function loadCustomEases(
   const eases = new Map<string, CustomEase>();
   for (const name of transitionsFolder(timelinesContainer)?.items ?? []) {
     try {
-      const ease = JSON.parse(await readFile(resolveProjectPath(projectDir, 'timelines', TRANSITIONS_DIR, `${name}.json`), 'utf-8')) as CustomEase;
+      const ease = parseJsonText(await readFile(resolveProjectPath(projectDir, 'timelines', TRANSITIONS_DIR, `${name}.json`), 'utf-8')) as CustomEase;
       if (ease && typeof ease === 'object' && Array.isArray(ease.transitionKeyframes)) eases.set(name, ease);
     } catch { /* an unreadable ease file is reported by list_eases */ }
   }

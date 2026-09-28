@@ -2245,7 +2245,8 @@ describe('event-legacy-key suggestions', () => {
       ['fix_legacy_event_shapes', { dryRun: false }],
       ['fix_legacy_behavior_keys', { dryRun: false }],
     ])('%s', async (tool, args) => {
-      const { sheet } = await afterTool(tool, args);
+      const { result, sheet } = await afterTool(tool, args);
+      expect(result.isError).not.toBe(true);
       expect(keysOf(await legacyWarnings(sheet))).toEqual(expectedKeys);
     });
 

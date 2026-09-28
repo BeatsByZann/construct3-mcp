@@ -1329,6 +1329,34 @@ describe('move_animation_to_folder', () => {
     expect(written.animations.items[0].name).toBe('Animation 1');
     expect(written.animations.subfolders[0].items).toHaveLength(0);
   });
+
+  it('moves an animation out of a first-level folder with an empty name to the root', async () => {
+    const sprite = makeFramedSprite(1);
+    const nested = sprite.animations.items.splice(0, 1);
+    sprite.animations.subfolders.push({ items: nested, subfolders: [], name: '' });
+    const { server, writer } = setup({ objects: new Map([['Hero', sprite]]) });
+    const result = await server.callTool('move_animation_to_folder', {
+      objectName: 'Hero', animationName: 'Animation 1', folderPath: null,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(parseResult(result).warnings.join(' ')).toContain('from a folder with no name to the animations root');
+    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
+    expect(written.animations.items[0].name).toBe('Animation 1');
+    expect(written.animations.subfolders[0].items).toHaveLength(0);
+  });
+
+  it('rejects moving an animation to the folder it is already in', async () => {
+    const sprite = makeFramedSprite(1);
+    const nested = sprite.animations.items.splice(0, 1);
+    sprite.animations.subfolders.push({ items: nested, subfolders: [], name: 'Combat' });
+    const { server, writer } = setup({ objects: new Map([['Hero', sprite]]) });
+    const result = await server.callTool('move_animation_to_folder', {
+      objectName: 'Hero', animationName: 'Animation 1', folderPath: 'Combat',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already in folder "Combat"');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
 });
 
 // ─── Animation names in image file names ─────────────────

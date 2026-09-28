@@ -41,7 +41,7 @@
  */
 
 import { z } from 'zod';
-import { backupOnce, recordDelete } from '../construct3/change-journal.js';
+import { recordDelete } from '../construct3/change-journal.js';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { parseJsonText } from '../construct3/json-format.js';
 import { readFile, unlink, stat } from 'fs/promises';
@@ -57,7 +57,8 @@ import type {
 } from '../construct3/types.js';
 import { validateName, validateSubfolder, toolResult, toolError, notFoundError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
-import { atomicWriteJson } from './timeline-tools.js';
+import { atomicWriteJson, backupFile } from './timeline-tools.js';
+import { existingSpelling } from '../construct3/atomic-write.js';
 
 type Reader = MutationToolDeps['reader'];
 
@@ -154,11 +155,6 @@ async function readJsonFile<T>(filePath: string): Promise<T> {
  */
 async function writeJsonFile(filePath: string, data: unknown, projectPath?: string): Promise<void> {
   await atomicWriteJson(filePath, data, projectPath);
-}
-
-/** Copy filePath to filePath.bak when it exists, once per tool call; returns the backup path. */
-async function backupFile(filePath: string): Promise<string> {
-  return (await backupOnce(filePath)).backupPath;
 }
 
 /** Add a flowchart name to the project.c3proj flowcharts container. */
@@ -665,7 +661,8 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
           return notFoundError('Flowchart', args.name, [], 'list_flowcharts');
         }
 
-        const filePath = flowchartFilePath(reader.getProjectDir(), args.name, subfolder);
+        // The file as spelled on disk: the backup, the delete and the journal all use that name.
+        const filePath = await existingSpelling(flowchartFilePath(reader.getProjectDir(), args.name, subfolder));
         const backupPath = await backupFile(filePath);
 
         // Delete the file first: a failure here leaves the registration intact
@@ -681,7 +678,7 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
 
         // The sibling editor-state file is derived from this flowchart.
         const warnings: string[] = [];
-        const uistatePath = uistateFilePath(filePath);
+        const uistatePath = await existingSpelling(uistateFilePath(filePath));
         try {
           await stat(uistatePath);
           await backupFile(uistatePath);

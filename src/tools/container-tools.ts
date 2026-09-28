@@ -19,14 +19,13 @@
  */
 
 import { z } from 'zod';
-import { backupOnce } from '../construct3/change-journal.js';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
 import { parseJsonText } from '../construct3/json-format.js';
 import { readFile } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, ObjectContainer } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
-import { atomicWriteJson } from './timeline-tools.js';
+import { atomicWriteJson, backupFile } from './timeline-tools.js';
 
 /** WriteResult plus the container's resulting member list. */
 interface ContainerWriteResult extends WriteResult {
@@ -40,10 +39,6 @@ type ProjectJson = Record<string, unknown>;
 async function readProjectJson(projectPath: string): Promise<ProjectJson> {
   const content = await readFile(projectPath, 'utf-8');
   return parseJsonText(content) as ProjectJson;
-}
-
-async function backupProjectFile(projectPath: string): Promise<string> {
-  return (await backupOnce(projectPath)).backupPath;
 }
 
 async function atomicWriteProjectJson(projectPath: string, project: ProjectJson): Promise<void> {
@@ -175,7 +170,7 @@ export function registerContainerTools({ server, reader }: MutationToolDeps) {
         const created: ObjectContainer = { members: [...args.members] };
         containers.push(created);
 
-        const backupPath = await backupProjectFile(projectPath);
+        const backupPath = await backupFile(projectPath);
         await atomicWriteProjectJson(projectPath, project);
         await reader.reloadProject();
 
@@ -265,7 +260,7 @@ export function registerContainerTools({ server, reader }: MutationToolDeps) {
 
         if (containers.length === 0) delete project.containers;
 
-        const backupPath = await backupProjectFile(projectPath);
+        const backupPath = await backupFile(projectPath);
         await atomicWriteProjectJson(projectPath, project);
         await reader.reloadProject();
 
@@ -310,7 +305,7 @@ export function registerContainerTools({ server, reader }: MutationToolDeps) {
         const [removed] = containers.splice(index, 1);
         if (containers.length === 0) delete project.containers;
 
-        const backupPath = await backupProjectFile(projectPath);
+        const backupPath = await backupFile(projectPath);
         await atomicWriteProjectJson(projectPath, project);
         await reader.reloadProject();
 

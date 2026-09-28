@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, cp, rm, readFile } from 'fs/promises';
+import { mkdtemp, cp, rm, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
@@ -175,5 +175,44 @@ describe('custom eases in event parameters (real project on disk)', () => {
     }
     const events = (await sheet()).events;
     expect(events[events.length - 1].actions[0].parameters.ease.name).toBe('Bouncy');
+  });
+
+  // ─── files saved with a byte order mark ──────────────────
+
+  /** Put a byte order mark in front of a project file, as some editors and tools save them. */
+  async function addBom(...segments: string[]): Promise<void> {
+    const path = join(tmpDir, ...segments);
+    await writeFile(path, '﻿' + await readFile(path, 'utf-8'), 'utf-8');
+  }
+
+  async function hasBom(...segments: string[]): Promise<boolean> {
+    return (await readFile(join(tmpDir, ...segments), 'utf-8')).startsWith('﻿');
+  }
+
+  it('create_ease and delete_ease work on a project.c3proj that starts with a BOM, and keep the BOM', async () => {
+    await addBom('project.c3proj');
+    await ok('create_ease', { name: 'Second', points: POINTS });
+    expect(await hasBom('project.c3proj')).toBe(true);
+    expect((await ok('list_eases', {})).eases.map((e: Json) => e.name)).toEqual(['Bouncy', 'Second']);
+
+    await ok('delete_ease', { name: 'Second' });
+    expect(await hasBom('project.c3proj')).toBe(true);
+    expect((await ok('list_eases', {})).eases.map((e: Json) => e.name)).toEqual(['Bouncy']);
+  });
+
+  it('list_eases, update_ease and an ease parameter read an ease file that starts with a BOM, and keep the BOM', async () => {
+    await addBom('timelines', 'transitions', 'Bouncy.json');
+
+    const listed = await ok('list_eases', {});
+    expect(listed.eases[0].error).toBeUndefined();
+    expect(listed.eases[0].points).toHaveLength(3);
+
+    const { action } = await addTween('Bouncy');
+    expect(action.parameters.ease.name).toBe('Bouncy');
+    expect(action.parameters.ease.json[0].json.transitionKeyframes).toHaveLength(3);
+
+    await ok('update_ease', { name: 'Bouncy', linear: true });
+    expect(await hasBom('timelines', 'transitions', 'Bouncy.json')).toBe(true);
+    expect((await sheet()).events.at(-1).actions[0].parameters.ease.json[0].json.linear).toBe(true);
   });
 });
