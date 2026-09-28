@@ -374,9 +374,6 @@ export function createAudioTrack(
 
 // ─── Custom eases ──────────────────────────────────────────
 
-/** Directory under timelines/ that holds custom ease files. */
-export const EASES_DIRECTORY = 'transitions';
-
 export interface EaseKeyframe {
   x: number;
   y: number;
@@ -501,24 +498,6 @@ export function trackFolderResultMode(data: Timeline, track: AnyTrack, folderPat
     if (mode) return mode;
   }
   return undefined;
-}
-
-type ContainerFolder = { name?: string; items: string[]; subfolders: ContainerFolder[] };
-
-/** The nameless first subfolder of the project `timelines` container, which lists custom eases. */
-export function easesFolder(container: { subfolders?: unknown[] } | undefined): ContainerFolder | undefined {
-  const first = container?.subfolders?.[0] as ContainerFolder | undefined;
-  if (!first || typeof first !== 'object' || !Array.isArray(first.items)) return undefined;
-  return typeof first.name === 'string' && first.name !== '' ? undefined : first;
-}
-
-/** The eases folder, created at index 0 when missing. */
-export function ensureEasesFolder(container: { items: string[]; subfolders: unknown[] }): ContainerFolder {
-  const existing = easesFolder(container);
-  if (existing) return existing;
-  const created: ContainerFolder = { items: [], subfolders: [] };
-  container.subfolders.unshift(created);
-  return created;
 }
 
 /** Every `ease` string in a timeline, outside `transitionsData`. */

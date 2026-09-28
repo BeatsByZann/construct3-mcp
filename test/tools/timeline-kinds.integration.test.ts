@@ -417,6 +417,24 @@ describe('timeline value/audio tracks, folders, eases and legacy tracks (real pr
       expect(listed.eases.map((e: Json) => [e.name, e.usedBy])).toEqual([['Swoop', []]]);
     });
 
+    it('finds and reuses the Transitions folder when a named folder comes before it', async () => {
+      await ok('create_ease', { name: 'Swoop', points: POINTS });
+      const projectPath = join(tmpDir, 'project.c3proj');
+      const project = await projectJson();
+      const eases = project.timelines.subfolders[0];
+      project.timelines.subfolders = [{ name: 'Group', items: [], subfolders: [] }, eases];
+      await writeFile(projectPath, JSON.stringify(project, null, '	'), 'utf-8');
+      await boot();
+
+      expect((await ok('list_eases', {})).eases.map((e: Json) => e.name)).toEqual(['Swoop']);
+      await ok('create_ease', { name: 'Second', points: POINTS });
+      const timelines = (await projectJson()).timelines;
+      expect(timelines.subfolders).toHaveLength(2);
+      expect(timelines.subfolders[1].items).toEqual(['Swoop', 'Second']);
+      await ok('delete_ease', { name: 'Swoop' });
+      expect((await projectJson()).timelines.subfolders[1].items).toEqual(['Second']);
+    });
+
     it('gives a project without a timelines container the nameless eases folder', async () => {
       const projectPath = join(tmpDir, 'project.c3proj');
       const project = await projectJson();

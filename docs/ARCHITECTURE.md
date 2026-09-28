@@ -212,10 +212,10 @@ Supporting modules next to the templates:
 | `construct3/layers.ts` | The layer tree of a layout: walks every layer and nested sub-layer and their instances (non-world instances included), finds layers and instances, compares layer names ignoring case; the analyzers and every layout, layer, template, effect, usage and timeline tool walk layers through it, so there is one layer walk in the code |
 | `construct3/path-utils.ts` | `resolveProjectPath()`: joins path segments and rejects paths that leave the project folder |
 | `construct3/png-generator.ts` | Zero-dependency placeholder PNGs and C3 image file names (all lowercase) |
-| `construct3/timeline-folders.ts` | The editor's Transitions folder in the timelines container (first nameless first-level folder, files in `timelines/transitions/`), shared by the timeline tools and `validate_project` |
+| `construct3/timeline-folders.ts` | The editor's Transitions folder in the timelines container (first nameless first-level folder wherever it sits, files in `timelines/transitions/`): finding it and creating it, shared by the timeline and ease tools, the ease parameter code and `validate_project` |
 | `construct3/ease-params.ts` | Custom eases embedded in event parameters, as Construct r495.2 saves them |
 | `construct3/tilemap-data.ts` | Codec for a Tilemap instance's tile data |
-| `construct3/timeline-model.ts` | Track kinds, track and property-track folders, and custom eases in timeline files |
+| `construct3/timeline-model.ts` | Track kinds, track and property-track folders, and custom eases in timeline files (the Transitions folder of the project itself is in `timeline-folders.ts`) |
 | `construct3/timeline-properties.ts` | What a property track stores for each kind of property |
 | `construct3/file-registration.ts` | Script and project file registration helpers |
 | `construct3/types.ts` | TypeScript types for project files and analysis results |

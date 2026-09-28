@@ -5,8 +5,6 @@ import {
   findTrackByUid,
   findTrackByName,
   listPropertyTracks,
-  easesFolder,
-  ensureEasesFolder,
   checkEasePoints,
   buildEaseKeyframes,
   referencedEases,
@@ -17,6 +15,7 @@ import {
   timelineFolder,
   type CustomEase,
 } from '../../src/construct3/timeline-model.js';
+import { transitionsFolder, ensureTransitionsFolder } from '../../src/construct3/timeline-folders.js';
 import type { Timeline } from '../../src/construct3/types.js';
 
 function timeline(overrides: Record<string, unknown> = {}): Timeline {
@@ -69,16 +68,35 @@ describe('track kinds', () => {
 });
 
 describe('custom eases', () => {
-  it('finds the eases folder only when the first subfolder is nameless', () => {
+  it('finds the Transitions folder as the first nameless first-level subfolder, wherever it sits', () => {
     const eases = { items: ['Swoop'], subfolders: [] };
-    expect(easesFolder({ subfolders: [eases, { name: 'A', items: [], subfolders: [] }] })).toBe(eases);
-    expect(easesFolder({ subfolders: [{ name: 'transitions', items: ['x'], subfolders: [] }] })).toBeUndefined();
-    expect(easesFolder({ subfolders: [] })).toBeUndefined();
+    expect(transitionsFolder({ subfolders: [eases, { name: 'A', items: [], subfolders: [] }] })).toBe(eases);
+    expect(transitionsFolder({ subfolders: [{ name: 'transitions', items: ['x'], subfolders: [] }] })).toBeUndefined();
+    expect(transitionsFolder({ subfolders: [] })).toBeUndefined();
+    expect(transitionsFolder(undefined)).toBeUndefined();
+
+    // A named folder before the nameless one does not hide it
+    expect(transitionsFolder({ subfolders: [{ name: 'A', items: [], subfolders: [] }, eases] })).toBe(eases);
+    // A nameless folder without an items array is not usable as it is
+    expect(transitionsFolder({ subfolders: [{ subfolders: [] }] })).toBeUndefined();
 
     const container = { items: [], subfolders: [{ name: 'A', items: [], subfolders: [] }] as unknown[] };
-    const created = ensureEasesFolder(container);
+    const created = ensureTransitionsFolder(container);
     expect(container.subfolders[0]).toBe(created);
     expect(created).toEqual({ items: [], subfolders: [] });
+  });
+
+  it('reuses a Transitions folder that is not first instead of adding a second nameless folder', () => {
+    const eases = { items: ['Swoop'], subfolders: [] };
+    const container = { items: [], subfolders: [{ name: 'A', items: [], subfolders: [] }, eases] as unknown[] };
+    expect(ensureTransitionsFolder(container)).toBe(eases);
+    expect(container.subfolders).toHaveLength(2);
+
+    const bare = { subfolders: [] };
+    const noItems = { items: [], subfolders: [bare] as unknown[] };
+    expect(ensureTransitionsFolder(noItems)).toBe(bare);
+    expect(bare).toEqual({ subfolders: [], items: [] });
+    expect(noItems.subfolders).toHaveLength(1);
   });
 
   it('builds ease keyframes with handle flags as sampled', () => {

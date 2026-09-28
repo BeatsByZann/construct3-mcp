@@ -2002,8 +2002,8 @@ directory its family uses (see the table under `register_project_file`).
 ## Timeline Tools
 
 Timelines live in `timelines/[subfolder/]<name>.json` and are registered in the
-`timelines` container of `project.c3proj`. The first, nameless subfolder of
-that container lists custom eases, whose files live in `timelines/transitions/`
+`timelines` container of `project.c3proj`. The first nameless subfolder of
+that container (the editor writes it first) lists custom eases, whose files live in `timelines/transitions/`
 (see [Custom eases](#custom-eases)); timeline tools never treat either as a
 timeline. Every write makes a `.bak` copy
 first and then replaces the file through a temp file and a rename.
@@ -2393,8 +2393,8 @@ A custom ease (sample: tasty-cappuccino `LightOutBack`) is
 }
 ```
 
-Its name is listed in the first, nameless subfolder of the `project.c3proj`
-`timelines` container (every sampled project has that folder), and each
+Its name is listed in the first nameless subfolder of the `project.c3proj`
+`timelines` container (every sampled project has that folder, first among the subfolders), and each
 timeline using the ease holds a copy in `transitionsData`. `sax`/`say` is the
 outgoing handle and `eax`/`eay` the incoming handle, as offsets from the
 point; `se`/`ee` mark which handles exist. The sample has two points only:

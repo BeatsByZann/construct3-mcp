@@ -21,12 +21,11 @@ import {
   checkEasePoints,
   createCustomEase,
   buildEaseKeyframes,
-  ensureEasesFolder,
-  easesFolder,
   clashesWithBuiltinEase,
   referencedEases,
   type CustomEase,
 } from '../construct3/timeline-model.js';
+import { ensureTransitionsFolder, transitionsFolder } from '../construct3/timeline-folders.js';
 import { atomicWriteJson, backupFile, type TimelineToolkit } from './timeline-tools.js';
 import { easeParameterName, easeParameterValue, forEachEaseParameter, EASE_PARAMETER_KEY } from '../construct3/ease-params.js';
 import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
@@ -58,10 +57,10 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
     const container = project.timelines as ContainerFolder;
     if (!Array.isArray(container.subfolders)) container.subfolders = [];
     if (add) {
-      const folder = ensureEasesFolder(container as { items: string[]; subfolders: unknown[] });
+      const folder = ensureTransitionsFolder(container);
       if (!folder.items.includes(name)) folder.items.push(name);
     } else {
-      const folder = easesFolder(container);
+      const folder = transitionsFolder(container);
       if (folder) folder.items = folder.items.filter(item => item !== name);
     }
     upgradeProjectShape(project);
@@ -128,7 +127,7 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
   }
 
   function easeNames(): string[] {
-    return easesFolder(kit.projectContainer())?.items.slice() ?? [];
+    return transitionsFolder(kit.projectContainer())?.items.slice() ?? [];
   }
 
   function result(name: string, action: string, backupPath: string, extra: Record<string, unknown> = {}, warnings: string[] = []) {
