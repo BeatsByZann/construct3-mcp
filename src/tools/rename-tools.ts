@@ -23,7 +23,9 @@
 
 import { z } from 'zod';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
-import { readFile, writeFile, copyFile, unlink, rename as renameFile, readdir, stat } from 'fs/promises';
+import { atomicReplace } from '../construct3/atomic-write.js';
+import { jsonTextStyleOf, parseJsonText, serializeJson } from '../construct3/json-format.js';
+import { readFile, copyFile, rename as renameFile, readdir, stat } from 'fs/promises';
 import type { Dirent } from 'fs';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, EventSheet, Layout, ObjectType } from '../construct3/types.js';
@@ -142,7 +144,7 @@ type ProjectJson = Record<string, unknown>;
 
 async function readProjectJson(projectPath: string): Promise<ProjectJson> {
   const content = await readFile(projectPath, 'utf-8');
-  return JSON.parse(content) as ProjectJson;
+  return parseJsonText(content) as ProjectJson;
 }
 
 async function backupFileIfPresent(filePath: string): Promise<string> {
@@ -158,25 +160,19 @@ async function backupFileIfPresent(filePath: string): Promise<string> {
   return bak;
 }
 
+/**
+ * Rewrite an existing JSON file in place, keeping its text style (line endings,
+ * trailing whitespace, BOM). Every caller rewrites a file that is already on
+ * disk; a file that is not gets Construct 3's own style.
+ */
 async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-  const tmpPath = filePath + '.tmp';
   // Callers back the file up first (backupFileIfPresent); the journal records the write as such.
-  let existed = true;
-  try { await stat(filePath); } catch { existed = false; }
+  let existingText: string | undefined;
+  try { existingText = await readFile(filePath, 'utf-8'); } catch { /* new file */ }
+  const existed = existingText !== undefined;
   let hasBackup = false;
   if (existed) { try { await stat(filePath + '.bak'); hasBackup = true; } catch { /* no backup */ } }
-  await writeFile(tmpPath, JSON.stringify(data, null, '\t'), 'utf-8');
-  try {
-    await renameFile(tmpPath, filePath);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'EEXIST') {
-      await unlink(filePath);
-      await renameFile(tmpPath, filePath);
-    } else {
-      try { await unlink(tmpPath); } catch { /* best-effort */ }
-      throw e;
-    }
-  }
+  await atomicReplace(filePath, serializeJson(data, existingText === undefined ? undefined : jsonTextStyleOf(existingText)));
   recordChange(!existed
     ? { kind: 'create', path: filePath }
     : hasBackup ? { kind: 'write', path: filePath, backupPath: filePath + '.bak' } : { kind: 'overwrite-no-backup', path: filePath });
@@ -399,7 +395,7 @@ async function listTimelineFiles(projectDir: string): Promise<Array<{ absolute: 
 /** Read one timeline file, or null when it is missing or unparsable. */
 async function readTimelineJson(absolute: string): Promise<Record<string, unknown> | null> {
   try {
-    return JSON.parse(await readFile(absolute, 'utf-8')) as Record<string, unknown>;
+    return parseJsonText(await readFile(absolute, 'utf-8')) as Record<string, unknown>;
   } catch {
     return null;
   }

@@ -143,9 +143,6 @@ These are behavior changes, not additions. They matter if you already depend on 
   sub-layers, frame tools follow each frame's real file type (GIF included), and
   `rename_event_variable` stays inside the declaring scope.
 
-- The flowchart, container, tilemap brush, rename and duplicate tools write Construct 3's own text
-  style (tab indent, LF) rather than keeping a file's line endings as upstream's writes do.
-
 The per-change detail, including the r495.2 sample sizes the shapes were derived from, is in
 [CHANGELOG.md](CHANGELOG.md) under `[1.9.1]`, which also lists what the merge of upstream 1.9.0
 decided where the two sides differed. The per-tool reference is in [docs/API.md](docs/API.md).

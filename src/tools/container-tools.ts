@@ -19,12 +19,14 @@
  */
 
 import { z } from 'zod';
-import { backupOnce, recordWrite } from '../construct3/change-journal.js';
+import { backupOnce } from '../construct3/change-journal.js';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
-import { readFile, writeFile, copyFile, unlink, rename, stat } from 'fs/promises';
+import { parseJsonText } from '../construct3/json-format.js';
+import { readFile } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, ObjectContainer } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
+import { atomicWriteJson } from './timeline-tools.js';
 
 /** WriteResult plus the container's resulting member list. */
 interface ContainerWriteResult extends WriteResult {
@@ -37,7 +39,7 @@ type ProjectJson = Record<string, unknown>;
 
 async function readProjectJson(projectPath: string): Promise<ProjectJson> {
   const content = await readFile(projectPath, 'utf-8');
-  return JSON.parse(content) as ProjectJson;
+  return parseJsonText(content) as ProjectJson;
 }
 
 async function backupProjectFile(projectPath: string): Promise<string> {
@@ -46,20 +48,8 @@ async function backupProjectFile(projectPath: string): Promise<string> {
 
 async function atomicWriteProjectJson(projectPath: string, project: ProjectJson): Promise<void> {
   upgradeProjectShape(project as unknown as Record<string, unknown>);
-  const tmpPath = projectPath + '.tmp';
-  await writeFile(tmpPath, JSON.stringify(project, null, '\t'), 'utf-8');
-  try {
-    await rename(tmpPath, projectPath);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'EEXIST') {
-      await unlink(projectPath);
-      await rename(tmpPath, projectPath);
-    } else {
-      try { await unlink(tmpPath); } catch { /* best-effort */ }
-      throw e;
-    }
-  }
-  await recordWrite(projectPath, true);
+  // Keeps the file's own line endings, trailing whitespace and BOM.
+  await atomicWriteJson(projectPath, project);
 }
 
 // ─── Container helpers ─────────────────────────────────────

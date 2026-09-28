@@ -28,8 +28,10 @@
 
 import { z } from 'zod';
 import { backupOnce, recordWrite } from '../construct3/change-journal.js';
-import { readFile, writeFile, copyFile, unlink, rename, mkdir, stat } from 'fs/promises';
+import { readFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
+import { atomicReplace } from '../construct3/atomic-write.js';
+import { applyJsonTextStyle, jsonTextStyleOf, parseJsonText, stripBom } from '../construct3/json-format.js';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError, validateName } from './shared.js';
@@ -192,7 +194,7 @@ async function readBrushFile(absolutePath: string): Promise<{ brushes: TilemapBr
     }
     throw e;
   }
-  const parsed = JSON.parse(content);
+  const parsed = parseJsonText(content);
   if (!Array.isArray(parsed)) {
     throw new Error(`Brush file is not a JSON array (found ${typeof parsed}); it may have been hand-edited.`);
   }
@@ -204,28 +206,30 @@ async function backupIfPresent(filePath: string): Promise<string> {
 }
 
 /**
+ * Text of a brush file holding `brushes`. C3 writes brush files as compact
+ * JSON (one line, no indentation, no trailing newline, no BOM), so a new file
+ * is written that way. An existing file keeps its own layout: compact stays
+ * compact, an indented file (a hand-edit or a checkout that re-formatted it)
+ * keeps its indent string and line endings, and the trailing whitespace and
+ * BOM are kept exactly.
+ */
+export function brushFileText(brushes: TilemapBrush[], existingText?: string): string {
+  if (existingText === undefined) return JSON.stringify(brushes);
+  const body = stripBom(existingText).replace(/[ \t\r\n]+$/, '');
+  const indent = /\n([ \t]+)\S/.exec(body)?.[1];
+  return applyJsonTextStyle(JSON.stringify(brushes, null, indent), jsonTextStyleOf(existingText));
+}
+
+/**
  * Write the brush array with the backup + temp-file + rename pattern the rest
- * of this server uses. C3 writes brush files as compact JSON (no indentation),
- * which is preserved here.
+ * of this server uses, in the file's own text style (see brushFileText).
  */
 async function writeBrushFile(absolutePath: string, brushes: TilemapBrush[]): Promise<void> {
-  let existed = true;
-  try { await stat(absolutePath); } catch { existed = false; }
+  let existingText: string | undefined;
+  try { existingText = await readFile(absolutePath, 'utf-8'); } catch { /* new file */ }
   await mkdir(dirname(absolutePath), { recursive: true });
-  const tmpPath = absolutePath + '.tmp';
-  await writeFile(tmpPath, JSON.stringify(brushes), 'utf-8');
-  try {
-    await rename(tmpPath, absolutePath);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'EEXIST') {
-      await unlink(absolutePath);
-      await rename(tmpPath, absolutePath);
-    } else {
-      try { await unlink(tmpPath); } catch { /* best-effort */ }
-      throw e;
-    }
-  }
-  await recordWrite(absolutePath, existed);
+  await atomicReplace(absolutePath, brushFileText(brushes, existingText));
+  await recordWrite(absolutePath, existingText !== undefined);
 }
 
 // ─── Registration ──────────────────────────────────────────

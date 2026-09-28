@@ -41,10 +41,10 @@
  */
 
 import { z } from 'zod';
-import { backupOnce, recordDelete, recordWrite } from '../construct3/change-journal.js';
+import { backupOnce, recordDelete } from '../construct3/change-journal.js';
 import { upgradeProjectShape } from '../construct3/project-shape.js';
-import { readFile, writeFile, mkdir, copyFile, unlink, rename, stat } from 'fs/promises';
-import { dirname } from 'path';
+import { parseJsonText } from '../construct3/json-format.js';
+import { readFile, unlink, stat } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
 import type {
   Construct3Project,
@@ -57,6 +57,7 @@ import type {
 } from '../construct3/types.js';
 import { validateName, validateSubfolder, toolResult, toolError, notFoundError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
+import { atomicWriteJson } from './timeline-tools.js';
 
 type Reader = MutationToolDeps['reader'];
 
@@ -142,29 +143,17 @@ function uistateFilePath(flowchartPath: string): string {
 
 async function readJsonFile<T>(filePath: string): Promise<T> {
   const content = await readFile(filePath, 'utf-8');
-  return JSON.parse(content) as T;
+  return parseJsonText(content) as T;
 }
 
-/** Write JSON with C3's tab indentation, via a temp file and a rename. */
-async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
-  const json = JSON.stringify(data, null, '\t');
-  const tmpPath = filePath + '.tmp';
-  let existed = true;
-  try { await stat(filePath); } catch { existed = false; }
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(tmpPath, json, 'utf-8');
-  try {
-    await rename(tmpPath, filePath);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'EEXIST') {
-      await unlink(filePath);
-      await rename(tmpPath, filePath);
-    } else {
-      try { await unlink(tmpPath); } catch { /* best-effort */ }
-      throw e;
-    }
-  }
-  await recordWrite(filePath, existed);
+/**
+ * Write JSON with C3's tab indentation, via a temp file and a rename, and
+ * record it in the change journal. An existing file keeps its text style (line
+ * endings, trailing whitespace, BOM); a new file follows the style of
+ * `projectPath` (see atomicWriteJson in timeline-tools.ts).
+ */
+async function writeJsonFile(filePath: string, data: unknown, projectPath?: string): Promise<void> {
+  await atomicWriteJson(filePath, data, projectPath);
 }
 
 /** Copy filePath to filePath.bak when it exists, once per tool call; returns the backup path. */
@@ -636,9 +625,9 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
 
         const filePath = flowchartFilePath(reader.getProjectDir(), args.name, args.subfolder);
         const backupPath = await backupFile(filePath);
-        await writeJsonFile(filePath, data);
-
         const projectPath = reader.getProjectPath();
+        await writeJsonFile(filePath, data, projectPath);
+
         await backupFile(projectPath);
         await addFlowchartToProject(projectPath, args.name, args.subfolder);
         await reader.reloadProject();

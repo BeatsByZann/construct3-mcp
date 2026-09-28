@@ -34,8 +34,10 @@
 
 import { z } from 'zod';
 import { forgetStamp, recordChange, restamp } from '../construct3/change-journal.js';
-import { readdir, copyFile, unlink, mkdir, stat, readFile, writeFile, rename } from 'fs/promises';
+import { readdir, copyFile, unlink, mkdir, stat, readFile, rename } from 'fs/promises';
 import { dirname } from 'path';
+import { atomicReplace } from '../construct3/atomic-write.js';
+import { parseJsonText, resolveJsonTextStyle, serializeJson } from '../construct3/json-format.js';
 import type { MutationToolDeps } from './shared.js';
 import type { Layer, Instance, ObjectType } from '../construct3/types.js';
 import { validateName, validateSubfolder, validateFileName, toolResult, toolError, notFoundError } from './shared.js';
@@ -524,7 +526,7 @@ async function timelinesUsingUids(projectDir: string, uids: Set<number>): Promis
         await walk(child, depth + 1);
       } else if (entry.name.endsWith('.json') && !entry.name.endsWith('.uistate.json')) {
         try {
-          if (uses(JSON.parse(await readFile(resolveProjectPath(projectDir, ...child), 'utf-8')), 0)) out.push(rel(child));
+          if (uses(parseJsonText(await readFile(resolveProjectPath(projectDir, ...child), 'utf-8')), 0)) out.push(rel(child));
         } catch { /* unreadable timeline: nothing to report */ }
       }
     }
@@ -1199,14 +1201,14 @@ export function registerStructureTools({ server, reader, writer, idGen }: Mutati
         if (await pathExists(targetPath)) {
           return toolError(`timelines/${args.newName}.json already exists on disk but is not registered. Remove it first.`);
         }
-        const copy = JSON.parse(await readFile(sourcePath, 'utf-8')) as Json;
+        const copy = parseJsonText(await readFile(sourcePath, 'utf-8')) as Json;
         copy.name = args.newName;
-        const tmp = targetPath + '.tmp';
+        // A new file: follows the style of project.c3proj, then of the other files in timelines/.
+        const style = await resolveJsonTextStyle(targetPath, reader.getProjectPath(), dirname(targetPath));
         try {
-          await writeFile(tmp, JSON.stringify(copy, null, '\t'), 'utf-8');
-          await rename(tmp, targetPath);
+          await atomicReplace(targetPath, serializeJson(copy, style));
         } catch (e) {
-          try { await unlink(tmp); } catch { /* best-effort */ }
+          try { await unlink(targetPath + '.tmp'); } catch { /* best-effort */ }
           throw e;
         }
 
