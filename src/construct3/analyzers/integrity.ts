@@ -1296,7 +1296,7 @@ function checkLegacyEventKeys(eventSheets: Map<string, EventSheet>, warnings: In
             check: 'event-legacy-key',
             entity: where,
             message: `Event uses "${legacy}", which Construct does not read; it stores this as ${correct}.`,
-            suggestion: 'Rewrite the block with update_event_block, which converts the legacy keys, or fix the key by hand.',
+            suggestion: `No tool converts this key, and update_event_block with isOrBlock: true adds "${correct}" but leaves "${legacy}" in place. Rename "${legacy}" to "${correct}" in the sheet file with the project closed in Construct.`,
           });
         }
       }
@@ -1311,7 +1311,7 @@ function checkLegacyEventKeys(eventSheets: Map<string, EventSheet>, warnings: In
                 check: 'event-legacy-key',
                 entity: where,
                 message: `A ${listKey.slice(0, -1)} uses "${legacy}", which Construct does not read; the key is "${correct}". Construct reports such an ACE as a missing action or condition id on load.`,
-                suggestion: `Rename the key to "${correct}" (update_event_block rewrites the block with the right keys).`,
+                suggestion: `No tool converts this key. Rename "${legacy}" to "${correct}" in the sheet file with the project closed in Construct.`,
               });
             }
           }

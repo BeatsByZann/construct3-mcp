@@ -196,7 +196,7 @@ Every mutation creates `.bak` backup files next to the modified files. If someth
 
 **Cause**: A condition or action carries a key Construct neither writes nor reads, `object-class` or `is-inverted` (the real keys are `objectClass` and `isInverted`), or a block carries `isOr` (an OR block is marked with `isOrBlock`). With `object-class`, Construct reports the ACE as missing on load. The legacy `behavior-type` key, a block-level `isElse` and a condition-level `isOr` are reported as `legacy-behavior-key` and `legacy-event-shape` instead; `fix_legacy_behavior_keys` and `fix_legacy_event_shapes` convert them.
 
-**Solution**: Delete the event and add it again with `add_event_block`, which writes the correct keys, or rename the key in the sheet file with the project closed in Construct.
+**Solution**: Rename the key in the sheet file with the project closed in Construct (`object-class` to `objectClass`, `is-inverted` to `isInverted`, block-level `isOr` to `isOrBlock`). No tool converts these keys: `fix_legacy_event_shapes`, `fix_legacy_behavior_keys` and `update_event_block` leave them in place. Deleting the event and adding it again with `add_event_block` also works, because that writes the correct keys.
 
 ## Runtime and Preview Issues
 
