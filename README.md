@@ -26,8 +26,8 @@ how this relates to upstream.** Read it before filing an issue, and note which b
 
 | Branch | What it is |
 |---|---|
-| `main` | Close to upstream on purpose. It is the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), so it carries only those correctness fixes (version 1.8.2), on the upstream code they were offered against, not upstream 1.9.0. Upstream's 66 tools of that time. |
-| `claude/w84-editor-gap` | The diverged line described in this README. All 190 tools. |
+| `claude/w84-editor-gap` | The diverged line described in this README, with upstream 1.9.0 merged in. All 190 tools. |
+| `main` | The same commit as `claude/w84-editor-gap`. |
 
 Everything below this notice describes `claude/w84-editor-gap`.
 

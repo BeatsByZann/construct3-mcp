@@ -9,14 +9,13 @@ behavior, and before filing an issue.
 
 ## Where the code is
 
-The work lives on `claude/w84-editor-gap`, which is this repository's default branch. `main` is kept
-for the upstream pull request.
+The work lives on `claude/w84-editor-gap`, which is this repository's default branch. `main` points
+at the same commit.
 
 | Branch | What it is |
 |---|---|
-| `main` | Upstream `main` as of July 2026 plus the seven correctness commits offered upstream as [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15). It is the head of that pull request, so it is kept close to upstream on purpose. The tool surface here is upstream's 66 tools of that time; it does not include upstream 1.9.0. |
-| `claude/w84-editor-gap` | The diverged line. Everything described below is on this branch. Use it if you came here for the extra tools. |
-| `claude/sync-upstream-v1.9.0` | Local, not yet pushed. The merge of upstream release 1.9.0 into `claude/w84-editor-gap` at `0eab993`; the measures and behavior below describe this merge, which the default branch takes when it is pushed. |
+| `claude/w84-editor-gap` | The diverged line, with upstream release 1.9.0 merged in. Everything described below is on this branch. Use it if you came here for the extra tools. |
+| `main` | The same commit as `claude/w84-editor-gap`. It was the head of upstream [PR #15](https://github.com/liauw-media/construct3-mcp/pull/15), which was closed once upstream took the remaining items into its own issue #49; it no longer has a role of its own. |
 
 ```bash
 git clone -b claude/w84-editor-gap https://github.com/BeatsByZann/construct3-mcp.git
@@ -28,21 +27,21 @@ node dist/index.js /path/to/your/project.c3proj
 
 ## How far it has diverged
 
-Measured on the merge of upstream 1.9.0 (`claude/sync-upstream-v1.9.0`, 2026-09-28, before it was
-committed) against `upstream/main` (`f03fa85`, release 1.9.0).
+Measured on `claude/w84-editor-gap` (2026-09-28, after the merge of upstream 1.9.0 and the fixes
+that followed it) against `upstream/main` (`f03fa85`, release 1.9.0).
 
 | Measure | Upstream | This fork |
 |---|---|---|
 | MCP tools registered | 71 | 190 |
 | MCP resources / prompts | 9 / 7 | 9 / 7 |
-| Source files under `src/` | 51 | 85 |
-| Test files | 46 | 102 |
-| Tests | not measured here | 2612 in 102 files (1 skipped) |
+| Source files under `src/` | 51 | 84 |
+| Test files | 46 | 104 |
+| Tests | not measured here | 2670 in 104 files (1 skipped) |
 | Package version | 1.9.0 | 1.9.1 |
 
 The merge takes all 17 upstream commits since the common ancestor `6957fcb` (2026-07-27), up to
 release 1.9.0, on top of the fork's 93 commits since that ancestor, so after it the fork is no
-longer behind upstream. Against upstream 1.9.0 it changes 175 files, with about 80,000 insertions
+longer behind upstream. Against upstream 1.9.0 it changes 188 files, with about 81,000 insertions
 and 1,700 deletions.
 
 No upstream tool was removed or renamed. All 71 upstream tools are registered under their
