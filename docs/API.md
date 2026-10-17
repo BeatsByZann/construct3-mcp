@@ -427,7 +427,7 @@ Locations are paths of event types (`function:Name > block > action:3`); `action
 
 ## Mutation Tools
 
-Mutation tools that write through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate → backup → write → verify → invalidate caches. The other write paths do less: `register_addon` / `unregister_addon` use a temp file but make no `.bak` backup and no read-back check; the timeline tools back up and use a temp file but do not read back; the runtime tools write `project.c3proj` and the bridge script in place, with no backup or read-back check; PNG images are written without a backup. Mutation tools return a `WriteResult` object on success.
+Mutation tools that write through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate → backup → write → verify → invalidate caches. The other project-file writes go through the same writer, with these differences: `register_addon` / `unregister_addon` back up `project.c3proj` once per call, read it back and merge a change the editor saved during the call; the timeline tools back up their files once per call, write them through a temp file and read them back; the runtime tools take each file's one lock, back each file up once per call, read it back and refuse a file that changed since the tool read it; PNG images are backed up once per call under the first free `.bak` name. Mutation tools return a `WriteResult` object on success.
 
 **Text style.** An overwritten file keeps its line endings (LF or CRLF), exact trailing whitespace and BOM. A new file follows `project.c3proj`, then the first JSON file with line breaks in its target folder, then Construct 3's own style: tab-indented JSON with LF line endings, no trailing newline and no BOM. Only files already in that tab layout get line-level diffs; files indented another way are re-indented in full.
 
@@ -1105,7 +1105,7 @@ Add an addon to the project's `usedAddons`. Known Scirra plugins and behaviors a
 | `author` | string | No | Author (default: `"Scirra"`) |
 | `bundled` | boolean | No | Value of the entry's `bundled` flag (default: false) |
 
-An addon that is already registered returns `action: "already_registered"` and nothing is written.
+An addon that is already registered returns `action: "already_registered"` and nothing is written. Otherwise `project.c3proj` is written through the project writer: backed up once per call (`project.c3proj.bak`), written through a temp file and read back. A `project.c3proj` saved in the editor during the call is merged with the new entry, not refused.
 
 ### `unregister_addon`
 
@@ -1116,6 +1116,8 @@ Remove an addon from `usedAddons`. Construct 3 errors on load if objects or beha
 | `type` | `"plugin"` \| `"behavior"` \| `"effect"` | Yes | Addon type |
 | `id` | string | Yes | Addon ID |
 | `force` | boolean | No | Required to remove a known Scirra built-in plugin or behavior (default: false) |
+
+The removal is written through the project writer: `project.c3proj` is backed up once per call (`project.c3proj.bak`), written through a temp file and read back. A `project.c3proj` saved in the editor during the call is merged with the removal, not refused.
 
 ### `add_animation_to_sprite`
 
