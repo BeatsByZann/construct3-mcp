@@ -5,8 +5,8 @@
  * see json-format.ts.
  */
 
-import { readFile, writeFile, copyFile, unlink, mkdir, stat, rename, readdir } from 'fs/promises';
-import { dirname, relative, sep } from 'path';
+import { readFile, copyFile, unlink, mkdir, stat, rename, readdir } from 'fs/promises';
+import { dirname, relative, sep, join, basename } from 'path';
 import { resolveProjectPath } from './path-utils.js';
 import { atomicReplace, existingSpelling, findFileIgnoringCase } from './atomic-write.js';
 import type { Construct3ProjectReader } from './project-reader.js';
@@ -16,12 +16,14 @@ import { resetProjectIndex } from './analyzers/index-builder.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from './templates.js';
 import { generatePlaceholderPng, getImageFileName } from './png-generator.js';
 import { applyJsonTextStyle, jsonTextStyleOf, parseJsonText, resolveJsonTextStyle } from './json-format.js';
-import { simulateImageRenames } from './animation-rename.js';
+import { freeBackupName, simulateImageRenames } from './animation-rename.js';
+import { nameKey } from './names.js';
 import {
   currentToolCall,
   fileKey,
   noteFileRead,
   noteFileWritten,
+  runInToolCall,
   sameFileState,
   statFileState,
   StaleFileError,
@@ -244,14 +246,14 @@ export class Construct3ProjectWriter {
    * registering its plugin and then the object in project.c3proj) does not
    * back up its own intermediate state.
    */
-  private async createBackup(path: string): Promise<string> {
+  private async createBackup(path: string, options: { freeName?: boolean } = {}): Promise<string> {
     // The backup takes the file's name as spelled on disk
     const filePath = await existingSpelling(path);
     const scope = currentToolCall();
     const key = fileKey(filePath);
     const earlier = scope?.backups.get(key);
     if (earlier !== undefined) return earlier.path;
-    const backupPath = filePath + '.bak';
+    const backupPath = options.freeName ? await this.freeBackupPath(filePath) : filePath + '.bak';
     try {
       await stat(filePath);
     } catch (e: unknown) {
@@ -280,6 +282,172 @@ export class Construct3ProjectWriter {
     const backup = scope.backups.get(key);
     if (backup === undefined || scope.changes.has(key)) return;
     scope.changes.set(key, { path: filePath, label: this.projectRelative(filePath), backup, isProjectFile });
+  }
+
+  /**
+   * Run `fn` under the one lock every write, delete and restore of a file
+   * takes: the project lock for project.c3proj (also updateProjectFile and
+   * undoing the call), the file's own lock otherwise.
+   */
+  private underLockOf<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+    return fileKey(filePath) === fileKey(this.reader.getProjectPath()) ? this.withProjectLock(fn) : this.withFileLock(filePath, fn);
+  }
+
+  /**
+   * A backup path beside `filePath` that no file has: <file>.bak, else
+   * <file>.1.bak, ... For images, which the frame tools keep as .bak under
+   * the same scheme (planFrameImageShift), so a backup never replaces one.
+   */
+  private async freeBackupPath(filePath: string): Promise<string> {
+    let names: string[] = [];
+    try {
+      names = await readdir(dirname(filePath));
+    } catch (e: unknown) {
+      if (!isNotFound(e)) throw e;
+    }
+    return join(dirname(filePath), freeBackupName(basename(filePath), new Set(names.map(nameKey))));
+  }
+
+  /** Whether a file is directly in the project's images/ folder. */
+  private isImageFile(filePath: string): boolean {
+    return fileKey(dirname(filePath)) === fileKey(resolveProjectPath(this.reader.getProjectDir(), 'images'));
+  }
+
+  /** Back a file a tool writes itself up once per call; the backup path, or undefined when there was no file before the call. */
+  private async backupForCall(filePath: string): Promise<string | undefined> {
+    const existsNow = (await statFileState(filePath)) !== null;
+    const backupPath = await this.createBackup(filePath, { freeName: this.isImageFile(filePath) });
+    const record = currentToolCall()?.backups.get(fileKey(filePath));
+    return (record ? record.existed : existsNow) ? backupPath : undefined;
+  }
+
+  /**
+   * After a write or delete through replaceFile, deleteFile or
+   * restoreForCall: stamp the file as the server's own only when it holds
+   * exactly the bytes written (`content`; null: deleted, recorded as absent
+   * whatever appears there afterwards). When another write landed right
+   * after this one, the file is not stamped, so the next call sees that
+   * write as a change made outside the server, and ConcurrentWriteError is
+   * thrown. project.c3proj gets its state only; the tool loads it again.
+   */
+  private async afterToolWrite(filePath: string, content: string | Buffer | null): Promise<void> {
+    const key = fileKey(filePath);
+    const state = content === null ? null : await this.stateIfHolding(filePath, content);
+    if (state === undefined) {
+      throw new ConcurrentWriteError(`${this.projectRelative(filePath)} was changed by another write right after this one (the Construct 3 editor, `
+        + 'or a tool call running in parallel?): it does not hold what this call wrote. Re-read it and retry.');
+    }
+    if (key === fileKey(this.reader.getProjectPath())) noteFileWritten(key, state);
+    else this.afterOwnWrite(filePath, state);
+  }
+
+  /**
+   * Replace or create a project file a tool writes itself, other than an
+   * entity file (writeEntityFile): timeline files, images, scripts, and
+   * project.c3proj for the runtime bridge, which writes text it built from
+   * the file. Under the file's one lock, refused (StaleFileError) when
+   * `expected` is given and the file is no longer in that state (the state
+   * the content was built from; required for project.c3proj, whose other
+   * updates go through updateProject). The file is backed up once per tool
+   * call (an image under a free .bak name), written through a temp file,
+   * keeping its name on disk, and read back. Returns the backup path, or
+   * undefined for a new file.
+   */
+  async replaceFile(path: string, content: string | Buffer, options: { expected?: FileState } = {}): Promise<string | undefined> {
+    if (fileKey(path) === fileKey(this.reader.getProjectPath()) && options.expected === undefined) {
+      throw new Error('project.c3proj is written through updateProject, or replaceFile with the state the new text was built from.');
+    }
+    await mkdir(dirname(path), { recursive: true });
+    const filePath = await existingSpelling(path);
+    const label = this.projectRelative(filePath);
+    return this.underLockOf(filePath, async () => {
+      if (options.expected !== undefined && !sameFileState(await statFileState(filePath), options.expected)) {
+        throw new StaleFileError(staleFileMessage(label), label);
+      }
+      const backup = await this.backupForCall(filePath);
+      await this.atomicWrite(filePath, content);
+      await this.afterToolWrite(filePath, content);
+      return backup;
+    });
+  }
+
+  /**
+   * Delete a project file a tool deletes itself (a timeline file, the
+   * bridge script), backed up once per tool call first, under the file's
+   * one lock. A missing file is not an error. Returns the backup path, or
+   * undefined when there was no file. project.c3proj cannot be deleted.
+   */
+  async deleteFile(path: string): Promise<string | undefined> {
+    const filePath = await existingSpelling(path);
+    if (fileKey(filePath) === fileKey(this.reader.getProjectPath())) throw new Error('project.c3proj cannot be deleted by a tool.');
+    return this.underLockOf(filePath, async () => {
+      const backup = await this.backupForCall(filePath);
+      try {
+        await unlink(filePath);
+      } catch (e: unknown) {
+        if (!isNotFound(e)) throw e;
+      }
+      await this.afterToolWrite(filePath, null);
+      return backup;
+    });
+  }
+
+  /**
+   * For a tool undoing one of its own steps (the runtime bridge): put a file
+   * this call wrote back to `content`, the content it had before the call
+   * (null: the call created it, so it is removed). It runs under the file's
+   * one lock and takes no new backup. It is refused when the file changed
+   * on disk after this call wrote it, so a later change is never replaced.
+   */
+  async restoreForCall(path: string, content: string | Buffer | null): Promise<void> {
+    const filePath = await existingSpelling(path);
+    const key = fileKey(filePath);
+    await this.underLockOf(filePath, async () => {
+      const ours = currentToolCall()?.reads.get(key);
+      if (ours !== undefined && !sameFileState(await statFileState(filePath), ours)) {
+        throw new Error(`${this.projectRelative(filePath)} changed on disk after this call wrote it, so it was left as it is.`);
+      }
+      if (content === null) {
+        try {
+          await unlink(filePath);
+        } catch (e: unknown) {
+          if (!isNotFound(e)) throw e;
+        }
+      } else if ((await this.stateIfHolding(filePath, content)) === undefined) {
+        await this.atomicWrite(filePath, content);
+      }
+      await this.afterToolWrite(filePath, content);
+    });
+  }
+
+  /**
+   * Update project.c3proj for a tool (timelines, addons): `change` edits the
+   * parsed file as it is on disk right before the write and returns false
+   * when there is nothing to write. Backed up once per call, written with
+   * the file's text style, read back and loaded again, and a change saved on
+   * disk meanwhile is merged into, not replaced (updateProjectFile). Returns
+   * the backup path, or undefined when nothing was written.
+   */
+  async updateProject(change: (project: any) => boolean | void): Promise<string | undefined> {
+    return this.updateProjectFile(change);
+  }
+
+  /**
+   * Put an image this call wrote back as it was before the call: from its
+   * backup when it existed, else removed. Under the file's one lock.
+   */
+  private async putBackImage(filePath: string): Promise<void> {
+    await this.underLockOf(filePath, async () => {
+      const backup = currentToolCall()?.backups.get(fileKey(filePath));
+      if (backup?.existed) {
+        const bytes = await readFile(backup.path);
+        await this.atomicWrite(filePath, bytes);
+        await this.afterToolWrite(filePath, bytes);
+      } else {
+        await unlink(filePath);
+        await this.afterToolWrite(filePath, null);
+      }
+    });
   }
 
   /**
@@ -526,17 +694,19 @@ export class Construct3ProjectWriter {
   }
 
   /**
-   * The state of a file this call just replaced with `text`, when it still
-   * holds exactly that text (read again here); undefined when it holds
-   * anything else, such as another write that landed after this one, or
-   * cannot be read. Only a state known to be this call's lets undoing the
-   * call put the file back (putBack compares it with the file on disk).
+   * The state of a file this call just replaced with `content`, when it
+   * still holds exactly those bytes (read again here); undefined when it
+   * holds anything else, such as another write that landed after this one,
+   * or cannot be read. The stat is taken before the read, so the state
+   * returned is never a later write's. Only a state known to be this call's
+   * lets undoing the call put the file back (putBack compares it with the
+   * file on disk).
    */
-  private async stateIfHolding(filePath: string, text: string): Promise<FileState | undefined> {
+  private async stateIfHolding(filePath: string, content: string | Buffer): Promise<FileState | undefined> {
     try {
-      // Taken before the read: when the text is ours, so is this state
       const state = await statFileState(filePath);
-      return (await readFile(filePath, 'utf-8')) === text ? state : undefined;
+      const bytes = await readFile(filePath);
+      return bytes.equals(typeof content === 'string' ? Buffer.from(content, 'utf-8') : content) ? state : undefined;
     } catch {
       return undefined;
     }
@@ -911,10 +1081,9 @@ export class Construct3ProjectWriter {
     // Directly in images/: a name with a path separator is refused
     const filePath = this.imageFilePath(fileName);
 
-    await mkdir(dirname(filePath), { recursive: true });
-
     const png = generatePlaceholderPng(width, height);
-    await writeFile(filePath, png);
+    // Through the writer's file write: backed up once per call under a free name when an image of that name is in the way
+    await this.replaceFile(filePath, png);
 
     return filePath;
   }
@@ -935,32 +1104,35 @@ export class Construct3ProjectWriter {
       height?: number;
     }>,
   ): Promise<string[]> {
-    const writtenPaths: string[] = [];
+    // Joins a running tool call, or opens one, so the rollback finds the backup records
+    return runInToolCall(async () => {
+      const writtenPaths: string[] = [];
 
-    try {
-      for (const file of files) {
-        const path = await this.writeImageFile(
-          file.objectName,
-          file.animationName,
-          file.frameIndex,
-          file.pluginId,
-          file.width,
-          file.height,
-        );
-        writtenPaths.push(path);
-      }
-      return writtenPaths;
-    } catch (error) {
-      // Rollback: remove any images we already wrote
-      for (const path of writtenPaths) {
-        try {
-          await unlink(path);
-        } catch {
-          // Best-effort cleanup — orphaned PNGs are harmless
+      try {
+        for (const file of files) {
+          const path = await this.writeImageFile(
+            file.objectName,
+            file.animationName,
+            file.frameIndex,
+            file.pluginId,
+            file.width,
+            file.height,
+          );
+          writtenPaths.push(path);
         }
+        return writtenPaths;
+      } catch (error) {
+        // Rollback: put back the images already written (one that was there before from its backup, a new one removed)
+        for (const path of writtenPaths) {
+          try {
+            await this.putBackImage(path);
+          } catch {
+            // Best-effort: an image that cannot be put back stays as this call wrote it
+          }
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   /**

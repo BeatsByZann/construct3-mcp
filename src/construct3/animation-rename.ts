@@ -195,6 +195,21 @@ export interface FrameImageShiftPlan {
 }
 
 /**
+ * A backup name for `file` that no name in `taken` (compared by nameKey)
+ * has: `<file>.bak`, else `<file>.1.bak`, `<file>.2.bak`, ... The name
+ * returned is added to `taken`.
+ */
+export function freeBackupName(file: string, taken: Set<string>): string {
+  for (let n = 0; ; n++) {
+    const name = n === 0 ? `${file}.bak` : `${file}.${n}.bak`;
+    if (!taken.has(nameKey(name))) {
+      taken.add(nameKey(name));
+      return name;
+    }
+  }
+}
+
+/**
  * Plan the image file renames that keep an animation's frames and their
  * images together when a frame is inserted or deleted. `files` lists images/,
  * `frames` are the animation's frames before the change. Each frame's files
@@ -225,15 +240,7 @@ export function planFrameImageShift(
 
   // Every name in images/ so far, and those the renames produce, by nameKey() (for free .bak names)
   const taken = new Set(files.map(nameKey));
-  const backupName = (file: string): string => {
-    for (let n = 0; ; n++) {
-      const name = n === 0 ? `${file}.bak` : `${file}.${n}.bak`;
-      if (!taken.has(nameKey(name))) {
-        taken.add(nameKey(name));
-        return name;
-      }
-    }
-  };
+  const backupName = (file: string): string => freeBackupName(file, taken);
 
   const move = (from: number, to: number) => {
     const fileType = frames[from]?.fileType;
