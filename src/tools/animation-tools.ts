@@ -845,10 +845,8 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         const fileName = getImageFileName(storedObjectName(obj, args.objectName), args.animationName, args.frameIndex, 'Sprite');
         const filePath = resolveProjectPath(reader.getProjectDir(), 'images', fileName);
 
-        const { mkdir, writeFile } = await import('fs/promises');
-        const { dirname } = await import('path');
-        await mkdir(dirname(filePath), { recursive: true });
-        await writeFile(filePath, pngBuffer);
+        // Through the writer: the old image is kept under a free .bak name, once per call
+        await writer.replaceFile(filePath, pngBuffer);
 
         // Update frame metadata if dimensions provided
         if (args.width !== undefined) frame.width = args.width;

@@ -330,7 +330,8 @@ describe('frame image names follow the object\'s stored name', () => {
     labels.set(sha(png), 'REPLACED');
     await ok('replace_sprite_image', { objectName: './Sprite', frameIndex: 1, pngBase64: png.toString('base64') });
 
-    expect(await snapshot()).toEqual(images({ '000.png': 'A', '001.png': 'REPLACED', '002.png': 'C' }));
+    // The replaced image is kept as a backup
+    expect(await snapshot()).toEqual(images({ '000.png': 'A', '001.png': 'REPLACED', '001.png.bak': 'B', '002.png': 'C' }));
   });
 });
 

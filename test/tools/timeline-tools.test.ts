@@ -9,6 +9,8 @@ import { MockWriter } from '../mocks/mock-writer.js';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
 import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
+import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
+import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { validateProjectIntegrity } from '../../src/construct3/analyzers/integrity.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { EDITOR_RELOAD_NOTE } from '../../src/tools/shared.js';
@@ -308,7 +310,7 @@ describe('timeline tools on a project folder', () => {
     const reader = new Construct3ProjectReader(projPath);
     await reader.loadProject();
     server = new MockServer();
-    registerTimelineTools({ server, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as any);
+    registerTimelineTools({ server, reader, writer: new Construct3ProjectWriter(reader, new IdGenerator()), idGen: new MockIdGenerator() } as any);
   });
 
   afterEach(async () => {
@@ -431,7 +433,7 @@ describe('timeline tools on a project folder', () => {
     const reader = new Construct3ProjectReader(projPath);
     await reader.loadProject();
     const local = new MockServer();
-    registerTimelineTools({ server: local, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as any);
+    registerTimelineTools({ server: local, reader, writer: new Construct3ProjectWriter(reader, new IdGenerator()), idGen: new MockIdGenerator() } as any);
     const before = await readFile(projPath, 'utf-8');
 
     const created = await local.callTool('create_timeline', { name: 'X' });
@@ -651,7 +653,7 @@ describe('timeline tools on a project folder', () => {
       const reader = new Construct3ProjectReader(projPath);
       await reader.loadProject();
       server = new MockServer();
-      registerTimelineTools({ server, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as any);
+      registerTimelineTools({ server, reader, writer: new Construct3ProjectWriter(reader, new IdGenerator()), idGen: new MockIdGenerator() } as any);
     });
 
     it('update_timeline keeps the file name on disk and backs up under it', async () => {

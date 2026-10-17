@@ -3,13 +3,10 @@
  */
 
 import { z } from 'zod';
-import { readFile } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, Addon } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from '../construct3/templates.js';
-import { jsonTextStyleOf, parseJsonText, serializeJson } from '../construct3/json-format.js';
-import { atomicReplace } from '../construct3/atomic-write.js';
 import { withProjectSync } from './project-sync.js';
 
 export function registerProjectTools({ server: mcpServer, reader, writer }: MutationToolDeps) {
@@ -101,12 +98,6 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
           }, { projectWritten: false });
         }
 
-        const projectPath = reader.getProjectPath();
-        // Changed on disk since it was loaded: refused, like the writer's own updates (#51)
-        await writer.assertProjectFileCurrent();
-        const content = await readFile(projectPath, 'utf-8');
-        const project = parseJsonText(content);
-
         const newAddon: Addon = {
           type: args.type,
           id: args.id,
@@ -114,10 +105,12 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
           author: args.author,
           bundled: args.bundled,
         };
-        project.usedAddons.push(newAddon);
-
-        await atomicReplace(projectPath, serializeJson(project, jsonTextStyleOf(content)));
-        await reader.reloadProject();
+        // Through the writer: backed up once per call, and a change saved on disk meanwhile is merged into
+        await writer.updateProject(project => {
+          // Checked again in the file as it is now: the editor may have registered it meanwhile
+          if ((project.usedAddons as Addon[]).some(a => a.type === args.type && a.id === args.id)) return false;
+          project.usedAddons.push(newAddon);
+        });
 
         const result: WriteResult = {
           success: true,
@@ -157,19 +150,12 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
           return toolError(`"${args.id}" is a known Scirra built-in ${args.type}. Use force=true if you really want to unregister it.`);
         }
 
-        const projectPath = reader.getProjectPath();
-        // Changed on disk since it was loaded: refused, like the writer's own updates (#51)
-        await writer.assertProjectFileCurrent();
-        const content = await readFile(projectPath, 'utf-8');
-        const project = parseJsonText(content);
-
-        const projIdx = (project.usedAddons as Addon[]).findIndex(a => a.type === args.type && a.id === args.id);
-        if (projIdx !== -1) {
+        // Through the writer: backed up once per call, and a change saved on disk meanwhile is merged into
+        await writer.updateProject(project => {
+          const projIdx = (project.usedAddons as Addon[]).findIndex(a => a.type === args.type && a.id === args.id);
+          if (projIdx === -1) return false;
           project.usedAddons.splice(projIdx, 1);
-        }
-
-        await atomicReplace(projectPath, serializeJson(project, jsonTextStyleOf(content)));
-        await reader.reloadProject();
+        });
 
         const result: WriteResult = {
           success: true,

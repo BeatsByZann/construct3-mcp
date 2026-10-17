@@ -59,6 +59,25 @@ export class MockWriter {
     return '/mock/backup/project.c3proj.bak';
   }
 
+  async replaceFile(path: string, content: string | Buffer, options?: { expected?: unknown }): Promise<string | undefined> {
+    this.calls.push({ method: 'replaceFile', args: [path, content, options] });
+    return `${path}.bak`;
+  }
+
+  async deleteFile(path: string): Promise<string | undefined> {
+    this.calls.push({ method: 'deleteFile', args: [path] });
+    return `${path}.bak`;
+  }
+
+  async restoreForCall(path: string, content: string | Buffer | null): Promise<void> {
+    this.calls.push({ method: 'restoreForCall', args: [path, content] });
+  }
+
+  async updateProject(change: (project: any) => boolean | void): Promise<string | undefined> {
+    this.calls.push({ method: 'updateProject', args: [change] });
+    return '/mock/backup/project.c3proj.bak';
+  }
+
   async ensureAddonRegistered(
     type: 'plugin' | 'behavior',
     id: string,

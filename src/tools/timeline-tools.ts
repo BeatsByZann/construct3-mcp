@@ -16,16 +16,16 @@
  */
 
 import { z } from 'zod';
-import { readFile, mkdir, copyFile, unlink, stat } from 'fs/promises';
+import { readFile, mkdir } from 'fs/promises';
 import { dirname, relative, sep } from 'path';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult } from '../construct3/types.js';
 import { newProjectFolder } from '../construct3/project-writer.js';
 import { validateName, validateSubfolder, toolResult, toolError, folderCaseClashError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
-import { atomicReplace, existingSpelling, findFileIgnoringCase } from '../construct3/atomic-write.js';
+import { existingSpelling, findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { findFolderPathClash, nameKey } from '../construct3/names.js';
-import { jsonTextStyleOf, parseJsonText, resolveJsonTextStyle, serializeJson } from '../construct3/json-format.js';
+import { parseJsonText, resolveJsonTextStyle, serializeJson } from '../construct3/json-format.js';
 import {
   TRANSITIONS_DIR,
   isNamelessFolder,
@@ -33,6 +33,8 @@ import {
   type ProjectFolderNode,
 } from '../construct3/timeline-folders.js';
 import { withProjectSync } from './project-sync.js';
+
+type Writer = MutationToolDeps['writer'];
 
 // ─── Timeline Type ─────────────────────────────────────────
 
@@ -141,31 +143,17 @@ async function readTimelineFile(filePath: string): Promise<Timeline> {
   return parseJsonText(content) as Timeline;
 }
 
-/** Write a timeline file atomically; an existing file keeps its name on disk, including its case. */
-async function atomicWriteTimeline(filePath: string, data: Timeline, projectPath: string): Promise<void> {
+/**
+ * Write a timeline file through the writer (backed up once per call, temp
+ * file, the name on disk kept, read back); a new file follows the
+ * project's text style. Returns the backup path, or undefined for a new file.
+ */
+async function atomicWriteTimeline(writer: Writer, filePath: string, data: Timeline, projectPath: string): Promise<string | undefined> {
   await mkdir(dirname(filePath), { recursive: true });
   const target = await existingSpelling(filePath);
   // Keep the existing file's text style; a new file follows the project's
   const json = serializeJson(data, await resolveJsonTextStyle(target, projectPath, dirname(target)));
-  await atomicReplace(target, json);
-}
-
-/**
- * Copy a file to <file>.bak, named after the file as spelled on disk. Returns
- * the backup path, or undefined when the file does not exist (nothing to back
- * up). A failed copy throws.
- */
-async function backupTimeline(path: string): Promise<string | undefined> {
-  const filePath = await existingSpelling(path);
-  const bak = filePath + '.bak';
-  try {
-    await stat(filePath);
-  } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT') return undefined;
-    throw e;
-  }
-  await copyFile(filePath, bak);
-  return bak;
+  return writer.replaceFile(target, json);
 }
 
 // ─── Locating timeline files ───────────────────────────────
@@ -263,58 +251,47 @@ function transitionRefusal(name: string): string {
 }
 
 /** Add a timeline name to project.c3proj timelines container. */
-async function addTimelineToProject(
-  projectPath: string,
-  name: string,
-  subfolder?: string,
-): Promise<void> {
-  const content = await readFile(projectPath, 'utf-8');
-  const project = parseJsonText(content);
-
-  if (!project.timelines) project.timelines = { items: [], subfolders: [] };
-  const container = project.timelines;
-
-  if (subfolder) {
-    const parts = subfolder.split('/');
-    type TFolder = { name?: string; items: string[]; subfolders: TFolder[] };
-    let cur: TFolder = container as TFolder;
-    for (const part of parts) {
-      let found = (cur.subfolders as TFolder[]).find(sf => sf.name === part);
-      if (!found) {
-        // Same key order as the editor writes (items, subfolders, name)
-        found = newProjectFolder(part);
-        cur.subfolders.push(found);
+async function addTimelineToProject(writer: Writer, name: string, subfolder?: string): Promise<void> {
+  await writer.updateProject(project => {
+    if (!project.timelines) project.timelines = { items: [], subfolders: [] };
+    const container = project.timelines;
+    if (subfolder) {
+      const parts = subfolder.split('/');
+      type TFolder = { name?: string; items: string[]; subfolders: TFolder[] };
+      let cur: TFolder = container as TFolder;
+      for (const part of parts) {
+        let found = (cur.subfolders as TFolder[]).find(sf => sf.name === part);
+        if (!found) {
+          // Same key order as the editor writes (items, subfolders, name)
+          found = newProjectFolder(part);
+          cur.subfolders.push(found);
+        }
+        cur = found;
       }
-      cur = found;
+      if (!cur.items.includes(name)) cur.items.push(name);
+    } else if (!container.items.includes(name)) {
+      container.items.push(name);
     }
-    if (!cur.items.includes(name)) cur.items.push(name);
-  } else {
-    if (!container.items.includes(name)) container.items.push(name);
-  }
-
-  await atomicReplace(projectPath, serializeJson(project, jsonTextStyleOf(content)));
+  });
 }
 
 /**
  * Remove a timeline name from the project.c3proj timelines container, from
  * exactly the named folder it was located in (never from the Transitions folder).
  */
-async function removeTimelineFromProject(projectPath: string, name: string, folders: string[]): Promise<void> {
-  const content = await readFile(projectPath, 'utf-8');
-  const project = parseJsonText(content);
-
-  let folder: TimelineFolderNode | undefined = project.timelines;
-  for (const folderName of folders) {
-    folder = folder && folderSubfolders(folder).find(sf => !isNamelessFolder(sf) && sf.name === folderName);
-  }
-  const items = folder && Array.isArray(folder.items) ? folder.items as unknown[] : [];
-  const idx = items.indexOf(name);
-  if (idx === -1) {
-    throw new Error(`"${name}" is not registered in ${['timelines', ...folders].join('/')} of project.c3proj`);
-  }
-  items.splice(idx, 1);
-
-  await atomicReplace(projectPath, serializeJson(project, jsonTextStyleOf(content)));
+async function removeTimelineFromProject(writer: Writer, name: string, folders: string[]): Promise<void> {
+  await writer.updateProject(project => {
+    let folder: TimelineFolderNode | undefined = project.timelines;
+    for (const folderName of folders) {
+      folder = folder && folderSubfolders(folder).find(sf => !isNamelessFolder(sf) && sf.name === folderName);
+    }
+    const items = folder && Array.isArray(folder.items) ? folder.items as unknown[] : [];
+    const idx = items.indexOf(name);
+    if (idx === -1) {
+      throw new Error(`"${name}" is not registered in ${['timelines', ...folders].join('/')} of project.c3proj`);
+    }
+    items.splice(idx, 1);
+  });
 }
 
 // ─── Registration ──────────────────────────────────────────
@@ -456,14 +433,10 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
         }
         // project.c3proj changed on disk since it was loaded: refused before any write (#51)
         await writer.assertProjectFileCurrent();
-        await atomicWriteTimeline(filePath, data, reader.getProjectPath());
+        await atomicWriteTimeline(writer, filePath, data, reader.getProjectPath());
 
-        // Register in project.c3proj (under lock via withProjectLock is internal to writer;
-        // we use writer.addToProject which handles the lock — but timelines isn't a standard category.
-        // We write project directly here, then reload via reader.
-        const projectPath = reader.getProjectPath();
-        await backupTimeline(projectPath);
-        await addTimelineToProject(projectPath, args.name, args.subfolder);
+        // Registered in project.c3proj through the writer: backed up once per call, and a save made meanwhile is merged
+        await addTimelineToProject(writer, args.name, args.subfolder);
         await reader.reloadProject();
 
         const result: WriteResult = {
@@ -532,8 +505,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
         if (args.ignoreSystemTimescale !== undefined) data.ignoreSystemTimescale = args.ignoreSystemTimescale;
         if (args.enabled !== undefined) data.enabled = args.enabled;
 
-        const backupPath = await backupTimeline(filePath);
-        await atomicWriteTimeline(filePath, data, reader.getProjectPath());
+        const backupPath = await atomicWriteTimeline(writer, filePath, data, reader.getProjectPath());
 
         const result: WriteResult = {
           success: true,
@@ -570,19 +542,16 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
 
         // project.c3proj changed on disk since it was loaded: refused before any change (#51)
         await writer.assertProjectFileCurrent();
-        // Back up exactly the file that is deleted; a failed backup or delete aborts
+        // Back up exactly the file that is deleted, through the writer; a failed backup or delete aborts
         const filePath = locatedFilePath(reader.getProjectDir(), args.name, location);
         const fileLabel = locatedFileLabel(args.name, location);
-        const backupPath = await backupTimeline(filePath);
+        const backupPath = await writer.deleteFile(filePath);
         if (!backupPath) {
           return toolError(`Timeline "${args.name}" is registered in project.c3proj, but its file ${fileLabel} was not found. Nothing was deleted and project.c3proj was not changed.`);
         }
-        await unlink(filePath);
 
-        const projectPath = reader.getProjectPath();
         try {
-          await backupTimeline(projectPath);
-          await removeTimelineFromProject(projectPath, args.name, location.folders);
+          await removeTimelineFromProject(writer, args.name, location.folders);
         } catch (e) {
           return toolError(`Deleted ${fileLabel} (backup: ${backupPath}), but could not remove "${args.name}" from project.c3proj: ${e instanceof Error ? e.message : String(e)}`);
         }

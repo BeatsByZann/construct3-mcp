@@ -571,6 +571,31 @@ describe('a call refused after it changed other files puts them back (#51)', () 
   });
 });
 
+// ─── Addon tools merge a change saved during the call ────────
+
+describe('register_addon and unregister_addon merge a change made on disk during the call (#51)', () => {
+  it('register_addon', async () => {
+    editorSavesProjectBeforeFirstCallOf(reader, 'getUsedAddons');
+
+    await expectSuccess('register_addon', { type: 'behavior', id: 'Tween', name: 'Tween' });
+
+    const project = await readJson('project.c3proj');
+    expect(project.properties.author).toBe('Editor');
+    expect(project.usedAddons.map((a: { id: string }) => a.id)).toContain('Tween');
+  });
+
+  it('unregister_addon', async () => {
+    await expectSuccess('register_addon', { type: 'behavior', id: 'Tween', name: 'Tween' });
+    editorSavesProjectBeforeFirstCallOf(reader, 'getUsedAddons');
+
+    await expectSuccess('unregister_addon', { type: 'behavior', id: 'Tween', force: true });
+
+    const project = await readJson('project.c3proj');
+    expect(project.properties.author).toBe('Editor');
+    expect(project.usedAddons.map((a: { id: string }) => a.id)).not.toContain('Tween');
+  });
+});
+
 // ─── Tools that update project.c3proj themselves ────────────
 
 describe('tools that update project.c3proj themselves refuse a change made during the call, before their first write (#51)', () => {
@@ -600,29 +625,6 @@ describe('tools that update project.c3proj themselves refuse a change made durin
     expect(result.text).toContain(refusal);
     expect(existsSync(join(dir, 'timelines', 'Intro.json'))).toBe(true);
     expect(JSON.stringify((await readJson('project.c3proj')).timelines)).toContain('Intro');
-  });
-
-  it('register_addon', async () => {
-    editorSavesProjectBeforeFirstCallOf(reader, 'getUsedAddons');
-
-    const result = await call('register_addon', { type: 'behavior', id: 'Tween', name: 'Tween' });
-
-    expect(result.isError).toBe(true);
-    expect(result.text).toContain(refusal);
-    const project = await readJson('project.c3proj');
-    expect(project.properties.author).toBe('Editor');
-    expect(project.usedAddons.map((a: { id: string }) => a.id)).not.toContain('Tween');
-  });
-
-  it('unregister_addon', async () => {
-    await expectSuccess('register_addon', { type: 'behavior', id: 'Tween', name: 'Tween' });
-    editorSavesProjectBeforeFirstCallOf(reader, 'getUsedAddons');
-
-    const result = await call('unregister_addon', { type: 'behavior', id: 'Tween', force: true });
-
-    expect(result.isError).toBe(true);
-    expect(result.text).toContain(refusal);
-    expect((await readJson('project.c3proj')).usedAddons.map((a: { id: string }) => a.id)).toContain('Tween');
   });
 
   it('inject_runtime_bridge', async () => {

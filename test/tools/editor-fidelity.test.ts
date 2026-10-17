@@ -73,7 +73,8 @@ describe('image file names', () => {
       objectName: 'Sprite2', animationName: 'Animation 1', frameIndex: 0, pngBase64: png.toString('base64'),
     });
 
-    expect(await imagesOf('sprite2-')).toEqual(['sprite2-animation 1-000.png']);
+    // The image it replaces is kept as a backup
+    expect(await imagesOf('sprite2-')).toEqual(['sprite2-animation 1-000.png', 'sprite2-animation 1-000.png.bak']);
     expect(Buffer.compare(await readFile(join(tmpDir, 'images', 'sprite2-animation 1-000.png')), png)).toBe(0);
   });
 
@@ -341,11 +342,13 @@ describe('rename_animation', () => {
 
     const data = await call('rename_animation', { objectName: 'Sprite2', animationName: 'Walk', newName: 'Run Fast' });
 
+    // The backup of the frame replaced in spriteWithWalk keeps its old name: it records the file as it was
     expect(await imagesOf('sprite2-')).toEqual([
       'sprite2-animation 1-000.png',
       'sprite2-run fast-000.png',
       'sprite2-run fast-001.png',
       'sprite2-run fast-002.png',
+      'sprite2-walk-001.png.bak',
     ]);
     expect(Buffer.compare(await readFile(join(tmpDir, 'images', 'sprite2-run fast-001.png')), art)).toBe(0);
     // Only the name changes: sid, frames and imageSpriteIds are kept
