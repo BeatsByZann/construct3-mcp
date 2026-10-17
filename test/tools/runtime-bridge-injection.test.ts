@@ -8,22 +8,41 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { access, chmod, cp, mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { constants, existsSync } from 'node:fs';
+import { cp, mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { getProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
-import { runInToolCall } from '../../src/construct3/disk-state.js';
+import { fileKey, runInToolCall } from '../../src/construct3/disk-state.js';
 import { registerRuntimeTools } from '../../src/tools/runtime-tools.js';
 import { MockServer } from '../mocks/mock-server.js';
+
+/** Runs once, right before the next statFileState of `path`: the editor saving that file at that moment. */
+const beforeNextStat = vi.hoisted(() => ({ hook: undefined as undefined | { path: string; run: () => Promise<void> } }));
+
+vi.mock('../../src/construct3/disk-state.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/construct3/disk-state.js')>();
+  return {
+    ...actual,
+    statFileState: async (path: string) => {
+      const hook = beforeNextStat.hook;
+      if (hook && actual.fileKey(path) === actual.fileKey(hook.path)) {
+        beforeNextStat.hook = undefined;
+        await hook.run();
+      }
+      return actual.statFileState(path);
+    },
+  };
+});
 
 const FIXTURES = join(__dirname, '..', 'fixtures');
 const dirs: string[] = [];
 
 afterEach(async () => {
+  beforeNextStat.hook = undefined;
   vi.restoreAllMocks();
   while (dirs.length > 0) await rm(dirs.pop()!, { recursive: true, force: true });
 });
@@ -268,16 +287,19 @@ describe('inject_runtime_bridge and remove_runtime_bridge on script files as use
     expect(existsSync(out)).toBe(false);
   });
 
-  it('puts back what it wrote when the import line cannot be written into the main script', async (context) => {
+  it('puts back what it wrote when the import line cannot be written into the main script', async () => {
     const dir = await copyFixture('minimal-project');
     const original = 'runOnStartup(async (runtime) => {});\n';
     const mainPath = await addRootMainScript(dir, original);
     const projectBefore = await readFile(join(dir, 'project.c3proj'), 'utf8');
-    await chmod(mainPath, 0o444);
     try {
-      // Where a read-only file stays writable (root on Linux), the failing write cannot be staged.
-      if (await access(mainPath, constants.W_OK).then(() => true, () => false)) context.skip('read-only files are writable for this user');
       const server = await tools(dir);
+      // The write of the main script fails (Windows and POSIX alike), at the writer's file write
+      const replaceFile = Construct3ProjectWriter.prototype.replaceFile;
+      vi.spyOn(Construct3ProjectWriter.prototype, 'replaceFile').mockImplementation(async function (this: Construct3ProjectWriter, path, content, options) {
+        if (fileKey(path) === fileKey(mainPath)) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        return replaceFile.call(this, path, content, options);
+      });
 
       const refused = await server.callTool('inject_runtime_bridge', {});
       expect(refused.isError).toBe(true);
@@ -286,11 +308,54 @@ describe('inject_runtime_bridge and remove_runtime_bridge on script files as use
       expect(await readFile(mainPath, 'utf8')).toBe(original);
       expect(existsSync(join(dir, 'scripts', 'c3-runtime-bridge.js'))).toBe(false);
     } finally {
-      await chmod(mainPath, 0o644);
+      vi.restoreAllMocks();
     }
   });
 
-  it('puts back what remove_runtime_bridge wrote when project.c3proj cannot be written', async (context) => {
+  it('refuses to write over a main script the editor saved during the call, and keeps that save', async () => {
+    const dir = await copyFixture('minimal-project');
+    const mainPath = await addRootMainScript(dir, 'runOnStartup(async (runtime) => {});\n');
+    const projectBefore = await readFile(join(dir, 'project.c3proj'), 'utf8');
+    const bridgePath = join(dir, 'scripts', 'c3-runtime-bridge.js');
+    const saved = '// saved in the editor\nrunOnStartup(async (runtime) => {});\n';
+    try {
+      const server = await tools(dir);
+      // The editor saves the main script after the bridge file and project.c3proj are written, before the import line is
+      const replaceFile = Construct3ProjectWriter.prototype.replaceFile;
+      vi.spyOn(Construct3ProjectWriter.prototype, 'replaceFile').mockImplementation(async function (this: Construct3ProjectWriter, path, content, options) {
+        const result = await replaceFile.call(this, path, content, options);
+        if (fileKey(path) === fileKey(join(dir, 'project.c3proj'))) await writeFile(mainPath, saved, 'utf8');
+        return result;
+      });
+
+      const refused = await server.callTool('inject_runtime_bridge', {});
+      expect(refused.isError).toBe(true);
+      expect(refused.content[0].text).toContain('was changed on disk after this server read it');
+      expect(refused.content[0].text).toContain('back as they were');
+      expect(await readFile(mainPath, 'utf8')).toBe(saved);
+      expect(await readFile(join(dir, 'project.c3proj'), 'utf8')).toBe(projectBefore);
+      expect(existsSync(bridgePath)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('builds the import line from the main script as the editor saved it, not from an older read', async () => {
+    const dir = await copyFixture('minimal-project');
+    const mainPath = await addRootMainScript(dir, 'runOnStartup(async (runtime) => {});\n');
+    const saved = '// saved in the editor\nrunOnStartup(async (runtime) => {});\n';
+    const server = await tools(dir);
+    // The state is taken before the text is read, so a save at this moment is read, not written over
+    beforeNextStat.hook = { path: mainPath, run: () => writeFile(mainPath, saved, 'utf8') };
+
+    payload(await server.callTool('inject_runtime_bridge', {}));
+    expect(beforeNextStat.hook).toBeUndefined();
+    const main = await readFile(mainPath, 'utf8');
+    expect(main).toContain('// saved in the editor');
+    expect(main).toContain('c3-runtime-bridge.js');
+  });
+
+  it('puts back what remove_runtime_bridge wrote when project.c3proj cannot be written', async () => {
     const dir = await copyFixture('minimal-project');
     const mainPath = await addRootMainScript(dir, 'runOnStartup(async (runtime) => {});\n');
     const server = await tools(dir);
@@ -298,10 +363,13 @@ describe('inject_runtime_bridge and remove_runtime_bridge on script files as use
     const mainBefore = await readFile(mainPath, 'utf8');
     const projectPath = join(dir, 'project.c3proj');
     const projectBefore = await readFile(projectPath, 'utf8');
-    await chmod(projectPath, 0o444);
     try {
-      // Where a read-only file stays writable (root on Linux), the failing write cannot be staged.
-      if (await access(projectPath, constants.W_OK).then(() => true, () => false)) context.skip('read-only files are writable for this user');
+      // The write of project.c3proj fails (Windows and POSIX alike), at the writer's file write
+      const replaceFile = Construct3ProjectWriter.prototype.replaceFile;
+      vi.spyOn(Construct3ProjectWriter.prototype, 'replaceFile').mockImplementation(async function (this: Construct3ProjectWriter, path, content, options) {
+        if (fileKey(path) === fileKey(projectPath)) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        return replaceFile.call(this, path, content, options);
+      });
 
       // The import line goes first, then the entry: the second write fails
       const refused = await server.callTool('remove_runtime_bridge', {});
@@ -311,7 +379,7 @@ describe('inject_runtime_bridge and remove_runtime_bridge on script files as use
       expect(await readFile(projectPath, 'utf8')).toBe(projectBefore);
       expect(existsSync(join(dir, 'scripts', 'c3-runtime-bridge.js'))).toBe(true);
     } finally {
-      await chmod(projectPath, 0o644);
+      vi.restoreAllMocks();
     }
   });
 
