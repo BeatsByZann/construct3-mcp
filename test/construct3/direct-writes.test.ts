@@ -183,4 +183,66 @@ describe('placeholder images', () => {
     await expect(run(() => writer.writeImageFiles(batch))).rejects.toThrow();
     expect(await readFile(first, 'utf-8')).toBe('old');
   });
+
+  it('names an image the rollback could not put back, with the file that holds the original', async () => {
+    const images = join(dir, 'images');
+    await mkdir(images, { recursive: true });
+    const first = join(images, getImageFileName('Hero', 'Animation 1', 0, 'Sprite'));
+    await writeFile(first, 'old');
+    // The batch's first write goes through; the rollback's write of the same image fails
+    const internals = writer as unknown as { atomicWrite: (p: string, c: string | Buffer) => Promise<void> };
+    const original = internals.atomicWrite.bind(writer);
+    let writes = 0;
+    vi.spyOn(internals, 'atomicWrite').mockImplementation(async (p, c) => {
+      if (fileKey(p) === fileKey(first) && ++writes === 2) throw new Error('disk full');
+      return original(p, c);
+    });
+    const message = await runInToolCall(() => writer.writeImageFiles(batch)).then(() => '', (e: Error) => e.message);
+    expect(message).toContain('Invalid image file name');
+    expect(message).toContain('images/hero-animation 1-000.png (the original is images/hero-animation 1-000.png.bak)');
+    expect(await readFile(first + '.bak', 'utf-8')).toBe('old');
+  });
+
+  it('leaves an image saved in the editor after the batch wrote it, and names it', async () => {
+    const images = join(dir, 'images');
+    await mkdir(images, { recursive: true });
+    const first = join(images, getImageFileName('Hero', 'Animation 1', 0, 'Sprite'));
+    await writeFile(first, 'old');
+    const original = writer.writeImageFile.bind(writer);
+    let calls = 0;
+    vi.spyOn(writer, 'writeImageFile').mockImplementation(async (...args) => {
+      const path = await original(...args);
+      if (++calls === 1) await writeFile(path, 'editor');
+      return path;
+    });
+    // The editor's save lands after the batch's write was confirmed and before the rollback
+    const message = await runInToolCall(() => writer.writeImageFiles(batch)).then(() => '', (e: Error) => e.message);
+    expect(message).toContain('Invalid image file name');
+    expect(message).toContain('images/hero-animation 1-000.png (the original is images/hero-animation 1-000.png.bak)');
+    expect(await readFile(first, 'utf-8')).toBe('editor');
+    expect(await readFile(first + '.bak', 'utf-8')).toBe('old');
+  });
+});
+
+describe('image backups never replace a file', () => {
+  it('keeps a .bak that appeared between choosing the backup name and copying to it', async () => {
+    const images = join(dir, 'images');
+    await mkdir(images, { recursive: true });
+    const image = join(images, 'hero-animation 1-001.png');
+    await writeFile(image, 'frame 2');
+    const internals = writer as unknown as { freeBackupPath: (p: string) => Promise<string> };
+    const original = internals.freeBackupPath.bind(writer);
+    let done = false;
+    vi.spyOn(internals, 'freeBackupPath').mockImplementation(async p => {
+      const chosen = await original(p);
+      if (!done) {
+        done = true;
+        await writeFile(chosen, 'parked late');
+      }
+      return chosen;
+    });
+    expect(await runInToolCall(() => writer.replaceFile(image, 'new'))).toBe(join(images, 'hero-animation 1-001.png.1.bak'));
+    expect(await readFile(image + '.bak', 'utf-8')).toBe('parked late');
+    expect(await readFile(image + '.1.bak', 'utf-8')).toBe('frame 2');
+  });
 });

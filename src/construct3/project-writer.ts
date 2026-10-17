@@ -6,6 +6,7 @@
  */
 
 import { readFile, copyFile, unlink, mkdir, stat, rename, readdir } from 'fs/promises';
+import { constants } from 'fs';
 import { dirname, relative, sep, join, basename } from 'path';
 import { resolveProjectPath } from './path-utils.js';
 import { atomicReplace, existingSpelling, findFileIgnoringCase } from './atomic-write.js';
@@ -118,6 +119,9 @@ export class ConcurrentWriteError extends Error {
  * between the read and the write, before the update is refused.
  */
 const MAX_PROJECT_UPDATE_ROUNDS = 3;
+
+/** How often an image backup picks another name when a file appeared under the chosen one, before it gives up. */
+const MAX_BACKUP_NAME_ATTEMPTS = 5;
 
 /** A file a tool wrote or deleted itself, outside the writer (see Construct3ProjectWriter.afterDirectWrites). */
 export interface DirectWrite {
@@ -253,7 +257,7 @@ export class Construct3ProjectWriter {
     const key = fileKey(filePath);
     const earlier = scope?.backups.get(key);
     if (earlier !== undefined) return earlier.path;
-    const backupPath = options.freeName ? await this.freeBackupPath(filePath) : filePath + '.bak';
+    let backupPath = options.freeName ? await this.freeBackupPath(filePath) : filePath + '.bak';
     try {
       await stat(filePath);
     } catch (e: unknown) {
@@ -265,7 +269,21 @@ export class Construct3ProjectWriter {
       throw new Error(`Cannot access file for backup: ${e instanceof Error ? e.message : String(e)}`);
     }
     // File exists — backup must succeed or we abort
-    await copyFile(filePath, backupPath);
+    if (options.freeName) {
+      // Never replaces a file: one that appeared under the chosen name since
+      // (EEXIST) is kept, and the next free name is tried
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await copyFile(filePath, backupPath, constants.COPYFILE_EXCL);
+          break;
+        } catch (e: unknown) {
+          if (!(e && typeof e === 'object' && 'code' in e && e.code === 'EEXIST') || attempt >= MAX_BACKUP_NAME_ATTEMPTS) throw e;
+          backupPath = await this.freeBackupPath(filePath);
+        }
+      }
+    } else {
+      await copyFile(filePath, backupPath);
+    }
     if (scope) scope.backups.set(key, { path: backupPath, existed: true, state: await statFileState(backupPath) });
     return backupPath;
   }
@@ -434,12 +452,20 @@ export class Construct3ProjectWriter {
 
   /**
    * Put an image this call wrote back as it was before the call: from its
-   * backup when it existed, else removed. Under the file's one lock.
+   * backup when it existed, else removed. Under the file's one lock. False,
+   * and the image is left as it is, when it changed on disk after this call
+   * wrote it (saved in the editor) or its backup no longer is the one made
+   * before the call, as in putBack and restoreForCall.
    */
-  private async putBackImage(filePath: string): Promise<void> {
-    await this.underLockOf(filePath, async () => {
-      const backup = currentToolCall()?.backups.get(fileKey(filePath));
+  private async putBackImage(filePath: string): Promise<boolean> {
+    return this.underLockOf(filePath, async () => {
+      const key = fileKey(filePath);
+      const scope = currentToolCall();
+      const ours = scope?.reads.get(key);
+      if (ours === undefined || !sameFileState(await statFileState(filePath), ours)) return false;
+      const backup = scope?.backups.get(key);
       if (backup?.existed) {
+        if (!sameFileState(await statFileState(backup.path), backup.state)) return false;
         const bytes = await readFile(backup.path);
         await this.atomicWrite(filePath, bytes);
         await this.afterToolWrite(filePath, bytes);
@@ -447,6 +473,7 @@ export class Construct3ProjectWriter {
         await unlink(filePath);
         await this.afterToolWrite(filePath, null);
       }
+      return true;
     });
   }
 
@@ -1123,14 +1150,24 @@ export class Construct3ProjectWriter {
         return writtenPaths;
       } catch (error) {
         // Rollback: put back the images already written (one that was there before from its backup, a new one removed)
+        const notPutBack: string[] = [];
         for (const path of writtenPaths) {
+          let putBack = false;
           try {
-            await this.putBackImage(path);
+            putBack = await this.putBackImage(path);
           } catch {
-            // Best-effort: an image that cannot be put back stays as this call wrote it
+            // Best-effort: an image that cannot be put back stays as it is, and is named below
+          }
+          if (!putBack) {
+            const backup = currentToolCall()?.backups.get(fileKey(path));
+            notPutBack.push(backup?.existed
+              ? `${this.projectRelative(path)} (the original is ${this.projectRelative(backup.path)})`
+              : `${this.projectRelative(path)} (new: this call created it)`);
           }
         }
-        throw error;
+        if (notPutBack.length === 0) throw error;
+        const cause = error instanceof Error ? error.message.replace(/\.$/, '') : String(error);
+        throw new Error(`${cause}. These image files could not be put back as they were before this call: ${notPutBack.join(', ')}.`, { cause: error });
       }
     });
   }
