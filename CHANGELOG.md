@@ -4,6 +4,11 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `move_event_block`: move an event with its sub-events to another place in its sheet, by SID. Refused, changing nothing: a move into the event itself, a place that no editor-saved project on record or checked editor case shows for that kind of event, a name clash in the new scope, a new load-time error, and (without `force`) a move that leaves events using a variable or parameter out of its scope or makes them find another variable or parameter of the same name. An else block that then continues another event is reported in a warning (#ISSUE).
+- `add_event_block` and `add_event_to_sheet` place a new event among the sub-events of an event (`parentSid`) or beside one (`siblingSid` with `position` `"before"` or `"after"`), where an editor-saved project on record or a checked editor case shows that kind of event, with the name rules of its new scope; `add_event_to_sheet` adds script events and takes a variable's comment and *Static* and *Constant* options; `add_event_block` returns the new block's `eventPath`; a new event placed so that an else block continues it is reported in a warning (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
@@ -13,6 +18,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 ### Fixed
 
 - When an object type, event sheet, layout or family write fails after replacing the file, the rollback of `update_layer`, `add_frame_to_animation`, `delete_frame_from_animation` and `rename_animation` puts the backup back only while the file holds that write's own content; a save made in the editor after the failure is kept, and the error names the file and its `.bak` (#ISSUE).
+- The reference checks of `delete_event_from_sheet`, `delete_event_sheet` and `move_events_between_sheets` count a custom action's parameters as in scope in its body (before, a use of one counted as a use of an event variable of that name), and a sheet nested deeper than 50 levels makes those checks incomplete, so they refuse without `force` as at their event limit (#ISSUE).
 
 ## [1.10.0] - 2026-09-30
 

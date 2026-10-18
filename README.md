@@ -160,10 +160,11 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | Tool | Description |
 |------|-------------|
 | `create_event_sheet` | Create a new event sheet with optional includes; refuses names that differ from an existing sheet only in case |
-| `add_event_to_sheet` | Add a group, function, variable, include, or comment (with colours) to a sheet (load-time checked); functions take the editor's return type, *Asynchronous* and *Copy picked* options; the names of a new (global) variable, of a function and of its parameters are checked like in the editor (no second function with the same name, ignoring case); returns the new SIDs (`generatedSid`, `functionParameterSids`), `eventPath` and `backupFile` |
-| `add_event_block` | Add a block event with conditions + actions (gameplay logic), written in the editor's own shapes: sub-events (also without conditions), else/else-if blocks, OR blocks, function calls, script actions, comment rows; refuses writes that break the checked editor load-time rules (unterminated string literals and backslashes outside them, empty expressions, trigger placement) and warns where Else cannot stand (after a triggered event) |
+| `add_event_to_sheet` | Add a group, function, variable, include, or comment (with colours) to a sheet (at the top level, in a group, among the sub-events of an event or beside one, where an editor-saved project on record or a checked editor case shows that kind of event; includes at the top level only); script events; a variable's *Static* and *Constant* options (load-time checked); functions take the editor's return type, *Asynchronous* and *Copy picked* options; the names of a new (global) variable, of a function and of its parameters are checked like in the editor (no second function with the same name, ignoring case); returns the new SIDs (`generatedSid`, `functionParameterSids`), `eventPath` and `backupFile` |
+| `add_event_block` | Add a block event with conditions + actions (gameplay logic), placed at the top level, in a group, among the sub-events of an event or beside one, written in the editor's own shapes: sub-events (also without conditions), else/else-if blocks, OR blocks, function calls, script actions, comment rows; refuses writes that break the checked editor load-time rules (unterminated string literals and backslashes outside them, empty expressions, trigger placement) and warns where Else cannot stand (after a triggered event) |
 | `update_event_block` | Update an existing block: modify/add/remove actions and conditions, edit comment rows (text and colours) in place, make it an else or OR block (load-time checked) |
 | `update_event_block_action` | Replace the parameters of one action in a block (by block SID and action index; function call arguments as an array; load-time checked) |
+| `move_event_block` | Move an event with its sub-events to another place in its sheet (group, sub-events of an event, beside an event); refuses a move into itself, a place no editor-saved project on record or checked editor case shows for that kind of event, and (without `force`) a move that takes a used variable or parameter out of scope |
 | `update_event_variable` | Rename a variable or change its type, initial value, static or constant flag; a new name is checked like in the editor |
 | `move_events_between_sheets` | Copy or move top-level events between sheets by SID (optionally into a group); load-time checked, so copying an event that breaks a load-time rule is refused; a copy or move that would clash event variable names (e.g. a copied global variable) is refused, and so is (without `force`) a move that takes a used variable out of scope, e.g. a global variable moved into a group |
 | `delete_event_from_sheet` | Delete an event from a sheet by SID or include name (dry-run, force); refuses while functions or event variables it removes are still referenced elsewhere (by calls, function maps, System variable ACEs or by name in expressions); warns about an else block the delete leaves behind |
@@ -440,7 +441,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 84.
 
 ### Standalone Testing
 
@@ -548,9 +549,10 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (6)
-│   │   ├── event-tools.ts          # Event sheet tools (12)
+│   │   ├── event-tools.ts          # Event sheet tools (13)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
