@@ -605,7 +605,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'add_custom_action',
     {
-      description: 'Add a custom action definition (a custom action block) to an event sheet. A custom action belongs to an object type or family and is called on it with { customAction, objectClass, parameters: [...] } in add_event_block or update_event_block; its conditions and actions are added with update_event_block on the returned SID. Placed like add_event_to_sheet places events (the top level, a group, or beside an event), where an editor-saved project on record or a checked editor case shows custom action blocks. Runs the load-time gate (new warnings are returned). Event sheets that could not be parsed are searched as text for the name; a possible match refuses without force=true. Refused, changing nothing: an owner that is no object type or family, an empty name, a second custom action of the same name on the same owner (ignoring case), parameter names the editor refuses, and a place that no editor-saved project on record or checked editor case shows for custom action blocks. Returns generatedSid, parameterSids, eventPath and backupFile.',
+      description: 'Add a custom action definition (a custom action block) to an event sheet. A custom action belongs to an object type or family and is called on it with { customAction, objectClass, parameters: [...] } in add_event_block or update_event_block; its conditions and actions are added with update_event_block on the returned SID. Placed at the top level, in a group, or beside an event there, and only where every event above it is a group: Construct 3 r506-2 (Free edition) was seen accepting a custom action block only at the top level and in a top-level group, and a group below a block, a block with conditions, a function block or a custom action block is refused (a custom action block is a trigger root for the load check). Runs the load-time gate (new warnings are returned). Event sheets that could not be parsed are searched as text for the name; a possible match refuses without force=true. Refused, changing nothing: an owner that is no object type or family, an empty name, a second custom action of the same name on the same owner (ignoring case), parameter names the editor refuses, and a place that no editor-saved project on record or checked editor case shows for custom action blocks (below a block, a function block or a custom action block, also through a group). Returns generatedSid, parameterSids, eventPath and backupFile.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
         objectClass: z.string().max(200).describe('The object type or family the custom action belongs to'),
@@ -634,7 +634,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       let writeStarted = false;
       try {
         const unregistered = await unregisteredSheetError(reader, args.sheetName);
-        if (unregistered) return unregistered;
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         const ownerError = customActionOwnerError(args.objectClass, await reader.listObjectTypes(), await reader.listFamilies());
         if (ownerError) return toolError(nothingChanged(ownerError));
         if (args.aceName.trim() === '') return toolError(nothingChanged('aceName is empty.'));
@@ -643,7 +643,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(`Event sheet "${args.sheetName}" is registered in the project but could not be read.`));
         }
         const events = sheet.events as Record<string, unknown>[];
         const resolution = resolveContainer(events, args.sheetName, {
@@ -654,6 +654,18 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const container = resolution.container;
         const placement = placementError('custom-ace-block', container);
         if (placement) return toolError(nothingChanged(placement));
+        // Only groups may stand above the new definition: a group below a block, a function block or a custom action block is refused
+        const nonGroup = containerParents(sheet.events, container).find(parent => parent.eventType !== 'group');
+        if (nonGroup !== undefined) {
+          const what = nonGroup.eventType === 'block' ? (Array.isArray(nonGroup.conditions) && nonGroup.conditions.length > 0 ? 'a block with conditions' : 'a block')
+            : nonGroup.eventType === 'function-block' ? 'a function block'
+              : nonGroup.eventType === 'custom-ace-block' ? 'a custom action block' : `an event of type "${String(nonGroup.eventType)}"`;
+          return toolError(nothingChanged(
+            `A custom action block is not placed in a group that stands below ${what}${nonGroup.sid !== undefined ? ` (SID ${nonGroup.sid})` : ''}: ` +
+            'Construct 3 r506-2 (Free edition) was seen accepting one only at the top level and in a top-level group, and the load check this tool follows ' +
+            'treats a custom action block as a trigger root, as it does a function block, which r506-2 (Free edition) refused to open under an "On start" block. ' +
+            'This is the tool\'s own rule, not checked in the editor. It can go at the top level, in a group, or in a group that has only groups above it.'));
+        }
 
         // One custom action of a name per owner, across the project
         const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
@@ -1281,7 +1293,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   server.tool(
     'move_events_between_sheets',
-    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). SIDs and all nested children are preserved; the result warns when a copied SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force.',
+    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). SIDs and all nested children are preserved; the result warns when a copied SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force. A copy (deleteSource=false) that would leave two custom actions of one name on one object type or family is refused, and so is any copy while the check for custom actions stopped at its traversal limit; a move is not (Construct 3 r506-2, Free edition, renamed the second of two such definitions on save).',
     {
       sourceSheet: z.string().max(200).describe('Event sheet to copy/move events from, as registered (letter case included)'),
       targetSheet: z.string().max(200).describe('Event sheet to copy/move events into, as registered (letter case included)'),

@@ -513,7 +513,7 @@ export function createCommentEvent(text: string): CommentEvent {
 
 /**
  * A custom action block in the key order the editor saves it (Construct 3
- * r506-2, Free edition: aceType, aceName, objectClass, the function keys,
+ * r506-2 (Free edition): aceType, aceName, objectClass, the function keys,
  * eventType, conditions, actions, sid; no children key without sub-events).
  */
 export function createCustomActionEvent(

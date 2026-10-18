@@ -54,7 +54,7 @@ function sheetEvents(): Ev[] {
 
 /** A reader that also registers event sheets it cannot parse (name to text), as the real reader reports them: absent from the bulk read, searchable as text. */
 class UnparsableSheetsReader extends MockReader {
-  constructor(data: ConstructorParameters<typeof MockReader>[0], private readonly unparsable: Record<string, string>) {
+  constructor(data: ConstructorParameters<typeof MockReader>[0], private readonly unparsable: Record<string, string | null>) {
     super(data);
   }
   override async listEventSheets(): Promise<string[]> {
@@ -66,11 +66,28 @@ class UnparsableSheetsReader extends MockReader {
   }
   override async searchEntityTextRaw(category: Parameters<MockReader['searchEntityTextRaw']>[0], name: string, terms: readonly RawTextTerm[]): Promise<Set<string>> {
     const text = this.unparsable[name];
-    return category === 'eventSheets' && text !== undefined ? searchText(text, terms) : super.searchEntityTextRaw(category, name, terms);
+    if (category === 'eventSheets' && text === null) throw new Error(`${name}: cannot be read as text either`);
+    return category === 'eventSheets' && typeof text === 'string' ? searchText(text, terms) : super.searchEntityTextRaw(category, name, terms);
   }
 }
 
-function setup(other: Ev[] = [], unparsable: Record<string, string> = {}, events: Ev[] = sheetEvents()) {
+/**
+ * The sheet events plus: block 40 (On start) with the group 41 below it, block 50 with the group 51 below it,
+ * function block 80 with the group 81 below it, and the group 60 "Outer" holding the group 61 "Inner".
+ */
+function nestedEvents(): Ev[] {
+  const group = (title: string, sid: number, children: Ev[] = []): Ev => ({ eventType: 'group', disabled: false, title, description: '', isActiveOnStart: true, sid, children });
+  return [
+    ...sheetEvents(),
+    block(40, { conditions: [{ id: 'on-start-of-layout', objectClass: 'System', sid: 42 }], children: [group('UnderStart', 41)] }),
+    block(50, { conditions: [tick], children: [group('UnderBlock', 51)] }),
+    { functionName: 'F', functionDescription: '', functionCategory: '', functionReturnType: 'none', functionCopyPicked: false, functionIsAsync: false,
+      functionParameters: [], eventType: 'function-block', conditions: [], actions: [], sid: 80, children: [group('UnderFunction', 81)] },
+    group('Outer', 60, [group('Inner', 61)]),
+  ];
+}
+
+function setup(other: Ev[] = [], unparsable: Record<string, string | null> = {}, events: Ev[] = sheetEvents()) {
   const server = new MockServer();
   const reader = new UnparsableSheetsReader({
     objects: new Map([
@@ -213,7 +230,18 @@ describe('add_custom_action', () => {
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
-  it('adds with force while a sheet cannot be read, and warns', async () => {
+  it('refuses while a registered sheet cannot be read at all, and adds with force and a warning', async () => {
+    const { server, writer } = setup([], { Gone: null });
+    const refused = parse(await server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: 'Jump' }));
+    expect(refused.action).toBe('add_blocked');
+    expect(String(refused.message)).toMatch(/Use force=true to add it anyway\. Nothing was changed\.$/);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    const forced = parse(await server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: 'Jump', force: true }));
+    expect(forced.success).toBe(true);
+    expect(String(forced.warnings)).toContain('Added with force=true:');
+  });
+
+  it('adds with force while a sheet cannot be parsed and may define the name, and warns', async () => {
     const { server, writer } = setup([], { Bad: '{"events":[{"aceName":"Jump","objectClass":"Alpha"' });
     const data = parse(await server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: 'Jump', force: true }));
     expect(data.success).toBe(true);
@@ -279,15 +307,54 @@ describe('add_custom_action', () => {
     })).rejects.toThrow();
   });
 
-  it('says a sheet that is not registered is not found', async () => {
-    const { server } = setup();
-    const text = errorText(await server.callTool('add_custom_action', { sheetName: 'sheet1', objectClass: 'Alpha', aceName: 'New' }));
-    expect(text).toContain('Did you mean "Sheet1"?');
+  it('says a sheet that is not registered is not found, and a registered sheet that cannot be read could not be read', async () => {
+    const { server } = setup([], { Bad: '{"events"' });
+    const missing = errorText(await server.callTool('add_custom_action', { sheetName: 'sheet1', objectClass: 'Alpha', aceName: 'New' }));
+    expect(missing).toMatch(/Did you mean "Sheet1"\? Nothing was changed\.$/);
+    const unreadable = errorText(await server.callTool('add_custom_action', { sheetName: 'Bad', objectClass: 'Alpha', aceName: 'New' }));
+    expect(unreadable).toBe('Event sheet "Bad" is registered in the project but could not be read. Nothing was changed.');
+  });
+
+  it('allows a definition only where every event above it is a group', async () => {
+    const { server } = setup([], {}, nestedEvents());
+    const inner = parse(await server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: 'Deep', groupPath: 'Outer > Inner' }));
+    expect(inner.eventPath).toBe('events[9].children[0].children[0]');
+    const beside = parse(await server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: 'Beside', siblingSid: 61, position: 'after' }));
+    expect(beside.eventPath).toBe('events[9].children[1]');
+  });
+
+  it('refuses a definition in a group below an On start block, a block, a function block or a custom action block', async () => {
+    const { server, writer } = setup([], {}, nestedEvents());
+    for (const [parentSid, what] of [[41, 'a block with conditions (SID 40)'], [51, 'a block with conditions (SID 50)'], [81, 'a function block (SID 80)']] as const) {
+      const text = errorText(await server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: 'Deep', parentSid }));
+      expect(text, String(parentSid)).toMatch(new RegExp(`^A custom action block is not placed in a group that stands below ${what.replace(/[()]/g, '\\$&')}: Construct 3 r506-2 \\(Free edition\\) was seen accepting one only at the top level and in a top-level group, `));
+      expect(text, String(parentSid)).toContain('a trigger root');
+      expect(text, String(parentSid)).toMatch(/Nothing was changed\.$/);
+    }
+    // Beside an event of such a group
+    const events = nestedEvents();
+    (events.find(e => e.sid === 40)!.children as Ev[])[0].children = [block(43)];
+    const beside = setup([], {}, events);
+    expect(errorText(await beside.server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: 'Deep', siblingSid: 43, position: 'before' })))
+      .toContain('stands below a block with conditions (SID 40)');
+    // A custom action block among the ancestors of a group (a sheet saved that way)
+    const custom = nestedEvents();
+    (custom.find(e => e.sid === 70)!).children = [{ eventType: 'group', disabled: false, title: 'InCustom', description: '', isActiveOnStart: true, sid: 71000, children: [] }];
+    const inCustom = setup([], {}, custom);
+    expect(errorText(await inCustom.server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: 'Deep', parentSid: 71000 })))
+      .toContain('stands below a custom action block (SID 70)');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
   it('every refusal ends with Nothing was changed. and leaves the sheet as it was', async () => {
     const big = bigSheetEvents();
-    const cases: Array<{ args: Record<string, unknown>; other?: Ev[]; unparsable?: Record<string, string> }> = [
+    const cases: Array<{ args: Record<string, unknown>; other?: Ev[]; unparsable?: Record<string, string | null>; nested?: boolean }> = [
+      { args: { objectClass: 'Alpha', aceName: 'New', parentSid: 41 }, nested: true },
+      { args: { objectClass: 'Alpha', aceName: 'New', parentSid: 51 }, nested: true },
+      { args: { objectClass: 'Alpha', aceName: 'New', parentSid: 81 }, nested: true },
+      { args: { sheetName: 'sheet1', objectClass: 'Alpha', aceName: 'New' } },
+      { args: { sheetName: 'Bad', objectClass: 'Alpha', aceName: 'New' }, unparsable: { Bad: '{"events"' } },
+      { args: { objectClass: 'Alpha', aceName: 'Jump' }, unparsable: { Gone: null } },
       { args: { objectClass: 'System', aceName: 'New' } },
       { args: { objectClass: 'Functions', aceName: 'New' } },
       { args: { objectClass: 'Nope', aceName: 'New' } },
@@ -303,8 +370,8 @@ describe('add_custom_action', () => {
       { args: { objectClass: 'Alpha', aceName: 'Jump' }, unparsable: { Bad: '{"events":[{"aceName":"Jump","objectClass":"Alpha"' } },
       { args: { objectClass: 'Alpha', aceName: 'New' }, other: big },
     ];
-    for (const { args, other, unparsable } of cases) {
-      const { server, writer, events } = setup(other ?? [], unparsable ?? {});
+    for (const { args, other, unparsable, nested } of cases) {
+      const { server, writer, events } = setup(other ?? [], unparsable ?? {}, nested ? nestedEvents() : sheetEvents());
       const before = JSON.stringify(events);
       const result = await server.callTool('add_custom_action', { sheetName: 'Sheet1', ...args });
       const text = result.isError ? result.content[0].text : String(parse(result).message);
@@ -332,6 +399,23 @@ describe('move_events_between_sheets and custom actions', () => {
     const { server } = setup();
     const copy = parse(await server.callTool('move_events_between_sheets', { sourceSheet: 'Sheet1', targetSheet: 'Other', sids: [20], deleteSource: false }));
     expect(copy.success).toBe(true);
+  });
+
+  it('lists at most ten of the custom actions a copy would duplicate', async () => {
+    const many = Array.from({ length: 11 }, (_, i) => customAction('Alpha', `N${i}`, 200 + i));
+    const { server, writer } = setup([], {}, [...sheetEvents(), ...many]);
+    const text = errorText(await server.callTool('move_events_between_sheets', {
+      sourceSheet: 'Sheet1', targetSheet: 'Other', sids: many.map(e => e.sid as number), deleteSource: false,
+    }));
+    expect(text.match(/^- "Alpha\.N\d+":/gm)).toHaveLength(10);
+    expect(text).toMatch(/Nothing was changed\.$/);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('moves events while the scan for custom actions stopped at its limit', async () => {
+    const { server } = setup(bigSheetEvents());
+    const move = parse(await server.callTool('move_events_between_sheets', { sourceSheet: 'Sheet1', targetSheet: 'Other', sids: [20], deleteSource: true }));
+    expect(move.success).toBe(true);
   });
 
   it('refuses to copy events while the scan for custom actions stopped at its limit', async () => {
