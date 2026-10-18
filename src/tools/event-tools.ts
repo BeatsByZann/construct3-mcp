@@ -887,7 +887,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             familiesOf: (await loadCustomActionContext(reader)).familiesOf,
           };
           complete = scan.complete && callSites.complete;
-          limit = callSites.limit ?? (scan.complete ? undefined : 'events');
+          limit = scan.limit ?? callSites.limit;
         }
 
         // 4. The new name and return type, checked like the editor's Function dialog against every other function;
@@ -930,13 +930,21 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           references = calls;
           // A plain call on an object in several families that define the new name: the one it runs is the first, as the other custom action tools warn
           if (newName !== oldName) {
+            let omitted = 0;
             for (const site of rewrite) {
               if (site.call.customActionObjectClass !== undefined || self.owner === site.call.objectClass) continue;
               const others = familiesOf(site.call.objectClass).filter(family => family !== self.owner
                 && definitions.some(d => d !== self && d.owner === family && nameKey(d.name) === nameKey(newName)));
               if (others.length === 0) continue;
+              if (renameWarnings.length >= 10) {
+                omitted++;
+                continue;
+              }
               renameWarnings.push(`${site.sheet} ${site.path}${site.sid !== undefined ? ` (SID ${site.sid})` : ''}: "${site.call.objectClass}" belongs to the families "${self.owner}" and ` +
                 `${others.map(f => `"${f}"`).join(', ')}, which both define a custom action of that name. The call uses the one on "${self.owner}"; which one Construct 3 runs was not checked in the editor.`);
+            }
+            if (omitted > 0) {
+              renameWarnings.push(`And ${omitted} more rewritten call(s) whose object belongs to several families that define a custom action of that name; each uses the one on "${self.owner}".`);
             }
           }
         }

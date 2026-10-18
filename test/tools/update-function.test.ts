@@ -800,6 +800,17 @@ describe('update_function for custom action blocks', () => {
     expect(forced.warnings).toContain(`Updated with force=true: ${limit}`);
   });
 
+  it('names the nesting-depth limit when the scan for custom actions and their calls stopped at it', async () => {
+    const { server, reader, writer } = memberFixture();
+    let inner: Ev = block(900);
+    for (let i = 0; i < 52; i++) inner = block(901 + i, { children: [inner] });
+    (await storedEvents(reader, 'Other')).push(inner);
+    const blocked = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true }));
+    expect(blocked).toMatchObject({ success: false, action: 'update_blocked' });
+    expect(String(blocked.message)).toBe('The check for uses of the custom action "Alpha.Hurt" stopped at its nesting-depth limit (events nested more than 50 deep), so uses further on are unknown. Use force=true to update anyway. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
   it('checks the calls against a definition the scan did not reach, with force', async () => {
     // A sheet with a call and then 100,000 comments before Sheet1: the scan of every sheet stops before the definitions, the SID search of Sheet1 finds them
     const { server, writer } = setupCustom(
@@ -811,6 +822,19 @@ describe('update_function for custom action blocks', () => {
     const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true, force: true }));
     expect(data).toMatchObject({ success: true, kind: 'custom-action', rewrittenCalls: 1, updatedSheets: ['First', 'Sheet1'] });
     expect(actionIn(writtenSheet(writer, 'First')!, 800).customAction).toBe('Strike');
+  });
+
+  it('refuses a rename while an event sheet it could not parse holds a custom action definition of the new name, without force', async () => {
+    const definition = '{"events":[{"eventType":"custom-ace-block","aceName":"Strike","objectClass":"Alpha","sid":900';
+    const { server, reader, writer } = memberFixture([], { Bad: definition });
+    const before = await allSheets(reader);
+    const blocked = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true }));
+    expect(blocked).toMatchObject({ success: false, action: 'update_blocked' });
+    expect(JSON.stringify(blocked.unscannedFiles)).toContain('Bad');
+    expect(String(blocked.message)).toMatch(/Use force=true to update anyway\. Nothing was changed\.$/);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(await allSheets(reader)).toBe(before);
+    expect(parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true, force: true })).success).toBe(true);
   });
 
   it('refuses a rename while an event sheet it could not parse may hold the new name, without force', async () => {
@@ -858,6 +882,23 @@ describe('update_function for custom action blocks', () => {
     expect(actionIn(writtenSheet(writer, 'Other')!, 800).customAction).toBe('Wave');
     expect(data.warnings).toContain('Other events[0] > action:0 (SID 800): "Alpha" belongs to the families "Fam" and "Fam2", which both define a custom action of that name. '
       + 'The call uses the one on "Fam"; which one Construct 3 runs was not checked in the editor.');
+  });
+
+  it('lists the first ten two-family warnings of a rename and counts the rest', async () => {
+    const calls = Array.from({ length: 12 }, (_unused, i) => block(800 + i, { actions: [customCall('Hurt', 900 + i)] }));
+    const { server } = setupCustom(
+      [customAction('Fam', 'Hurt', 700), customAction('Fam2', 'Wave', 710)],
+      calls,
+      {}, undefined, ['Fam2'],
+    );
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Wave', updateCallers: true }));
+    expect(data).toMatchObject({ success: true, rewrittenCalls: 12 });
+    const warnings = data.warnings as string[];
+    expect(warnings).toHaveLength(11);
+    expect(warnings.slice(0, 10).every(w => w.includes('belongs to the families "Fam" and "Fam2"'))).toBe(true);
+    expect(warnings[0]).toContain('(SID 800)');
+    expect(warnings[9]).toContain('(SID 809)');
+    expect(warnings[10]).toBe('And 2 more rewritten call(s) whose object belongs to several families that define a custom action of that name; each uses the one on "Fam".');
   });
 
   it('gives no two-family warning for a call that names its family, runs its object\'s own action or has one family defining the name, nor without a rename', async () => {

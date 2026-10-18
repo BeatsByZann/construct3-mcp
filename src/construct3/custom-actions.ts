@@ -29,14 +29,20 @@ const MAX_DEPTH = 50;
 const MAX_NODES = 100_000;
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** The limit a walk of the event sheets stopped at: the event count, or the depth events are nested to (the event count when both stopped it). */
+export type CustomActionWalkLimit = 'events' | 'depth';
+
 /**
- * Every custom action block in `sheets` (sheet name to events), in sheet and
- * document order, and whether the scan saw every event: false when it
- * stopped at its depth or node limit, so a definition past it is unknown.
+ * Visit every event of `sheets` (sheet name to events) that is an object,
+ * depth first, with its sheet and its JSON path (e.g. "events[2].children[0]").
+ * Returns the limit the walk stopped at, if any: events past the node or the
+ * depth limit are not visited.
  */
-export function customActionScan(sheets: ReadonlyMap<string, unknown>): { definitions: CustomActionDefinition[]; complete: boolean } {
-  const found: CustomActionDefinition[] = [];
-  let complete = true;
+function walkEvents(
+  sheets: ReadonlyMap<string, unknown>,
+  visit: (event: Record<string, unknown>, sheet: string, eventPath: string) => void,
+): CustomActionWalkLimit | undefined {
+  let limit: CustomActionWalkLimit | undefined;
   let nodes = 0;
   for (const [sheet, events] of sheets) {
     if (!Array.isArray(events)) continue;
@@ -44,29 +50,43 @@ export function customActionScan(sheets: ReadonlyMap<string, unknown>): { defini
     while (stack.length > 0) {
       const { list, path, depth } = stack.pop()!;
       if (depth > MAX_DEPTH) {
-        complete = false;
+        limit ??= 'depth';
         continue;
       }
       list.forEach((ev, i) => {
         if (!isRecord(ev)) return;
         if (++nodes > MAX_NODES) {
-          complete = false;
+          limit = 'events';
           return;
         }
         const eventPath = `${path}[${i}]`;
-        if (ev.eventType === 'custom-ace-block' && typeof ev.aceName === 'string' && typeof ev.objectClass === 'string') {
-          const params = Array.isArray(ev.functionParameters) ? ev.functionParameters : [];
-          found.push({
-            owner: ev.objectClass, name: ev.aceName, sheet, eventPath,
-            ...(typeof ev.sid === 'number' ? { sid: ev.sid } : {}),
-            parameters: params.filter(isRecord).map(p => String(p.name)),
-          });
-        }
+        visit(ev, sheet, eventPath);
         if (Array.isArray(ev.children)) stack.push({ list: ev.children, path: `${eventPath}.children`, depth: depth + 1 });
       });
     }
   }
-  return { definitions: found, complete };
+  return limit;
+}
+
+/**
+ * Every custom action block in `sheets` (sheet name to events), in sheet and
+ * document order, and whether the scan saw every event: false when it
+ * stopped at its depth or node limit, so a definition past it is unknown.
+ * `limit` says which limit it was.
+ */
+export function customActionScan(sheets: ReadonlyMap<string, unknown>): { definitions: CustomActionDefinition[]; complete: boolean; limit?: CustomActionWalkLimit } {
+  const found: CustomActionDefinition[] = [];
+  const limit = walkEvents(sheets, (ev, sheet, eventPath) => {
+    if (ev.eventType === 'custom-ace-block' && typeof ev.aceName === 'string' && typeof ev.objectClass === 'string') {
+      const params = Array.isArray(ev.functionParameters) ? ev.functionParameters : [];
+      found.push({
+        owner: ev.objectClass, name: ev.aceName, sheet, eventPath,
+        ...(typeof ev.sid === 'number' ? { sid: ev.sid } : {}),
+        parameters: params.filter(isRecord).map(p => String(p.name)),
+      });
+    }
+  });
+  return { definitions: found, complete: limit === undefined, ...(limit !== undefined ? { limit } : {}) };
 }
 
 /** The definitions customActionScan finds, for a lookup that only warns (a protective check uses customActionScan and its `complete`). */
@@ -143,40 +163,20 @@ export interface CustomActionCallSite {
  * event (false past its depth or node limit; `limit` says which, the node
  * limit when both stopped it).
  */
-export function customActionCallSites(sheets: ReadonlyMap<string, unknown>): { sites: CustomActionCallSite[]; complete: boolean; limit?: 'events' | 'depth' } {
+export function customActionCallSites(sheets: ReadonlyMap<string, unknown>): { sites: CustomActionCallSite[]; complete: boolean; limit?: CustomActionWalkLimit } {
   const sites: CustomActionCallSite[] = [];
-  let limit: 'events' | 'depth' | undefined;
-  let nodes = 0;
-  for (const [sheet, events] of sheets) {
-    if (!Array.isArray(events)) continue;
-    const stack: Array<{ list: unknown[]; path: string; depth: number }> = [{ list: events, path: 'events', depth: 0 }];
-    while (stack.length > 0) {
-      const { list, path, depth } = stack.pop()!;
-      if (depth > MAX_DEPTH) {
-        limit ??= 'depth';
-        continue;
-      }
-      list.forEach((ev, i) => {
-        if (!isRecord(ev)) return;
-        if (++nodes > MAX_NODES) {
-          limit = 'events';
-          return;
-        }
-        const eventPath = `${path}[${i}]`;
-        (Array.isArray(ev.actions) ? ev.actions : []).forEach((ace, j) => {
-          if (!isRecord(ace) || typeof ace.customAction !== 'string' || typeof ace.objectClass !== 'string') return;
-          sites.push({
-            sheet, path: `${eventPath} > action:${j}`, ...(typeof ev.sid === 'number' ? { sid: ev.sid } : {}), ace,
-            call: {
-              customAction: ace.customAction, objectClass: ace.objectClass,
-              ...(typeof ace.customActionObjectClass === 'string' ? { customActionObjectClass: ace.customActionObjectClass } : {}),
-            },
-          });
-        });
-        if (Array.isArray(ev.children)) stack.push({ list: ev.children, path: `${eventPath}.children`, depth: depth + 1 });
+  const limit = walkEvents(sheets, (ev, sheet, eventPath) => {
+    (Array.isArray(ev.actions) ? ev.actions : []).forEach((ace, j) => {
+      if (!isRecord(ace) || typeof ace.customAction !== 'string' || typeof ace.objectClass !== 'string') return;
+      sites.push({
+        sheet, path: `${eventPath} > action:${j}`, ...(typeof ev.sid === 'number' ? { sid: ev.sid } : {}), ace,
+        call: {
+          customAction: ace.customAction, objectClass: ace.objectClass,
+          ...(typeof ace.customActionObjectClass === 'string' ? { customActionObjectClass: ace.customActionObjectClass } : {}),
+        },
       });
-    }
-  }
+    });
+  });
   return { sites, complete: limit === undefined, ...(limit !== undefined ? { limit } : {}) };
 }
 

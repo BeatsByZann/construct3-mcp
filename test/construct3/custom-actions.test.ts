@@ -138,7 +138,23 @@ describe('customActionScan', () => {
   it('is complete for an ordinary sheet', () => {
     const result = customActionScan(new Map<string, unknown>([['Sheet1', [block('Alpha', 'Hurt', 1)]]]));
     expect(result.complete).toBe(true);
+    expect(result.limit).toBeUndefined();
     expect(result.definitions).toHaveLength(1);
+  });
+
+  it('says which limit stopped it, and stops where customActionCallSites stops', () => {
+    const comments = Array.from({ length: 100_000 }, () => ({ eventType: 'comment', text: 'x' }));
+    const wide = new Map<string, unknown>([['Sheet1', [...comments, block('Alpha', 'Late', 1)]]]);
+    let inner: Record<string, unknown> = block('Alpha', 'Deep', 1);
+    for (let i = 0; i < 52; i++) inner = { eventType: 'block', conditions: [], actions: [], sid: 100 + i, children: [inner] };
+    const deep = new Map<string, unknown>([['Sheet1', [inner]]]);
+    expect(customActionScan(wide).limit).toBe('events');
+    expect(customActionScan(deep).limit).toBe('depth');
+    for (const sheets of [wide, deep]) {
+      const scan = customActionScan(sheets);
+      const calls = customActionCallSites(sheets);
+      expect([scan.complete, scan.limit]).toEqual([calls.complete, calls.limit]);
+    }
   });
 });
 
