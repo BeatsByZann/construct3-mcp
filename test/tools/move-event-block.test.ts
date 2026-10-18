@@ -349,6 +349,47 @@ describe('move_event_block', () => {
     }
   });
 
+  /** Adds group "U" (80) under the On start block 30 and group "V" (81) under block 20; group "H" (50) gets custom action 83; block 84 holds custom action 85. */
+  function addCustomActionShapes(events: Ev[]): void {
+    (events[2].children as Ev[] | undefined) ??= [];
+    (events[2].children as Ev[]).push({ eventType: 'group', disabled: false, title: 'U', description: '', isActiveOnStart: true, sid: 80, children: [] });
+    (events[1].children as Ev[]).push({ eventType: 'group', disabled: false, title: 'V', description: '', isActiveOnStart: true, sid: 81, children: [] });
+    (events[4].children as Ev[]).push({ aceType: 'action', aceName: 'Go', objectClass: 'Alpha', functionParameters: [], eventType: 'custom-ace-block', conditions: [], actions: [], sid: 83 });
+    events.push(block(84, { children: [{ aceType: 'action', aceName: 'Stop', objectClass: 'Alpha', functionParameters: [], eventType: 'custom-ace-block', conditions: [], actions: [], sid: 85 }] }));
+  }
+
+  it('refuses a custom action block, and a group or block that holds one, moved where a block or another event that is not a group stands above it', async () => {
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      // The block itself into a group under an On start block, and into a group under an ordinary block
+      [{ sid: 70, parentSid: 80 }, /^A custom action block is not placed below a block with conditions \(SID 30\): /],
+      [{ sid: 70, parentSid: 81 }, /^A custom action block is not placed below a block \(SID 20\): /],
+      // A group that holds one, under a block
+      [{ sid: 50, parentSid: 20 }, /^The event with SID 50 holds the custom action block with SID 83\. A custom action block is not placed below a block \(SID 20\): /],
+      [{ sid: 50, parentSid: 81 }, /^The event with SID 50 holds the custom action block with SID 83\. A custom action block is not placed below a block \(SID 20\): /],
+      // A block that holds one: the block stands above it wherever it goes
+      [{ sid: 84, groupPath: 'H' }, /^The event with SID 84 holds the custom action block with SID 85\. A custom action block is not placed below a block \(SID 84\): /],
+    ];
+    for (const [args, pattern] of cases) {
+      const { server, reader, writer } = setup();
+      addCustomActionShapes(await sheetOf(reader));
+      const text = errorText(await server.callTool('move_event_block', { sheetName: 'Sheet1', ...args }));
+      expect(text, JSON.stringify(args)).toMatch(pattern);
+      expect(text).toContain('Construct 3 r506-2 (Free edition) was seen accepting one only at the top level and in a top-level group');
+      expect(text).toContain('not checked in the editor');
+      expect(text).toMatch(/Nothing was changed\.$/);
+      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    }
+  });
+
+  it('still moves a custom action block, and a group that holds one, where only groups stand above it', async () => {
+    for (const args of [{ sid: 70, groupPath: 'H' }, { sid: 83, groupPath: 'G' }, { sid: 50, groupPath: 'G' }]) {
+      const { server, reader } = setup();
+      addCustomActionShapes(await sheetOf(reader));
+      const data = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', ...args }));
+      expect(data.success, JSON.stringify(args)).toBe(true);
+    }
+  });
+
   it('puts the sheet in memory back when a scan after the move throws, and says nothing was changed', async () => {
     // With force the move gets past the check of the uses, then the else-block scan refuses events nested deeper than 50
     const { server, reader, writer } = setup();
@@ -393,6 +434,10 @@ describe('move_event_block', () => {
       { args: { sheetName: 'Sheet1', sid: 95, parentSid: 41 } },
       { args: { sheetName: 'Sheet1', sid: 90, parentSid: 41 } },
       { args: { sheetName: 'Sheet1', sid: 95, parentSid: 71 } },
+      // A custom action block into a group under a block, a group that holds one under a block, and a block that holds one
+      { args: { sheetName: 'Sheet1', sid: 70, parentSid: 80 }, prepare: addCustomActionShapes },
+      { args: { sheetName: 'Sheet1', sid: 50, parentSid: 20 }, prepare: addCustomActionShapes },
+      { args: { sheetName: 'Sheet1', sid: 84, groupPath: 'H' }, prepare: addCustomActionShapes },
     ];
     for (const { args, prepare } of calls) {
       const { server, reader, writer } = setup();
@@ -404,6 +449,17 @@ describe('move_event_block', () => {
       expect(errorText(result), JSON.stringify(args)).toMatch(/Nothing was changed\.$/);
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
       expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
+    }
+  });
+
+  it('refuses an event sheet that is not registered or cannot be read, saying Nothing was changed.', async () => {
+    for (const sheetName of ['Nope', 'sheet1', 'Bad']) {
+      const { server, writer } = setup([], { Bad: '{"events":[' });
+      const result = await server.callTool('move_event_block', { sheetName, sid: 20, groupPath: 'H' });
+      expect(result.isError, sheetName).toBe(true);
+      expect(errorText(result), sheetName).toMatch(/Nothing was changed\.$/);
+      expect(errorText(result), sheetName).toContain(`Event sheet "${sheetName}" not found`);
+      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
     }
   });
 

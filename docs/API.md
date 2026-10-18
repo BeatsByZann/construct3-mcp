@@ -624,11 +624,11 @@ Returns `generatedSid` (the SID of a new group, function or variable; includes a
 | Variable | yes | yes | yes | yes | no |
 | Group | yes | yes | yes | no | no |
 | Function block | yes | yes | yes (not under a block with a trigger) | no | no |
-| Custom action block | yes | yes | no | no | no |
+| Custom action block | yes | yes (only with groups above it) | no | no | no |
 | Include | yes | no | no | no | no |
 
 - A custom action block is not a destination: its sub-events accept no kind of event, so the last column is all no, and a parent given as a custom action block is refused.
-- A function block in a group: Construct 3 r506-2 (free edition) opened and kept one.
+- A function block in a group: Construct 3 r506-2 (Free edition) opened and kept one.
 - A function block in a block with no trigger: r506-2 opened and kept one under an ordinary block. A function block under a block with a trigger is refused, as below.
 - A variable in a group: an r495.2 editor-saved project has 2 such variables.
 - A variable in a block: an r495.2 editor-saved project has 1, and r506-2 opened and kept one under a block with a trigger and one under a block without.
@@ -637,9 +637,9 @@ Returns `generatedSid` (the SID of a new group, function or variable; includes a
 - A group in a group: r506-2 opened and kept a group nested in another group.
 - A script at the top level, in a group and in a function block: r506-2 opened and kept each.
 - A comment in a group: an r495.2 editor-saved project has 16.
-- A custom action block at the top level and in a group: r506-2 opened and kept each.
+- A custom action block at the top level and in a top-level group: r506-2 opened and kept each. A group below a block, a function block or a custom action block was not tried: the tools refuse a custom action block (and a group or block that holds one) unless only groups stand above it, which is their own rule, since the load-time check treats a custom action block as a trigger root.
 - A block in a function block: no editor-saved project on record and no editor case covers it; it is not verified in the editor.
-- A function block under a block with a trigger (for example an *On start* block) is refused: Construct 3 r506-2 (free edition) refused to open a project with a function block there: the editor showed "Failed to open project" and logged "cannot add another trigger to event branch". The other arrangements of a function block under a trigger, a function block or a custom action block follow upstream's load-time check, which counts a function block and a custom action block as a trigger; they were not tried in the editor.
+- A function block under a block with a trigger (for example an *On start* block) is refused: Construct 3 r506-2 (Free edition) refused to open a project with a function block there: the editor showed "Failed to open project" and logged "cannot add another trigger to event branch". The other arrangements of a function block under a trigger, a function block or a custom action block follow upstream's load-time check, which counts a function block and a custom action block as a trigger; they were not tried in the editor.
 - The other "no" cells have no editor case on record; the table refuses them, and they were not tried in the editor.
 
 Everything else is refused, with the places that kind of event can go. Includes are placed only at the top level.

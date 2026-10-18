@@ -1817,7 +1817,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'move_event_block',
     {
-      description: 'Move an event, with its sub-events, to another place in the same event sheet: the top level, a group (groupPath), the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"). Blocks, groups, variables, function blocks and custom action blocks are moved by SID (comments, includes and script events have none). The event keeps its SID and everything in it. Refused, changing nothing: a move into the event itself or its sub-events, a place that no editor-saved project on record or checked editor case shows for that kind of event, a function block (or an event holding one) under or below a block that has a trigger condition or under or below a function block or a custom action block, a new load-time error, a name that would clash in the new scope, and (unless force=true) a move that leaves events using an event variable or function parameter out of its scope. Event sheets that could not be parsed are searched as text for a global variable the move makes local. A move to where the event already is changes nothing.',
+      description: 'Move an event, with its sub-events, to another place in the same event sheet: the top level, a group (groupPath), the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"). Blocks, groups, variables, function blocks and custom action blocks are moved by SID (comments, includes and script events have none). The event keeps its SID and everything in it. Refused, changing nothing: a move into the event itself or its sub-events, a place that no editor-saved project on record or checked editor case shows for that kind of event, a function block (or an event holding one) under or below a block that has a trigger condition or under or below a function block or a custom action block, a custom action block (or an event holding one) with an event that is not a group above it (it goes at the top level or in groups only), a new load-time error, a name that would clash in the new scope, and (unless force=true) a move that leaves events using an event variable or function parameter out of its scope. Event sheets that could not be parsed are searched as text for a global variable the move makes local. A move to where the event already is changes nothing.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
         sid: z.number().int().positive().describe('SID of the event to move'),
@@ -1835,12 +1835,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       try {
         // Its scope check compares the sheet with the other sheets by registered name
         const unregistered = await unregisteredSheetError(reader, args.sheetName);
-        if (unregistered) return unregistered;
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
         }
         const events = sheet.events as Record<string, unknown>[];
         const beforeEvents = snapshotEvents(sheet.events);
@@ -1877,6 +1878,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // A function block, or an event that holds one, goes only where a function block is placed
         const functionRefusal = movedFunctionBlockRefusal(moving, containerParents(sheet.events, container));
         if (functionRefusal) return refuse(functionRefusal);
+        // A custom action block, or an event that holds one, goes only where every event above it is a group
+        const customActionRefusal = movedCustomActionBlockRefusal(moving, containerParents(sheet.events, container));
+        if (customActionRefusal) return refuse(customActionRefusal);
 
         // The declaration each use of this sheet's variables and parameters finds now, for the scope check after the move
         const sheetsNow = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
@@ -2439,6 +2443,44 @@ function movedFunctionBlockRefusal(moving: Record<string, unknown>, parents: rea
   return undefined;
 }
 
+/**
+ * Why `moving`, once it stands below `parents` (the events enclosing its new
+ * place, outermost first), puts a custom action block where an event that is
+ * not a group stands above it, or undefined. The custom action block is
+ * `moving` itself or one inside it at any depth; the events between `moving`
+ * and that block count as well as `parents`, and the first block found with a
+ * non-group above it is the one the message names. Construct 3 r506-2 (Free
+ * edition) was seen accepting a custom action block only at the top level and
+ * in a top-level group, and the load-time check treats a custom action block
+ * as a trigger root; the rule is this tool's own and was not checked in the
+ * editor.
+ */
+function movedCustomActionBlockRefusal(moving: Record<string, unknown>, parents: readonly C3Event[]): string | undefined {
+  const stack: Array<{ event: Record<string, unknown>; above: Array<Record<string, unknown>> }> = [
+    { event: moving, above: [...parents as ReadonlyArray<Record<string, unknown>>] },
+  ];
+  while (stack.length > 0) {
+    const { event, above } = stack.pop()!;
+    if (event.eventType === 'custom-ace-block') {
+      const nonGroup = above.find(parent => parent.eventType !== 'group');
+      if (nonGroup === undefined) continue;
+      const what = nonGroup.eventType === 'block' ? (Array.isArray(nonGroup.conditions) && nonGroup.conditions.length > 0 ? 'a block with conditions' : 'a block')
+        : nonGroup.eventType === 'function-block' ? 'a function block'
+          : nonGroup.eventType === 'custom-ace-block' ? 'a custom action block' : `an event of type "${String(nonGroup.eventType)}"`;
+      const held = event === moving ? '' : `The event with SID ${String(moving.sid)} holds the custom action block${typeof event.sid === 'number' ? ` with SID ${event.sid}` : ''}. `;
+      return `${held}A custom action block is not placed below ${what}${typeof nonGroup.sid === 'number' ? ` (SID ${nonGroup.sid})` : ''}: ` +
+        'Construct 3 r506-2 (Free edition) was seen accepting one only at the top level and in a top-level group, and the load check this tool follows ' +
+        'treats a custom action block as a trigger root, as it does a function block, which r506-2 (Free edition) refused to open under an "On start" block. ' +
+        'This is the tool\'s own rule, not checked in the editor. It can go at the top level, in a group, or in a group that has only groups above it.';
+    }
+    if (!Array.isArray(event.children)) continue;
+    for (const child of [...event.children as unknown[]].reverse()) {
+      if (typeof child === 'object' && child !== null) stack.push({ event: child as Record<string, unknown>, above: [...above, event] });
+    }
+  }
+  return undefined;
+}
+
 /** Error text for a move within one sheet that would put names Construct 3 treats as the same into one scope; a name in another sheet is placed by its sheet. */
 function sameSheetNameClashMessage(sheetName: string, clashes: readonly NewEventVariableNameClash[]): string {
   const lines = clashes.slice(0, 10).map(({ declaration, use }) => {
@@ -2615,14 +2657,15 @@ export function functionParameterNamesError(
  * block is refused under or below a block that holds a trigger condition and
  * under or below a function block or a custom action block (the load-time
  * check, load-rules.ts, counts both kinds of block as triggers). Recorded
- * editor case: Construct 3 r506-2 (free edition) refused to open a function
+ * editor case: Construct 3 r506-2 (Free edition) refused to open a function
  * block under an "On start" block. The other arrangements follow the
  * load-time check and were not tried in the editor. Groups do not count. A
- * condition is a trigger by its id (isTriggerId), as in the load-time check,
- * whatever addon it belongs to.
+ * condition is a trigger by its id (isTriggerId: the id starts with "on-"),
+ * as in the load-time check, whatever addon it belongs to; the editor was
+ * seen refusing only the built-in "On start of layout".
  */
 function functionBlockTriggerRefusal(parents: readonly C3Event[]): string | undefined {
-  const recorded = 'Construct 3 r506-2 (free edition) refused to open a project with a function block under an "On start" block ("cannot add another trigger to event branch")';
+  const recorded = 'Construct 3 r506-2 (Free edition) refused to open a project with a function block under an "On start" block ("cannot add another trigger to event branch")';
   const goes = 'It can go at the top level, in a group, or among the sub-events of blocks that have no trigger in them or above them and are not inside a function block or a custom action block.';
   for (const parent of parents as ReadonlyArray<Record<string, unknown>>) {
     const sid = typeof parent.sid === 'number' ? ` with SID ${parent.sid}` : '';
@@ -2634,7 +2677,7 @@ function functionBlockTriggerRefusal(parents: readonly C3Event[]): string | unde
     if (!Array.isArray(parent.conditions)) continue;
     const trigger = (parent.conditions as Array<Record<string, unknown> | null>).find(c => isTriggerId(c?.id));
     if (!trigger) continue;
-    return `A function block is not placed under the block${sid}, which has the trigger "${String(trigger.id)}", or below it: ${recorded}, and the load-time check of this tool treats a trigger in an enclosing event the same way. ${goes}`;
+    return `A function block is not placed under the block${sid}, which has a condition with the trigger id "${String(trigger.id)}", which this tool takes for a trigger because the id starts with "on-", whatever addon the condition belongs to, or below it: ${recorded}, and the load-time check of this tool treats a trigger in an enclosing event the same way. ${goes}`;
   }
   return undefined;
 }

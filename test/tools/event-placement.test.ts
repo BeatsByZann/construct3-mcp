@@ -309,7 +309,9 @@ describe('a trigger the guard recognises by id', () => {
     for (const list of conditions) {
       const { server, writer } = setup([block(650, { conditions: list })]);
       const text = errorText(await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'Fn', parentSid: 650 }));
-      expect(text, JSON.stringify(list)).toContain('which has the trigger');
+      const id = list.find(c => String(c.id).startsWith('on-'))!.id;
+      // The refusal names the id and says the rule is the id's prefix, whatever addon the condition belongs to
+      expect(text, JSON.stringify(list)).toContain(`which has a condition with the trigger id "${id}", which this tool takes for a trigger because the id starts with "on-", whatever addon the condition belongs to`);
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
     }
   });
