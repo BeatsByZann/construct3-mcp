@@ -349,6 +349,28 @@ describe('move_event_block', () => {
     }
   });
 
+  it('puts the sheet in memory back when a scan after the move throws, and says nothing was changed', async () => {
+    // With force the move gets past the check of the uses, then the else-block scan refuses events nested deeper than 50
+    const { server, reader, writer } = setup();
+    (await sheetOf(reader)).push(deepBlock());
+    const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
+    const result = await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, groupPath: 'H', force: true });
+    expect(errorText(result)).toBe('The change was stopped before anything was written: Sub-event scan exceeded depth 50. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    // The reader hands out the stored object: it is as it was, not only what is on disk
+    expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
+  });
+
+  it('puts the sheet in memory back when its write fails', async () => {
+    const { server, reader, writer } = setup();
+    const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
+    (writer as unknown as { writeEntityFile: () => Promise<string> }).writeEntityFile = async () => { throw new Error('disk full'); };
+    const result = await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, groupPath: 'H' });
+    expect(errorText(result)).toContain('disk full');
+    expect(errorText(result)).not.toContain('stopped before anything was written');
+    expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
+  });
+
   it('every refusal ends with Nothing was changed. and leaves the sheet as it was', async () => {
     const calls: Array<{ args: Record<string, unknown>; prepare?: (events: Ev[]) => void }> = [
       { args: { sheetName: 'Sheet1', sid: 999, groupPath: 'H' } },

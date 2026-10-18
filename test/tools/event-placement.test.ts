@@ -385,3 +385,41 @@ describe('refusals', () => {
     }
   });
 });
+
+describe('an error after the event is placed in memory', () => {
+  /** A block nested deeper than the else-block scan looks, so that scan throws after the event is placed. */
+  function deepBlock(): Ev {
+    let inner: Ev = block(98);
+    for (let depth = 0; depth < 52; depth++) inner = block(99000 + depth, { children: [inner] });
+    return inner;
+  }
+  const calls: Array<[string, Record<string, unknown>]> = [
+    ['add_event_block', { sheetName: 'Sheet1' }],
+    ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x' }],
+  ];
+
+  it('puts the sheet in memory back and says nothing was changed when a scan after the placement throws', async () => {
+    for (const [tool, args] of calls) {
+      const { server, reader, writer } = setup([...sheetEvents(), deepBlock()]);
+      const sheet = await reader.readEventSheet('Sheet1');
+      const before = JSON.stringify(sheet);
+      const result = await server.callTool(tool, args);
+      expect(errorText(result), tool).toBe('The change was stopped before anything was written: Sub-event scan exceeded depth 50. Nothing was changed.');
+      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+      // The reader hands out the stored object: it is as it was, not only what is on disk
+      expect(JSON.stringify(await reader.readEventSheet('Sheet1')), tool).toBe(before);
+    }
+  });
+
+  it('puts the sheet in memory back when its write fails', async () => {
+    for (const [tool, args] of calls) {
+      const { server, reader, writer } = setup();
+      const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
+      (writer as unknown as { writeEntityFile: () => Promise<string> }).writeEntityFile = async () => { throw new Error('disk full'); };
+      const result = await server.callTool(tool, args);
+      expect(errorText(result), tool).toContain('disk full');
+      expect(errorText(result), tool).not.toContain('stopped before anything was written');
+      expect(JSON.stringify(await reader.readEventSheet('Sheet1')), tool).toBe(before);
+    }
+  });
+});

@@ -342,6 +342,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       inputSchema: z.object(addEventToSheetShape).passthrough(),
     },
     async (args) => {
+      // Once the event is placed in memory, an error puts the sheet back (see the catch below)
+      let undoPlacement: (() => void) | undefined;
+      let writeStarted = false;
       try {
         // A destination argument misspelled would otherwise be dropped and the event written at the top level
         const known = new Set(Object.keys(addEventToSheetShape));
@@ -467,6 +470,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         }
 
+        undoPlacement = () => { sheet.events = beforeEvents; };
         insertIntoContainer(container, args.position, event as unknown as Record<string, unknown>);
         const eventPath = eventPathOf(sheet.events as Record<string, unknown>[], event as unknown as Record<string, unknown>);
 
@@ -480,6 +484,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const warnings = [...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events)];
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        writeStarted = true;
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
         resetProjectIndex(reader);
 
@@ -499,6 +504,10 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[add_event_to_sheet] failed:', error);
+        if (undoPlacement) {
+          undoPlacement();
+          if (!writeStarted) return toolError(stoppedBeforeWriteMessage(error));
+        }
         return toolError(`Error adding event: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -533,6 +542,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       }).strict(),
     },
     async (args) => {
+      // Once the event is placed in memory, an error puts the sheet back (see the catch below)
+      let undoPlacement: (() => void) | undefined;
+      let writeStarted = false;
       try {
         // Read the target event sheet
         let sheet: EventSheet;
@@ -588,6 +600,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         warnings.push(...counter.warnings);
         const blockSid = blockEvent.sid as number;
 
+        undoPlacement = () => { sheet.events = beforeEvents; };
         insertIntoContainer(container, args.position, blockEvent as unknown as Record<string, unknown>);
         const eventPath = eventPathOf(events, blockEvent as unknown as Record<string, unknown>);
 
@@ -604,6 +617,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        writeStarted = true;
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
         resetProjectIndex(reader);
 
@@ -619,6 +633,10 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         return toolResult({ ...result, eventPath });
       } catch (error) {
         console.error('[add_event_block] failed:', error);
+        if (undoPlacement) {
+          undoPlacement();
+          if (!writeStarted) return toolError(stoppedBeforeWriteMessage(error));
+        }
         return toolError(`Error adding event block: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -1811,6 +1829,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       }).strict(),
     },
     async (args) => {
+      // Once the event is placed in memory, an error puts the sheet back (see the catch below)
+      let undoPlacement: (() => void) | undefined;
+      let writeStarted = false;
       try {
         // Its scope check compares the sheet with the other sheets by registered name
         const unregistered = await unregisteredSheetError(reader, args.sheetName);
@@ -1866,6 +1887,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // Take the event out, then insert it (the sibling's index is read after the removal)
         const from = found.match.path;
         const sourceOwner = (findEnclosingEvents(sheet.events, moving as unknown as C3Event) ?? []).at(-1) as Record<string, unknown> | undefined;
+        undoPlacement = () => { sheet.events = beforeEvents; };
         found.match.parentArray.splice(found.match.index, 1);
         insertIntoContainer(container, args.position, moving);
         // An event left without sub-events is written without the key, as the editor and the builders do (templates.ts:535)
@@ -1937,6 +1959,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (!lost.complete) warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
         warnings.push(...unscannedWarnings(unscanned, 'Moved'));
 
+        writeStarted = true;
         const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
         resetProjectIndex(reader);
         return toolResult({
@@ -1950,6 +1973,10 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[move_event_block] failed:', error);
+        if (undoPlacement) {
+          undoPlacement();
+          if (!writeStarted) return toolError(stoppedBeforeWriteMessage(error));
+        }
         return toolError(`Error moving event: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -2359,6 +2386,16 @@ function copiedSidsWarning(
     `update_event_block, update_event_block_action, update_event_variable and delete_event_from_sheet refuse ${one ? 'this SID' : 'these SIDs'} ` +
     `in "${sheetName}" unless eventPath names one of the events.`
   );
+}
+
+/**
+ * The refusal for an error thrown after a tool placed an event in the sheet's
+ * events in memory and before it wrote the file (for example a scan that
+ * exceeds its depth limit): the tool has put the events back, so nothing was
+ * changed.
+ */
+function stoppedBeforeWriteMessage(error: unknown): string {
+  return nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 /** True when `target` (compared by identity) is among the sub-events of `event`, at any depth. */
