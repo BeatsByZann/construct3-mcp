@@ -26,7 +26,7 @@ This guide is for Construct 3 developers who want to use the server with Claude 
 
 ## What it does and what it doesn't
 
-construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 83 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
+construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 86 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
 
 - **Read and explain**: list objects, layouts, event sheets, families, timelines and addons, show an event sheet as a readable outline with the editor's event numbers, find where an object is used, map functions, find unused objects and assets.
 - **Check**: `validate_project` runs 29 checks, including rules the Construct 3 editor enforces when it opens a project. `find_runtime_traps` looks for logic that loads fine but hangs or does nothing.
@@ -133,7 +133,7 @@ To see the tool list without any AI tool, use the MCP Inspector in CLI mode:
 npx -y @modelcontextprotocol/inspector --cli node "C:/Tools/construct3-mcp/dist/index.js" "C:/Games/My Game" --method tools/list
 ```
 
-This prints a JSON list of 83 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools`; both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
+This prints a JSON list of 86 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools`; both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
 
 ### Alternative: run from GitHub without cloning
 
@@ -354,12 +354,12 @@ Confirm the trust prompt when the server starts. Logs: Command Palette > **MCP: 
 
 *From each vendor's documentation, not tested for this guide.* Always pass an explicit project path.
 
-- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 83, so disable other servers or tools you don't need if you hit the limit.
+- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 86, so disable other servers or tools you don't need if you hit the limit.
 - **Antigravity**: open the file through the Agent panel > **MCP Servers** > **Manage MCP Servers** > **View raw config**. Current documentation names `~/.gemini/config/mcp_config.json` (global) and `.agents/mcp_config.json` (per workspace).
 
 ### Check that it works
 
-Your client should show `construct3` with 83 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
+Your client should show `construct3` with 86 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
 
 > Give me an overview of this project.
 
@@ -568,7 +568,7 @@ If you forgot to close the project: close it in Construct 3 **without saving**, 
 Before the server rewrites or deletes a JSON file or `project.c3proj`, it copies it to `<file>.bak` next to it, for example `eventSheets/MainSheet.json.bak` or `project.c3proj.bak`.
 
 - There is only **one** such `.bak` per file. The next tool call that writes the same file overwrites it, so it holds the state before the **last tool call** that wrote the file, not the state before your session. A tool call that writes a file twice (after "Add keyboard input", `create_object` registers the `Keyboard` addon and then the object in `project.c3proj`) backs it up once, before its first write. One request to the AI can still run several tool calls.
-- Sprite frame images work differently. The editor names a frame's image after the frame's index, so `add_frame_to_animation` with an `index` and `delete_frame_from_animation` rename the images of the later frames one index up or down, and every frame keeps its image. If a step fails, the object file is restored from its backup only while it still holds that write's own content. A new frame's placeholder image, if the call wrote one, is removed, and the images are renamed back, only when the object file, read again, holds the frames from before the call; an image whose old name is taken keeps its new name, and the error names the file that holds that name. Otherwise the images stay where the call left them and the error says where they are. If another write made on top of this one kept the new frames, the call succeeds with a warning instead of an error. A file that appeared under the name of a new frame's image is not written over: the write is refused, and the error says so. The image of a deleted frame, and an image file that no frame uses but sits where a moved image or the new placeholder has to go, are renamed to `<file>.bak` in `images/`, for example `images/player-animation 1-001.png.bak`. If that name is taken, the next one is `<file>.1.bak`, then `<file>.2.bak`, so older copies are kept. The tool's `warnings` name these files (the first three, then how many more). `delete_object` keeps the image files of the object it deletes the same way, for example `images/player-animation 1-000.png.bak`.
+- Sprite frame images work differently. The editor names a frame's image after the frame's index, so `add_frame_to_animation` with an `index` and `delete_frame_from_animation` rename the images of the later frames one index up or down, and every frame keeps its image. `reorder_frames` and `reverse_frames` rename each frame's image to its new index, and `duplicate_frame` copies a frame's image for its copy. If a step fails, the object file is restored from its backup only while it still holds that write's own content. A new frame's placeholder image, if the call wrote one, is removed, and the images are renamed back, only when the object file, read again, holds the frames from before the call; an image whose old name is taken keeps its new name, and the error names the file that holds that name. Otherwise the images stay where the call left them and the error says where they are. If another write made on top of this one kept the new frames, the call succeeds with a warning instead of an error. A file that appeared under the name of a new frame's image is not written over: the write is refused, and the error says so. The image of a deleted frame, and an image file that no frame uses but sits where a moved image or the new placeholder has to go, are renamed to `<file>.bak` in `images/`, for example `images/player-animation 1-001.png.bak`. If that name is taken, the next one is `<file>.1.bak`, then `<file>.2.bak`, so older copies are kept. The tool's `warnings` name these files (the first three, then how many more). `delete_object` keeps the image files of the object it deletes the same way, for example `images/player-animation 1-000.png.bak`.
 - Nothing deletes them. They are not listed in `project.c3proj`, and `pack_project` leaves them out of the `.c3p`. `validate_project` lists them as `backup-file` info, including those in `images/`. Whether the Construct 3 editor shows or keeps them was not tested for this guide.
 - A write of a file that already exists keeps its previous content as a `.bak`, once per tool call: `register_addon` and `unregister_addon` (`project.c3proj.bak`), the timeline tools, the runtime-bridge tools (`inject_runtime_bridge`, `remove_runtime_bridge`, and `export_for_preview` / `pack_project` when they add the bridge, which also add or remove one line in your main script; each file is backed up right before its own write) and the image writes. `replace_sprite_image` keeps the image it replaces as `<file>.bak` (`<file>.1.bak`, ... when taken). `create_object` and `add_animation_to_sprite` keep an image file of the same name, for example one left behind by a deleted animation, the same way before they write their placeholder PNGs. A file that did not exist before the call has nothing to back up.
 
@@ -611,12 +611,12 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Runtime helpers that only return text: `get_bridge_commands`, `generate_bridge_eval_script`
 - Runtime read: `get_canvas_size` (the canvas geometry of a game you connected to with `connect_to_game`; it sends nothing to the game)
 
-**Tools that write files (47)**, review before approving:
+**Tools that write files (50)**, review before approving:
 
 - Objects and families: `create_object`, `update_object_properties`, `delete_object`, `create_family`, `update_family`, `delete_family`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `move_events_between_sheets`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `delete_layer`, `add_instance_to_layout`, `update_instance`, `delete_instance_from_layout`
-- Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `replace_sprite_image`
+- Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
@@ -749,4 +749,4 @@ Install it and add one object that uses the addon in the Construct 3 editor, sav
 - Third-party addons must be installed and added in the editor; `register_addon` only edits the addon list.
 - The documentation resources only return links to the Construct 3 manual.
 - The runtime tools need Node.js 22 or later and Chrome or Edge, start from an export or the editor's preview (the server cannot export), and the bridge must be removed before you ship.
-- Windsurf / Devin Desktop allows 100 tools in total; this server uses 83 of them.
+- Windsurf / Devin Desktop allows 100 tools in total; this server uses 86 of them.

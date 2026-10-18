@@ -1241,6 +1241,42 @@ Delete a frame by index. The last frame of an animation cannot be deleted.
 
 Like [`add_frame_to_animation`](#add_frame_to_animation), it keeps the frames and their image files together: the deleted frame's image file is renamed to `<file>.bak` (kept, not deleted), then the image files of the frames after it are renamed one index down, with the extension of their `fileType`. `warnings` gives how many image files were renamed, with the first one, names the kept file, and names the frames after it that have no image file. If the object write fails, the object file is restored from its backup if it was already replaced, and the image files get their old names again only when the object file, read again, holds the frames from before the call (an image file whose old name is taken keeps its new name, and the error says which file holds it); when another write replaced the object file during it, the file is kept as for `add_frame_to_animation` and the image files follow what it holds.
 
+### `reorder_frames`
+
+Put the frames of a Sprite animation in a new order (#ISSUE). Each frame keeps its properties and its `imageSpriteId`, and its image file moves with it: the editor names a frame's image after the frame's index (see [`add_frame_to_animation`](#add_frame_to_animation)), so the file of the frame that ends at index k is renamed to `<object>-<animation>-<k, 3 digits>.<ext>`, all lowercase, keeping the extension of its `fileType` (for another `fileType`, every file with the frame's name and a single extension moves).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name |
+| `order` | number[] | Yes | The frames' indexes before the call, in their new order: `order[k]` is the frame that ends at index k. Every index from 0 to the frame count minus 1, once |
+
+Refused before anything is written, with nothing changed: an `order` that does not list every frame once, or that leaves every frame at its index; another animation of the object (in any animation folder) with frames and a name that differs only in case (both use the same image files, so moving them would give that animation other images); renames that cannot be done without replacing a file.
+
+Two files that would take each other's names move through a temporary name, `<file>.reorder` (`<file>.1.reorder`, ... when taken). A file no frame uses under a name a moved image needs is renamed to `<file>.bak` first. `warnings` give how many image files were renamed, with the first ones, the files kept as `.bak`, and the frames that change index but have no image file. The image files are renamed first, then the object file is written; if the write fails, the object file is restored from its backup if it was already replaced and the image files get their old names again, except any whose old name is taken, which the error names with the file in its way. After a failed write the object file is read again, and the image files are renamed back only when it holds the frames from before the call; when it holds the new order (compared by `imageSpriteId` when every frame has its own, otherwise by each frame's whole content, and by each frame's image file extension) they stay, and after another write made on top of this one the call succeeds with a warning; when it holds neither or cannot be read they stay and the error says recovery is unresolved and where each file is. A frame that has no image file still reserves its new name: an unused file there is kept as `.bak`. A process stopped during the renames leaves the object file as it was and can leave image files under their new or `.reorder` names; restore `images/` from version control or a copy of the project.
+
+### `reverse_frames`
+
+Reverse the order of a Sprite animation's frames, with their image files, as [`reorder_frames`](#reorder_frames) does with the reversed order (#ISSUE). The middle frame of an odd count keeps its file. An animation with one frame is refused, with nothing changed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name |
+
+### `duplicate_frame`
+
+Insert a copy of a Sprite animation frame (#ISSUE): the frame's properties, a new `imageSpriteId` when the frame has one (as for a frame [`add_frame_to_animation`](#add_frame_to_animation) adds), and a copy of its image file.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name |
+| `frameIndex` | number | Yes | 0-based index of the frame to copy |
+| `index` | number | No | Insert the copy at this index, 0 to the frame count (default: right after the frame), as `add_frame_to_animation`'s `index` |
+
+As for `add_frame_to_animation`, the image files of the frames from `index` on move one index up first, and a file no frame uses under a needed name is kept as `<file>.bak`; then each of the frame's files is copied, from its new name when it moved, to `<object>-<animation>-<index>.<ext>` with its own extension, only to a name that holds no file. A frame without an image file is copied without one, with a warning; every frame placed, the copy included, reserves its image name, so an unused file there is kept as `.bak` instead of being taken. Returns `index` (where the copy was inserted) and `imageSpriteId` (the copy's). If a copy or the object write fails, the object file is restored from its backup if it was already replaced and read again; when it holds the frames from before the call, every copy this call wrote is removed (a copy that cannot be confirmed as this call's is left and named) and the image files get their old names again; otherwise the images are kept as for [`reorder_frames`](#reorder_frames) (the whole frame list is compared). A frame index or `index` out of range is refused before anything is written, and so is a frame of an animation that shares its image files with another one whose name differs only in case.
+
 ### `replace_sprite_image`
 
 Replace a frame's image with real PNG data. The PNG is written to the frame's file in `images/`; the object JSON is backed up and rewritten. The editor picks the file's extension from the frame's `fileType`, so a frame stored in another format (e.g. JPEG, in `<name>.jpg`) gets `fileType: "image/png"` and the new `<name>.png`; the old file is left in `images/` and a warning names it. The image the frame held is backed up once per call as `<file>.bak` under the first free name (`<file>.1.bak`, ... when that name is taken), before the new PNG is written; it is never replaced.

@@ -61,7 +61,7 @@ construct3-mcp/
 │   │   ├── hierarchy.ts            # Hierarchy (scene graph) links between layout instances
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
-│   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert/delete
+│   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert, delete, reorder and duplicate
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
@@ -111,7 +111,7 @@ construct3-mcp/
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
-│   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── animation-tools.ts      # Sprite animation and frame tools (11)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)

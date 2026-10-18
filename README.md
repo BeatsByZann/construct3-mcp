@@ -199,6 +199,9 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `add_frame_to_animation` | Add a blank frame (placeholder PNG) at an index; later frame images move up with their frames |
 | `update_frame` | Update a frame's duration, size or origin |
 | `delete_frame_from_animation` | Delete a frame by index (never the last one); its image is kept as `.bak`, later frame images move down |
+| `reorder_frames` | Put an animation's frames in a new order; their image files move with them |
+| `reverse_frames` | Reverse an animation's frames with their image files |
+| `duplicate_frame` | Insert a copy of a frame with a copy of its image; later frame images move up |
 | `replace_sprite_image` | Replace a frame's image with base64 PNG data |
 
 **Timelines**
@@ -299,7 +302,7 @@ Additional safeguards:
 - **Global plugin protection** — Singleglobal-inst objects (Audio, AJAX, etc.) cannot be placed on layouts.
 - **Plugin-specific defaults** — Instances are created with correct default properties for each plugin type (Sprite, Text, TiledBg, NinePatch).
 - **Image generation** — Sprite and TiledBg creation automatically generates valid placeholder PNGs, named like the editor names them: `images/<object>-<animation>-000.png`, all lowercase. Batch writes roll back on failure.
-- **Frame images move with their frames** — The editor names a frame's image file after the frame's index, so `add_frame_to_animation` with an `index` and `delete_frame_from_animation` rename the image files of the later frames one index up or down (JPEG and other formats keep their extension). The deleted frame's image, and any unused file whose name a moved image or new placeholder needs, are kept as `<file>.bak` instead of being deleted or replaced. The placeholder is written create-only, under that file's lock, to a name that holds no file: a file another writer put there first refuses the write, and is not replaced. If a write fails, the object file is restored from its backup only while it still holds the failed write's own content. The placeholder is removed, and the image files are renamed back, only when the object file, read again, holds the frames from before the call; an image whose old name is taken keeps its new name, and the error names the file that holds that name. When the object file holds this call's frames, the images stay with them; when it holds neither, or cannot be read, they stay as this call left them, and the error says where they are. When another write made on top of this one kept this call's frames, the call succeeds with a warning instead of an error. The animation tools run one at a time, so parallel calls on one Sprite cannot move each other's images or write its object without each other's frames. `validate_project` reports frames without an image file (`frame-image`) and lists the `.bak` files in `images/` (`backup-file`).
+- **Frame images move with their frames** — The editor names a frame's image file after the frame's index, so `add_frame_to_animation` with an `index` and `delete_frame_from_animation` rename the image files of the later frames one index up or down (JPEG and other formats keep their extension). `reorder_frames` and `reverse_frames` rename each frame's image to its new index, and `duplicate_frame` copies the frame's image to the new frame's index, only to a free name. The deleted frame's image, and any unused file whose name a moved image or new placeholder needs, are kept as `<file>.bak` instead of being deleted or replaced. The placeholder is written create-only, under that file's lock, to a name that holds no file: a file another writer put there first refuses the write, and is not replaced. If a write fails, the object file is restored from its backup only while it still holds the failed write's own content. The placeholder is removed, and the image files are renamed back, only when the object file, read again, holds the frames from before the call; an image whose old name is taken keeps its new name, and the error names the file that holds that name. When the object file holds this call's frames, the images stay with them; when it holds neither, or cannot be read, they stay as this call left them, and the error says where they are. When another write made on top of this one kept this call's frames, the call succeeds with a warning instead of an error. The animation tools run one at a time, so parallel calls on one Sprite cannot move each other's images or write its object without each other's frames. `validate_project` reports frames without an image file (`frame-image`) and lists the `.bak` files in `images/` (`backup-file`).
 - **Layout instance sync** — Like the editor, every layout instance carries an entry for each behavior of its object type and of the families it belongs to, with the built-in behaviors' default property values, and a value for each of their instance variables. `add_instance_to_layout` writes these entries and values; adding or removing a behavior or instance variable (`update_object_properties`, `update_family`) or changing family membership (`update_family`, `delete_family`) updates the existing instances, and a family's effect entries go with the family. `add_instance_to_layout` and `update_instance` refuse values for instance variables the object and its families do not have.
 - **Hierarchy links follow deletions** — Hierarchy (scene graph) links name UIDs, and a new instance can get the UID of a deleted one. `delete_instance_from_layout` and `delete_layer` therefore remove the links to the instances they delete (children stay in the layout without a parent), new UIDs are above every UID a link names, and `validate_project` reports links that point at no instance or only one way (`hierarchy-link`).
 - **Names compared like the editor** — Create and rename tools refuse a name that differs from an existing one only in case where Construct 3 compares names ignoring case: event sheets and layouts (project-wide), object types and families, the layers of one layout (sub-layers included; the editor cannot load a layout with two such layers), the animations of one sprite (in any animation folder), and sibling project-bar folders. Timeline names are compared exactly, as the editor does, but a case variant of a timeline in the same folder is refused because both would share one file on Windows and macOS. Tools that check an entity together with the rest of the project take its name only as registered, letter case included: `update_object_properties`, `update_family`, and the event sheet tools whose checks compare a sheet with the other sheets (`add_event_to_sheet`, `delete_event_sheet`, `delete_event_from_sheet`, `update_event_variable`, `move_events_between_sheets`).
@@ -440,7 +443,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 86.
 
 ### Standalone Testing
 
@@ -504,7 +507,7 @@ construct3-mcp/
 │   │   ├── hierarchy.ts            # Hierarchy (scene graph) links between layout instances
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
-│   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert/delete
+│   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert, delete, reorder and duplicate
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
@@ -554,7 +557,7 @@ construct3-mcp/
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
-│   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── animation-tools.ts      # Sprite animation and frame tools (11)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
