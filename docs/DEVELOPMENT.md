@@ -106,9 +106,9 @@ construct3-mcp/
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
-│   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (8)
+│   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
