@@ -81,10 +81,14 @@ export interface RevertReport {
 /**
  * What the port reports for a file it put back: not done, or done with the
  * state it left the file in (null: removed), read under the file's lock.
+ * The state is undefined (not known) when the restore was made but the file
+ * could not be read back; the entry then expects no known state of the file,
+ * so no later step restores or renames over it and changedSinceCall lists it.
+ * A file that holds other bytes after the restore is not done.
  */
 export type PutBackOutcome =
   | { readonly done: false }
-  | { readonly done: true; readonly state: FileState };
+  | { readonly done: true; readonly state: FileState | undefined };
 
 /**
  * What the port reports for a file it renamed back: not done, or done with
@@ -315,8 +319,9 @@ export function reasonOf(error: unknown): string {
  *
  * What a step reports when it does not complete: "changed on disk" (or
  * "while the revert ran") when the file or backup is not in the expected
- * state, which includes a read-back the writer could not make (its
- * stateIfHolding treats an unreadable file as not holding the bytes); the
+ * state, which includes a file that holds other bytes right after the
+ * restore (a read-back that cannot be made is not that: the step is done,
+ * with the file's state unknown, see PutBackOutcome); the
  * error code (reasonOf) when a step threw, such as a stat or write that
  * failed with EACCES. A rename is only tried when the call is known to have
  * left a file at its target (a null or undefined state is never "the call

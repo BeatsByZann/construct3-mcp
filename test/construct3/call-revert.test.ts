@@ -25,12 +25,13 @@ vi.mock('../../src/construct3/disk-state.js', async importOriginal => {
 });
 const realStat = (path: string): Promise<FileState> => vi.importActual<typeof import('../../src/construct3/disk-state.js')>('../../src/construct3/disk-state.js').then(m => m.statFileState(path));
 
-/** The next read of the state of `path` fails with EPERM, once, while the file is `present` or not. */
-function failStatOnce(path: string, present: boolean): void {
+/** A read of the state of `path` fails with EPERM, once, while the file is `present` or not; the first `skip` such reads succeed. */
+function failStatOnce(path: string, present: boolean, skip = 0): void {
   const key = fileKey(path);
   let armed = true;
+  let toSkip = skip;
   vi.mocked(statFileState).mockImplementation(async p => {
-    if (armed && fileKey(p) === key && existsSync(p) === present) {
+    if (armed && fileKey(p) === key && existsSync(p) === present && toSkip-- <= 0) {
       armed = false;
       throw Object.assign(new Error(`EPERM: operation not permitted, stat '${p}'`), { code: 'EPERM' });
     }
@@ -46,7 +47,7 @@ let writer: Construct3ProjectWriter;
 
 beforeEach(async () => {
   vi.mocked(statFileState).mockImplementation(realStat);
-  dir =await mkdtemp(join(tmpdir(), 'c3-call-revert-'));
+  dir = await mkdtemp(join(tmpdir(), 'c3-call-revert-'));
   await cp(FIXTURE_DIR, dir, { recursive: true });
   reader = new Construct3ProjectReader(join(dir, 'project.c3proj'));
   await reader.loadProject();
@@ -303,6 +304,79 @@ describe('revertEntry: a step that worked, whose file cannot be read afterwards'
     expect(await read('layouts/Layout 1.json')).toBe(layoutBefore);
   });
 
+  it('counts a file restored from its backup as done when it cannot be read back, and the next attempt goes on from there', async () => {
+    const layoutBefore = await read('layouts/Layout 1.json');
+    const layoutPath = join(dir, 'layouts', 'Layout 1.json');
+    const timeline = join(dir, 'timelines', 'T.json');
+    const entry = await recorded('two files', async () => {
+      await writer.replaceFile(timeline, '{}');
+      await addLayer('HUD');
+    });
+    // The layout is restored first; of the reads of its state, the second (the one after the write) fails once. The timeline fails once.
+    failStatOnce(layoutPath, true, 1);
+    const original = writer.putBackChange.bind(writer);
+    let failed = false;
+    vi.spyOn(writer, 'putBackChange').mockImplementation(async (change, asLeft) => {
+      if (!failed && fileKey(change.path) === fileKey(timeline)) {
+        failed = true;
+        return { done: false };
+      }
+      return original(change, asLeft);
+    });
+
+    const first = await revert(entry);
+    expect(first.restored.map(r => r.file)).toEqual(['layouts/Layout 1.json']);
+    expect(first.notRestored.map(r => r.file)).toEqual(['timelines/T.json']);
+    expect(entry.undone).toBe(1);
+    expect(await read('layouts/Layout 1.json')).toBe(layoutBefore);
+    // No state is known for the layout, so nothing may be put back or renamed over it later
+    expect(entry.expected.get(fileKey(layoutPath))).toBeUndefined();
+    const layoutChange = entry.changes[1];
+    if (layoutChange.kind === 'move') throw new Error('expected a file change');
+    expect(await writer.putBackChange(layoutChange.file, () => entry.expected.get(fileKey(layoutPath)))).toEqual({ done: false });
+    expect(await read('layouts/Layout 1.json')).toBe(layoutBefore);
+
+    const second = await revert(entry);
+    expect(second.notRestored).toEqual([]);
+    expect(second.restored.map(r => r.file)).toEqual(['timelines/T.json']);
+    expect(entry.reverted).toBe(true);
+    expect(existsSync(timeline)).toBe(false);
+  });
+
+  it('does not count a file as done when it holds other bytes right after the restore', async () => {
+    const layoutPath = join(dir, 'layouts', 'Layout 1.json');
+    const entry = await recorded('add_layer', () => addLayer('HUD'));
+    const atomicWrite = (writer as unknown as { atomicWrite: (path: string, content: Buffer) => Promise<void> }).atomicWrite.bind(writer);
+    vi.spyOn(writer as unknown as { atomicWrite: typeof atomicWrite }, 'atomicWrite').mockImplementation(async (path, content) => {
+      await atomicWrite(path, content);
+      await writeFile(path, 'another write, right after');
+    });
+
+    const report = await revert(entry);
+
+    expect(report.restored).toEqual([]);
+    expect(report.notRestored).toEqual([{ file: 'layouts/Layout 1.json', reason: 'it, or its backup, changed on disk while the revert ran' }]);
+    expect(entry.undone).toBe(0);
+    expect(await readFile(layoutPath, 'utf-8')).toBe('another write, right after');
+  });
+
+  it('does not count a file as done when it is gone right after the restore', async () => {
+    const layoutPath = join(dir, 'layouts', 'Layout 1.json');
+    const entry = await recorded('add_layer', () => addLayer('HUD'));
+    const atomicWrite = (writer as unknown as { atomicWrite: (path: string, content: Buffer) => Promise<void> }).atomicWrite.bind(writer);
+    vi.spyOn(writer as unknown as { atomicWrite: typeof atomicWrite }, 'atomicWrite').mockImplementation(async (path, content) => {
+      await atomicWrite(path, content);
+      await rm(path);
+    });
+
+    const report = await revert(entry);
+
+    expect(report.restored).toEqual([]);
+    expect(report.notRestored.map(r => r.file)).toEqual(['layouts/Layout 1.json']);
+    expect(entry.undone).toBe(0);
+    expect(existsSync(layoutPath)).toBe(false);
+  });
+
   it('counts a file renamed back as done, and the next attempt goes on from there', async () => {
     const images = join(dir, 'images');
     await mkdir(images, { recursive: true });
@@ -329,6 +403,29 @@ describe('revertEntry: a step that worked, whose file cannot be read afterwards'
     expect(entry.reverted).toBe(true);
     expect(await readFile(join(images, 'a.png'), 'utf-8')).toBe('a');
     expect(existsSync(join(images, 'b.png')) || existsSync(join(images, 'c.png'))).toBe(false);
+  });
+});
+
+describe('a write read back with a read that fails keeps its earlier behavior', () => {
+  it('replaceFile refuses a file it cannot read back, as a file another write landed on', async () => {
+    const timeline = join(dir, 'timelines', 'T.json');
+    failStatOnce(timeline, true);
+
+    await expect(runInToolCall(() => writer.replaceFile(timeline, '{}'))).rejects.toThrow('was changed by another write right after this one');
+  });
+
+  it('undoing a call leaves a file it restored but cannot read back, as left', async () => {
+    const layoutPath = join(dir, 'layouts', 'Layout 1.json');
+    const layoutBefore = await read('layouts/Layout 1.json');
+    const undo = await runInToolCall(async () => {
+      await addLayer('HUD');
+      failStatOnce(layoutPath, true, 1);
+      return writer.undoToolCall();
+    });
+
+    expect(undo.restored).toEqual([]);
+    expect(undo.left.map(f => f.label)).toEqual(['layouts/Layout 1.json']);
+    expect(await read('layouts/Layout 1.json')).toBe(layoutBefore);
   });
 });
 

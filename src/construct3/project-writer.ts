@@ -188,6 +188,12 @@ export interface EntityOnDisk {
   readonly file: 'present' | 'absent' | 'unknown';
 }
 
+/** What reading a file back after a write found (Construct3ProjectWriter.readBack). */
+type ReadBack =
+  | { readonly kind: 'holds'; readonly state: FileState }
+  | { readonly kind: 'other' }
+  | { readonly kind: 'unreadable' };
+
 /**
  * The files undoing a tool call left as they are (UndoReport.left), for a
  * message: "left as they are (...): layouts/Level 1.json (its state from
@@ -627,7 +633,9 @@ export class Construct3ProjectWriter {
     for (const [key, change] of changes) {
       let putBack = false;
       try {
-        putBack = (await this.putBackLocked(change, () => scope.reads.get(key))) !== false;
+        // A restore that could not be read back (state undefined) is left, as before the revert port existed
+        const result = await this.putBackLocked(change, () => scope.reads.get(key));
+        putBack = result !== false && result.state !== undefined;
       } catch {
         putBack = false;
       }
@@ -651,18 +659,21 @@ export class Construct3ProjectWriter {
   }
 
   /** putBack under the file's one lock (underLockOf); `asLeft` is read inside the lock. */
-  private putBackLocked(change: CallChange, asLeft: () => FileState | undefined): Promise<false | { state: FileState }> {
+  private putBackLocked(change: CallChange, asLeft: () => FileState | undefined): Promise<false | { state: FileState | undefined }> {
     return this.underLockOf(change.path, () => this.putBack(change, asLeft()));
   }
 
   /**
    * Put one file the tool call changed back as it was before the call.
    * False when it is no longer in the state the call left it in (`asLeft`),
-   * or its backup no longer holds the state from before the call. Otherwise
-   * the state the file was left in, read here under the file's lock (null:
-   * removed), so no caller has to read it again outside the lock.
+   * or its backup no longer holds the state from before the call, or the
+   * file holds other bytes right after the restore. Otherwise the state the
+   * file was left in, read here under the file's lock (null: removed), so no
+   * caller has to read it again outside the lock; undefined when the
+   * restored file could not be read back (the restore was made, but no
+   * state is known: nothing may be restored or renamed over it later).
    */
-  private async putBack(change: CallChange, asLeft: FileState | undefined): Promise<false | { state: FileState }> {
+  private async putBack(change: CallChange, asLeft: FileState | undefined): Promise<false | { state: FileState | undefined }> {
     const key = fileKey(change.path);
     if (asLeft === undefined || !sameFileState(await statFileState(change.path), asLeft)) return false;
     if (!change.backup.existed) {
@@ -678,11 +689,16 @@ export class Construct3ProjectWriter {
     if (!sameFileState(await statFileState(change.backup.path), change.backup.state)) return false;
     const content = await readFile(change.backup.path);
     await this.atomicWrite(change.path, content);
-    const state = await this.stateIfHolding(change.path, content);
-    if (state === undefined) return false;
-    if (change.isProjectFile) noteFileWritten(key, state);
-    // Only JSON files hold IDs for the ID generator (not images or scripts)
-    else this.afterOwnWrite(change.path, state, change.path.toLowerCase().endsWith('.json') ? content.toString('utf-8') : undefined);
+    const held = await this.readBack(change.path, content);
+    if (held.kind === 'other') return false;
+    const state = held.kind === 'holds' ? held.state : undefined;
+    if (change.isProjectFile) {
+      if (state !== undefined) noteFileWritten(key, state);
+      else currentToolCall()?.reads.delete(key);
+    } else {
+      // Only JSON files hold IDs for the ID generator (not images or scripts)
+      this.afterOwnWrite(change.path, state, change.path.toLowerCase().endsWith('.json') ? content.toString('utf-8') : undefined);
+    }
     return { state };
   }
 
@@ -859,10 +875,12 @@ export class Construct3ProjectWriter {
    * After a write of the server's own: record the file's new state, drop the
    * reader caches and the project index, and add the IDs in the written text
    * to the ID generator (it keeps its scan instead of scanning the whole
-   * project again, #38).
+   * project again, #38). An unknown `state` (undefined: the file could not
+   * be read back) records nothing, so the reader sees the file as changed
+   * from outside at its next check and loads it again.
    */
-  private afterOwnWrite(filePath: string, state: FileState, text?: string): void {
-    this.reader.noteOwnWrite(filePath, state);
+  private afterOwnWrite(filePath: string, state: FileState | undefined, text?: string): void {
+    if (state !== undefined) this.reader.noteOwnWrite(filePath, state);
     this.reader.invalidateCaches();
     resetProjectIndex(this.reader);
     if (text !== undefined) this.idGen.noteWrittenText(text);
@@ -969,12 +987,25 @@ export class Construct3ProjectWriter {
    * file on disk).
    */
   private async stateIfHolding(filePath: string, content: string | Buffer): Promise<FileState | undefined> {
+    const held = await this.readBack(filePath, content);
+    return held.kind === 'holds' ? held.state : undefined;
+  }
+
+  /**
+   * stateIfHolding, telling apart a file that holds other bytes (another
+   * write landed, or the file is gone) from one that could not be read (a
+   * stat or read that failed with anything but "no such file"). The stat is
+   * taken before the read, as in stateIfHolding.
+   */
+  private async readBack(filePath: string, content: string | Buffer): Promise<ReadBack> {
     try {
       const state = await statFileState(filePath);
       const bytes = await readFile(filePath);
-      return bytes.equals(typeof content === 'string' ? Buffer.from(content, 'utf-8') : content) ? state : undefined;
-    } catch {
-      return undefined;
+      return bytes.equals(typeof content === 'string' ? Buffer.from(content, 'utf-8') : content)
+        ? { kind: 'holds', state }
+        : { kind: 'other' };
+    } catch (e: unknown) {
+      return isNotFound(e) ? { kind: 'other' } : { kind: 'unreadable' };
     }
   }
 
