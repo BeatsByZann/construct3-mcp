@@ -160,6 +160,16 @@ describe('list_changes', () => {
     await expect(server.callTool('list_changes', { limit: 51 })).rejects.toThrow();
   });
 
+  it('says "Error listing changes:" with a full stop when the listing fails', async () => {
+    await ok('add_layer', { layoutName: 'Layout 1', layerName: 'HUD' });
+    (journalEntries(reader)[0] as { changes: unknown }).changes = undefined;
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const failed = await server.callTool('list_changes', {});
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toBe('Error listing changes: an unexpected error (details are in the server log).');
+    expect(logged).toHaveBeenCalledWith('[list_changes] failed:', expect.any(TypeError));
+  });
+
   it('writes nothing, so it is not listed itself and ends with no changed-files line', async () => {
     await ok('add_layer', { layoutName: 'Layout 1', layerName: 'HUD' });
     const listed = await ok('list_changes');
@@ -288,9 +298,11 @@ describe('revert_last_change', () => {
   it('says "Could not revert:" with the error code when the revert itself fails', async () => {
     await ok('add_layer', { layoutName: 'Layout 1', layerName: 'HUD' });
     vi.spyOn(writer, 'afterRevert').mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const failed = await server.callTool('revert_last_change', {});
     expect(failed.isError).toBe(true);
     expect(failed.content[0].text).toBe('Could not revert: EACCES');
+    expect(logged).toHaveBeenCalledWith('[revert_last_change] failed:', expect.objectContaining({ code: 'EACCES' }));
   });
 
   it('finishes a revert that stopped part way on the next call', async () => {
@@ -352,6 +364,7 @@ describe('revert_last_change and other calls at once', () => {
 
   it('the bridge waits while a revert restores project.c3proj, then refuses to write over it', async () => {
     const projectBefore = await readFile(join(dir, 'project.c3proj'), 'utf-8');
+    const before = await snapshot();
     await ok('update_project_metadata', { author: 'To revert' });
     const { reached, release } = holdNextPutBackOf(join(dir, 'project.c3proj'));
     // The bridge has read project.c3proj (as it is before the revert) once it asks the writer to replace it; it then waits for the revert's lock
@@ -373,6 +386,8 @@ describe('revert_last_change and other calls at once', () => {
     expect(injected.isError).toBe(true);
     expect(injected.content[0].text).toContain('project.c3proj was changed on disk after this server read it');
     expect(await readFile(join(dir, 'project.c3proj'), 'utf-8')).toBe(projectBefore);
+    // No bridge script or other file is left behind by the refused call
+    expect(await snapshot()).toEqual(before);
     expect(journalEntries(reader).map(e => e.tool)).toEqual(['update_project_metadata']);
   });
 
