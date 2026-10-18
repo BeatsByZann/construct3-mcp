@@ -181,7 +181,7 @@ describe('customActionRenameCaptures', () => {
     return { sheet: 'Other', path: `events[${sid}] > action:0`, sid, call: c, ace: { ...c } };
   };
 
-  it('resolves each rewritten call against the definitions after the rename', () => {
+  it('captures a call that ran another definition and would run the renamed one', () => {
     // Alpha.Hurt and Fam.Wave: renaming Alpha.Hurt to Wave captures a plain Wave call on Alpha, which ran Fam.Wave
     const hurt = at('Alpha', 'Hurt', 'events[0]');
     const wave = at('Fam', 'Wave', 'events[1]');
@@ -202,5 +202,18 @@ describe('customActionRenameCaptures', () => {
     const captures = customActionRenameCaptures(sites, [famHurt, alphaWave], famHurt, 'Wave', families);
     expect(captures.rewrite).toEqual([sites[1]]);
     expect(captures.captured).toEqual([{ site: sites[0], before: famHurt, after: alphaWave }]);
+  });
+
+  it('for an object in two families, follows the family a call resolves to first', () => {
+    const twoFamilies = (objectClass: string) => (objectClass === 'Alpha' ? ['Fam', 'Fam2'] : []);
+    const first = at('Fam', 'Hurt', 'events[0]');
+    const second = at('Fam2', 'Hurt', 'events[1]');
+    const sites = [site('Hurt', 1)];
+    // The plain call runs Fam's action: renaming it rewrites the call, which keeps running it under the new name
+    const renamedFirst = customActionRenameCaptures(sites, [first, second], first, 'Strike', twoFamilies);
+    expect([renamedFirst.rewrite, renamedFirst.captured]).toEqual([[sites[0]], []]);
+    // Renaming Fam2's action, which the call does not run, touches no call
+    const renamedSecond = customActionRenameCaptures(sites, [first, second], second, 'Strike', twoFamilies);
+    expect([renamedSecond.rewrite, renamedSecond.captured]).toEqual([[], []]);
   });
 });

@@ -592,15 +592,21 @@ function customAction(owner: string, name: string, sid: number, extra: Ev = {}):
 const customCall = (name: string, sid: number, extra: Ev = {}): Ev => ({ customAction: name, objectClass: 'Alpha', sid, ...extra });
 const DUPLICATE_RULE = 'A call names a custom action by its name, so it could not tell two apart (Construct 3 r506-2 (Free edition) opened such a project, ran the first definition, and renamed the second one when it saved: DoK became DoK2). Choose another name.';
 
-/** Object types Alpha and Beta, family Fam with member Alpha; Sheet1 and Other hold the events given, after the sheet First when given. */
-function setupCustom(sheet1: Ev[], other: Ev[], unparsable: Record<string, string> = {}, first?: Ev[]) {
+/**
+ * Object types Alpha and Beta, family Fam with member Alpha (and further families when given); Sheet1 and Other hold
+ * the events given, after the sheet First when given.
+ */
+function setupCustom(sheet1: Ev[], other: Ev[], unparsable: Record<string, string> = {}, first?: Ev[], moreFamilies: string[] = []) {
   const server = new MockServer();
   const reader = new UnparsableSheetsReader({
     objects: new Map([
       ['Alpha', { name: 'Alpha', 'plugin-id': 'Sprite', sid: 1 }],
       ['Beta', { name: 'Beta', 'plugin-id': 'Sprite', sid: 2 }],
     ]),
-    families: new Map([['Fam', { name: 'Fam', members: ['Alpha'], sid: 3 }]]),
+    families: new Map([
+      ['Fam', { name: 'Fam', members: ['Alpha'], sid: 3 }],
+      ...moreFamilies.map((name, i) => [name, { name, members: ['Alpha'], sid: 5 + i }] as const),
+    ]),
     eventSheets: new Map([
       ...(first ? [['First', { name: 'First', sid: 4, events: first }] as const] : []),
       ['Sheet1', { name: 'Sheet1', sid: 1, events: sheet1 }],
@@ -616,7 +622,7 @@ function setupCustom(sheet1: Ev[], other: Ev[], unparsable: Record<string, strin
  * Definitions Alpha.Hurt(amount) 700 and Fam.Wave() 710; Other block 800 calls Hurt on Alpha (801), Wave on Alpha (802,
  * running Fam.Wave) and Wave on Alpha through customActionObjectClass Fam (803).
  */
-function memberFixture(hurtBody: Ev[] = []) {
+function memberFixture(hurtBody: Ev[] = [], unparsable: Record<string, string> = {}) {
   return setupCustom(
     [
       customAction('Alpha', 'Hurt', 700, {
@@ -626,6 +632,7 @@ function memberFixture(hurtBody: Ev[] = []) {
       customAction('Fam', 'Wave', 710),
     ],
     [block(800, { actions: [customCall('Hurt', 801, { parameters: ['5'] }), customCall('Wave', 802), customCall('Wave', 803, { customActionObjectClass: 'Fam' })] })],
+    unparsable,
   );
 }
 
@@ -680,7 +687,7 @@ describe('update_function for custom action blocks', () => {
   it('refuses an empty name', async () => {
     const { server } = memberFixture();
     expect(errorText(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: '  ' })))
-      .toBe('functionName is empty. Nothing was changed.');
+      .toBe('functionName is empty or only spaces. Nothing was changed.');
   });
 
   it('refuses a rename that would send other calls to another definition', async () => {
@@ -783,6 +790,88 @@ describe('update_function for custom action blocks', () => {
     expect(actionIn(writtenSheet(writer, 'First')!, 800).customAction).toBe('Strike');
   });
 
+  it('refuses a rename while an event sheet it could not parse may hold the new name, without force', async () => {
+    // The sheet names neither Hurt nor Damage, only the new name: a call it holds could run the renamed action
+    const custom = memberFixture([], { Bad: '{"events":[{"customAction":"Strike","objectClass":"Alpha"' });
+    const customBefore = await allSheets(custom.reader);
+    const blocked = parse(await custom.server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true }));
+    expect(blocked).toMatchObject({ success: false, action: 'update_blocked' });
+    expect(JSON.stringify(blocked.unscannedFiles)).toContain('Bad');
+    expect(String(blocked.message)).toMatch(/Use force=true to update anyway\. Nothing was changed\.$/);
+    expect(custom.writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(await allSheets(custom.reader)).toBe(customBefore);
+    const forced = parse(await custom.server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true, force: true }));
+    expect(forced.success).toBe(true);
+    expect(String(forced.warnings)).toContain('Updated with force=true:');
+    expect(String(forced.warnings)).toContain('Bad');
+    // A function renamed to a name an unparsed sheet holds is refused the same way
+    const fn = setup({ expression: false, unparsable: { Bad: '{"events":[{"callFunction":"Hurt"' } });
+    const fnBefore = await allSheets(fn.reader);
+    const fnBlocked = parse(await fn.server.callTool('update_function', { sheetName: 'Sheet1', sid: 100, functionName: 'Hurt', updateCallers: true }));
+    expect(fnBlocked).toMatchObject({ success: false, action: 'update_blocked' });
+    expect(fn.writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(await allSheets(fn.reader)).toBe(fnBefore);
+  });
+
+  it('names a call that runs no custom action now and would run the renamed one', async () => {
+    const { server, reader, writer } = memberFixture();
+    ((await storedEvents(reader, 'Other'))[0].actions as Ev[]).push(customCall('Strike', 805));
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true }));
+    expect(data).toMatchObject({ success: false, action: 'update_blocked' });
+    expect(String(data.message)).toContain('Other events[0] > action:3 (SID 800) runs no custom action now and would run "Alpha.Strike".');
+    expect(data.references).toEqual([{ sheet: 'Other', path: 'events[0] > action:3', sid: 800, kind: 'customAction', runs: null, wouldRun: 'Alpha.Strike' }]);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('warns when a rewritten call\'s object belongs to two families that define the new name', async () => {
+    // Fam.Hurt and Fam2.Wave, Alpha in both: renaming Fam.Hurt to Wave leaves the plain Hurt call on Fam's action, now shadowing Fam2's
+    const { server, writer } = setupCustom(
+      [customAction('Fam', 'Hurt', 700), customAction('Fam2', 'Wave', 710)],
+      [block(800, { actions: [customCall('Hurt', 801)] })],
+      {}, undefined, ['Fam2'],
+    );
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Wave', updateCallers: true }));
+    expect(data).toMatchObject({ success: true, rewrittenCalls: 1 });
+    expect(actionIn(writtenSheet(writer, 'Other')!, 800).customAction).toBe('Wave');
+    expect(data.warnings).toContain('Other events[0] > action:0 (SID 800): "Alpha" belongs to the families "Fam" and "Fam2", which both define a custom action of that name. '
+      + 'The call uses the one on "Fam"; which one Construct 3 runs was not checked in the editor.');
+  });
+
+  it('gives no two-family warning for a call that names its family, runs its object\'s own action or has one family defining the name, nor without a rename', async () => {
+    // A call that names Fam, with Fam2 also defining the new name
+    const named = setupCustom(
+      [customAction('Fam', 'Hurt', 700), customAction('Fam2', 'Wave', 710)],
+      [block(800, { actions: [customCall('Hurt', 801, { customActionObjectClass: 'Fam' })] })],
+      {}, undefined, ['Fam2'],
+    );
+    const namedData = parse(await named.server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Wave', updateCallers: true }));
+    expect(namedData).toMatchObject({ success: true, rewrittenCalls: 1 });
+    expect(namedData.warnings).toBeUndefined();
+    // Alpha's own action renamed to a name both its families define: the call runs Alpha's
+    const own = setupCustom(
+      [customAction('Alpha', 'Hurt', 700), customAction('Fam', 'Strike', 710), customAction('Fam2', 'Strike', 720)],
+      [block(800, { actions: [customCall('Hurt', 801)] })],
+      {}, undefined, ['Fam2'],
+    );
+    const ownData = parse(await own.server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true }));
+    expect(ownData).toMatchObject({ success: true, rewrittenCalls: 1 });
+    expect(ownData.warnings).toBeUndefined();
+    // A family action renamed while no other family of the object defines the new name
+    const single = setupCustom([customAction('Fam', 'Hurt', 700)], [block(800, { actions: [customCall('Hurt', 801)] })]);
+    const singleData = parse(await single.server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true }));
+    expect(singleData).toMatchObject({ success: true, rewrittenCalls: 1 });
+    expect(singleData.warnings).toBeUndefined();
+    // No rename: the calls keep their names, and the warning is the call-writing tools' to give
+    const kept = setupCustom(
+      [customAction('Fam', 'Hurt', 700), customAction('Fam2', 'Hurt', 710)],
+      [block(800, { actions: [customCall('Hurt', 801)] })],
+      {}, undefined, ['Fam2'],
+    );
+    const keptData = parse(await kept.server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, description: 'Hurts' }));
+    expect(keptData).toMatchObject({ success: true, rewrittenCalls: 0 });
+    expect(keptData.warnings).toBeUndefined();
+  });
+
   it('dryRun reports the custom action plan and writes nothing', async () => {
     const { server, reader, writer } = memberFixture();
     const before = await allSheets(reader);
@@ -795,28 +884,44 @@ describe('update_function for custom action blocks', () => {
   });
 
   it('every refusal ends with Nothing was changed. and leaves every sheet as it was', async () => {
-    type Case = { args: Record<string, unknown>; fixture?: () => ReturnType<typeof setupCustom>; prepare?: (reader: MockReader) => Promise<void> };
+    // Each case with a fragment of its own refusal, so a case refused for another reason fails
+    type Case = { args: Record<string, unknown>; refusal: string; fixture?: () => ReturnType<typeof setupCustom>; prepare?: (reader: MockReader) => Promise<void> };
+    const captures = 'would change which custom action 1 call(s) run';
     const cases: Case[] = [
-      { args: { returnType: 'number' } },
-      { args: { returnType: 'none', renameParameters: [{ from: 'amount', to: 'dmg' }] } },
-      { args: { functionName: ' ' } },
-      { args: { functionName: 'jump', updateCallers: true }, prepare: async reader => { (await storedEvents(reader, 'Sheet1')).push(customAction('Alpha', 'Jump', 720)); } },
-      { args: { functionName: 'Strike' } },
+      { args: { returnType: 'number' }, refusal: 'returnType applies to function blocks' },
+      { args: { returnType: 'none', renameParameters: [{ from: 'amount', to: 'dmg' }] }, refusal: 'returnType applies to function blocks' },
+      { args: { functionName: ' ' }, refusal: 'functionName is empty or only spaces.' },
+      {
+        args: { functionName: 'jump', updateCallers: true }, refusal: '"Alpha" already has a custom action "Jump"',
+        prepare: async reader => { (await storedEvents(reader, 'Sheet1')).push(customAction('Alpha', 'Jump', 720)); },
+      },
+      { args: { functionName: 'Strike' }, refusal: '1 call(s) run the custom action "Alpha.Hurt"' },
       // Refused after the parameter list was changed in memory
-      { args: { functionName: 'Strike', renameParameters: [{ from: 'amount', to: 'dmg' }] } },
-      { args: { functionName: 'Wave', updateCallers: true, force: true } },
-      { args: { functionName: 'Wave', addParameters: [{ name: 'crit', type: 'boolean' }], updateCallers: true } },
-      { args: { functionName: 'Wave', updateCallers: true }, fixture: () => familyFixture() },
-      { args: { removeParameters: ['amount'], addParameters: [{ name: 'hits', type: 'number' }], updateCallers: true, force: true } },
-      { args: { functionName: 'Strike', updateCallers: true }, prepare: async reader => { (await storedEvents(reader, 'Other')).push(...comments()); } },
-      { args: { removeParameters: ['amount'], updateCallers: true }, fixture: () => memberFixture([block(705, { conditions: [useOf('amount', 706)] })]) },
+      { args: { functionName: 'Strike', renameParameters: [{ from: 'amount', to: 'dmg' }] }, refusal: '1 call(s) run the custom action "Alpha.Hurt"' },
+      { args: { functionName: 'Wave', updateCallers: true, force: true }, refusal: captures },
+      { args: { functionName: 'Wave', addParameters: [{ name: 'crit', type: 'boolean' }], updateCallers: true }, refusal: captures },
+      { args: { functionName: 'Wave', updateCallers: true }, refusal: captures, fixture: () => familyFixture() },
+      { args: { removeParameters: ['amount'], addParameters: [{ name: 'hits', type: 'number' }], updateCallers: true, force: true }, refusal: 'Make two calls' },
+      {
+        args: { functionName: 'Strike', updateCallers: true }, refusal: 'stopped at its traversal limit',
+        prepare: async reader => { (await storedEvents(reader, 'Other')).push(...comments()); },
+      },
+      {
+        args: { removeParameters: ['amount'], updateCallers: true }, refusal: 'where the parameter no longer exists after the update',
+        fixture: () => memberFixture([block(705, { conditions: [useOf('amount', 706)] })]),
+      },
+      {
+        args: { functionName: 'Strike', updateCallers: true }, refusal: 'Use force=true to update anyway.',
+        fixture: () => memberFixture([], { Bad: '{"customAction":"Strike"' }),
+      },
     ];
-    for (const { args, fixture, prepare } of cases) {
+    for (const { args, refusal, fixture, prepare } of cases) {
       const { server, reader, writer } = (fixture ?? memberFixture)();
       await prepare?.(reader);
       const before = await allSheets(reader);
       const result = await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, ...args });
       const text = result.isError ? result.content[0].text : String(parse(result).message);
+      expect(text, JSON.stringify(args)).toContain(refusal);
       expect(text, JSON.stringify(args)).toMatch(/Nothing was changed\.$/);
       expect(text.match(/Nothing was changed\./g), JSON.stringify(args)).toHaveLength(1);
       expect(await allSheets(reader), JSON.stringify(args)).toBe(before);

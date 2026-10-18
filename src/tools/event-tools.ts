@@ -15,7 +15,7 @@ import {
   caseClashError,
   folderCaseClashError,
 } from './shared.js';
-import { findFolderPathClash, findNameClash } from '../construct3/names.js';
+import { findFolderPathClash, findNameClash, nameKey } from '../construct3/names.js';
 import type { CustomActionCall } from '../construct3/types.js';
 import {
   SYSTEM_EXPRESSIONS_NOT_IN_R449,
@@ -138,8 +138,16 @@ import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-
 import { rollBackFailedCall } from './call-rollback.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
-import { customActionDefinitionClashes, customActionOwnerError, customActionScan, newCustomActionDuplicates } from '../construct3/custom-actions.js';
-import { customActionCallSites, customActionRenameCaptures, type CustomActionCallSite, type CustomActionDefinition } from '../construct3/custom-actions.js';
+import {
+  customActionCallSites,
+  customActionDefinitionClashes,
+  customActionOwnerError,
+  customActionRenameCaptures,
+  customActionScan,
+  newCustomActionDuplicates,
+  type CustomActionCallSite,
+  type CustomActionDefinition,
+} from '../construct3/custom-actions.js';
 import {
   createEmptySheet,
   createVariableEvent,
@@ -755,7 +763,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'update_function',
     {
-      description: 'Update a function block or a custom action block: name (functionName; for a custom action its aceName), return type (function blocks only; refused for a custom action), description, category, options, and parameters (add, remove, rename). Calls and function map registrations are rewritten only with updateCallers=true. A custom action call is matched to the definition it runs (its object type\'s own action, else its family\'s, or the family named in customActionObjectClass; names ignoring case); a custom action name its owner already has is refused, and so, even with force, is a rename that would make any call run another definition or stop running this one. A change that Functions.Name(...) expression calls or event sheets that could not be parsed may depend on is refused without force, since this tool cannot rewrite those; scripts are not checked. Removing or renaming a parameter that the body still uses by its old name, or renames that make a use in the body find another parameter, are refused without force. A new parameter\'s initial value must be one the calls can take as an argument (a number, a one-line string, true or false). A call is rewritten only when it passes the parameter count from before the update, so a repeated run of a change that alters the parameter count changes nothing more; removing and adding the same number of parameters in one call is refused while calls exist (make two calls). Caller sheets are written first and the definition last; a failed write puts back what the call wrote, except a file saved meanwhile by another program, which is left as it is and named with its .bak. dryRun reports the plan without writing.',
+      description: 'Update a function block or a custom action block: name (functionName; for a custom action its aceName), return type (function blocks only; refused for a custom action), description, category, options, and parameters (add, remove, rename). Calls and function map registrations are rewritten only with updateCallers=true. A custom action call is matched to the definition it runs (its object type\'s own action, else its family\'s, or the family named in customActionObjectClass; names ignoring case); a custom action name its owner already has is refused, and so, even with force, is a rename that would make a call the scan reached run another definition or stop running this one (with force past the scan\'s traversal limit, the calls and definitions beyond it are not checked). A change that Functions.Name(...) expression calls or event sheets that could not be parsed may depend on is refused without force, since this tool cannot rewrite those; such a sheet is searched as text for the old name and, for a rename, the new one. Scripts are not checked. Removing or renaming a parameter that the body still uses by its old name, or renames that make a use in the body find another parameter, are refused without force. A new parameter\'s initial value must be one the calls can take as an argument (a number, a one-line string, true or false). A call is rewritten only when it passes the parameter count from before the update, so a repeated run of a change that alters the parameter count changes nothing more; removing and adding the same number of parameters in one call is refused while calls exist (make two calls). Caller sheets are written first and the definition last; a failed write puts back what the call wrote, except a file saved meanwhile by another program, which is left as it is and named with its .bak. dryRun reports the plan without writing.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Event sheet that holds the function, as registered (letter case included)'),
         sid: z.number().int().positive().describe('SID of the function block or custom action block'),
@@ -888,6 +896,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const oldReturn = String(func.functionReturnType ?? 'none');
         const newReturn = args.returnType ?? oldReturn;
         let calls: CallReference[];
+        const renameWarnings: string[] = [];
         if (customActions === undefined) {
           if (newName !== oldName || newReturn !== oldReturn) {
             const others = functionBlockNames(sheets).filter(f => !(f.sheet === args.sheetName && f.eventPath === found.match.path));
@@ -896,7 +905,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
           calls = references.filter(r => r.kind === 'callFunction');
         } else {
-          if (newName.trim() === '') return refuse('functionName is empty.');
+          if (newName.trim() === '') return refuse('functionName is empty or only spaces.');
           const { definitions, self, sites, familiesOf } = customActions;
           const clash = customActionDefinitionClashes(definitions.filter(d => d !== self), owner, newName)[0];
           if (clash !== undefined) {
@@ -905,9 +914,10 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           const { rewrite, captured } = customActionRenameCaptures(sites, definitions, self, newName, familiesOf);
           if (captured.length > 0) {
             const runs = (d?: CustomActionDefinition) => (d ? `${d.owner}.${d.name}` : null);
+            // A captured call always runs a definition after the rename: one not rewritten keeps its own, a rewritten one finds the renamed one
             const shown = captured.slice(0, 10).map(({ site, before, after }) =>
               `${site.sheet} ${site.path}${site.sid !== undefined ? ` (SID ${site.sid})` : ''} ${before ? `runs "${runs(before)}" now` : 'runs no custom action now'}` +
-              ` and would run ${after ? `"${runs(after)}"` : 'none'}`);
+              ` and would run "${runs(after)}"`);
             return blocked(`Renaming "${shownName}" to "${newName}" would change which custom action ${captured.length} call(s) run: ` +
               `${shown.join('; ')}${captured.length > 10 ? `; and ${captured.length - 10} more` : ''}. ` +
               'A call names a custom action by its name, so this rename would make the game do something else; force does not override it. Choose another name.',
@@ -915,6 +925,17 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
           calls = rewrite.map(customCallReference);
           references = calls;
+          // A plain call on an object in several families that define the new name: the one it runs is the first, as the other custom action tools warn
+          if (newName !== oldName) {
+            for (const site of rewrite) {
+              if (site.call.customActionObjectClass !== undefined || self.owner === site.call.objectClass) continue;
+              const others = familiesOf(site.call.objectClass).filter(family => family !== self.owner
+                && definitions.some(d => d !== self && d.owner === family && nameKey(d.name) === nameKey(newName)));
+              if (others.length === 0) continue;
+              renameWarnings.push(`${site.sheet} ${site.path}${site.sid !== undefined ? ` (SID ${site.sid})` : ''}: "${site.call.objectClass}" belongs to the families "${self.owner}" and ` +
+                `${others.map(f => `"${f}"`).join(', ')}, which both define a custom action of that name. The call uses the one on "${self.owner}"; which one Construct 3 runs was not checked in the editor.`);
+            }
+          }
         }
 
         // 5. Parameters: where the removed and renamed names resolve now, then removals, renames and additions in that order
@@ -978,7 +999,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // An unparsed sheet may call Functions.Name(...) in an expression, which a removed return type breaks too
         if (renamed || shapeChanged || returnToNone) {
           const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'));
-          unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [[nameTerm(oldName)]] }]);
+          // The new name too: such a sheet may hold a call the rename would capture, or a definition the new name would clash with
+          const searched = renamed ? [nameTerm(oldName), nameTerm(newName)] : [nameTerm(oldName)];
+          unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [searched] }]);
           if (blocksWithoutForce(unscanned) && !args.force) {
             return blocked(`${unscannedRefusal(unscanned)} Use force=true to update anyway.`, [], unscanned);
           }
@@ -1011,6 +1034,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
         if (!complete) warnings.push(`Updated with force=true: ${traversalLimitReason(usesChecked, limit)}`);
         warnings.push(...unscannedWarnings(unscanned, 'Updated'));
+        warnings.push(...renameWarnings);
         const parameterList = () => current.map(p => ({ name: p.name, type: p.type, sid: p.sid }));
 
         // 9. dryRun: report the plan, put the definition back, write nothing
