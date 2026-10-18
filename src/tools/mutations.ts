@@ -11,6 +11,7 @@ import { registerObjectTools } from './object-tools.js';
 import { registerEventTools } from './event-tools.js';
 import { registerLayoutTools } from './layout-tools.js';
 import { registerProjectTools } from './project-tools.js';
+import { registerHierarchyTools } from './hierarchy-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 
@@ -25,6 +26,7 @@ export function registerMutationTools(
   registerEventTools(deps);
   registerLayoutTools(deps);
   registerProjectTools(deps);
+  registerHierarchyTools(deps);
   registerAnimationTools(deps);
   registerTimelineTools(deps);
 }
