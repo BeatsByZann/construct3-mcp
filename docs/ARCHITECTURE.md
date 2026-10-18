@@ -352,7 +352,7 @@ Claude → create_object({ name: "Enemy", pluginId: "Sprite" })
   → toolResult(WriteResult)         ← adds the editorNote
 ```
 
-Event sheet writes (`add_event_block`, `update_event_block`, `add_event_to_sheet`, `update_event_block_action`, `move_events_between_sheets`) run one more step before `writeEntityFile`: `checkLoadRulesBeforeWrite()` (for moves, `checkLoadRulesBeforeSheetPairWrite()`) compares the sheet's editor load-time issues before and after the change. A new error refuses the write; new warnings are returned with the result.
+Event sheet writes (`add_event_block`, `update_event_block`, `add_event_to_sheet`, `update_event_block_action`, `move_events_between_sheets`, `move_event_block_items`) run one more step before `writeEntityFile`: `checkLoadRulesBeforeWrite()` (for moves, `checkLoadRulesBeforeSheetPairWrite()`) compares the sheet's editor load-time issues before and after the change. A new error refuses the write; new warnings are returned with the result.
 
 ### Analysis Flow
 
