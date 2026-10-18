@@ -1049,6 +1049,35 @@ Delete a layer or sub-layer from a layout, together with its sub-layers.
 - A layer whose own or sub-layers' instances are not empty returns `success: false`, `action: "delete_blocked"` with `instanceCount` (sub-layers included), and `subLayerCount` when the layer has sub-layers, unless `force=true`
 - Hierarchy links of the layout's other instances to the deleted instances are removed, as for [`delete_instance_from_layout`](#delete_instance_from_layout): children on other layers stay without a parent, and parents on other layers no longer list the deleted children; a warning names their UIDs
 
+### `reorder_layers`
+
+Put the layers of one level of a layout in a new order (#ISSUE): the layout's own layers, or the sub-layers of `parentLayer`. `layerNames` lists every layer of that level once, with its exact name, first to last (index 0 first, as `add_layer` counts). Sub-layers and instances stay with their layer. A list that leaves out, repeats or adds a layer is refused and changes nothing; so is a level where two layers share a name. Returns `{ success, entity, category: "layout", action: "updated", order, parentLayer?, backupFile }`; an order the level already has returns `action: "unchanged"` and writes nothing.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `layerNames` | string[] | Yes | Every layer of the level, in the new order |
+| `parentLayer` | string | No | Reorder this layer's sub-layers (a path such as `"Main > HUD"` is accepted) |
+
+A `"layer"` parameter of a condition or action can name a layer by a number (any number literal, or an expression that may give one), which may count layers by their position; every such parameter that is not one quoted name is listed in a warning and never changed. Event sheets the server could not parse are not searched for them, and the warning names them. The scan covers only `"layer"` parameters: layer numbers in expressions (such as `LayerOpacity(1)`) and in scripts are not searched.
+
+When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
+
+### `move_layer`
+
+Move a layer, with its sub-layers and instances, to another place in the same layout (#ISSUE): into the sub-layers of `parentLayer`, with `parentLayer: null` to the layout's own layers, or with `parentLayer` left out within its current level, at `index` (0 = first; default: last). A move into the layer itself or one of its sub-layers is refused. Returns `{ ..., action: "updated", layer, from: { parentLayer, index }, to: { parentLayer, index }, backupFile }` (`parentLayer` null for the layout's own layers); a layer already in that place returns `action: "unchanged"`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `layerName` | string | Yes | Layer to move, or a sub-layer path |
+| `parentLayer` | string \| null | No | Destination parent layer; null: the layout's own layers; omitted: its current level |
+| `index` | number | No | Position at the destination once moved; refused when past the last place |
+
+A `"layer"` parameter of a condition or action can name a layer by a number (any number literal, or an expression that may give one), which may count layers by their position; every such parameter that is not one quoted name is listed in a warning and never changed. Event sheets the server could not parse are not searched for them, and the warning names them. The scan covers only `"layer"` parameters: layer numbers in expressions (such as `LayerOpacity(1)`) and in scripts are not searched.
+
+When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
+
 ### `update_instance`
 
 Update a placed instance, found by UID on any layer or sub-layer or among the non-world instances (which ignore position, size, angle, Z elevation and color).
@@ -1068,6 +1097,20 @@ Update a placed instance, found by UID on any layer or sub-layer or among the no
 | `instanceVariables` | object | No | Values merged into the instance's existing `instanceVariables`; only instance variables of the instance's object type and its families |
 
 At least one property must be provided. A name in `instanceVariables` that neither the instance's object type nor its families have is refused and nothing is changed (names are matched with their letter case; a name that differs only in case is pointed out), as is any value when the object type does not exist; a value of another type than its variable is written with a warning. When the object type's file could not be parsed, the names are not checked and a warning says so. A name that a family file which could not be parsed possibly declares (its text names the object type and the name, or it cannot be read at all) is written with a warning and `unscannedFiles`, as in [`add_instance_to_layout`](#add_instance_to_layout).
+
+### `move_instance`
+
+Move a placed instance to another layer or sub-layer of its layout, to another place in its layer's instances, or both (#ISSUE). A layer keeps its instances in an array: `position` counts in it, from `"first"` to `"last"`. With `afterUid` or `beforeUid` the instance goes right after or right before that instance of the destination layer. Without a position, an instance that changes layer goes last. Refused, changing nothing: a non-world instance, a UID or anchor that several instances of the layout have, an anchor on another layer, an index past the last place, two placements at once. Hierarchy links stay as they are. Returns `{ ..., action: "updated", uid, fromLayer, fromIndex, toLayer, toIndex, layerInstanceCount, backupFile }`; an instance already in that place returns `action: "unchanged"`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of an instance on a layer or sub-layer |
+| `toLayer` | string | No | Destination layer or sub-layer path (default: its own layer) |
+| `position` | `"first"` \| `"last"` \| number | No | Place in the destination's instances |
+| `afterUid` / `beforeUid` | number | No | Right after / right before this instance |
+
+When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
 
 ### `delete_instance_from_layout`
 

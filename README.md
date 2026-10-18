@@ -184,8 +184,11 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `add_layer` | Add a layer (position, visibility, transparency, parallax, blend mode); refuses a name any layer or sub-layer of the layout uses, ignoring case |
 | `update_layer` | Rename a layer or sub-layer or change visibility, interactivity, parallax, blend mode, scale rate, Z elevation; refuses a new name used by another layer or sub-layer, ignoring case; a rename points the event parameters that name the layer at the new name (unless another layout has a layer of that name) and lists other strings that may name it |
 | `delete_layer` | Delete a layer or sub-layer with its sub-layers (never the last top-level one; blocked while they hold instances unless forced); hierarchy links of other instances to the deleted ones are removed |
+| `reorder_layers` | Put the layers of one level of a layout (the layout's own, or a layer's sub-layers) in a new order |
+| `move_layer` | Move a layer with its sub-layers and instances into another layer's sub-layers or to the top level, at an index; refuses a move into its own sub-layers |
 | `add_instance_to_layout` | Place an object instance on a layout layer or sub-layer with full property control; writes a value for every instance variable of the object and its families and refuses names they do not have |
 | `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, visibility, tags, instance variables of its object and families) |
+| `move_instance` | Move a placed instance to another layer or sub-layer, or to another place in its layer's instances |
 | `delete_instance_from_layout` | Remove a placed instance by UID (layers, sub-layers and non-world instances); its hierarchy children stay without a parent, and its parent no longer lists it |
 
 **Sprite animations**
@@ -440,7 +443,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 86.
 
 ### Standalone Testing
 
@@ -548,6 +551,7 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (6)
 │   │   ├── event-tools.ts          # Event sheet tools (12)
@@ -555,6 +559,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── layer-order.ts          # Layer and instance order tools (3)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/

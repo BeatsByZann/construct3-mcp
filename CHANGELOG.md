@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `reorder_layers`, `move_layer` and `move_instance`: put the layers of one level of a layout in a new order, move a layer with its sub-layers to another level (never into its own sub-layers), and move a placed instance to another layer or place in its layer's instances. Layers are found by name or sub-layer path as in `update_layer`; a UID several instances share is refused; a failed write puts the layout back (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
