@@ -1195,6 +1195,29 @@ Delete an animation from a Sprite object; an animation in an animation folder is
 | `objectName` | string | Yes | Sprite object name |
 | `animationName` | string | Yes | Animation to delete |
 
+### `create_animation_folder`
+
+Create an animation folder among a Sprite object's animations, with the folders above it that are not there yet (#ISSUE). The folder is not part of the frame image file names, so no image file changes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `folderPath` | string | Yes | Folder path, `/`-separated (e.g. `"Combat/Melee"`); no empty segment, `.`, `..` or `\` |
+
+Returns `foldersCreated` (the paths created, outermost first). A new folder is written as `{ "items": [], "subfolders": [], "name": ... }`, the key order of a new project-bar folder; the order the editor itself writes for animation folders was not checked. Refused, with nothing changed: a path that exists already; a folder that differs from an existing sibling folder only in case (a rule of the server, as for `subfolder` paths; whether the editor allows such folders was not checked); an object that is not a Sprite or whose animations have no folder list. If the object write fails after replacing the file, the file is restored from its backup while it holds that write's content; another write's content is left as it is.
+
+### `move_animation_to_folder`
+
+Move an animation of a Sprite object into an existing animation folder, or back to the top level of its animations (#ISSUE). The animation is found by its exact name in any folder, as by the other animation tools, and is added at the end of the target's list, so the order of the object's animations changes (moving one out and back puts it last); how the editor treats that order was not checked. No image file changes, and nothing in the animation changes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation to move |
+| `folderPath` | string \| null | No | Existing folder path, `/`-separated, compared exactly; left out, `null` or `""` for the top level |
+
+Returns `fromFolder` and `toFolder` (`null` for the top level). A warning says when this move leaves no animation outside animation folders; how the editor treats such an object was not checked. Refused, with nothing changed: a folder that does not exist (the error names an existing folder whose name differs only in case), an animation that is not found, and a move into the folder the animation is in. A failed object write is handled as for `create_animation_folder`.
+
 ### `add_frame_to_animation`
 
 Add a blank frame (with a placeholder PNG in `images/`) to a Sprite animation. Like every image the tools write, the file is named as the editor names it: `<object>-<animation>-<frame, 3 digits>.png`, all lowercase, spaces kept (e.g. `hero-walk left-001.png`).

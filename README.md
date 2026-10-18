@@ -196,6 +196,8 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_animation_properties` | Update animation speed, looping, ping-pong, repeat count |
 | `rename_animation` | Rename an animation with its frame image files and the layout instances starting with it |
 | `delete_animation` | Delete an animation (never the last one) |
+| `create_animation_folder` | Create an animation folder (and the folders above it) on a Sprite |
+| `move_animation_to_folder` | Move an animation into an animation folder or back to the top level |
 | `add_frame_to_animation` | Add a blank frame (placeholder PNG) at an index; later frame images move up with their frames |
 | `update_frame` | Update a frame's duration, size or origin |
 | `delete_frame_from_animation` | Delete a frame by index (never the last one); its image is kept as `.bak`, later frame images move down |
@@ -440,7 +442,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 85.
 
 ### Standalone Testing
 
@@ -497,6 +499,7 @@ construct3-mcp/
 │   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify), project.c3proj updates, undo of a tool call's writes
 │   │   ├── id-generator.ts         # SID/UID/imageSpriteId generation with collision avoidance
 │   │   ├── disk-state.ts           # File states on disk, tool call scope, stale-write error
+│   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── templates.ts            # Entity templates and known addon maps
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
@@ -553,7 +556,7 @@ construct3-mcp/
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
-│   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── animation-tools.ts      # Sprite animation and frame tools (10)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)

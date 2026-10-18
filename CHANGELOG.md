@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `create_animation_folder` creates an animation folder, with the folders above it, among a Sprite's animations, and `move_animation_to_folder` moves an animation to the end of one, or of the top level. No image file changes. A folder that differs from a sibling folder only in case is refused, and a failed object write is restored from its backup unless another write changed the file (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).

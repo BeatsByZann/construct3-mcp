@@ -54,6 +54,7 @@ construct3-mcp/
 │   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify), project.c3proj updates, undo of a tool call's writes
 │   │   ├── id-generator.ts         # SID/UID/imageSpriteId generation with collision avoidance
 │   │   ├── disk-state.ts           # File states on disk, tool call scope, stale-write error
+│   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── templates.ts            # Entity templates and known addon maps
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
@@ -110,7 +111,7 @@ construct3-mcp/
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
-│   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── animation-tools.ts      # Sprite animation and frame tools (10)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
