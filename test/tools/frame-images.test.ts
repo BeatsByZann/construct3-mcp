@@ -518,6 +518,88 @@ describe('frame image changes are undone when a step fails', () => {
     await expectUnchanged();
   });
 
+  /**
+   * A server whose writer replaces the object file and fails its post-write
+   * check (the file is then restored from its backup), and whose rollback
+   * meets another program's file at the placeholder's name right after it
+   * removed the placeholder, so one image cannot be renamed back.
+   */
+  function failingObjectVerifyThenFileAtPlaceholder(): MockServer {
+    class LateFileWriter extends Construct3ProjectWriter {
+      override async putBackImage(...args: Parameters<Construct3ProjectWriter['putBackImage']>): Promise<'removed' | 'restored' | false> {
+        const outcome = await super.putBackImage(...args);
+        const content = Buffer.from('image OTHER');
+        labels.set(sha(content), 'OTHER');
+        await writeFile(args[0], content);
+        return outcome;
+      }
+    }
+    const idGen = new IdGenerator();
+    const writer = new LateFileWriter(reader, idGen);
+    const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<void> };
+    internals.verifyWrittenFile = async () => { throw new Error('Post-write verification failed for "Sprite"'); };
+    return register(writer, idGen);
+  }
+
+  it('add_frame_to_animation: a rollback that fails in part says what it undid', async () => {
+    const text = (await failingObjectVerifyThenFileAtPlaceholder().callTool('add_frame_to_animation', insert)).content[0].text;
+    expect(text).toContain('Post-write verification failed for "Sprite". The change was rolled back only in part: the placeholder image '
+      + 'was removed and objectTypes/Sprite.json was restored from its backup (its .bak stays). Rolling back failed for: image files (');
+    expect(text).toContain('the files whose old names were free were renamed back; images/sprite-animation 1-001.png holds the file that was '
+      + 'images/sprite-animation 1-000.png before the call, and images/sprite-animation 1-000.png is taken by images/sprite-animation 1-000.png). '
+      + 'Check these before you run the tool again.');
+    // The image files are not claimed as renamed back, and the first attempt's "none was renamed" no longer contradicts the clause
+    expect(text).not.toContain('the image files have their old names again');
+    expect(text).not.toContain('No image file was renamed');
+    expect(await snapshot()).toEqual(images({ '000.png': 'OTHER', '001.png': 'A', '001.jpg': 'J', '002.gif': 'G', '003.png': 'orphan' }));
+    expect(await readdir(join(tmpDir, 'objectTypes'))).toContain('Sprite.json.bak');
+    expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
+  });
+
+  it('add_frame_to_animation: a case variant of the placeholder\'s name in the listing is never written over', async () => {
+    // The listing reports another letter case of the placeholder's name once the renames ran (as a case-sensitive file system would)
+    class CaseVariantWriter extends Construct3ProjectWriter {
+      private renamed = false;
+      private reported = false;
+      override async renameImageFiles(renames: ReadonlyArray<{ from: string; to: string }>): Promise<void> {
+        await super.renameImageFiles(renames);
+        this.renamed = renames.length > 0 && !this.reported;
+      }
+      override async listImageFiles(): Promise<string[]> {
+        const files = await super.listImageFiles();
+        if (!this.renamed) return files;
+        this.renamed = false;
+        this.reported = true;
+        return [...files, 'Sprite-Animation 1-000.png'];
+      }
+    }
+    const idGen = new IdGenerator();
+    const text = (await register(new CaseVariantWriter(reader, idGen), idGen).callTool('add_frame_to_animation', insert)).content[0].text;
+    expect(text).toContain('Error adding frame: images/Sprite-Animation 1-000.png appeared after this call planned the frame image renames');
+    expect(text).toContain('Nothing was changed: the image files have their old names again.');
+    await expectUnchanged();
+  });
+
+  it('add_frame_to_animation: after another write changed a frame\'s fileType, the images stay and the message does not tell to run the tool again', async () => {
+    // An editor save lands between the tool's read and its write: the write is refused as stale, and the file now holds neither state
+    class EditorSaveWriter extends Construct3ProjectWriter {
+      override async writeEntityFile(...args: Parameters<Construct3ProjectWriter['writeEntityFile']>): Promise<string> {
+        if (args[0] === 'objectTypes') {
+          const obj = JSON.parse(await readFile(objectPath(), 'utf8'));
+          obj.animations.items[0].frames[0].fileType = 'image/webp';
+          await writeFile(objectPath(), JSON.stringify(obj, null, '\t'));
+        }
+        return super.writeEntityFile(...args);
+      }
+    }
+    const idGen = new IdGenerator();
+    const text = (await register(new EditorSaveWriter(reader, idGen), idGen).callTool('add_frame_to_animation', insert)).content[0].text;
+    expect(text).toContain('was changed on disk after this server read it');
+    expect(text).toContain('Recovery is unresolved');
+    expect(text).not.toContain('Run the tool again');
+    expect(await snapshot()).toEqual(images({ '000.png': 'NEW', '001.png': 'A', '002.jpg': 'J', '003.gif': 'G', '003.png': 'orphan' }));
+  });
+
   it('delete_frame_from_animation: a failed image rename renames the files back and writes nothing', async () => {
     const result = await failingRenames().callTool('delete_frame_from_animation', remove);
     expect(result.isError).toBe(true);
@@ -726,6 +808,34 @@ describe('another write to the object file during a frame change', () => {
       + 'write left it. objectTypes/Sprite.json could not be read again to tell which frames it holds, so the image files were left as this call left them');
     expect(text).toContain('Recovery is unresolved');
     expect(await readFile(objectPath(), 'utf8')).toBe(withSpeed42(objectBefore));
+    expect(await snapshot()).toEqual(images({ '000.png': 'B', '000.png.bak': 'A', '001.png': 'C' }));
+  });
+
+  /** The JSON `text` with the first frame's fileType changed (another write that kept the frame list but changed a frame's image format). */
+  const withFirstFrameWebp = (text: string) => {
+    const obj = JSON.parse(text);
+    obj.animations.items[0].frames[0].fileType = 'image/webp';
+    return JSON.stringify(obj, null, '\t');
+  };
+
+  it('add_frame_to_animation: a write that kept the frames but changed a frame\'s fileType holds neither state, so the images stay', async () => {
+    const result = await withOtherWrite((_written, before) => withFirstFrameWebp(before), objectBefore).callTool('add_frame_to_animation', insert);
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('holds neither the frames from before the call nor this call\'s, so the image files were left as this call left them');
+    expect(text).toContain('Recovery is unresolved');
+    expect(await readFile(objectPath(), 'utf8')).toBe(withFirstFrameWebp(objectBefore));
+    expect(await snapshot()).toEqual(images({ '000.png': 'NEW', '001.png': 'A', '002.png': 'B', '003.png': 'C' }));
+  });
+
+  it('delete_frame_from_animation: a write that kept the frames but changed a frame\'s fileType holds neither state, so the images stay', async () => {
+    const result = await withOtherWrite((_written, before) => withFirstFrameWebp(before), objectBefore).callTool('delete_frame_from_animation', remove);
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('holds neither the frames from before the call nor this call\'s');
+    expect(text).toContain('Recovery is unresolved');
     expect(await snapshot()).toEqual(images({ '000.png': 'B', '000.png.bak': 'A', '001.png': 'C' }));
   });
 

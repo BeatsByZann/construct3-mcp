@@ -1117,6 +1117,8 @@ async function renameImagesBack(writer: MutationToolDeps['writer'], renames: rea
       // None of them ran (renameImageFiles renames back what it renamed); reported below
     }
   }
+  // The first attempt renamed none; the clause below says the second one renamed some, so the two do not contradict
+  if (ran) cause = cause.replace(/\. No image file was renamed$/, '');
   const net = netRenames(ran ? [...renames, ...doable] : renames);
   const files = await writer.listImageFiles();
   const holder = (name: string) => files.find(file => nameKey(file) === nameKey(name));
@@ -1157,7 +1159,7 @@ async function recoverFrameChange(
   reader: MutationToolDeps['reader'],
   error: unknown,
   change: FrameChange,
-): Promise<{ kept: true } | { message: string }> {
+): Promise<{ kept: true } | { message: string; complete: boolean }> {
   const relative = (path: string) => writer.projectRelative(path);
   const otherWrite = error instanceof EntityWriteError && error.changedByOtherWrite;
   const objectFile = error instanceof EntityWriteError
@@ -1170,8 +1172,8 @@ async function recoverFrameChange(
       const { restored, label, reason } = await writer.restoreFailedWrite(error);
       if (restored) restoredFile = true;
       else notRestored = `${label} (${failedWriteLeftReason(reason)}; it was left as it is)`;
-    } catch {
-      notRestored = `restoring ${objectFile} from its backup failed`;
+    } catch (e) {
+      notRestored = `restoring ${objectFile} from its backup failed (${fileErrorText(e, relative).replace(/\.$/, '')})`;
     }
   }
   const state = await frameStateAfterFailure(reader, change.objectName, change.animationName, change.before, change.after);
@@ -1195,7 +1197,7 @@ async function recoverFrameChange(
       : `${objectFile} ${state === 'unreadable' ? 'could not be read again to tell which frames it holds' : 'holds neither the frames from before the call nor this call\'s'}, `
         + `so the image files were left as this call left them${list}. Recovery is unresolved: check the frames of "${change.animationName}" `
         + 'against images/ before you run the tool again.';
-    return { message: `${otherWriteNote}${notRestoredNote}${outcome}` };
+    return { message: `${otherWriteNote}${notRestoredNote}${outcome}`, complete: false };
   }
 
   // The object file holds the frames from before the call: undo the images
@@ -1222,20 +1224,25 @@ async function recoverFrameChange(
     ? 'Another write replaced the object file during this one (a tool call running in parallel?) without this call\'s change; '
       + 'the object file was left as that write left it. '
     : '';
-  if (failed.length > 0) {
-    return { message: `${otherWriteNote}${notRestoredNote}Rolling back failed for: ${failed.join('; ')}. Check these before you run the tool again.` };
-  }
+  // What was undone: the image files are claimed only when none is left (imagesLeft names those that are)
   const undone = [
-    ...(change.renames.length > 0 ? ['the image files have their old names again'] : []),
+    ...(change.renames.length > 0 && imagesLeft === undefined ? ['the image files have their old names again'] : []),
     ...(removed === 1 ? [`the ${noun} was removed`] : removed > 1 ? [`the ${removed} ${noun}s were removed`] : []),
     ...putBack,
     ...(restoredFile ? [`${objectFile} was restored from its backup (its .bak stays)`] : []),
   ];
+  const undoneList = `${undone.slice(0, -1).join(', ')}${undone.length > 1 ? ' and ' : ''}${undone[undone.length - 1]}`;
+  if (failed.length > 0) {
+    const inPart = undone.length > 0 ? `The change was rolled back only in part: ${undoneList}. ` : '';
+    return {
+      message: `${otherWriteNote}${notRestoredNote}${inPart}Rolling back failed for: ${failed.join('; ')}. Check these before you run the tool again.`,
+      complete: false,
+    };
+  }
   const lead = restoredFile || putBack.length > 0 ? 'The change was rolled back' : 'Nothing was changed';
   return {
-    message: otherWriteNote + notRestoredNote + (undone.length === 0
-      ? `${lead}.`
-      : `${lead}: ${undone.slice(0, -1).join(', ')}${undone.length > 1 ? ' and ' : ''}${undone[undone.length - 1]}.`),
+    message: otherWriteNote + notRestoredNote + (undone.length === 0 ? `${lead}.` : `${lead}: ${undoneList}.`),
+    complete: true,
   };
 }
 
@@ -1255,7 +1262,9 @@ async function recoverFrameChangeOrThrow(
   const outcome = await recoverFrameChange(writer, reader, error, change);
   if ('message' in outcome) {
     // A refusal of the writer ends with a full stop already
-    const cause = fileErrorText(error, path => writer.projectRelative(path)).replace(/\.$/, '');
+    let cause = fileErrorText(error, path => writer.projectRelative(path)).replace(/\.$/, '');
+    // A stale refusal tells to run the tool again; after anything but a full rollback the recovery sentences say what to check first
+    if (!outcome.complete) cause = cause.replace(/ Run the tool again: it reads the files? as (?:it is|they are) now$/, '');
     throw new Error(`${cause}. ${outcome.message}`);
   }
   return { backupPath: (error as EntityWriteError).backupPath, otherWrite: true };

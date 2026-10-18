@@ -59,6 +59,9 @@ const PROPERTIES_KEY_MAP: Record<keyof ProjectProperties, true> = {
 };
 const ALLOWED_PROPERTIES = new Set(Object.keys(PROPERTIES_KEY_MAP));
 
+/** The errors of an image rename itself (not of the folder listing before it), for renameImageFiles' wording. */
+const renameCallErrors = new WeakSet<object>();
+
 type EntityCategory = 'objectTypes' | 'eventSheets' | 'layouts' | 'families';
 
 /** Options for Construct3ProjectWriter.writeEntityFile. */
@@ -1267,11 +1270,12 @@ export class Construct3ProjectWriter {
           notRestored.push(`images/${move.to} (was images/${move.from})`);
         }
       }
-      // An fs error's message holds absolute paths: name the files by their path in the project instead
+      // An fs error's message holds absolute paths: name the files by their path in the project instead. The
+      // rename wording is for an error of the rename itself; any other fs error (the folder listing) is named as it is
       const code = typeof error === 'object' && error !== null && 'code' in error ? (error as { code?: unknown }).code : undefined;
-      const cause = typeof code === 'string' && current !== undefined
+      const cause = typeof code === 'string' && current !== undefined && typeof error === 'object' && error !== null && renameCallErrors.has(error)
         ? `${code} renaming images/${current.from} to images/${current.to}`
-        : (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
+        : fileErrorText(error, path => this.projectRelative(path)).replace(/\.$/, '');
       const after = done.length === 0
         ? 'No image file was renamed.'
         : notRestored.length === 0
@@ -1297,7 +1301,12 @@ export class Construct3ProjectWriter {
       if (occupant !== undefined) {
         throw new Error(`Cannot rename images/${from} to images/${to}: images/${occupant} already exists`);
       }
-      await rename(fromPath, toPath);
+      try {
+        await rename(fromPath, toPath);
+      } catch (error) {
+        if (typeof error === 'object' && error !== null) renameCallErrors.add(error);
+        throw error;
+      }
     });
   }
 

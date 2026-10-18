@@ -183,6 +183,22 @@ describe('renameImageFiles and other writes of the same names', () => {
     expect(await images()).toEqual(['hero-walk-000.png']);
   });
 
+  it('does not word a failed folder listing as a rename, and names the folder by its path in the project', async () => {
+    await addImages({ 'hero-walk-000.png': 'frame 0' });
+    // The listing before the rename (inside the target's lock) fails; the up-front listing worked
+    const listImageFiles = writer.listImageFiles.bind(writer);
+    let listings = 0;
+    writer.listImageFiles = async () => {
+      if (++listings > 1) throw Object.assign(new Error(`EACCES: permission denied, scandir '${join(tmpDir, 'images')}'`), { code: 'EACCES', path: join(tmpDir, 'images') });
+      return listImageFiles();
+    };
+    const error = await writer.renameImageFiles([{ from: 'hero-walk-000.png', to: 'hero-run-000.png' }]).catch((e: Error) => e);
+    const message = (error as Error).message;
+    expect(message).toBe('Renaming image files failed: EACCES on images. No image file was renamed.');
+    expect(message).not.toContain(tmpDir);
+    expect(await images()).toEqual(['hero-walk-000.png']);
+  });
+
   it('names the files of a failed rename by their path in the project, never by an absolute path', async () => {
     await addImages({ 'hero-walk-000.png': 'frame 0', 'hero-walk-001.png': 'frame 1' });
     const error = await writer.renameImageFiles([

@@ -782,7 +782,7 @@ describe('add_frame_to_animation', () => {
     expect(result.isError).toBe(true);
     // The mock reader hands back the object the tool changed, so after the failed restore it holds this call's frames and the images stay
     expect(result.content[0].text).toContain('Post-write verification failed for "Hero". The object file was not restored: restoring '
-      + 'objectTypes/Hero.json from its backup failed. objectTypes/Hero.json holds this call\'s frames, so the image files keep the names '
+      + 'objectTypes/Hero.json from its backup failed (EPERM). objectTypes/Hero.json holds this call\'s frames, so the image files keep the names '
       + 'this call gave them');
     // The file is named by its project-relative path, never an absolute one
     expect(result.content[0].text).not.toContain('/mock/backup');
@@ -793,7 +793,7 @@ describe('add_frame_to_animation', () => {
   it.each([
     ['changed', 'another write changed it after this call\'s write failed'],
     ['unreadable', 'it could not be read'],
-  ] as const)('lists an object file the restore left as it is (%s) under what failed, not as restored', async (reason, why) => {
+  ] as const)('names an object file the restore left as it is (%s) in a note, not as restored', async (reason, why) => {
     const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
     writer.imageFiles = ['hero-animation 1-000.png'];
     renamingImages(writer);
