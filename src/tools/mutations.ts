@@ -12,6 +12,7 @@ import { registerEventTools } from './event-tools.js';
 import { registerLayoutTools } from './layout-tools.js';
 import { registerProjectTools } from './project-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
+import { registerEffectTools } from './effect-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 
 export function registerMutationTools(
@@ -26,5 +27,6 @@ export function registerMutationTools(
   registerLayoutTools(deps);
   registerProjectTools(deps);
   registerAnimationTools(deps);
+  registerEffectTools(deps);
   registerTimelineTools(deps);
 }

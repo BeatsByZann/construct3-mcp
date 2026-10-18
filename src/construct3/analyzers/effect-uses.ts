@@ -34,6 +34,8 @@ export interface EffectUse {
   name?: string;
   /** The parameter as saved */
   expression: string;
+  /** Set on a System condition or action (findEffectUses with `system`): it names a layer or layout effect */
+  system?: true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,10 +54,12 @@ export function effectNameOf(expression: string): string | undefined {
 
 /**
  * Every condition and action with a string "effect" parameter in the given
- * event sheets, except System ones (layer and layout effects). Walks events,
- * groups, function and custom action blocks and sub-events to any depth.
+ * event sheets, except System ones (layer and layout effects) unless
+ * `options.system` is set, which includes them, each marked `system: true`.
+ * Walks events, groups, function and custom action blocks and sub-events to
+ * any depth.
  */
-export function findEffectUses(sheets: ReadonlyMap<string, EventSheet>): EffectUse[] {
+export function findEffectUses(sheets: ReadonlyMap<string, EventSheet>, options: { system?: boolean } = {}): EffectUse[] {
   const uses: EffectUse[] = [];
   for (const [sheetName, sheet] of sheets) {
     const stack: Array<{ events: unknown; path: string }> = [{ events: sheet?.events, path: 'events' }];
@@ -69,7 +73,9 @@ export function findEffectUses(sheets: ReadonlyMap<string, EventSheet>): EffectU
           const aces = event[kind];
           if (!Array.isArray(aces)) continue;
           aces.forEach((ace, j) => {
-            if (!isRecord(ace) || typeof ace.objectClass !== 'string' || ace.objectClass === 'System') return;
+            if (!isRecord(ace) || typeof ace.objectClass !== 'string') return;
+            const system = ace.objectClass === 'System';
+            if (system && !options.system) return;
             const expression = isRecord(ace.parameters) ? ace.parameters.effect : undefined;
             if (typeof expression !== 'string') return;
             const name = effectNameOf(expression);
@@ -81,6 +87,7 @@ export function findEffectUses(sheets: ReadonlyMap<string, EventSheet>): EffectU
               objectClass: ace.objectClass,
               ...(name !== undefined ? { name } : {}),
               expression,
+              ...(system ? { system: true as const } : {}),
             });
           });
         }
@@ -120,6 +127,26 @@ export function familyEffectUsesThroughMembers(
     if (!kept) broken.push(use);
   }
   return { broken, unknown };
+}
+
+/**
+ * Of `uses`, those through one of `objectClasses` that name `effect`
+ * (`named`, ignoring case), and those through one of them whose effect
+ * parameter is another expression than a quoted name (`unknown`), which
+ * cannot be told. For a layer or layout effect, `objectClasses` is
+ * ['System'] and `uses` comes from findEffectUses with `system`.
+ */
+export function effectUsesNaming(
+  uses: readonly EffectUse[],
+  effect: string,
+  objectClasses: readonly string[],
+): { named: EffectUse[]; unknown: EffectUse[] } {
+  const key = effect.toLowerCase();
+  const through = uses.filter(use => objectClasses.includes(use.objectClass));
+  return {
+    named: through.filter(use => use.name !== undefined && use.name.toLowerCase() === key),
+    unknown: through.filter(use => use.name === undefined),
+  };
 }
 
 /** Where an effect use is, for messages: '"Sheet1" events[3] action 0'. */
