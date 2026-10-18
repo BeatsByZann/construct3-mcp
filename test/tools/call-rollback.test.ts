@@ -173,8 +173,8 @@ describe('rollBackFailedCall', () => {
     expect(restoreCalled).toBe(false);
   });
 
-  /** The writer's replacement of project.c3proj fails once, as atomicReplace's EEXIST fallback does when its retry fails; `removeFirst`: the old file was deleted first (atomic-write.ts:89-91). */
-  function failProjectReplace(removeFirst: boolean): void {
+  /** The writer's replacement of project.c3proj fails once, as atomicReplace's EEXIST fallback does when its retry fails; `removeFirst`: the old file was deleted first (atomic-write.ts:89-91); `then` runs after that and before the throw (an editor save, say). */
+  function failProjectReplace(removeFirst: boolean, then: () => Promise<void> = async () => {}): void {
     const internals = writer as unknown as { atomicWrite: (path: string, content: string | Buffer) => Promise<void> };
     const write = internals.atomicWrite.bind(writer);
     let failed = false;
@@ -182,6 +182,7 @@ describe('rollBackFailedCall', () => {
       if (!failed && path.endsWith('project.c3proj')) {
         failed = true;
         if (removeFirst) await rm(path);
+        await then();
         throw new Error('EACCES: permission denied, rename');
       }
       return write(path, content);
@@ -213,6 +214,35 @@ describe('rollBackFailedCall', () => {
   it('says nothing was changed when a project.c3proj replacement failed and the file still holds its state from before the call', async () => {
     failProjectReplace(false);
     expect(await updateProjectOnce()).toBe('EACCES: permission denied, rename. Nothing was changed.');
+  });
+
+  it('names project.c3proj with its .bak when its replacement failed and the file holds another write\'s bytes', async () => {
+    const projectPath = join(tmpDir, 'project.c3proj');
+    const before = await readFile(projectPath, 'utf8');
+    const saved = JSON.stringify({ ...(JSON.parse(before) as Record<string, unknown>), savedInEditor: true }, null, '\t');
+    failProjectReplace(false, () => writeFile(projectPath, saved));
+    const message = await updateProjectOnce();
+    expect(message).toContain('left as it is: project.c3proj (its update failed before the server recorded it, '
+      + 'so whether it holds this call\'s change is not known; its state from before the call is in project.c3proj.bak)');
+    expect(message).not.toContain('Nothing was changed');
+    expect(await readFile(projectPath, 'utf8')).toBe(saved);
+    expect(await readFile(join(tmpDir, 'project.c3proj.bak'), 'utf8')).toBe(before);
+  });
+
+  it('does not call a file put back when its .bak was replaced while the restore ran', async () => {
+    const sheetBefore = await readFile(sheetPath(), 'utf8');
+    failReadBackOf('MainSheet.json');
+    const restore = writer.restoreFailedWrite.bind(writer);
+    writer.restoreFailedWrite = async (error) => {
+      // Another call backs up the file as this call's failed write left it
+      await writeFile(sheetPath() + '.bak', await readFile(sheetPath()));
+      return restore(error);
+    };
+    const message = await writeLayoutThenSheet();
+    expect(message).toContain('left as it is: eventSheets/MainSheet.json (it was put back from eventSheets/MainSheet.json.bak, '
+      + 'but eventSheets/MainSheet.json.bak was replaced meanwhile, so what it holds is not known)');
+    expect(message).not.toContain('MainSheet.json is as before');
+    expect(await readFile(sheetPath(), 'utf8')).not.toBe(sheetBefore);
   });
 
   it('says nothing was changed when the call failed before its first write', async () => {
