@@ -191,13 +191,33 @@ describe('reasonOf', () => {
 // Tests added beyond the plan's 13 (progress.md, Task 7 notes): proofs of protections the plan's tests leave unproved
 
 describe('the journal of a project, kept in memory', () => {
-  it('drops the calls beyond the last ones, however many are asked for', () => {
+  function recordMany(count: number): object {
     const project = {};
-    for (let i = 0; i < MAX_JOURNAL_ENTRIES + 5; i++) {
+    for (let i = 0; i < count; i++) {
       const s = scope(); change(s, `layouts/L${i}.json`);
       recordToolCall(project, 'add_layer', i, s);
     }
+    return project;
+  }
+
+  it('drops the calls beyond the last ones', () => {
+    const project = recordMany(MAX_JOURNAL_ENTRIES + 5);
+    // The limit of journalEntries is kept to the cap, so only the journal itself can tell: the 5 oldest are gone
+    for (const entry of journalEntries(project, MAX_JOURNAL_ENTRIES)) entry.reverted = true;
+    expect(lastUnrevertedEntry(project)).toBeUndefined();
+  });
+
+  it('keeps the limit of journalEntries between 1 and the cap, and whole', () => {
+    const project = recordMany(MAX_JOURNAL_ENTRIES);
+    expect(journalEntries(project, 0)).toHaveLength(1);
+    expect(journalEntries(project, -3)).toHaveLength(1);
+    expect(journalEntries(project, 0.5)).toHaveLength(1);
+    expect(journalEntries(project, 2.9)).toHaveLength(2);
     expect(journalEntries(project, 10 * MAX_JOURNAL_ENTRIES)).toHaveLength(MAX_JOURNAL_ENTRIES);
+    expect(journalEntries(project, Infinity)).toHaveLength(MAX_JOURNAL_ENTRIES);
+    expect(journalEntries(project, NaN)).toHaveLength(20);
+    expect(journalEntries(project)).toHaveLength(20);
+    expect(journalEntries(project, 0)[0].id).toBe(MAX_JOURNAL_ENTRIES);
   });
 });
 
@@ -239,8 +259,8 @@ describe('changedSinceCall on a backup it cannot read', () => {
 describe('revertEntry on a port written by hand', () => {
   function portLog(log: string[], overrides: Partial<RevertPort> = {}): RevertPort {
     return {
-      putBackChange: async change => { log.push(`put back ${change.label}`); return true; },
-      renameBack: async move => { log.push(`rename back ${move.toLabel}`); return true; },
+      putBackChange: async change => { log.push(`put back ${change.label}`); return { done: true, state: null }; },
+      renameBack: async move => { log.push(`rename back ${move.toLabel}`); return { done: true, fromState: AFTER, toState: null }; },
       afterRevert: async projectPutBack => { log.push(`after revert (project put back: ${projectPutBack})`); },
       withAnimationLock: async fn => {
         log.push('lock taken');
@@ -271,8 +291,25 @@ describe('revertEntry on a port written by hand', () => {
     change(s, 'layouts/L.json');
     const asked: Array<FileState | undefined> = [];
     const entry = recordToolCall({}, 'one', 1, s)!;
-    await revertEntry(entry, portLog([], { putBackChange: async (_change, asLeft) => { asked.push(asLeft()); return true; } }));
+    await revertEntry(entry, portLog([], { putBackChange: async (_change, asLeft) => { asked.push(asLeft()); return { done: true, state: null }; } }));
     expect(asked).toEqual([AFTER]);
+  });
+
+  it('keeps the states the port reports for a step it did, and reads nothing from disk', async () => {
+    // None of these files exist on disk: a state read there would be null
+    const reported: FileState = { mtimeMs: 7, size: 7, ino: 7 };
+    const s = scope();
+    change(s, 'layouts/L.json');
+    move(s, 'images/a.png', 'images/b.png');
+    const entry = recordToolCall({}, 'two', 1, s)!;
+    await revertEntry(entry, portLog([], {
+      putBackChange: async () => ({ done: true, state: reported }),
+      renameBack: async () => ({ done: true, fromState: reported, toState: null }),
+    }));
+    expect(entry.expected.get(fileKey(path('layouts/L.json')))).toBe(reported);
+    expect(entry.expected.get(fileKey(path('images/a.png')))).toBe(reported);
+    expect(entry.expected.get(fileKey(path('images/b.png')))).toBeNull();
+    expect(entry.reverted).toBe(true);
   });
 
   it('still lets the port finish (afterRevert) when the first step cannot be undone', async () => {
@@ -281,7 +318,7 @@ describe('revertEntry on a port written by hand', () => {
     change(s, 'layouts/M.json');
     const log: string[] = [];
     const entry = recordToolCall({}, 'two', 1, s)!;
-    const report = await revertEntry(entry, portLog(log, { putBackChange: async () => false }));
+    const report = await revertEntry(entry, portLog(log, { putBackChange: async () => ({ done: false }) }));
     expect(report.restored).toEqual([]);
     expect(log).toEqual(['lock taken', 'after revert (project put back: false)', 'lock released']);
     expect(entry.undone).toBe(0);

@@ -78,10 +78,31 @@ export interface RevertReport {
   notRestored: Array<{ file: string; reason: string }>;
 }
 
-/** What a revert needs from the project writer. */
+/**
+ * What the port reports for a file it put back: not done, or done with the
+ * state it left the file in (null: removed), read under the file's lock.
+ */
+export type PutBackOutcome =
+  | { readonly done: false }
+  | { readonly done: true; readonly state: FileState };
+
+/**
+ * What the port reports for a file it renamed back: not done, or done with
+ * the states of both ends, read under the file's lock (the target is null).
+ */
+export type RenameOutcome =
+  | { readonly done: false }
+  | { readonly done: true; readonly fromState: FileState; readonly toState: null };
+
+/**
+ * What a revert needs from the project writer. A step that was done reports
+ * the state it left its files in, so the revert never reads one again after
+ * the step (outside the lock, and a read that fails there must not turn a
+ * step that worked into a failure).
+ */
 export interface RevertPort {
-  putBackChange(change: CallChange, asLeft: () => FileState | undefined): Promise<boolean>;
-  renameBack(move: CallMove, toState: FileState | undefined): Promise<boolean>;
+  putBackChange(change: CallChange, asLeft: () => FileState | undefined): Promise<PutBackOutcome>;
+  renameBack(move: CallMove, toState: FileState | undefined): Promise<RenameOutcome>;
   afterRevert(projectPutBack: boolean): Promise<void>;
   withAnimationLock<T>(fn: () => Promise<T>): Promise<T>;
 }
@@ -161,9 +182,13 @@ export function recordToolCall(owner: object, tool: string, startedAt: number, s
   return entry;
 }
 
-/** The project's last `limit` entries, newest first. */
+/**
+ * The project's last `limit` entries, newest first. `limit` is whole and
+ * kept between 1 and MAX_JOURNAL_ENTRIES (NaN gives the default 20).
+ */
 export function journalEntries(owner: object, limit = 20): JournalEntry[] {
-  return journalOf(owner).entries.slice(-limit).reverse();
+  const count = Number.isNaN(limit) ? 20 : Math.min(Math.max(Math.trunc(limit), 1), MAX_JOURNAL_ENTRIES);
+  return journalOf(owner).entries.slice(-count).reverse();
 }
 
 /** The most recent entry that was not (fully) reverted. */
@@ -283,7 +308,10 @@ export function reasonOf(error: unknown): string {
  * last change first, under the animation lock (renames of frame images
  * cannot interleave with an animation tool). Each undone step is kept on
  * the entry (undone, expected), so a revert that stops at a step it cannot
- * undo resumes there next time. Run changedSinceCall first.
+ * undo resumes there next time. Run changedSinceCall first. A step the port
+ * did reports the states it left, which are kept as they are: nothing is
+ * read from disk after a step, so nothing can turn a step that worked into a
+ * failed one.
  *
  * What a step reports when it does not complete: "changed on disk" (or
  * "while the revert ran") when the file or backup is not in the expected
@@ -307,19 +335,21 @@ export async function revertEntry(entry: JournalEntry, port: RevertPort): Promis
         if (change.kind === 'move') {
           const fromKey = fileKey(change.move.from);
           const toKey = fileKey(change.move.to);
-          done = await port.renameBack(change.move, entry.expected.get(toKey));
-          if (done) {
-            entry.expected.set(fromKey, entry.expected.get(toKey));
-            entry.expected.set(toKey, null);
+          const renamed = await port.renameBack(change.move, entry.expected.get(toKey));
+          done = renamed.done;
+          if (renamed.done) {
+            entry.expected.set(fromKey, renamed.fromState);
+            entry.expected.set(toKey, renamed.toState);
             report.restored.push({ file: change.move.fromLabel, how: `moved back from ${change.move.toLabel}` });
           } else {
             reason = `${change.move.toLabel} changed on disk, or a file is in the way at ${change.move.fromLabel}`;
           }
         } else {
           const key = fileKey(change.file.path);
-          done = await port.putBackChange(change.file, () => entry.expected.get(key));
-          if (done) {
-            entry.expected.set(key, await statFileState(change.file.path));
+          const putBack = await port.putBackChange(change.file, () => entry.expected.get(key));
+          done = putBack.done;
+          if (putBack.done) {
+            entry.expected.set(key, putBack.state);
             if (change.file.isProjectFile) projectPutBack = true;
             report.restored.push({
               file: change.file.label,

@@ -15,8 +15,28 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { getImageFileName } from '../../src/construct3/png-generator.js';
-import { currentToolCall, fileKey, runInToolCall, stampOf, type ToolCallScope } from '../../src/construct3/disk-state.js';
+import { currentToolCall, fileKey, runInToolCall, stampOf, statFileState, type FileState, type ToolCallScope } from '../../src/construct3/disk-state.js';
 import { changedSinceCall, recordToolCall, revertEntry, type JournalEntry } from '../../src/construct3/change-journal.js';
+
+// statFileState behaves as it does unless a test makes a read fail (failStatOnce)
+vi.mock('../../src/construct3/disk-state.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/construct3/disk-state.js')>();
+  return { ...actual, statFileState: vi.fn(actual.statFileState) };
+});
+const realStat = (path: string): Promise<FileState> => vi.importActual<typeof import('../../src/construct3/disk-state.js')>('../../src/construct3/disk-state.js').then(m => m.statFileState(path));
+
+/** The next read of the state of `path` fails with EPERM, once, while the file is `present` or not. */
+function failStatOnce(path: string, present: boolean): void {
+  const key = fileKey(path);
+  let armed = true;
+  vi.mocked(statFileState).mockImplementation(async p => {
+    if (armed && fileKey(p) === key && existsSync(p) === present) {
+      armed = false;
+      throw Object.assign(new Error(`EPERM: operation not permitted, stat '${p}'`), { code: 'EPERM' });
+    }
+    return realStat(p);
+  });
+}
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
@@ -25,7 +45,8 @@ let reader: Construct3ProjectReader;
 let writer: Construct3ProjectWriter;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'c3-call-revert-'));
+  vi.mocked(statFileState).mockImplementation(realStat);
+  dir =await mkdtemp(join(tmpdir(), 'c3-call-revert-'));
   await cp(FIXTURE_DIR, dir, { recursive: true });
   reader = new Construct3ProjectReader(join(dir, 'project.c3proj'));
   await reader.loadProject();
@@ -128,7 +149,7 @@ describe('revertEntry', () => {
     vi.spyOn(writer, 'putBackChange').mockImplementation(async (change, asLeft) => {
       if (!failed && fileKey(change.path) === fileKey(join(dir, 'layouts', 'Layout 1.json'))) {
         failed = true;
-        return false;
+        return { done: false };
       }
       return original(change, asLeft);
     });
@@ -174,7 +195,7 @@ describe('revertEntry: the rest of a stopped revert', () => {
     });
     const original = writer.putBackChange.bind(writer);
     vi.spyOn(writer, 'putBackChange').mockImplementation(async (change, asLeft) => (
-      fileKey(change.path) === fileKey(timelineTwo) ? false : original(change, asLeft)
+      fileKey(change.path) === fileKey(timelineTwo) ? { done: false } : original(change, asLeft)
     ));
 
     const report = await revert(entry);
@@ -223,7 +244,7 @@ describe('revertEntry: the rest of a stopped revert', () => {
     vi.spyOn(writer, 'putBackChange').mockImplementation(async (change, asLeft) => {
       if (!failed && fileKey(change.path) === fileKey(join(dir, 'layouts', 'Layout 1.json'))) {
         failed = true;
-        return false;
+        return { done: false };
       }
       return original(change, asLeft);
     });
@@ -249,12 +270,121 @@ describe('revertEntry: the rest of a stopped revert', () => {
   });
 });
 
+describe('revertEntry: a step that worked, whose file cannot be read afterwards', () => {
+  it('counts a file put back as done, and the next attempt goes on from there', async () => {
+    const layoutBefore = await read('layouts/Layout 1.json');
+    const timeline = join(dir, 'timelines', 'T.json');
+    const entry = await recorded('two files', async () => {
+      await addLayer('HUD');
+      await writer.replaceFile(timeline, '{}');
+    });
+    // The timeline is removed first; a read of it after that fails once, as EPERM can right after an unlink. The layout fails once.
+    failStatOnce(timeline, false);
+    const original = writer.putBackChange.bind(writer);
+    let failed = false;
+    vi.spyOn(writer, 'putBackChange').mockImplementation(async (change, asLeft) => {
+      if (!failed && fileKey(change.path) === fileKey(join(dir, 'layouts', 'Layout 1.json'))) {
+        failed = true;
+        return { done: false };
+      }
+      return original(change, asLeft);
+    });
+
+    const first = await revert(entry);
+    expect(first.restored.map(r => r.file)).toEqual(['timelines/T.json']);
+    expect(first.notRestored.map(r => r.file)).toEqual(['layouts/Layout 1.json']);
+    expect(entry.undone).toBe(1);
+    expect(existsSync(timeline)).toBe(false);
+
+    const second = await revert(entry);
+    expect(second.notRestored).toEqual([]);
+    expect(second.restored.map(r => r.file)).toEqual(['layouts/Layout 1.json']);
+    expect(entry.reverted).toBe(true);
+    expect(await read('layouts/Layout 1.json')).toBe(layoutBefore);
+  });
+
+  it('counts a file renamed back as done, and the next attempt goes on from there', async () => {
+    const images = join(dir, 'images');
+    await mkdir(images, { recursive: true });
+    await writeFile(join(images, 'a.png'), 'a');
+    const entry = await recorded('rename twice', async () => {
+      await writer.renameImageFiles([{ from: 'a.png', to: 'b.png' }]);
+      await writer.renameImageFiles([{ from: 'b.png', to: 'c.png' }]);
+    });
+    // c back to b first; the read of b after that fails once. The second rename back (b to a) fails once.
+    failStatOnce(join(images, 'b.png'), true);
+    const original = writer.renameBack.bind(writer);
+    let calls = 0;
+    vi.spyOn(writer, 'renameBack').mockImplementation(async (move, toState) => (++calls === 2 ? { done: false } : original(move, toState)));
+
+    const first = await revert(entry);
+    expect(first.restored.map(r => r.file)).toEqual(['images/b.png']);
+    expect(first.notRestored.map(r => r.file)).toEqual(['images/b.png']);
+    expect(entry.undone).toBe(1);
+    expect(await changedSinceCall(entry)).toEqual({ files: [], backups: [] });
+
+    const second = await revert(entry);
+    expect(second.notRestored).toEqual([]);
+    expect(second.restored.map(r => r.file)).toEqual(['images/a.png']);
+    expect(entry.reverted).toBe(true);
+    expect(await readFile(join(images, 'a.png'), 'utf-8')).toBe('a');
+    expect(existsSync(join(images, 'b.png')) || existsSync(join(images, 'c.png'))).toBe(false);
+  });
+});
+
 describe('the writer as the revert port', () => {
+  it('putBackChange reports the state it left a file in, and that it did not put back a file that changed', async () => {
+    const timeline = join(dir, 'timelines', 'T.json');
+    const layoutPath = join(dir, 'layouts', 'Layout 1.json');
+    const entry = await recorded('two files', async () => {
+      await addLayer('HUD');
+      await writer.replaceFile(timeline, '{}');
+    });
+    const [layoutChange, timelineChange] = entry.changes;
+    if (layoutChange.kind === 'move' || timelineChange.kind === 'move') throw new Error('expected file changes');
+    const left = (change: { path: string }) => entry.expected.get(fileKey(change.path));
+
+    await writeFile(layoutPath, 'edited since the call');
+    expect(await writer.putBackChange(layoutChange.file, () => left(layoutChange.file))).toEqual({ done: false });
+
+    expect(await writer.putBackChange(timelineChange.file, () => left(timelineChange.file))).toEqual({ done: true, state: null });
+    expect(existsSync(timeline)).toBe(false);
+
+    await writeFile(layoutPath, 'edited since the call');
+    const asLeft = stampOf(statSync(layoutPath));
+    const restored = await writer.putBackChange(layoutChange.file, () => asLeft);
+    expect(restored).toEqual({ done: true, state: stampOf(statSync(layoutPath)) });
+    expect(JSON.parse(await read('layouts/Layout 1.json')).layers.map((l: { name: string }) => l.name)).not.toContain('HUD');
+  });
+
+  it('renameBack waits for the lock of the file it moves back to, and finds a placeholder written under it', async () => {
+    const images = join(dir, 'images');
+    await mkdir(images, { recursive: true });
+    await writeFile(join(images, 'a.png'), 'a');
+    const entry = await recorded('rename', () => writer.renameImageFiles([{ from: 'a.png', to: 'b.png' }]));
+    const move = entry.changes[0];
+    if (move.kind !== 'move') throw new Error('expected a move');
+    const toState = stampOf(statSync(join(images, 'b.png')));
+    const withFileLock = (writer as unknown as { withFileLock: (path: string, fn: () => Promise<void>) => Promise<void> }).withFileLock.bind(writer);
+
+    let back: Promise<unknown> = Promise.resolve();
+    // A placeholder write holds the lock of images/a.png and lands in the slot while renameBack is asked to run
+    await withFileLock(join(images, 'a.png'), async () => {
+      back = runInToolCall(() => writer.renameBack(move.move, toState));
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await writeFile(join(images, 'a.png'), 'placeholder');
+    });
+
+    expect(await back).toEqual({ done: false });
+    expect(await readFile(join(images, 'a.png'), 'utf-8')).toBe('placeholder');
+    expect(await readFile(join(images, 'b.png'), 'utf-8')).toBe('a');
+  });
+
   it('putBackChange hands the file\'s state reader to the lock without calling it', async () => {
     const entry = await recorded('create', () => writer.replaceFile(join(dir, 'timelines', 'T.json'), '{}'));
     const change = entry.changes[0];
     if (change.kind === 'move') throw new Error('expected a file change');
-    const putBackLocked = vi.spyOn(writer as unknown as { putBackLocked: () => Promise<boolean> }, 'putBackLocked').mockResolvedValue(true);
+    const putBackLocked = vi.spyOn(writer as unknown as { putBackLocked: () => Promise<false> }, 'putBackLocked').mockResolvedValue(false);
     const asLeft = vi.fn(() => undefined);
 
     await writer.putBackChange(change.file, asLeft);
@@ -272,7 +402,7 @@ describe('the writer as the revert port', () => {
 
     const moved = await runInToolCall(() => writer.renameBack({ from, to: join(images, 'b.png'), fromLabel: 'gone/sub/a.png', toLabel: 'images/b.png' }, toState));
 
-    expect(moved).toBe(true);
+    expect(moved).toEqual({ done: true, fromState: stampOf(statSync(from)), toState: null });
     expect(await readFile(from, 'utf-8')).toBe('b');
   });
 });
@@ -337,7 +467,7 @@ describe('revertEntry: renames', () => {
     vi.spyOn(writer, 'renameBack').mockImplementation(async (move, toState) => {
       if (!failed) {
         failed = true;
-        return false;
+        return { done: false };
       }
       return original(move, toState);
     });

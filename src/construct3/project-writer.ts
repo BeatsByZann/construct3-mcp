@@ -9,6 +9,7 @@ import { readFile, copyFile, unlink, mkdir, stat, rename, readdir } from 'fs/pro
 import { constants } from 'fs';
 import { dirname, relative, sep, join, basename } from 'path';
 import { resolveProjectPath } from './path-utils.js';
+import type { PutBackOutcome, RenameOutcome } from './change-journal.js';
 import { atomicReplace, existingSpelling, findFileIgnoringCase } from './atomic-write.js';
 import { entityFolderPaths, type Construct3ProjectReader } from './project-reader.js';
 import type { IdGenerator } from './id-generator.js';
@@ -626,7 +627,7 @@ export class Construct3ProjectWriter {
     for (const [key, change] of changes) {
       let putBack = false;
       try {
-        putBack = await this.putBackLocked(change, () => scope.reads.get(key));
+        putBack = (await this.putBackLocked(change, () => scope.reads.get(key))) !== false;
       } catch {
         putBack = false;
       }
@@ -650,16 +651,18 @@ export class Construct3ProjectWriter {
   }
 
   /** putBack under the file's one lock (underLockOf); `asLeft` is read inside the lock. */
-  private putBackLocked(change: CallChange, asLeft: () => FileState | undefined): Promise<boolean> {
+  private putBackLocked(change: CallChange, asLeft: () => FileState | undefined): Promise<false | { state: FileState }> {
     return this.underLockOf(change.path, () => this.putBack(change, asLeft()));
   }
 
   /**
    * Put one file the tool call changed back as it was before the call.
    * False when it is no longer in the state the call left it in (`asLeft`),
-   * or its backup no longer holds the state from before the call.
+   * or its backup no longer holds the state from before the call. Otherwise
+   * the state the file was left in, read here under the file's lock (null:
+   * removed), so no caller has to read it again outside the lock.
    */
-  private async putBack(change: CallChange, asLeft: FileState | undefined): Promise<boolean> {
+  private async putBack(change: CallChange, asLeft: FileState | undefined): Promise<false | { state: FileState }> {
     const key = fileKey(change.path);
     if (asLeft === undefined || !sameFileState(await statFileState(change.path), asLeft)) return false;
     if (!change.backup.existed) {
@@ -670,7 +673,7 @@ export class Construct3ProjectWriter {
       }
       if (change.isProjectFile) noteFileWritten(key, null);
       else this.afterOwnWrite(change.path, null);
-      return true;
+      return { state: null };
     }
     if (!sameFileState(await statFileState(change.backup.path), change.backup.state)) return false;
     const content = await readFile(change.backup.path);
@@ -680,7 +683,7 @@ export class Construct3ProjectWriter {
     if (change.isProjectFile) noteFileWritten(key, state);
     // Only JSON files hold IDs for the ID generator (not images or scripts)
     else this.afterOwnWrite(change.path, state, change.path.toLowerCase().endsWith('.json') ? content.toString('utf-8') : undefined);
-    return true;
+    return { state };
   }
 
   /**
@@ -720,27 +723,45 @@ export class Construct3ProjectWriter {
    * For revert_last_change (change-journal.ts): put back one recorded change
    * under the file's one lock, when the file is still in the state `asLeft`
    * returns (read inside the lock) and its backup still holds the state
-   * from before the call.
+   * from before the call. Reports the state it left the file in (read under
+   * the lock, null: removed), so the caller never reads it again.
    */
-  async putBackChange(change: CallChange, asLeft: () => FileState | undefined): Promise<boolean> {
-    return this.putBackLocked(change, asLeft);
+  async putBackChange(change: CallChange, asLeft: () => FileState | undefined): Promise<PutBackOutcome> {
+    const putBack = await this.putBackLocked(change, asLeft);
+    return putBack === false ? { done: false } : { done: true, state: putBack.state };
   }
 
   /**
    * For revert_last_change: rename a file a recorded call renamed back, only
    * when `to` is in the state `toState` and nothing is at `from` (on Windows
    * a rename replaces the file in its way). A `toState` of undefined (not
-   * known) or null (absent) is refused: the call left a file at `to`. Run
-   * inside withAnimationLock.
+   * known) or null (absent) is refused: the call left a file at `to`. The
+   * check and the rename run under the lock of `from`, so a write of a
+   * placeholder to that file cannot land between them. Run inside
+   * withAnimationLock (that lock, then the file's). Once the file is renamed
+   * the step is done whatever follows. It reports the state of `from` read
+   * under the lock, or `toState` (a rename keeps the stamp) when that read
+   * fails, and the state of `to`: null.
    */
-  async renameBack(move: CallMove, toState: FileState | undefined): Promise<boolean> {
-    if (!toState || !sameFileState(await statFileState(move.to), toState)) return false;
-    if ((await statFileState(move.from)) !== null) return false;
-    await mkdir(dirname(move.from), { recursive: true });
-    await rename(move.to, move.from);
-    noteFileWritten(fileKey(move.to), null);
-    noteFileWritten(fileKey(move.from), await statFileState(move.from));
-    return true;
+  async renameBack(move: CallMove, toState: FileState | undefined): Promise<RenameOutcome> {
+    if (!toState) return { done: false };
+    return this.underLockOf(move.from, async (): Promise<RenameOutcome> => {
+      if (!sameFileState(await statFileState(move.to), toState)) return { done: false };
+      if ((await statFileState(move.from)) !== null) return { done: false };
+      await mkdir(dirname(move.from), { recursive: true });
+      await rename(move.to, move.from);
+      const fromKey = fileKey(move.from);
+      noteFileWritten(fileKey(move.to), null);
+      // A rename keeps the file's stamp: when the read of it fails, the step is done all the same, with the state checked above
+      let fromState: FileState = toState;
+      try {
+        fromState = await statFileState(move.from);
+      } catch {
+        // Keep the state checked above
+      }
+      noteFileWritten(fromKey, fromState);
+      return { done: true, fromState, toState: null };
+    });
   }
 
   /** After revert_last_change put files back: load project.c3proj again when it was among them, and drop the caches and the index. */
