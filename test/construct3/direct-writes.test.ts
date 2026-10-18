@@ -154,6 +154,26 @@ describe('restoreForCall', () => {
     });
     expect(await readFile(file, 'utf-8')).toBe('editor');
   });
+
+  it('leaves a file the call has no state for as it is, unless the caller names the state it is in', async () => {
+    const file = join(dir, 'scripts', 'main.js');
+    await mkdir(join(dir, 'scripts'), { recursive: true });
+    await writeFile(file, 'someone else');
+    await runInToolCall(async () => {
+      await expect(writer.restoreForCall(file, 'before')).rejects.toThrow('has no state recorded by this call');
+      expect(await readFile(file, 'utf-8')).toBe('someone else');
+
+      // A state that is not the file's: refused
+      await writeFile(file, 'someone else, again');
+      await expect(writer.restoreForCall(file, 'before', { expected: await statFileState(join(dir, 'project.c3proj')) }))
+        .rejects.toThrow('changed on disk after this call wrote it');
+      expect(await readFile(file, 'utf-8')).toBe('someone else, again');
+
+      // The file's own state: put back
+      await writer.restoreForCall(file, 'before', { expected: await statFileState(file) });
+    });
+    expect(await readFile(file, 'utf-8')).toBe('before');
+  });
 });
 
 describe('updateProject', () => {

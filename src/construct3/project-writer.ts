@@ -415,14 +415,20 @@ export class Construct3ProjectWriter {
    * this call wrote back to `content`, the content it had before the call
    * (null: the call created it, so it is removed). It runs under the file's
    * one lock and takes no new backup. It is refused when the file changed
-   * on disk after this call wrote it, so a later change is never replaced.
+   * on disk after this call wrote it, so a later change is never replaced,
+   * and when the call has no state of its own for the file to compare with:
+   * the state it recorded, or `options.expected`, the state the caller knows
+   * the file to be in (it takes precedence; null: there is no file).
    */
-  async restoreForCall(path: string, content: string | Buffer | null): Promise<void> {
+  async restoreForCall(path: string, content: string | Buffer | null, options: { expected?: FileState } = {}): Promise<void> {
     const filePath = await existingSpelling(path);
     const key = fileKey(filePath);
     await this.underLockOf(filePath, async () => {
-      const ours = currentToolCall()?.reads.get(key);
-      if (ours !== undefined && !sameFileState(await statFileState(filePath), ours)) {
+      const ours = options.expected !== undefined ? options.expected : currentToolCall()?.reads.get(key);
+      if (ours === undefined) {
+        throw new Error(`${this.projectRelative(filePath)} has no state recorded by this call to compare with, so it was left as it is.`);
+      }
+      if (!sameFileState(await statFileState(filePath), ours)) {
         throw new Error(`${this.projectRelative(filePath)} changed on disk after this call wrote it, so it was left as it is.`);
       }
       if (content === null) {
