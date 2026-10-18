@@ -783,12 +783,12 @@ At least one update parameter must be provided.
 6. Final state checks — warn if this call removed the last condition
 
 **Notes:**
-- Only works on `block` or `function-block` events (not groups, variables, etc.)
+- Only works on `block`, `function-block` and `custom-ace-block` (custom action block) events, not on groups, variables, etc.
 - New actions/conditions get fresh SIDs via the ID generator
 - `objectClass` is validated on new conditions/actions; `behaviorType` is soft-validated and the deprecated `"behavior-type"` alias is normalized, as in `add_event_block`. All additions are validated in one pass before anything changes, so each warning appears once and a conflicting key aborts the call without writing.
 - Existing conditions/actions edited through `updateConditions`/`updateActions` that still carry the legacy `"behavior-type"` key are normalized to `"behaviorType"` with the same rules as `fix_legacy_behavior_keys`, and each one is reported in `warnings`. `update_event_block_action` does the same for the action it edits.
 - Duplicate removal indices are automatically deduplicated
-- Warns only when this call removed the last condition (the block then runs whenever its parent runs; a function body on every call). Blocks that never had conditions, such as function blocks and condition-less sub-events, get no warning.
+- Warns only when this call removed the last condition (the block then runs whenever its parent runs; a function body or a custom action body on every call). Blocks that never had conditions, such as function blocks and condition-less sub-events, get no warning.
 - `disabled` on the block, an action or a condition is written right after its `sid`, as the editor does. Parameters added to a condition that has `isInverted` but no `parameters` go before `isInverted`, and a new `isInverted` goes last, where the editor writes them.
 - Added actions on the built-in Functions object are checked as in `add_event_block`; *Set return value* gets no warning when the block is a function block or one of its sub-events.
 - An added condition with the deprecated `isOr` flag is refused unless the block is (or becomes) an OR block. An added System `else` condition is appended: on a block without conditions it becomes the first condition; in an else block, or with `isElse: true`, it is a duplicate and is dropped; otherwise it lands after the existing conditions with a warning (use `isElse: true` instead).
@@ -805,7 +805,7 @@ Replace the parameters of a single action. The block is found by SID anywhere in
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet |
-| `blockSid` | number | Yes | SID of the `block` or `function-block` holding the action |
+| `blockSid` | number | Yes | SID of the `block`, `function-block` or custom action block holding the action |
 | `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
 | `actionIndex` | number | Yes | 0-based action index |
 | `parameters` | object \| array | Yes | New parameter values; replaces the existing `parameters` entirely (max 100 keys, depth 6). For a function call: the arguments in parameter order as an array; an object keyed `"0"`, `"1"`, … or by the function's parameter names is converted to that array. An array for any other action is refused. |
@@ -889,16 +889,16 @@ Add a custom action definition (a custom action block, `eventType` `"custom-ace-
 | `position` | enum | No | `"start"`, `"end"` (default), or `"before"` / `"after"` the `siblingSid` event |
 | `force` | boolean | No | Add even while an event sheet the server could not parse, or a scan that stopped at its limit, may define a custom action of that name (default false) |
 
-**Placement.** The definition goes at the top level, in a group, or beside an event there, and only where every event above it is a group, so a group inside a group is allowed. A place below a block, a block with conditions, a function block or a custom action block is refused. Construct 3 r506-2 (Free edition) was seen accepting a custom action block only at the top level and in a top-level group; the rule for nested groups is this tool's own and was not checked in the editor. A custom action block is a trigger root for the load-time check, as a function block is.
+**Placement.** The definition goes at the top level, in a group, or beside an event there, and only where every event above it is a group, so a group inside a group is allowed. A place below a block, a block with conditions, a function block or a custom action block is refused. Construct 3 r506-2 (Free edition) was tried with a custom action block at the top level and in a top-level group, and accepted it in both; the rule for nested groups is this tool's own and was not checked in the editor. A custom action block is a trigger root for the load-time check, as a function block is.
 
 **Refusals.** Each one changes nothing, and its message ends with "Nothing was changed.":
 - An owner that is no object type or family. System and the Functions object own no custom action. A name that differs only in letter case gets a hint with the spelling that exists.
 - An empty `aceName`.
-- A second custom action of the same name on the same owner, ignoring letter case, anywhere in the project; the message names its sheet, path and SID. A custom action of the same name on another object type, or a member's own action that overrides its family's, is allowed. Construct 3 r506-2 (Free edition) ran the first of two definitions of one name and renamed the second one when it saved (DoK became DoK2), so a call could not tell them apart.
+- A second custom action of the same name on the same owner, ignoring letter case, anywhere in the project; the message names its sheet, path and SID. A custom action of the same name on another object type, or a member's own action that overrides its family's, is allowed. Construct 3 r506-2 (Free edition) ran the first of two definitions of one name and renamed the second one when it saved (DoK became DoK2), so a call could not tell them apart. The refusal also covers names that differ only in letter case; that wider rule is the tool's own and was not checked in the editor.
 - A parameter name that the editor's function parameter dialog refuses: a name that a global variable, an event variable or an earlier parameter of the same list has, a name given twice, or a name that differs only in case from one of them. In a group, a name that a variable of an enclosing event has is refused as well; this is the tool's own rule.
 - A place where a custom action block may not stand (see **Placement**).
 
-**Unparsed sheets and the scan limit.** Event sheets that the server could not parse are searched as text for the custom action's name and its owner. A possible match refuses the call without `force`, and the sheets are listed in `unscannedFiles`; with `force` the definition is added and a warning names them. A sheet searched without a match gets a warning. The scan of custom action definitions stops at its limit (100,000 events across all event sheets, or nesting deeper than 50 levels); a definition past it is unknown, so the call refuses without `force`, and with `force` it is added with a warning. A registered sheet that cannot be read at all refuses the call.
+**Unparsed sheets and the scan limit.** Event sheets that the server could not parse are searched as text for the custom action's name and its owner. A possible match refuses the call without `force`, and the sheets are listed in `unscannedFiles`; with `force` the definition is added and a warning names them. A sheet searched without a match gets a warning. The scan of custom action definitions stops at its limit (100,000 events across all event sheets, or nesting deeper than 50 levels); a definition past it is unknown, so the call refuses without `force`, and with `force` it is added with a warning. A registered sheet other than the target that cannot be read at all refuses the call without `force`; with `force` the call is added with a warning. If the target sheet itself cannot be read, the call is refused, with or without `force`.
 
 **Load-time gate.** The sheet is checked against the load-time rules as in `add_event_block`, and the new warnings are returned in `warnings`. For example, a custom action block placed between a block and its else block gets an `else-placement` warning.
 
@@ -906,18 +906,18 @@ Add a custom action definition (a custom action block, `eventType` `"custom-ace-
 
 **Returns.** `generatedSid` (the definition's SID), `parameterSids` (`{ name, sid }` for each parameter, when there are any), `eventPath`, `backupFile`, and `warnings` and `unscannedFiles` when there are any.
 
-**Rollback.** When the write fails, the sheet is put back, unless an editor save changed the file after the write; then the sheet is left as it is and the error names it with its `.bak`. The message keeps the write's own error.
+**Rollback.** When the write fails, the sheet is put back, unless the file no longer holds this call's write (an editor save changed it after the write, say, or another write did); then the sheet is left as it is and the error names it with its `.bak`. The message keeps the write's own error.
 
 **Calling a custom action**
 
 A call is an action of `add_event_block` (in `actions`) or of `update_event_block` (in `addActions`): `{ customAction, objectClass, customActionObjectClass?, parameters?, disabled? }`. It is written with the keys `customAction`, `objectClass`, `customActionObjectClass` (when there is one), `sid`, `disabled` (only when true) and `parameters` (only when there are arguments), in that order.
 
 - `objectClass` must be an object type or family of the project. System and the Functions object are refused, and so is an unknown name.
-- `customActionObjectClass` must name a family that `objectClass` belongs to; otherwise the call is refused.
-- The definition a call runs is the one on `customActionObjectClass` when given, else on `objectClass`, else on the first family `objectClass` belongs to that defines the name. The name matches ignoring letter case. A call written in another case is written with the definition's spelling by `add_event_block` and `update_event_block`, with a warning; the update paths keep the stored name and warn.
+- `customActionObjectClass` must be `objectClass` itself or a family that `objectClass` belongs to; any other name is refused.
+- The definition a call runs is the one on `customActionObjectClass` when given, else on `objectClass`, else on the first family `objectClass` belongs to that defines the name. The name matches ignoring letter case. A call written in another case gets the definition's spelling from `add_event_block` and from the calls `update_event_block` adds, with a warning; `update_event_block`'s `updateActions` and `update_event_block_action` keep the stored name and warn.
 - A member's call of a custom action its family defines (the member has no definition of that name) carries `customActionObjectClass` set to that family, after `objectClass`, as Construct 3 r506-2 (Free edition) saved it. A call on the family itself, or on a member with its own definition, carries none.
 - A call that names no custom action of the parsed sheets is written with a warning. Whether Construct 3 opens a project with such a call was not checked.
-- When an object belongs to two families that both define the name, the call uses the first, with a warning. Which one Construct 3 runs was not checked.
+- When the object has no definition of the name of its own, the call names no `customActionObjectClass`, and two of its families both define the name, the call uses the first family in the order the families are read, with a warning. Which one Construct 3 runs was not checked.
 - An argument count other than the definition's parameter count is written with a warning.
 - A boolean argument stays a JSON boolean. Other arguments are strings, as expressions. `add_event_block` refuses a number argument (the argument schema takes strings and booleans only); the update paths take numbers and write them as strings. The number behavior was not checked in the editor.
 - `update_event_block` edits the conditions and actions of a custom action block by its SID (it has no `isElse`, since a custom action block cannot be an else block). It adds no sub-events, and no tool on this branch places an event inside a custom action block.
