@@ -923,7 +923,7 @@ Update a group event in place (#ISSUE): its title, description, *Active on start
 
 Give at least one of `title`, `description`, `isActiveOnStart`, `disabled`, `backgroundColor` and `textColor`. A value the group already has changes nothing.
 
-Refused, changing nothing (each message ends "Nothing was changed."): no update given; a SID that no event has, or that several events share (`eventPath` picks one); an event that is not a group.
+Refused, changing nothing (each message ends "Nothing was changed."): no update given; a SID that no event has, or that several events share (`eventPath` picks one); an event that is not a group; an event sheet that is not registered.
 
 **Titles.** Refused, changing nothing: an empty or blank title, and a title that another group in the same list has, exactly or with outer whitespace ignored, since group paths in that list could not tell the two apart. Another group that has the title, ignoring letter case and outer whitespace, does not refuse the rename: it is named in a warning, because "set-group-active" and "is-group-active" name a group by its title. That covers a group in another list or another sheet, and a group in the same list whose title differs only in letter case. Construct 3 r506-2 (Free edition) opened and saved a project with two groups titled "Same", one at the top level and one nested in a group "Outer".
 
@@ -933,7 +933,7 @@ Refused, changing nothing (each message ends "Nothing was changed."): no update 
 
 Returns `{ success, entity, category, action, updatedSid, eventPath, title, warnings?, references?, unscannedFiles?, backupFile? }`, with `backupFile` when written. `action` is `"updated"`, or `"unchanged"` when the values already match and nothing is written. A rename that is refused for its uses, a limit or an unparsed sheet returns `{ success: false, action: "rename_blocked", message, entity, category, references, unscannedFiles? }` and changes nothing.
 
-When a change throws before the write, the sheet is put back in memory and the call refuses with "The update stopped before anything was written (...). Nothing was changed." When the write fails, the call is rolled back; if the editor saved the sheet after the failed write, the error names the file and its `.bak` and leaves the sheet as it is.
+When a change throws before the write, the sheet is put back in memory and the call refuses with "The change was stopped before anything was written: ... Nothing was changed." When the write fails, the call is rolled back; if the editor saved the sheet after the failed write, the error names the file and its `.bak` and leaves the sheet as it is.
 
 ### `update_comment`
 
@@ -950,7 +950,7 @@ Update a comment event in place (#ISSUE): its text and colours. A comment has no
 
 Give at least one of `text`, `textColor` and `backgroundColor`. The tool takes no `siblingSid` and no `position`; they are refused as unknown arguments.
 
-Refused, changing nothing (each message ends "Nothing was changed."): no update given; an index past the end of the container; an event at the index that is not a comment.
+Refused, changing nothing (each message ends "Nothing was changed."): no update given; an index past the end of the container; an event at the index that is not a comment; an event sheet that is not registered or cannot be read.
 
 A comment event keeps its keys in the order `eventType`, `text`, `text-color`, `background-color`. A colour the comment lacks is inserted after the keys that come before it in that order (`text-color` after `text`, `background-color` after `text-color`). The tool uses this order for comment rows among a block's actions too; it was not checked in the editor for a comment event. `null` removes a colour. An update to the values the comment already has returns `"unchanged"` and writes nothing.
 
@@ -972,9 +972,9 @@ Replace the JavaScript of a script event, enable or disable it, or remove it (#I
 
 Give exactly one of `script`, `disabled` and `remove`. `expectedText` is only used with `remove`.
 
-**Removal.** `remove` needs `expectedText`, and the script event at `index` must start with it: its first line, whether the script is stored as one string or as a list of lines. Otherwise the removal is refused and the message gives the first line found. Removing a script event runs the load-time gate; its warnings are returned, and an else block that then continues another event is reported in a warning.
+**Removal.** `remove` needs `expectedText`, and the script event at `index` must start with it: its first line, whether the script is stored as one string or as a list of lines (an entry of the list that holds a line break counts up to the break). Otherwise the removal is refused and the message gives the first line found. Removing a script event runs the load-time gate; its warnings are returned, and an else block that then continues another event is reported in a warning.
 
-Refused, changing nothing (each message ends "Nothing was changed."): none, or more than one, of `script`, `disabled` and `remove`; `expectedText` without `remove`; `remove` without `expectedText`; a first line that differs; an index past the end of the container; an event at the index that is not a script event; a removal after which the load-time check reports errors for issues the removal introduces in the sheet (the message starts "Construct 3 load-time check failed; nothing was written." and lists the rules broken).
+Refused, changing nothing (each message ends "Nothing was changed."): none, or more than one, of `script`, `disabled` and `remove`; `expectedText` without `remove`; `remove` without `expectedText`; a first line that differs; an index past the end of the container; an event at the index that is not a script event (an event without an `eventType` is named as one that has none); an event sheet that is not registered or cannot be read; a removal after which the load-time check reports errors for issues the removal introduces in the sheet (the message starts "Construct 3 load-time check failed; nothing was written." and lists the rules broken).
 
 Returns `{ success, entity, category, action, eventPath, warnings?, backupFile? }`; `action` is `"updated"`, `"deleted"` for a removal, or `"unchanged"` when the event already has the values given. `backupFile` is given when written. Failures are handled as for `update_comment`.
 

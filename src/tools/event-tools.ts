@@ -2108,19 +2108,20 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (!given) return toolError(nothingChanged('No update given. Give at least one of title, description, isActiveOnStart, disabled, backgroundColor, textColor.'));
         if (args.title !== undefined && args.title.trim() === '') return toolError(nothingChanged('title is empty.'));
         const unregistered = await unregisteredSheetError(reader, args.sheetName);
-        if (unregistered) return unregistered;
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
         }
         const events = sheet.events as Record<string, unknown>[];
         const beforeEvents = snapshotEvents(sheet.events);
         const found = resolveEventBySid(events, args.sid, { sheetName: args.sheetName, action: 'update', eventPath: args.eventPath });
         if ('error' in found) return toolError(nothingChanged(found.error));
         const group = found.match.event;
-        if (group.eventType !== 'group') return toolError(nothingChanged(`The event with SID ${args.sid} is a "${String(group.eventType)}", not a group.`));
+        if (group.eventType !== 'group') return toolError(nothingChanged(`The event with SID ${args.sid} ${typeof group.eventType === 'string' ? `is a "${group.eventType}"` : 'has no eventType'}, ${typeof group.eventType === 'string' ? 'not a group' : 'so it is not a group'}.`));
         const oldTitle = String(group.title ?? '');
         const warnings: string[] = [];
         const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
@@ -2179,7 +2180,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         } catch (error) {
           sheet.events = beforeEvents;
-          return toolError(nothingChanged(`The update stopped before anything was written (${error instanceof Error ? error.message : String(error)}).`));
+          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
         }
 
         const path = found.match.path;
@@ -2236,7 +2237,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
         }
         const events = sheet.events as Record<string, unknown>[];
         const beforeEvents = snapshotEvents(sheet.events);
@@ -2247,7 +2249,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           editCommentRowInPlace(found.event, { text: args.text, 'text-color': args.textColor, 'background-color': args.backgroundColor }, 'eventType');
         } catch (error) {
           sheet.events = beforeEvents;
-          return toolError(nothingChanged(`The update stopped before anything was written (${error instanceof Error ? error.message : String(error)}).`));
+          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
         }
         if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
           return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', eventPath }, { projectWritten: false });
@@ -2302,7 +2304,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
         }
         const events = sheet.events as Record<string, unknown>[];
         const beforeEvents = snapshotEvents(sheet.events);
@@ -2312,7 +2315,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const warnings: string[] = [];
         if (args.remove) {
           const stored = found.event.script;
-          const firstLine = String((typeof stored === 'string' || Array.isArray(stored) ? toScriptLines(stored as string | string[]) : [])[0] ?? '');
+          // A list entry may hold a line break, which the editor shows as two lines
+          const firstLine = String((typeof stored === 'string' || Array.isArray(stored) ? toScriptLines(stored as string | string[]) : [])[0] ?? '').split(/\r?\n/)[0];
           if (firstLine !== args.expectedText) {
             return toolError(nothingChanged(`The script event at index ${args.index} of ${found.where} starts with "${firstLine}", not "${args.expectedText}". Read the sheet again and give the index of the script event to remove.`));
           }
@@ -2335,7 +2339,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         } catch (error) {
           sheet.events = beforeEvents;
-          return toolError(nothingChanged(`The update stopped before anything was written (${error instanceof Error ? error.message : String(error)}).`));
+          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
         }
         if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
           return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', eventPath }, { projectWritten: false });
@@ -2549,7 +2553,9 @@ function indexedEvent(
   if (args.index >= list.length) return { error: `Index ${args.index} is out of range: ${where} holds ${list.length} event(s), indexes 0-${Math.max(0, list.length - 1)}.` };
   const event = list[args.index];
   if (event.eventType !== wanted) {
-    return { error: `The event at index ${args.index} of ${where} is a "${String(event.eventType)}", not a ${wanted === 'comment' ? 'comment' : 'script event'}; indexes count every event of the container.` };
+    const noun = wanted === 'comment' ? 'comment' : 'script event';
+    const what = typeof event.eventType === 'string' ? `is a "${event.eventType}", not a ${noun}` : `has no eventType, so it is not a ${noun}`;
+    return { error: `The event at index ${args.index} of ${where} ${what}; indexes count every event of the container.` };
   }
   return { event, list, where };
 }

@@ -63,6 +63,18 @@ const written = (writer: MockWriter): Ev[] => (writer.callsFor('writeEntityFile'
 const sheetOf = async (reader: MockReader) => (await reader.readEventSheet('Sheet1')).events as unknown as Ev[];
 const groupG = (events: Ev[]) => (events[1].children as Ev[]);
 
+/**
+ * Adds a top-level block 500 whose conditions are read from `late` once group "G" has lost the
+ * event at index 2 (a removal), and are none before. No real sheet gets a new load-time error
+ * from losing a script event, since the rules look at an event's ancestors and, for else blocks,
+ * at its predecessor (a warning), so this makes the input of the check change with the removal.
+ */
+function withLateConditions(events: Ev[], late: () => unknown[]): void {
+  const lateBlock = block(500);
+  Object.defineProperty(lateBlock, 'conditions', { enumerable: true, configurable: true, get: () => (groupG(events).length < 4 ? late() : []) });
+  events.push(lateBlock);
+}
+
 const COMMENT_TOOL = 'update_comment';
 const SCRIPT_TOOL = 'update_script_event';
 
@@ -140,7 +152,7 @@ describe('update_comment', () => {
     // The text is set first, then the background colour, whose key cannot be set
     Object.defineProperty(top, 'background-color', { enumerable: true, configurable: true, get: () => [0, 0, 0, 1], set: () => { throw new Error('the colour cannot be set'); } });
     const result = await server.callTool(COMMENT_TOOL, { sheetName: 'Sheet1', index: 0, text: 'x', backgroundColor: [1, 1, 1, 1] });
-    expect(errorText(result)).toBe('The update stopped before anything was written (the colour cannot be set). Nothing was changed.');
+    expect(errorText(result)).toBe('The change was stopped before anything was written: the colour cannot be set. Nothing was changed.');
     expect((await sheetOf(reader))[0].text).toBe('top');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
 
@@ -193,6 +205,55 @@ describe('update_script_event', () => {
     expect(removed.action).toBe('deleted');
   });
 
+  it('refuses a removal after which the load-time check finds a new error, and puts the sheet back', async () => {
+    const { server, reader, writer } = setup();
+    const trigger = (sid: number): Ev => ({ id: 'on-start-of-layout', objectClass: 'System', sid });
+    withLateConditions(await sheetOf(reader), () => [trigger(501), trigger(502)]);
+    const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
+    const text = errorText(await server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, remove: true, expectedText: 'a = 1;' }));
+    expect(text).toContain('Construct 3 load-time check failed; nothing was written.');
+    expect(text).toContain('Event has 2 triggers');
+    expect(text).toMatch(/Nothing was changed\.$/);
+    expect(text.match(/Nothing was changed\./g)).toHaveLength(1);
+    expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('compares the first line of a script saved as a list whose first entry holds a line break', async () => {
+    const { server, reader } = setup();
+    groupG(await sheetOf(reader))[2].script = ['first line\nsecond line', 'third'];
+    expect(errorText(await server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, remove: true, expectedText: 'first line\nsecond line' })))
+      .toContain('starts with "first line", not');
+    const removed = parse(await server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, remove: true, expectedText: 'first line' }));
+    expect(removed.action).toBe('deleted');
+  });
+
+  it('writes a script event that stores disabled: false without the key when disabled is false, and keeps the other keys', async () => {
+    const { server, reader, writer } = setup();
+    groupG(await sheetOf(reader))[2].disabled = false;
+    const data = parse(await server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, disabled: false }));
+    expect(data.action).toBe('updated');
+    expect(groupG(written(writer))[2]).toEqual({ eventType: 'script', language: 'javascript', script: ['a = 1;', 'b = 2;'] });
+  });
+
+  it('refuses an event sheet that is not registered or cannot be read, saying Nothing was changed.', async () => {
+    const { server, writer } = setup();
+    for (const sheetName of ['Nope', 'sheet1']) {
+      expect(errorText(await server.callTool(SCRIPT_TOOL, { sheetName, groupPath: 'G', index: 2, disabled: true })), sheetName).toMatch(/not found.*Nothing was changed\.$/s);
+      expect(errorText(await server.callTool(COMMENT_TOOL, { sheetName, index: 0, text: 'x' })), sheetName).toMatch(/not found.*Nothing was changed\.$/s);
+    }
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('names an event without an eventType as one, not as "undefined"', async () => {
+    const { server, reader } = setup();
+    groupG(await sheetOf(reader)).push({ sid: 240 });
+    expect(errorText(await server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 4, disabled: true })))
+      .toBe('The event at index 4 of group "G" has no eventType, so it is not a script event; indexes count every event of the container. Nothing was changed.');
+    expect(errorText(await server.callTool(COMMENT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 4, text: 'x' })))
+      .toBe('The event at index 4 of group "G" has no eventType, so it is not a comment; indexes count every event of the container. Nothing was changed.');
+  });
+
   it('compares the first line of a script saved as one string', async () => {
     const { server, reader } = setup();
     groupG(await sheetOf(reader))[2].script = 'first line\nsecond line';
@@ -240,19 +301,17 @@ describe('update_script_event', () => {
     const lines = groupG(events)[2].script;
     Object.defineProperty(groupG(events)[2], 'script', { enumerable: true, configurable: true, get: () => lines, set: () => { throw new Error('the script cannot be set'); } });
     expect(errorText(await server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, script: 'x' })))
-      .toBe('The update stopped before anything was written (the script cannot be set). Nothing was changed.');
+      .toBe('The change was stopped before anything was written: the script cannot be set. Nothing was changed.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
 
-    // A sheet nested deeper than the else-block scan looks
-    const deep = setup();
-    let inner: Ev = block(900);
-    for (let depth = 0; depth < 52; depth++) inner = block(910 + depth, { children: [inner] });
-    (await sheetOf(deep.reader)).push(inner);
-    const before = JSON.stringify(await deep.reader.readEventSheet('Sheet1'));
-    const stopped = await deep.server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, remove: true, expectedText: 'a = 1;' });
-    expect(errorText(stopped)).toMatch(/^The update stopped before anything was written \(.+\)\. Nothing was changed\.$/);
-    expect(JSON.stringify(await deep.reader.readEventSheet('Sheet1'))).toBe(before);
-    expect(deep.writer.callsFor('writeEntityFile')).toHaveLength(0);
+    // The load-time check cannot read an event once the script event is gone
+    const stopping = setup();
+    withLateConditions(await sheetOf(stopping.reader), () => { throw new Error('the check cannot read this event'); });
+    const before = JSON.stringify(await stopping.reader.readEventSheet('Sheet1'));
+    const stopped = await stopping.server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, remove: true, expectedText: 'a = 1;' });
+    expect(errorText(stopped)).toBe('The change was stopped before anything was written: the check cannot read this event. Nothing was changed.');
+    expect(JSON.stringify(await stopping.reader.readEventSheet('Sheet1'))).toBe(before);
+    expect(stopping.writer.callsFor('writeEntityFile')).toHaveLength(0);
 
     const failing = setup(new FailingWriter());
     const failed = await failing.server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, disabled: true });
@@ -280,6 +339,14 @@ describe('update_comment and update_script_event', () => {
       { tool: SCRIPT_TOOL, args: { groupPath: 'G', index: 1, script: 'x' } },
       { tool: SCRIPT_TOOL, args: { groupPath: 'G', index: 7, disabled: true } },
       { tool: SCRIPT_TOOL, args: { groupPath: 'E', index: 0, disabled: true } },
+      { tool: COMMENT_TOOL, args: { sheetName: 'Nope', index: 0, text: 'x' } },
+      { tool: SCRIPT_TOOL, args: { sheetName: 'Nope', groupPath: 'G', index: 2, disabled: true } },
+      // Refused after the script event was taken out in memory: the load-time check finds a new error
+      {
+        tool: SCRIPT_TOOL,
+        args: { groupPath: 'G', index: 2, remove: true, expectedText: 'a = 1;' },
+        prepare: events => withLateConditions(events, () => [{ id: 'on-start-of-layout', objectClass: 'System', sid: 501 }, { id: 'on-start-of-layout', objectClass: 'System', sid: 502 }]),
+      },
     ];
     for (const { tool, args, prepare } of calls) {
       const { server, reader, writer } = setup();

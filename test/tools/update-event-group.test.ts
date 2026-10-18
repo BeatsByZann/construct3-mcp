@@ -276,6 +276,23 @@ describe('update_event_group', () => {
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
+  it('names an event without an eventType as one, not as "undefined"', async () => {
+    const { server, reader } = setup();
+    (await sheetOf(reader)).push({ sid: 700 });
+    expect(errorText(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 700, description: 'x' })))
+      .toBe('The event with SID 700 has no eventType, so it is not a group. Nothing was changed.');
+  });
+
+  it('refuses an event sheet that is not registered, also under another letter case', async () => {
+    const { server, writer } = setup();
+    for (const sheetName of ['Nope', 'sheet1']) {
+      const text = errorText(await server.callTool('update_event_group', { sheetName, sid: 100, description: 'x' }));
+      expect(text, sheetName).toMatch(/not found.*Nothing was changed\.$/s);
+      if (sheetName === 'sheet1') expect(text).toContain('Did you mean "Sheet1"?');
+    }
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
   it('every refusal ends with Nothing was changed. and leaves the sheet as it was', async () => {
     // Each also asks for changes that would be made if the call went through
     const calls: Array<Record<string, unknown>> = [
@@ -287,6 +304,8 @@ describe('update_event_group', () => {
       { sid: 999, description: 'x', disabled: true },
       { sid: 100, eventPath: 'events[1]', description: 'x', disabled: true },
       { sid: 100, eventPath: 'bogus', description: 'x', disabled: true },
+      { sheetName: 'Nope', sid: 100, description: 'x', disabled: true },
+      { sheetName: 'sheet1', sid: 100, description: 'x', disabled: true },
     ];
     for (const args of calls) {
       const { server, reader, writer } = setup();
@@ -333,7 +352,7 @@ describe('update_event_group', () => {
       set: () => { throw new Error('the description cannot be set'); },
     });
     const result = await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, title: 'Walk', description: 'x' });
-    expect(errorText(result)).toBe('The update stopped before anything was written (the description cannot be set). Nothing was changed.');
+    expect(errorText(result)).toBe('The change was stopped before anything was written: the description cannot be set. Nothing was changed.');
     expect((await sheetOf(reader))[0].title).toBe('Movement');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
