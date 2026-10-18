@@ -55,9 +55,9 @@ function listSome(items: string[], max = 5): string {
 
 /**
  * A "layer" parameter that is not one quoted string, so it may be a layer
- * number (Revision 3): a number literal in any form ("1", "1.0", "+1",
+ * number: a number literal in any form ("1", "1.0", "+1",
  * "1e0", " 1 "), or any other expression (a variable, arithmetic), which
- * may evaluate to one. A quoted name is a name (layer-references.ts:4-8).
+ * may evaluate to one. A quoted name is a name (see layer-references.ts).
  */
 function mayBeLayerNumber(expression: string): boolean {
   return !/^\s*"(?:[^"]|"")*"\s*$/.test(expression) && expression.trim() !== '';
@@ -188,7 +188,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
             ...(unknown.length > 0 ? [`not at this level: ${quoted(unknown)}`] : []),
           ];
           return refusal(`layerNames must list every layer of ${scope} exactly once (${problems.join('; ')}). `
-            + `Current order, first to last: ${quoted(current)}`);
+            + `Current order, first to last: ${quoted(current) || '(none)'}`);
         }
 
         const common = {

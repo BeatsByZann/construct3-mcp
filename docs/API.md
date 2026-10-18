@@ -1051,7 +1051,7 @@ Delete a layer or sub-layer from a layout, together with its sub-layers.
 
 ### `reorder_layers`
 
-Put the layers of one level of a layout in a new order (#ISSUE): the layout's own layers, or the sub-layers of `parentLayer`. `layerNames` lists every layer of that level once, with its exact name, first to last (index 0 first, as `add_layer` counts). Sub-layers and instances stay with their layer. A list that leaves out, repeats or adds a layer is refused and changes nothing; so is a level where two layers share a name. Returns `{ success, entity, category: "layout", action: "updated", order, parentLayer?, backupFile }`; an order the level already has returns `action: "unchanged"` and writes nothing.
+Put the layers of one level of a layout in a new order (#ISSUE): the layout's own layers, or the sub-layers of `parentLayer`. `layerNames` lists every layer of that level once, with its exact name, first to last (index 0 first, as `add_layer` counts). Sub-layers and instances stay with their layer. A list that leaves out, repeats or adds a layer is refused and changes nothing; so is a level where two layers share a name. Returns `{ success, entity, category: "layout", action: "updated", order, parentLayer?, backupFile, warnings? }`; an order the level already has returns `action: "unchanged"` and writes nothing.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1059,13 +1059,13 @@ Put the layers of one level of a layout in a new order (#ISSUE): the layout's ow
 | `layerNames` | string[] | Yes | Every layer of the level, in the new order |
 | `parentLayer` | string | No | Reorder this layer's sub-layers (a path such as `"Main > HUD"` is accepted) |
 
-A `"layer"` parameter of a condition or action can name a layer by a number (any number literal, or an expression that may give one), which may count layers by their position; every such parameter that is not one quoted name is listed in a warning and never changed. Event sheets the server could not parse are not searched for them, and the warning names them. The scan covers only `"layer"` parameters: layer numbers in expressions (such as `LayerOpacity(1)`) and in scripts are not searched.
+A `"layer"` parameter of a condition or action can name a layer by a number (any number literal, or an expression that may give one), which may count layers by their position; every such parameter that is not one quoted name is counted in a warning, which lists the first five and then a count, and is never changed. Event sheets the server could not parse are not searched for them, and a warning names the first five of them. The scan covers only `"layer"` parameters: layer numbers in expressions (such as `LayerOpacity(1)`) and in scripts are not searched.
 
 When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
 
 ### `move_layer`
 
-Move a layer, with its sub-layers and instances, to another place in the same layout (#ISSUE): into the sub-layers of `parentLayer`, with `parentLayer: null` to the layout's own layers, or with `parentLayer` left out within its current level, at `index` (0 = first; default: last). A move into the layer itself or one of its sub-layers is refused. Returns `{ ..., action: "updated", layer, from: { parentLayer, index }, to: { parentLayer, index }, backupFile }` (`parentLayer` null for the layout's own layers); a layer already in that place returns `action: "unchanged"`.
+Move a layer, with its sub-layers and instances, to another place in the same layout (#ISSUE): into the sub-layers of `parentLayer`, with `parentLayer: null` to the layout's own layers, or with `parentLayer` left out within its current level, at `index` (0 = first; default: last). A move into the layer itself or one of its sub-layers is refused. Returns `{ ..., action: "updated", layer, from: { parentLayer, index }, to: { parentLayer, index }, backupFile, warnings? }` (`parentLayer` null for the layout's own layers); a layer already in that place returns `action: "unchanged"`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1074,7 +1074,7 @@ Move a layer, with its sub-layers and instances, to another place in the same la
 | `parentLayer` | string \| null | No | Destination parent layer; null: the layout's own layers; omitted: its current level |
 | `index` | number | No | Position at the destination once moved; refused when past the last place |
 
-A `"layer"` parameter of a condition or action can name a layer by a number (any number literal, or an expression that may give one), which may count layers by their position; every such parameter that is not one quoted name is listed in a warning and never changed. Event sheets the server could not parse are not searched for them, and the warning names them. The scan covers only `"layer"` parameters: layer numbers in expressions (such as `LayerOpacity(1)`) and in scripts are not searched.
+A `"layer"` parameter of a condition or action can name a layer by a number (any number literal, or an expression that may give one), which may count layers by their position; every such parameter that is not one quoted name is counted in a warning, which lists the first five and then a count, and is never changed. Event sheets the server could not parse are not searched for them, and a warning names the first five of them. The scan covers only `"layer"` parameters: layer numbers in expressions (such as `LayerOpacity(1)`) and in scripts are not searched.
 
 When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
 
@@ -1100,7 +1100,7 @@ At least one property must be provided. A name in `instanceVariables` that neith
 
 ### `move_instance`
 
-Move a placed instance to another layer or sub-layer of its layout, to another place in its layer's instances, or both (#ISSUE). A layer keeps its instances in an array: `position` counts in it, from `"first"` to `"last"`. With `afterUid` or `beforeUid` the instance goes right after or right before that instance of the destination layer. Without a position, an instance that changes layer goes last. Refused, changing nothing: a non-world instance, a UID or anchor that several instances of the layout have, an anchor on another layer, an index past the last place, two placements at once. Hierarchy links stay as they are. Returns `{ ..., action: "updated", uid, fromLayer, fromIndex, toLayer, toIndex, layerInstanceCount, backupFile }`; an instance already in that place returns `action: "unchanged"`.
+Move a placed instance to another layer or sub-layer of its layout, to another place in its layer's instances, or both (#ISSUE). A layer keeps its instances in an array: `position` counts in it, from `"first"` to `"last"`. With `afterUid` or `beforeUid` the instance goes right after or right before that instance of the destination layer. Without a position, an instance that changes layer goes last. Refused, changing nothing: a call with nothing to do (no `toLayer` and no position), an anchor that is the instance itself, a UID the layout does not have, a non-world instance, a UID or anchor that several instances of the layout have, an anchor on another layer, an index past the last place, two placements at once. Hierarchy links stay as they are. Returns `{ ..., action: "updated", uid, fromLayer, fromIndex, toLayer, toIndex, layerInstanceCount, backupFile }`; an instance already in that place returns `action: "unchanged"`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

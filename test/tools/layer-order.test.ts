@@ -150,6 +150,28 @@ describe('reorder_layers', () => {
     expect(await readFile(layoutPath(), 'utf8')).toBe(before);
     expect(await layoutFiles()).toEqual(filesBefore);
   });
+
+  it('refuses a level whose layers share a name instead of merging them, and changes nothing', async () => {
+    // Top, Under, Top: listing Under and Top passes the permutation check and, without the refusal, would drop one Top and its instances
+    const layout = await readLayout();
+    at(layout.layers, ['Main', 'Overlay']).subLayers.push(layer('Top', 550000000000008, [sprite(5)]));
+    await writeFile(layoutPath(), JSON.stringify(layout, null, '\t'));
+    await reader.loadProject();
+    const before = await readFile(layoutPath(), 'utf8');
+    const filesBefore = await layoutFiles();
+    const data = await call('reorder_layers', { parentLayer: 'Overlay', layerNames: ['Under', 'Top'] });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('cannot be told apart by name (repeated: "Top"); rename them first with update_layer. Nothing was changed.');
+    expect(await readFile(layoutPath(), 'utf8')).toBe(before);
+    expect(await layoutFiles()).toEqual(filesBefore);
+  });
+
+  it('prints (none) as the current order of a level with no layers', async () => {
+    const before = await readFile(layoutPath(), 'utf8');
+    const data = await call('reorder_layers', { parentLayer: 'HUD', layerNames: ['Top'] });
+    expect(data.text).toContain('Current order, first to last: (none). Nothing was changed.');
+    expect(await readFile(layoutPath(), 'utf8')).toBe(before);
+  });
 });
 
 describe('move_layer', () => {
@@ -194,7 +216,7 @@ describe('move_layer', () => {
     expect((reordered.warnings ?? []).join(' ')).toContain('"MainSheet" events[0] action 1 (1)');
   });
 
-  it('lists number literals in every form and other expressions, never a quoted name, and changes none (Revision 3)', async () => {
+  it('lists number literals in every form and other expressions, never a quoted name, and changes none', async () => {
     const sheetFile = join(tmpDir, 'eventSheets', 'MainSheet.json');
     const sheet = JSON.parse(await readFile(sheetFile, 'utf8')) as { events: Array<{ actions: unknown[] }> };
     ['1.0', '+1', '1e0', 'LayerVar', '"Main"', '"Say ""hi"""'].forEach((layer, i) => sheet.events[0].actions.push(
