@@ -55,6 +55,8 @@ import { getProjectIndex } from './index-builder.js';
 import { countAnimationFrames } from './animations.js';
 import { getScriptSource, tokenizeScript, type ScriptToken } from './script-scan.js';
 import { createByNameTarget } from '../event-shapes.js';
+import { containerMemberships } from '../containers.js';
+import { nameKey } from '../names.js';
 
 export type AssetType = 'sound' | 'music' | 'image' | 'font' | 'video' | 'icon' | 'general' | 'all';
 
@@ -666,9 +668,7 @@ export async function getAssetUsage(
   }
 
   // ── Images (sprite animations and single images) ─────────
-  const containers = Array.isArray(project.containers) && project.containers.length > 0
-    ? JSON.stringify(project.containers).toLowerCase()
-    : '';
+  const memberships = containerMemberships(project);
   const assetUsages: AssetUsageInfo[] = [];
   for (const [objName, objData] of objectTypes) {
     // Tiled Background, 9-patch, Particles, Sprite font and other plugins save one `image` instead
@@ -705,7 +705,7 @@ export async function getAssetUsage(
       info.status = 'not-analysed';
       info.reason = `${namedAs === objName ? 'the object name' : `its family "${namedAs}"`} appears in event parameters or scripts, `
         + 'where object references are not all traced';
-    } else if (containers.includes(JSON.stringify(objName.toLowerCase()))) {
+    } else if (memberships.has(nameKey(objName))) {
       info.status = 'not-analysed';
       info.reason = 'the object type is in a container, whose other members create its instances';
     } else if (createdByExpression.length > 0) {

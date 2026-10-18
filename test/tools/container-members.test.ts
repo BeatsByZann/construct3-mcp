@@ -241,3 +241,64 @@ describe('delete_object and containers', () => {
     expect((data.warnings ?? []).join(' ')).toContain('Removed the container with "Hitbox", "Shield", since fewer than two members were left.');
   });
 });
+
+interface Orphans { orphanedObjects: Array<{ name: string; containers?: ContainerJson[] }> }
+interface Dependencies { object: { containers?: ContainerJson[] } }
+
+describe('analysis tools and containers', () => {
+  it('find_orphaned_objects lists the containers of an orphan', async () => {
+    const data = await call('find_orphaned_objects', {}) as unknown as Orphans;
+    const gem = data.orphanedObjects.find(o => o.name === 'Gem');
+    expect(gem?.containers).toEqual([{ index: 1, members: ['Gem', 'Coin', 'Key'], others: ['Coin', 'Key'] }]);
+  });
+
+  it('get_object_dependencies reports container membership, read from project.c3proj as it is now', async () => {
+    const one = await call('get_object_dependencies', { object: 'Gem' }) as unknown as Dependencies;
+    expect(one.object.containers).toEqual([{ index: 1, members: ['Gem', 'Coin', 'Key'], others: ['Coin', 'Key'] }]);
+    const sprite = await call('get_object_dependencies', { object: 'Sprite' }) as unknown as Dependencies;
+    expect(sprite.object.containers).toBeUndefined();
+    // An own write of project.c3proj that touches nothing else: the next call sees it
+    await writer.updateProject(project => { project.containers = []; });
+    const after = await call('get_object_dependencies', { object: 'Gem' }) as unknown as Dependencies;
+    expect(after.object.containers).toBeUndefined();
+  });
+});
+
+describe('validate_project container-member', () => {
+  const containerIssues = async () => {
+    const result = await validateProjectIntegrity(reader);
+    const pick = (list: typeof result.errors) => list.filter(e => e.check === 'container-member');
+    return { errors: pick(result.errors), warnings: pick(result.warnings), info: pick(result.info) };
+  };
+
+  it('reports nothing while every container has two or more object types', async () => {
+    expect(await containerIssues()).toEqual({ errors: [], warnings: [], info: [] });
+  });
+
+  it('reports a member that names no object type as an error', async () => {
+    await setProject(project => { project.containers![1].members.push('Ghost'); });
+    const { errors } = await containerIssues();
+    expect(errors).toHaveLength(1);
+    expect(errors[0].entity).toBe('containers/1');
+    expect(errors[0].message).toContain('lists "Ghost", which is not an object type of the project');
+    expect(errors[0].message).toContain('cannot find object type name');
+  });
+
+  it('warns about a member that differs only in case', async () => {
+    await setProject(project => { project.containers![0].members = ['hitbox', 'Shield']; });
+    const { errors, warnings } = await containerIssues();
+    expect(errors).toEqual([]);
+    expect(warnings.map(w => w.message)).toEqual([expect.stringContaining('"hitbox", which differs only in letter case from the object type "Hitbox"')]);
+  });
+
+  it('reports a container with fewer than two object types as an error', async () => {
+    await setProject(project => { project.containers![0].members = ['Shield']; });
+    const { errors } = await containerIssues();
+    expect(errors.map(e => e.message)).toEqual([expect.stringContaining('has only one member that is an object type ("Shield")')]);
+  });
+
+  it('reports no error after delete_object took the member out', async () => {
+    await call('delete_object', { name: 'Gem' });
+    expect((await containerIssues()).errors).toEqual([]);
+  });
+});
