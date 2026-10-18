@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'fs/promises';
-import { writeFileSync } from 'fs';
+import { existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
@@ -299,6 +299,37 @@ describe('delete_object whose project.c3proj update fails otherwise', () => {
     expect(text).not.toContain('Left as they are');
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(saved);
     expect(await images()).toEqual(['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg']);
+  });
+});
+
+/**
+ * The object file was deleted, then project.c3proj was saved again from before
+ * the call (the editor holds it) and lists the object again: the call is an
+ * error, the object file stays deleted (its .bak holds it), and only the
+ * images are renamed back to their live names.
+ */
+describe('delete_object whose object file was deleted and then project.c3proj lists the name again', () => {
+  it('leaves the object file deleted and renames only the images back', async () => {
+    await createCoin();
+    const objectBefore = await readFile(objectPath('Coin'), 'utf8');
+    const projectBefore = await readFile(join(tmpDir, 'project.c3proj'), 'utf8');
+    const deleteEntityFile = writer.deleteEntityFile.bind(writer);
+    writer.deleteEntityFile = async (...args) => {
+      // The editor saves the project it holds, from before the call: it still lists the object
+      writeFileSync(join(tmpDir, 'project.c3proj'), projectBefore);
+      return deleteEntityFile(...args);
+    };
+
+    const result = await server.callTool('delete_object', { name: 'Coin' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('objectTypes/Coin.json was deleted, but project.c3proj was saved again during the delete ' +
+      '(in the Construct 3 editor?) and lists "Coin" again. Put the file back from objectTypes/Coin.json.bak, or remove "Coin" in the editor. ' +
+      'Its image files were renamed back from .bak.');
+    expect(existsSync(objectPath('Coin'))).toBe(false);
+    expect(await readFile(`${objectPath('Coin')}.bak`, 'utf8')).toBe(objectBefore);
+    expect(await images()).toEqual(['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg']);
+    expect(JSON.parse(await readFile(join(tmpDir, 'project.c3proj'), 'utf8')).objectTypes.items).toContain('Coin');
   });
 });
 
