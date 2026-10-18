@@ -604,22 +604,36 @@ export function ambiguousSidMessage(
 }
 
 /**
+ * A refusal's text, ending with "Nothing was changed." exactly once: for the
+ * refusals of the event tools that place, move or edit events, which all
+ * come before the tool's first write.
+ */
+export function nothingChanged(message: string): string {
+  const text = message.trimEnd();
+  if (text.endsWith('Nothing was changed.')) return text;
+  return `${/[.?!]$/.test(text) ? text : `${text}.`} Nothing was changed.`;
+}
+
+/**
  * Resolve the one event a SID-addressed tool acts on. A SID that matches no
  * event, or several events without an eventPath to pick one, is an error, as
  * is an eventPath that does not point at an event with this SID. Nothing is
- * changed, so tools can return the error before any write.
+ * changed, so tools can return the error before any write. `argument` is the
+ * name of the tool argument that holds `eventPath` (default `eventPath`); the
+ * messages name it.
  */
 export function resolveEventBySid(
   events: Record<string, unknown>[],
   sid: number,
-  options: { sheetName: string; action: string; eventPath?: string },
+  options: { sheetName: string; action: string; eventPath?: string; argument?: string },
 ): { match: SidMatch } | { error: string } {
   const { sheetName, eventPath } = options;
+  const argument = options.argument ?? 'eventPath';
   let wanted: string | undefined;
   if (eventPath !== undefined) {
     const indices = parseEventPath(eventPath);
     if (!indices) {
-      return { error: `eventPath "${eventPath}" is not an event path. Use the form events[3] or events[3].children[1], as locate_event and SID errors list it.` };
+      return { error: `${argument} "${eventPath}" is not an event path. Use the form events[3] or events[3].children[1], as locate_event and SID errors list it.` };
     }
     wanted = formatEventPath(indices);
   }
@@ -636,14 +650,14 @@ export function resolveEventBySid(
       : 'no event exists at that path';
     return {
       error:
-        `eventPath "${eventPath}" does not point at an event with SID ${sid} in sheet "${sheetName}" (${target}). ` +
+        `${argument} "${eventPath}" does not point at an event with SID ${sid} in sheet "${sheetName}" (${target}). ` +
         `${matches.length === 1 ? 'The event with this SID is' : `The ${matches.length} events with this SID are`}:\n` +
         describeSidMatches(sheetName, events, matches).join('\n'),
     };
   }
 
   if (matches.length > 1) {
-    return { error: ambiguousSidMessage(sheetName, events, sid, matches, { action: options.action, argument: 'eventPath' }) };
+    return { error: ambiguousSidMessage(sheetName, events, sid, matches, { action: options.action, argument }) };
   }
   return { match: matches[0] };
 }
