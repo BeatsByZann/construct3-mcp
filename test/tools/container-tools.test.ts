@@ -311,7 +311,7 @@ describe('update_container', () => {
     expect(existsSync(projectPath() + '.bak')).toBe(false);
   });
 
-  it('refuses a missing member and a container that does not list the member', async () => {
+  it('refuses a member that no container lists', async () => {
     await seed(['Hitbox', 'Shield']);
     const none = await call('update_container', { member: 'Coin', addMembers: ['Key'] });
     expect(none.isError).toBe(true);
@@ -385,7 +385,21 @@ describe('a save of project.c3proj during the call', () => {
     expect(data.isError).toBe(true);
     expect(data.text).toContain('does not list "Hitbox"');
     expect(occurrences(data.text, NOTHING_CHANGED)).toBe(1);
+    // project.c3proj is the save, byte for byte. The writer made its backup in round 1, before it saw the file change,
+    // so project.c3proj.bak is left next to the refusal (it holds the file as round 1 read it)
     expect(await projectText()).toBe(saved);
+    expect(existsSync(projectPath() + '.bak')).toBe(true);
+  });
+});
+
+describe('delete_container and a save during the call', () => {
+  it('deletes the container that lists the member as the file stands, when a save during the call reordered the containers', async () => {
+    await seed(['Hitbox', 'Shield'], ['Gem', 'Coin']);
+    const saved = await savedWith([['Gem', 'Coin'], ['Hitbox', 'Shield']]);
+    saveDuringUpdate(() => writeFile(projectPath(), saved));
+    const data = await call('delete_container', { member: 'Gem' });
+    expect(data).toMatchObject({ success: true, action: 'deleted', index: 0, members: ['Gem', 'Coin'] });
+    expect((await readProject()).containers).toEqual([{ members: ['Hitbox', 'Shield'] }]);
   });
 });
 
