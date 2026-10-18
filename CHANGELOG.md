@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `rename_layer` renames a layer in one or more layouts in one call and points the `"layer"` parameters that are exactly its quoted old name at the new name when every layout with a layer of that name is renamed; `dryRun` reports the files it would write. When a write fails, the files the call wrote are rolled back, except one another write changed since (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).

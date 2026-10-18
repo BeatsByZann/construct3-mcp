@@ -183,6 +183,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `delete_layout` | Delete a layout (blocks startup layout, checks references) |
 | `add_layer` | Add a layer (position, visibility, transparency, parallax, blend mode); refuses a name any layer or sub-layer of the layout uses, ignoring case |
 | `update_layer` | Rename a layer or sub-layer or change visibility, interactivity, parallax, blend mode, scale rate, Z elevation; refuses a new name used by another layer or sub-layer, ignoring case; a rename points the event parameters that name the layer at the new name (unless another layout has a layer of that name) and lists other strings that may name it |
+| `rename_layer` | Rename a layer in several layouts at once, with its `"layer"` parameters and a dry run |
 | `delete_layer` | Delete a layer or sub-layer with its sub-layers (never the last top-level one; blocked while they hold instances unless forced); hierarchy links of other instances to the deleted ones are removed |
 | `add_instance_to_layout` | Place an object instance on a layout layer or sub-layer with full property control; writes a value for every instance variable of the object and its families and refuses names they do not have |
 | `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, visibility, tags, instance variables of its object and families) |
@@ -440,7 +441,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 84.
 
 ### Standalone Testing
 
@@ -553,6 +554,7 @@ construct3-mcp/
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
+│   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
@@ -681,7 +683,7 @@ We welcome contributions! Here's how to get started:
 
 - **Folder Format Only**: Works with .c3proj folder projects; `pack_project` can write a .c3p, but .c3p files cannot be opened
 - **Editor Holds the Project in Memory**: Close and reopen the project in Construct 3 after MCP edits and before saving there, or the editor can overwrite them
-- **No Rename Refactoring**: Objects, families, event sheets, layouts and timelines cannot be renamed; renaming an event variable (`update_event_variable`) does not update the events that use the old name, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38). `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
+- **No Rename Refactoring**: Objects, families, event sheets, layouts and timelines cannot be renamed; renaming an event variable (`update_event_variable`) does not update the events that use the old name, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38); `rename_layer` renames it in several layouts in one call. `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
 - **Runtime Testing Needs an Export or the Editor's Preview**: Only the Construct editor exports or previews a project, so the runtime tools start from an exported folder (`serve_preview`) or a preview in a browser with a debugging port; they drive Chromium-based browsers (Chrome, Edge) only
 - **No ACE Validation**: Event block conditions/actions are not validated against plugin schemas (the AI caller is expected to know valid ACE IDs). Only the editor load-time rules listed under `validate_project` are checked; triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only. OR blocks are created with `isOrBlock`
 
