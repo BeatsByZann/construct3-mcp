@@ -6,8 +6,8 @@
  * instance of the object type (or of each member of the family) holds its
  * state in its `effects`, keyed by the effect's name. A layout's or layer's
  * entry is { effectId, name, instance: { isEnabled, parameters } }. Shapes
- * checked on an r495.2 editor-saved project (object type, family and layer
- * entries) and in Construct 3 r506-2 (a layout entry).
+ * checked on an r495.2 editor-saved project (one family entry and one layer
+ * entry) and in Construct 3 r506-2 (one object type entry and one layout entry).
  *
  * The layouts that the instance entries change are written first (through
  * syncLayoutInstances) and the holder's file last, so a call stopped between

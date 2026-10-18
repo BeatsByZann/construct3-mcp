@@ -1150,8 +1150,8 @@ The five effect tools (`list_effects`, `add_effect`, `update_effect`, `remove_ef
 
 Where the state of an effect is kept:
 
-- An object type's or family's effect is an entry `{ effectId, name }` in the `effectTypes` of its file (the shape of an r495.2 editor-saved project). Its state is on every placed instance of the object type, or of each member of the family, in the instance's `effects`, under the effect's name, as `{ isEnabled, parameters }`.
-- A layer's or layout's effect is an entry `{ effectId, name, instance: { isEnabled, parameters } }` in the `effectTypes` of the layer or of the layout: the layer entry of an r495.2 editor-saved project, and the layout entry Construct 3 r506-2 saved.
+- An object type's or family's effect is an entry `{ effectId, name }` in the `effectTypes` of its file (the shape of the one family entry of an r495.2 editor-saved project and of the one object type entry Construct 3 r506-2 saved). Its state is on every placed instance of the object type, or of each member of the family, in the instance's `effects`, under the effect's name, as `{ isEnabled, parameters }`.
+- A layer's or layout's effect is an entry `{ effectId, name, instance: { isEnabled, parameters } }` in the `effectTypes` of the layer or of the layout: the one layer entry of an r495.2 editor-saved project, and the one layout entry Construct 3 r506-2 saved.
 
 The result is `{ target, effects, registeredEffectAddons }`. `target` is `{ kind, name }` for an object type, a family or a layout, and `{ kind: "layer", layout, layer }` for a layer; `effects` lists the entries in order; `registeredEffectAddons` lists the `usedAddons` entries of type `effect`.
 
