@@ -2,6 +2,13 @@
 
 All notable changes to the Construct3 MCP Server are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- `delete_layout`, `delete_event_sheet`, `delete_family` and `delete_object` check the entity file, take the name out of `project.c3proj`, then delete the file, and undo the call when a step fails. Before, a `project.c3proj` update that failed for another reason than a change on disk (a file held by another program, or read-only) left the file deleted and the name registered, a `file-existence` error in `validate_project`; `delete_object` restored its file from the backup instead. Now such a call puts back what it changed, so it changes nothing unless a file cannot be put back, and its error says what is on disk afterwards: `project.c3proj` missing or unreadable, whether it lists the entity, and whether the file is there. A delete that finds `project.c3proj` saved again during the call and listing the entity is reported as an error instead of a success (#ISSUE).
+- A writer update of `project.c3proj` that reads the file again because it changed on disk, before the call first wrote it, backs it up again, so undoing the call keeps that change (#ISSUE).
+
 ## [1.10.0] - 2026-09-30
 
 ### Highlights
