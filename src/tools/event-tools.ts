@@ -93,7 +93,6 @@ import {
   rewriteFunctionCallInPlace,
   checkFunctionCallArguments,
   mergeCallArguments,
-  c3StringEnd,
   collectFunctionSignatures,
   resolveCallName,
   functionsObjectName,
@@ -117,7 +116,6 @@ import {
   REFERENCE_CHECK_MAX_EVENTS,
   namesVisibleToOtherSheets,
   type DeleteReference,
-  type FunctionReference,
   type DeleteReferenceKind,
   type DeleteReferenceReport,
 } from '../construct3/analyzers/delete-references.js';
@@ -141,6 +139,7 @@ import { rollBackFailedCall } from './call-rollback.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
 import { customActionDefinitionClashes, customActionOwnerError, customActionScan, newCustomActionDuplicates } from '../construct3/custom-actions.js';
+import { customActionCallSites, customActionRenameCaptures, type CustomActionCallSite, type CustomActionDefinition } from '../construct3/custom-actions.js';
 import {
   createEmptySheet,
   createVariableEvent,
@@ -756,12 +755,12 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'update_function',
     {
-      description: 'Update a function block or a custom action block: name, return type (functions), description, category, options, and parameters (add, remove, rename). Calls and function map registrations are rewritten only with updateCallers=true; a change that Functions.Name(...) expression calls or event sheets that could not be parsed may depend on is refused without force, since this tool cannot rewrite those; removing or renaming a parameter that the body still uses by its old name, or renames that make a use in the body find another parameter, are refused without force. A new parameter\'s initial value must be one the calls can take as an argument (a number, a string, true or false). A call is rewritten only when it passes the function\'s parameter count before the update, so a repeated run of a change that alters the parameter count changes nothing more; removing and adding the same number of parameters in one call is refused while calls exist (make two calls). Caller sheets are written first and the definition last; a failed write puts back what the call wrote. dryRun reports the plan without writing.',
+      description: 'Update a function block or a custom action block: name (functionName; for a custom action its aceName), return type (function blocks only; refused for a custom action), description, category, options, and parameters (add, remove, rename). Calls and function map registrations are rewritten only with updateCallers=true. A custom action call is matched to the definition it runs (its object type\'s own action, else its family\'s, or the family named in customActionObjectClass; names ignoring case); a custom action name its owner already has is refused, and so, even with force, is a rename that would make any call run another definition or stop running this one. A change that Functions.Name(...) expression calls or event sheets that could not be parsed may depend on is refused without force, since this tool cannot rewrite those; scripts are not checked. Removing or renaming a parameter that the body still uses by its old name, or renames that make a use in the body find another parameter, are refused without force. A new parameter\'s initial value must be one the calls can take as an argument (a number, a one-line string, true or false). A call is rewritten only when it passes the parameter count from before the update, so a repeated run of a change that alters the parameter count changes nothing more; removing and adding the same number of parameters in one call is refused while calls exist (make two calls). Caller sheets are written first and the definition last; a failed write puts back what the call wrote, except a file saved meanwhile by another program, which is left as it is and named with its .bak. dryRun reports the plan without writing.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Event sheet that holds the function, as registered (letter case included)'),
-        sid: z.number().int().positive().describe('SID of the function block'),
+        sid: z.number().int().positive().describe('SID of the function block or custom action block'),
         eventPath: eventPathSchema,
-        functionName: z.string().min(1).max(200).optional().describe('New name; calls and function maps follow only with updateCallers=true'),
+        functionName: z.string().min(1).max(200).optional().describe('New name (for a custom action, its aceName); calls and function maps follow only with updateCallers=true'),
         description: z.string().max(10_000).optional().describe('The editor\'s Description'),
         category: z.string().max(200).optional().describe('The editor\'s Category'),
         returnType: z.enum(['none', 'number', 'string', 'any']).optional().describe('The editor\'s Return type (function blocks only)'),
@@ -812,8 +811,12 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const found = resolveEventBySid(sheet.events as Record<string, unknown>[], args.sid, { sheetName: args.sheetName, action: 'update', eventPath: args.eventPath });
         if ('error' in found) return toolError(nothingChanged(found.error));
         const func = found.match.event;
-        if (func.eventType !== 'function-block') {
+        if (func.eventType !== 'function-block' && func.eventType !== 'custom-ace-block') {
           return toolError(nothingChanged(`The event with SID ${args.sid} is a "${String(func.eventType)}", not a function block or custom action block.`));
+        }
+        const kind = func.eventType === 'function-block' ? 'function' : 'custom-action';
+        if (kind === 'custom-action' && args.returnType !== undefined) {
+          return toolError(nothingChanged('returnType applies to function blocks; a custom action has none.'));
         }
 
         // 3. Every sheet, read once here as the whole object the write needs, with a snapshot, and the uses of the function by name
@@ -845,20 +848,73 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             message: nothingChanged(reason), references, ...unscannedFields(reports),
           }, { projectWritten: false });
         };
-        const oldName = String(func.functionName);
-        const { references, complete, limit } = findFunctionReferences(sheets, oldName, functionsObjectName(reader));
-        const calls = references.filter(r => r.kind === 'callFunction');
-        const maps = references.filter(r => r.kind === 'function-map');
-        const expressions = references.filter(r => r.kind === 'expression');
+        // A function is named by functionName and called by callFunction; a custom action by aceName and customAction
+        const definitionNameKey = kind === 'function' ? 'functionName' : 'aceName';
+        const callNameKey = kind === 'function' ? 'callFunction' : 'customAction';
+        const oldName = String(func[definitionNameKey]);
+        const owner = String(func.objectClass);
+        const shownName = kind === 'function' ? oldName : `${owner}.${oldName}`;
+        let references: CallReference[] = [];
+        let maps: CallReference[] = [];
+        let expressions: CallReference[] = [];
+        let complete: boolean;
+        let limit: ReferenceCheckLimit | undefined;
+        // For a custom action: the definitions, this one among them, every call, and the families of each object type
+        let customActions: {
+          definitions: CustomActionDefinition[]; self: CustomActionDefinition; sites: CustomActionCallSite[];
+          familiesOf: (objectClass: string) => readonly string[];
+        } | undefined;
+        if (kind === 'function') {
+          ({ references, complete, limit } = findFunctionReferences(sheets, oldName, functionsObjectName(reader)));
+          maps = references.filter(r => r.kind === 'function-map');
+          expressions = references.filter(r => r.kind === 'expression');
+        } else {
+          const scan = customActionScan(sheets);
+          const callSites = customActionCallSites(sheets);
+          // A definition past the scan's limits is not listed; it is still the one the calls are checked against
+          const listed = scan.definitions.find(d => d.sheet === args.sheetName && d.eventPath === found.match.path);
+          const self = listed ?? { owner, name: oldName, sheet: args.sheetName, eventPath: found.match.path, parameters: [] };
+          customActions = {
+            definitions: listed ? scan.definitions : [...scan.definitions, self], self, sites: callSites.sites,
+            familiesOf: (await loadCustomActionContext(reader)).familiesOf,
+          };
+          complete = scan.complete && callSites.complete;
+          limit = callSites.limit ?? (scan.complete ? undefined : 'events');
+        }
 
-        // 4. The new name and return type, checked like the editor's Function dialog against every other function
+        // 4. The new name and return type, checked like the editor's Function dialog against every other function;
+        // for a custom action, against the other custom actions of its owner and what each call runs
         const newName = args.functionName ?? oldName;
         const oldReturn = String(func.functionReturnType ?? 'none');
         const newReturn = args.returnType ?? oldReturn;
-        if (newName !== oldName || newReturn !== oldReturn) {
-          const others = functionBlockNames(sheets).filter(f => !(f.sheet === args.sheetName && f.eventPath === found.match.path));
-          const problem = findFunctionNameProblem(newName, newReturn, others);
-          if (problem) return refuse(functionNameMessage(problem, newName, newReturn));
+        let calls: CallReference[];
+        if (customActions === undefined) {
+          if (newName !== oldName || newReturn !== oldReturn) {
+            const others = functionBlockNames(sheets).filter(f => !(f.sheet === args.sheetName && f.eventPath === found.match.path));
+            const problem = findFunctionNameProblem(newName, newReturn, others);
+            if (problem) return refuse(functionNameMessage(problem, newName, newReturn));
+          }
+          calls = references.filter(r => r.kind === 'callFunction');
+        } else {
+          if (newName.trim() === '') return refuse('functionName is empty.');
+          const { definitions, self, sites, familiesOf } = customActions;
+          const clash = customActionDefinitionClashes(definitions.filter(d => d !== self), owner, newName)[0];
+          if (clash !== undefined) {
+            return refuse(`"${owner}" already has a custom action "${clash.name}" (sheet "${clash.sheet}", ${clash.eventPath}${clash.sid !== undefined ? `, SID ${clash.sid}` : ''}). ${DUPLICATE_CUSTOM_ACTION_RULE}`);
+          }
+          const { rewrite, captured } = customActionRenameCaptures(sites, definitions, self, newName, familiesOf);
+          if (captured.length > 0) {
+            const runs = (d?: CustomActionDefinition) => (d ? `${d.owner}.${d.name}` : null);
+            const shown = captured.slice(0, 10).map(({ site, before, after }) =>
+              `${site.sheet} ${site.path}${site.sid !== undefined ? ` (SID ${site.sid})` : ''} ${before ? `runs "${runs(before)}" now` : 'runs no custom action now'}` +
+              ` and would run ${after ? `"${runs(after)}"` : 'none'}`);
+            return blocked(`Renaming "${shownName}" to "${newName}" would change which custom action ${captured.length} call(s) run: ` +
+              `${shown.join('; ')}${captured.length > 10 ? `; and ${captured.length - 10} more` : ''}. ` +
+              'A call names a custom action by its name, so this rename would make the game do something else; force does not override it. Choose another name.',
+            captured.map(({ site, before, after }) => ({ ...referenceEntry(customCallReference(site)), runs: runs(before), wouldRun: runs(after) })));
+          }
+          calls = rewrite.map(customCallReference);
+          references = calls;
         }
 
         // 5. Parameters: where the removed and renamed names resolve now, then removals, renames and additions in that order
@@ -907,7 +963,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // 7. Blocks: calls without updateCallers, an argument change a repeated run could not recognise, expressions, unparsed sheets, the traversal limit
         const callerRefs = [...calls, ...(renamed ? maps : [])];
         if ((renamed || shapeChanged) && callerRefs.length > 0 && !args.updateCallers) {
-          return blocked(`${callerRefs.length} call(s) or function map registration(s) use "${oldName}": ${listReferences(callerRefs)}. Set updateCallers=true to rewrite them, or change them first.`,
+          const using = kind === 'function' ? `call(s) or function map registration(s) use "${oldName}"` : `call(s) run the custom action "${shownName}"`;
+          return blocked(`${callerRefs.length} ${using}: ${listReferences(callerRefs)}. Set updateCallers=true to rewrite them, or change them first.`,
             callerRefs.map(referenceEntry));
         }
         if (removed.length > 0 && added.length > 0 && current.length === oldCount && calls.length > 0) {
@@ -926,7 +983,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             return blocked(`${unscannedRefusal(unscanned)} Use force=true to update anyway.`, [], unscanned);
           }
         }
-        const usesChecked = `uses of the function "${oldName}"`;
+        const usesChecked = kind === 'function' ? `uses of the function "${oldName}"` : `uses of the custom action "${shownName}"`;
         if (!complete && !args.force) return blocked(`${traversalLimitReason(usesChecked, limit)} Use force=true to update anyway.`, references.map(referenceEntry));
 
         // 8. Parameter uses in the body: a use whose parameter is gone, or that now finds another parameter of its name
@@ -935,7 +992,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const reboundCount = countDeleteReferences(rebound);
         const whereLost = 'where the parameter no longer exists after the update';
         const whereRebound = 'where the name now finds another parameter after the update';
-        const paramsChecked = `uses of the parameters of "${oldName}"`;
+        const paramsChecked = `uses of the parameters of "${shownName}"`;
         if ((lostCount > 0 || reboundCount > 0 || !lost.complete) && !args.force) {
           const reasons = [
             ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
@@ -959,7 +1016,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // 9. dryRun: report the plan, put the definition back, write nothing
         if (args.dryRun) {
           const plan = {
-            dryRun: true, kind: 'function', name: oldName, newName, returnType: newReturn, parameters: parameterList(),
+            dryRun: true, kind, name: oldName, newName, ...(kind === 'function' ? { returnType: newReturn } : {}), parameters: parameterList(),
             calls: calls.map(referenceEntry), maps: maps.map(referenceEntry), expressions: expressions.map(referenceEntry),
             ...(warnings.length > 0 ? { warnings } : {}),
             ...unscannedFields(unscanned),
@@ -969,7 +1026,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
 
         // 10. The definition (the parameters were changed in step 5); a key the stored block lacks is added after the others
-        if (renamed) func.functionName = newName;
+        if (renamed) func[definitionNameKey] = newName;
         if (args.description !== undefined) func.functionDescription = args.description;
         if (args.category !== undefined) func.functionCategory = args.category;
         if (args.returnType !== undefined) func.functionReturnType = args.returnType;
@@ -979,11 +1036,11 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // 11. The callers, with updateCallers only; a call is renamed always, and its arguments change only when it passes oldCount of them
         let rewrittenCalls = 0;
         let rewrittenMaps = 0;
-        const leftAlone: FunctionReference[] = [];
+        const leftAlone: CallReference[] = [];
         if (args.updateCallers) {
           for (const ref of calls) {
             let changed = false;
-            if (renamed) { ref.ace.callFunction = newName; changed = true; }
+            if (renamed) { ref.ace[callNameKey] = newName; changed = true; }
             if (shapeChanged) {
               if (rewriteCallArguments(ref.ace, oldCount, removedIndexes, addedArguments)) changed = true;
               else leftAlone.push(ref);
@@ -998,14 +1055,14 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         }
         if (leftAlone.length > 0) {
-          warnings.push(`${leftAlone.length} call(s) pass a number of arguments other than the ${oldCount} parameter(s) "${oldName}" had, so their arguments were left as they are (a call this update already rewrote in a run that stopped is one of them): ${listReferences(leftAlone)}.`);
+          warnings.push(`${leftAlone.length} call(s) pass a number of arguments other than the ${oldCount} parameter(s) "${shownName}" had, so their arguments were left as they are (a call this update already rewrote in a run that stopped is one of them): ${listReferences(leftAlone)}.`);
         }
 
         // 12. Unchanged: no sheet differs from its snapshot
         const changedSheets = [...sheets.keys()].filter(name => JSON.stringify(sheets.get(name)) !== JSON.stringify(snapshots.get(name)));
         if (changedSheets.length === 0) {
           return toolResult({
-            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', updatedSid: args.sid, kind: 'function',
+            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', updatedSid: args.sid, kind,
             name: newName, previousName: oldName, parameters: parameterList(), updatedSheets: [], rewrittenCalls: 0, rewrittenMaps: 0,
             ...(warnings.length > 0 ? { warnings } : {}),
           }, { projectWritten: false });
@@ -1030,7 +1087,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           throw new Error(await rollBackFailedCall(writer, error));
         }
         return toolResult({
-          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', updatedSid: args.sid, kind: 'function',
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', updatedSid: args.sid, kind,
           name: newName, previousName: oldName, parameters: parameterList(), updatedSheets: order, rewrittenCalls, rewrittenMaps,
           ...(warnings.length > 0 ? { warnings } : {}),
           ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
@@ -2722,9 +2779,8 @@ function defaultInitialValue(type: 'number' | 'string' | 'boolean'): string {
  * The argument a call passes for a new parameter, or why the initial value
  * cannot be one: a number as its numeric literal, a string as a Construct
  * string literal (a quote inside is written twice, as layerNameLiteral does
- * in layer-references.ts), a boolean as JSON true or false, as calls store
- * booleans. The literal is checked with c3StringEnd, the reader the
- * expression scans use, so what is written parses back to one string.
+ * in layer-references.ts; a line break is refused), a boolean as JSON true
+ * or false, as calls store booleans.
  */
 function callArgumentFor(
   type: 'number' | 'string' | 'boolean',
@@ -2742,18 +2798,37 @@ function callArgumentFor(
     }
     return { value: text };
   }
-  const literal = `"${(initialValue ?? '').replace(/"/g, '""')}"`;
-  if (c3StringEnd(literal, 0) !== literal.length - 1) return { problem: `The initial value "${initialValue}" cannot be written as one string argument.` };
-  return { value: literal };
+  // This tool's own rule: whether the editor accepts a line break inside a string literal has not been checked
+  if (/[\r\n]/.test(initialValue ?? '')) {
+    return {
+      problem: 'The initial value of a string parameter cannot hold a line break (a newline or carriage return): this tool writes it into each call ' +
+        'as a one-line string literal, and whether Construct 3 accepts a line break there has not been checked.',
+    };
+  }
+  return { value: `"${(initialValue ?? '').replace(/"/g, '""')}"` };
+}
+
+/** A call or other use of a function or custom action where it stands, with the stored action for a rewrite in place. */
+interface CallReference {
+  kind: DeleteReferenceKind | 'customAction';
+  sheet: string;
+  path: string;
+  sid?: number;
+  ace: Record<string, unknown>;
+}
+
+/** A custom action call as update_function lists and rewrites calls. */
+function customCallReference(site: CustomActionCallSite): CallReference {
+  return { kind: 'customAction', sheet: site.sheet, path: site.path, ...(site.sid !== undefined ? { sid: site.sid } : {}), ace: site.ace };
 }
 
 /** A reference as a result lists it. */
-function referenceEntry(r: DeleteReference): Record<string, unknown> {
+function referenceEntry(r: Omit<CallReference, 'ace'>): Record<string, unknown> {
   return { sheet: r.sheet, path: r.path, ...(r.sid !== undefined ? { sid: r.sid } : {}), kind: r.kind };
 }
 
 /** Up to ten references for a message, then how many more. */
-function listReferences(refs: readonly DeleteReference[]): string {
+function listReferences(refs: readonly Omit<CallReference, 'ace'>[]): string {
   const shown = refs.slice(0, 10).map(r => `${r.sheet} ${r.path}${r.sid !== undefined ? ` (SID ${r.sid})` : ''}`);
   return `${shown.join('; ')}${refs.length > 10 ? `; and ${refs.length - 10} more` : ''}`;
 }

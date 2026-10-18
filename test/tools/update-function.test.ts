@@ -446,6 +446,8 @@ describe('update_function', () => {
     const result = await server.callTool('update_function', { sheetName: 'Sheet1', sid: 100, functionName: 'Hurt', updateCallers: true });
     expect(errorText(result)).toContain('disk full');
     expect(errorText(result)).not.toContain('stopped before anything was written');
+    // The failed write went through the rollback, which undid the call's earlier writes
+    expect(writer.callsFor('undoToolCall')).toHaveLength(1);
     expect(await allSheets(reader)).toBe(before);
   });
 
@@ -555,6 +557,20 @@ describe('update_function', () => {
     expect(actionIn(writtenSheet(empty.writer, 'Other')!, 400).parameters).toEqual(['1', '""']);
   });
 
+  it('refuses a string initial value with a line break, before anything is written', async () => {
+    for (const initialValue of ['two\nlines', 'two\rlines']) {
+      const { server, reader, writer } = setup({ expression: false });
+      const before = await allSheets(reader);
+      const text = errorText(await server.callTool('update_function', {
+        sheetName: 'Sheet1', sid: 100, addParameters: [{ name: 'label', type: 'string', initialValue }], updateCallers: true,
+      }));
+      expect(text, JSON.stringify(initialValue)).toBe('The initial value of a string parameter cannot hold a line break (a newline or carriage return): '
+        + 'this tool writes it into each call as a one-line string literal, and whether Construct 3 accepts a line break there has not been checked. Nothing was changed.');
+      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+      expect(await allSheets(reader)).toBe(before);
+    }
+  });
+
   it('refuses an initial value the calls cannot take as an argument, before anything is written', async () => {
     const { server, writer } = setup({ expression: false });
     const result = await server.callTool('update_function', {
@@ -563,6 +579,249 @@ describe('update_function', () => {
     expect(errorText(result)).toContain('The initial value of a number parameter is a number');
     expect(errorText(result)).toMatch(/Nothing was changed\.$/);
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+});
+
+/** A custom action block as the editor saves it. */
+function customAction(owner: string, name: string, sid: number, extra: Ev = {}): Ev {
+  return {
+    aceType: 'action', aceName: name, objectClass: owner, functionDescription: '', functionCategory: '', functionReturnType: 'none',
+    functionCopyPicked: false, functionIsAsync: false, functionParameters: [], eventType: 'custom-ace-block', conditions: [], actions: [], sid, ...extra,
+  };
+}
+const customCall = (name: string, sid: number, extra: Ev = {}): Ev => ({ customAction: name, objectClass: 'Alpha', sid, ...extra });
+const DUPLICATE_RULE = 'A call names a custom action by its name, so it could not tell two apart (Construct 3 r506-2 (Free edition) opened such a project, ran the first definition, and renamed the second one when it saved: DoK became DoK2). Choose another name.';
+
+/** Object types Alpha and Beta, family Fam with member Alpha; Sheet1 and Other hold the events given, after the sheet First when given. */
+function setupCustom(sheet1: Ev[], other: Ev[], unparsable: Record<string, string> = {}, first?: Ev[]) {
+  const server = new MockServer();
+  const reader = new UnparsableSheetsReader({
+    objects: new Map([
+      ['Alpha', { name: 'Alpha', 'plugin-id': 'Sprite', sid: 1 }],
+      ['Beta', { name: 'Beta', 'plugin-id': 'Sprite', sid: 2 }],
+    ]),
+    families: new Map([['Fam', { name: 'Fam', members: ['Alpha'], sid: 3 }]]),
+    eventSheets: new Map([
+      ...(first ? [['First', { name: 'First', sid: 4, events: first }] as const] : []),
+      ['Sheet1', { name: 'Sheet1', sid: 1, events: sheet1 }],
+      ['Other', { name: 'Other', sid: 2, events: other }],
+    ]),
+  }, unparsable);
+  const writer = new MockWriter();
+  registerEventTools({ server, reader, writer, idGen: new MockIdGenerator() } as unknown as MutationToolDeps);
+  return { server, reader, writer };
+}
+
+/**
+ * Definitions Alpha.Hurt(amount) 700 and Fam.Wave() 710; Other block 800 calls Hurt on Alpha (801), Wave on Alpha (802,
+ * running Fam.Wave) and Wave on Alpha through customActionObjectClass Fam (803).
+ */
+function memberFixture(hurtBody: Ev[] = []) {
+  return setupCustom(
+    [
+      customAction('Alpha', 'Hurt', 700, {
+        functionParameters: [{ name: 'amount', type: 'number', initialValue: '0', comment: '', sid: 701 }],
+        ...(hurtBody.length > 0 ? { children: hurtBody } : {}),
+      }),
+      customAction('Fam', 'Wave', 710),
+    ],
+    [block(800, { actions: [customCall('Hurt', 801, { parameters: ['5'] }), customCall('Wave', 802), customCall('Wave', 803, { customActionObjectClass: 'Fam' })] })],
+  );
+}
+
+/**
+ * Definitions Fam.Hurt() 700 and Alpha.Wave() 710; Other block 800 calls Hurt on Alpha (801, running Fam.Hurt, unless
+ * left out) and Hurt on Alpha through customActionObjectClass Fam (802).
+ */
+function familyFixture(plainCall = true) {
+  return setupCustom(
+    [customAction('Fam', 'Hurt', 700), customAction('Alpha', 'Wave', 710)],
+    [block(800, { actions: [...(plainCall ? [customCall('Hurt', 801)] : []), customCall('Hurt', 802, { customActionObjectClass: 'Fam' })] })],
+  );
+}
+
+describe('update_function for custom action blocks', () => {
+  it('renames a custom action and the calls that run it, with updateCallers', async () => {
+    const { server, writer } = memberFixture();
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true }));
+    expect(data).toMatchObject({
+      success: true, action: 'updated', kind: 'custom-action', name: 'Strike', previousName: 'Hurt', updatedSheets: ['Other', 'Sheet1'], rewrittenCalls: 1, rewrittenMaps: 0,
+    });
+    const sheet1 = writtenSheet(writer, 'Sheet1')!;
+    expect(sheet1[0].aceName).toBe('Strike');
+    expect('functionName' in sheet1[0]).toBe(false);
+    const actions = (writtenSheet(writer, 'Other')!.find(e => e.sid === 800)!.actions as Ev[]);
+    expect(actions.map(a => a.customAction)).toEqual(['Strike', 'Wave', 'Wave']);
+    expect(actions[0].parameters).toEqual(['5']);
+  });
+
+  it('refuses a rename with calls without updateCallers, listing them', async () => {
+    const { server, writer } = memberFixture();
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike' }));
+    expect(data).toMatchObject({ success: false, action: 'update_blocked' });
+    expect(String(data.message)).toContain('1 call(s) run the custom action "Alpha.Hurt": Other events[0] > action:0 (SID 800). Set updateCallers=true');
+    expect(data.references).toEqual([{ sheet: 'Other', path: 'events[0] > action:0', sid: 800, kind: 'customAction' }]);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('refuses a name the owner already has, ignoring case', async () => {
+    const { server, reader, writer } = memberFixture();
+    (await storedEvents(reader, 'Sheet1')).push(customAction('Alpha', 'Jump', 720));
+    const before = await allSheets(reader);
+    const text = errorText(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'JUMP', updateCallers: true }));
+    expect(text).toBe(`"Alpha" already has a custom action "Jump" (sheet "Sheet1", events[2], SID 720). ${DUPLICATE_RULE} Nothing was changed.`);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(await allSheets(reader)).toBe(before);
+    // A case-only rename of its own name is no clash
+    const own = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'HURT', updateCallers: true }));
+    expect(own).toMatchObject({ success: true, name: 'HURT', rewrittenCalls: 1 });
+  });
+
+  it('refuses an empty name', async () => {
+    const { server } = memberFixture();
+    expect(errorText(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: '  ' })))
+      .toBe('functionName is empty. Nothing was changed.');
+  });
+
+  it('refuses a rename that would send other calls to another definition', async () => {
+    const { server, reader, writer } = memberFixture();
+    const before = await allSheets(reader);
+    // Plain Wave calls on Alpha run Fam.Wave; renaming Alpha.Hurt to Wave would make them run Alpha's action
+    for (const force of [false, true]) {
+      const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Wave', updateCallers: true, force }));
+      expect(data).toMatchObject({ success: false, action: 'update_blocked' });
+      expect(String(data.message)).toBe('Renaming "Alpha.Hurt" to "Wave" would change which custom action 1 call(s) run: '
+        + 'Other events[0] > action:1 (SID 800) runs "Fam.Wave" now and would run "Alpha.Wave". '
+        + 'A call names a custom action by its name, so this rename would make the game do something else; force does not override it. Choose another name. Nothing was changed.');
+      expect(data.references).toEqual([{ sheet: 'Other', path: 'events[0] > action:1', sid: 800, kind: 'customAction', runs: 'Fam.Wave', wouldRun: 'Alpha.Wave' }]);
+    }
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(await allSheets(reader)).toBe(before);
+  });
+
+  it('refuses a family rename that would send the calls it rewrites to a member\'s own action', async () => {
+    const { server, reader, writer } = familyFixture();
+    const before = await allSheets(reader);
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Wave', updateCallers: true }));
+    expect(data).toMatchObject({ success: false, action: 'update_blocked' });
+    expect(String(data.message)).toContain('Other events[0] > action:0 (SID 800) runs "Fam.Hurt" now and would run "Alpha.Wave"');
+    expect(data.references).toEqual([{ sheet: 'Other', path: 'events[0] > action:0', sid: 800, kind: 'customAction', runs: 'Fam.Hurt', wouldRun: 'Alpha.Wave' }]);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(await allSheets(reader)).toBe(before);
+    // Without the plain call, the call that names Fam still runs Fam's action, renamed
+    const explicit = familyFixture(false);
+    const renamed = parse(await explicit.server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Wave', updateCallers: true }));
+    expect(renamed).toMatchObject({ success: true, kind: 'custom-action', name: 'Wave', rewrittenCalls: 1 });
+    expect(actionIn(writtenSheet(explicit.writer, 'Other')!, 800)).toMatchObject({ customAction: 'Wave', objectClass: 'Alpha', customActionObjectClass: 'Fam' });
+  });
+
+  it('refuses returnType for a custom action', async () => {
+    const { server, writer } = memberFixture();
+    expect(errorText(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, returnType: 'none' })))
+      .toBe('returnType applies to function blocks; a custom action has none. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('edits parameters and the calls\' arguments with updateCallers, idempotently', async () => {
+    const { server, reader, writer } = memberFixture();
+    // A call already rewritten by a run that stopped: it passes three arguments to a one-parameter action
+    ((await storedEvents(reader, 'Other'))[0].actions as Ev[]).push(customCall('Hurt', 804, { parameters: ['1', '"x"', true] }));
+    const data = parse(await server.callTool('update_function', {
+      sheetName: 'Sheet1', sid: 700, addParameters: [{ name: 'label', type: 'string', initialValue: 'hi' }, { name: 'crit', type: 'boolean' }], updateCallers: true,
+    }));
+    expect(data).toMatchObject({ success: true, kind: 'custom-action', rewrittenCalls: 1 });
+    const actions = writtenSheet(writer, 'Other')!.find(e => e.sid === 800)!.actions as Ev[];
+    expect(actions[0].parameters).toEqual(['5', '"hi"', false]);
+    expect(actions[3].parameters).toEqual(['1', '"x"', true]);
+    expect(String(data.warnings)).toContain('1 call(s) pass a number of arguments other than the 1 parameter(s) "Alpha.Hurt" had');
+    expect((writtenSheet(writer, 'Sheet1')![0].functionParameters as Ev[]).map(p => p.name)).toEqual(['amount', 'label', 'crit']);
+    // Both calls now pass the three arguments the action has, so removing the first parameter drops the first argument of each
+    const second = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, removeParameters: ['amount'], updateCallers: true }));
+    expect(second).toMatchObject({ success: true, rewrittenCalls: 2 });
+    expect(actions.map(a => a.parameters)).toEqual([['"hi"', false], undefined, undefined, ['"x"', true]]);
+  });
+
+  it('refuses removing a custom action parameter its body uses, without force', async () => {
+    const { server, writer } = memberFixture([block(705, { conditions: [useOf('amount', 706)] })]);
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, removeParameters: ['amount'], updateCallers: true }));
+    expect(data).toMatchObject({ success: false, action: 'update_blocked' });
+    expect(String(data.message)).toContain('Event variable "amount" is still used 1 time(s) where the parameter no longer exists after the update');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('refuses removing and adding parameters together while calls to the custom action exist', async () => {
+    const { server, writer } = memberFixture();
+    const text = errorText(await server.callTool('update_function', {
+      sheetName: 'Sheet1', sid: 700, removeParameters: ['amount'], addParameters: [{ name: 'hits', type: 'number' }], updateCallers: true, force: true,
+    }));
+    expect(text).toContain('Make two calls: one that removes the parameters, then one that adds them.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('refuses a rename while the scan for custom actions and their calls stopped at its traversal limit, and renames with force', async () => {
+    const { server, reader, writer } = memberFixture();
+    (await storedEvents(reader, 'Other')).push(...comments());
+    const limit = 'The check for uses of the custom action "Alpha.Hurt" stopped at its traversal limit (100,000 events across all event sheets), so uses further on are unknown.';
+    const blocked = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true }));
+    expect(blocked).toMatchObject({ success: false, action: 'update_blocked', message: `${limit} Use force=true to update anyway. Nothing was changed.` });
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    const forced = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true, force: true }));
+    expect(forced.success).toBe(true);
+    expect(forced.warnings).toContain(`Updated with force=true: ${limit}`);
+  });
+
+  it('checks the calls against a definition the scan did not reach, with force', async () => {
+    // A sheet with a call and then 100,000 comments before Sheet1: the scan of every sheet stops before the definitions, the SID search of Sheet1 finds them
+    const { server, writer } = setupCustom(
+      [customAction('Alpha', 'Hurt', 700), customAction('Fam', 'Wave', 710)],
+      [],
+      {},
+      [block(800, { actions: [customCall('Hurt', 801)] }), ...comments()],
+    );
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true, force: true }));
+    expect(data).toMatchObject({ success: true, kind: 'custom-action', rewrittenCalls: 1, updatedSheets: ['First', 'Sheet1'] });
+    expect(actionIn(writtenSheet(writer, 'First')!, 800).customAction).toBe('Strike');
+  });
+
+  it('dryRun reports the custom action plan and writes nothing', async () => {
+    const { server, reader, writer } = memberFixture();
+    const before = await allSheets(reader);
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'Strike', updateCallers: true, dryRun: true }));
+    expect(data).toMatchObject({ dryRun: true, kind: 'custom-action', name: 'Hurt', newName: 'Strike', maps: [], expressions: [] });
+    expect('returnType' in data).toBe(false);
+    expect(data.calls).toEqual([{ sheet: 'Other', path: 'events[0] > action:0', sid: 800, kind: 'customAction' }]);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(await allSheets(reader)).toBe(before);
+  });
+
+  it('every refusal ends with Nothing was changed. and leaves every sheet as it was', async () => {
+    type Case = { args: Record<string, unknown>; fixture?: () => ReturnType<typeof setupCustom>; prepare?: (reader: MockReader) => Promise<void> };
+    const cases: Case[] = [
+      { args: { returnType: 'number' } },
+      { args: { returnType: 'none', renameParameters: [{ from: 'amount', to: 'dmg' }] } },
+      { args: { functionName: ' ' } },
+      { args: { functionName: 'jump', updateCallers: true }, prepare: async reader => { (await storedEvents(reader, 'Sheet1')).push(customAction('Alpha', 'Jump', 720)); } },
+      { args: { functionName: 'Strike' } },
+      // Refused after the parameter list was changed in memory
+      { args: { functionName: 'Strike', renameParameters: [{ from: 'amount', to: 'dmg' }] } },
+      { args: { functionName: 'Wave', updateCallers: true, force: true } },
+      { args: { functionName: 'Wave', addParameters: [{ name: 'crit', type: 'boolean' }], updateCallers: true } },
+      { args: { functionName: 'Wave', updateCallers: true }, fixture: () => familyFixture() },
+      { args: { removeParameters: ['amount'], addParameters: [{ name: 'hits', type: 'number' }], updateCallers: true, force: true } },
+      { args: { functionName: 'Strike', updateCallers: true }, prepare: async reader => { (await storedEvents(reader, 'Other')).push(...comments()); } },
+      { args: { removeParameters: ['amount'], updateCallers: true }, fixture: () => memberFixture([block(705, { conditions: [useOf('amount', 706)] })]) },
+    ];
+    for (const { args, fixture, prepare } of cases) {
+      const { server, reader, writer } = (fixture ?? memberFixture)();
+      await prepare?.(reader);
+      const before = await allSheets(reader);
+      const result = await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, ...args });
+      const text = result.isError ? result.content[0].text : String(parse(result).message);
+      expect(text, JSON.stringify(args)).toMatch(/Nothing was changed\.$/);
+      expect(text.match(/Nothing was changed\./g), JSON.stringify(args)).toHaveLength(1);
+      expect(await allSheets(reader), JSON.stringify(args)).toBe(before);
+      expect(writer.callsFor('writeEntityFile'), JSON.stringify(args)).toHaveLength(0);
+    }
   });
 });
 

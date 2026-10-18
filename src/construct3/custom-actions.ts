@@ -126,3 +126,92 @@ export function resolveCustomActionCall(
   if (call.customActionObjectClass !== undefined) return on(call.customActionObjectClass);
   return on(call.objectClass) ?? familiesOf(call.objectClass).map(on).find(d => d !== undefined);
 }
+
+/** A custom action call where it stands, for the tools that list or rewrite calls. */
+export interface CustomActionCallSite {
+  sheet: string;
+  /** Path of the action, e.g. "events[2].children[0] > action:1" */
+  path: string;
+  sid?: number;
+  call: { customAction: string; objectClass: string; customActionObjectClass?: string };
+  /** The stored action, for a rewrite in place */
+  ace: Record<string, unknown>;
+}
+
+/**
+ * Every custom action call in `sheets`, and whether the walk saw every
+ * event (false past its depth or node limit; `limit` says which, the node
+ * limit when both stopped it).
+ */
+export function customActionCallSites(sheets: ReadonlyMap<string, unknown>): { sites: CustomActionCallSite[]; complete: boolean; limit?: 'events' | 'depth' } {
+  const sites: CustomActionCallSite[] = [];
+  let limit: 'events' | 'depth' | undefined;
+  let nodes = 0;
+  for (const [sheet, events] of sheets) {
+    if (!Array.isArray(events)) continue;
+    const stack: Array<{ list: unknown[]; path: string; depth: number }> = [{ list: events, path: 'events', depth: 0 }];
+    while (stack.length > 0) {
+      const { list, path, depth } = stack.pop()!;
+      if (depth > MAX_DEPTH) {
+        limit ??= 'depth';
+        continue;
+      }
+      list.forEach((ev, i) => {
+        if (!isRecord(ev)) return;
+        if (++nodes > MAX_NODES) {
+          limit = 'events';
+          return;
+        }
+        const eventPath = `${path}[${i}]`;
+        (Array.isArray(ev.actions) ? ev.actions : []).forEach((ace, j) => {
+          if (!isRecord(ace) || typeof ace.customAction !== 'string' || typeof ace.objectClass !== 'string') return;
+          sites.push({
+            sheet, path: `${eventPath} > action:${j}`, ...(typeof ev.sid === 'number' ? { sid: ev.sid } : {}), ace,
+            call: {
+              customAction: ace.customAction, objectClass: ace.objectClass,
+              ...(typeof ace.customActionObjectClass === 'string' ? { customActionObjectClass: ace.customActionObjectClass } : {}),
+            },
+          });
+        });
+        if (Array.isArray(ev.children)) stack.push({ list: ev.children, path: `${eventPath}.children`, depth: depth + 1 });
+      });
+    }
+  }
+  return { sites, complete: limit === undefined, ...(limit !== undefined ? { limit } : {}) };
+}
+
+/**
+ * What renaming the definition `renamed` to `newName` does to every call.
+ * Each call is resolved before the rename; a call that ran `renamed` is to
+ * be rewritten to the new name. Each call is then resolved again as it
+ * will stand (the rewritten ones with the new name) against the
+ * definitions after the rename: a call to rewrite must still run `renamed`,
+ * and any other call must still run what it ran before (or nothing, as
+ * before). A call that fails this is `captured`. Definitions are compared
+ * by their sheet and event path.
+ */
+export function customActionRenameCaptures(
+  sites: readonly CustomActionCallSite[],
+  definitions: readonly CustomActionDefinition[],
+  renamed: CustomActionDefinition,
+  newName: string,
+  familiesOf: (objectClass: string) => readonly string[],
+): {
+  rewrite: CustomActionCallSite[];
+  captured: Array<{ site: CustomActionCallSite; before?: CustomActionDefinition; after?: CustomActionDefinition }>;
+} {
+  const same = (a?: CustomActionDefinition, b?: CustomActionDefinition) =>
+    a === undefined || b === undefined ? a === b : a.sheet === b.sheet && a.eventPath === b.eventPath;
+  const after = definitions.map(d => (same(d, renamed) ? { ...d, name: newName } : d));
+  const rewrite: CustomActionCallSite[] = [];
+  const captured: Array<{ site: CustomActionCallSite; before?: CustomActionDefinition; after?: CustomActionDefinition }> = [];
+  for (const site of sites) {
+    const before = resolveCustomActionCall(site.call, definitions, familiesOf);
+    const toRewrite = before !== undefined && same(before, renamed);
+    const proposed = toRewrite ? { ...site.call, customAction: newName } : site.call;
+    const now = resolveCustomActionCall(proposed, after, familiesOf);
+    if (!same(now, before)) captured.push({ site, before, after: now });
+    else if (toRewrite) rewrite.push(site);
+  }
+  return { rewrite, captured };
+}
