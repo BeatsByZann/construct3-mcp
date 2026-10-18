@@ -19,8 +19,10 @@ describe('findFunctionReferences', () => {
       A: [fn('Damage', 10), block(20, [{ callFunction: 'damage', sid: 21, parameters: ['5'] }])],
       B: [block(30, [
         { id: 'map-function', objectClass: 'Functions', sid: 31, parameters: { map: '"m"', string: '"k"', function: 'DAMAGE' } },
-        { id: 'set-x', objectClass: 'Sprite', sid: 32, parameters: { x: 'functions.damage(1) + Functions.Damage(2)' } },
-        { callFunction: 'Other', sid: 33, parameters: ['Functions.DAMAGE(3)'] },
+        // One reference per condition or action, however many of its parameters call the function
+        { id: 'set-position', objectClass: 'Sprite', sid: 32, parameters: { x: 'functions.damage(1) + Functions.Damage(2)', y: 'Functions.Damage(4)' } },
+        // A boolean argument is no expression
+        { callFunction: 'Other', sid: 33, parameters: [false, 'Functions.DAMAGE(3)'] },
         { callFunction: 'Damaged', sid: 34 },
       ])],
     }), 'Damage', 'Functions');
