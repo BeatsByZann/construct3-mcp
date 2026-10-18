@@ -1,6 +1,6 @@
 /**
  * The sync of layout instances with the behaviors, instance variables and effects of their
- * object types and families, shared by the object, family and effect tools; moved from
+ * object types and families, shared by the object and family tools; moved from
  * object-tools.ts.
  */
 

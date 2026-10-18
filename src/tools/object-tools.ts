@@ -1617,7 +1617,7 @@ async function caseOnlyRenameScriptWarnings(
   if (where.length === 0) return [];
   return [
     `Scripts read instance variable "${oldName}" by name (instVars.${oldName}) in ${listSome(where)}; script names are case-sensitive, `
-      + `so they will not find "${newName}". They were NOT changed: review them.`,
+      + `so a read of "${oldName}" may no longer find "${newName}" (the read could be dynamic). They were NOT changed: review them.`,
     ...(unreadable.length > 0 ? [`${unreadable.length} script file(s) could not be read and were not searched: ${listSome(unreadable)}.`] : []),
   ];
 }

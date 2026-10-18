@@ -127,7 +127,7 @@ describe('update_instance_variable: rename', () => {
     expect(data.success).toBe(true);
     expect(await valuesOf(0)).toEqual({ HP: 5, label: 'boss' });
     expect((data.warnings ?? []).join(' ')).toContain('Scripts read instance variable "hp" by name (instVars.hp)');
-    expect((data.warnings ?? []).join(' ')).toContain('script names are case-sensitive, so they will not find "HP"');
+    expect((data.warnings ?? []).join(' ')).toContain('script names are case-sensitive, so a read of "hp" may no longer find "HP" (the read could be dynamic)');
   });
 
   it('reports a call that changes nothing as unchanged and writes nothing', async () => {
@@ -157,6 +157,25 @@ describe('update_instance_variable: rename', () => {
     expect(data.action).toBe('update_blocked');
     expect(data.unscannedFiles).toBeDefined();
     expect(await contents()).toEqual(before);
+  });
+
+  it('refuses a family variable rename when an unparsed event sheet names a member and the variable', async () => {
+    await call('create_family', { name: 'Enemies', pluginId: 'Sprite', members: ['Sprite'] });
+    await call('update_family', { name: 'Enemies', addVariables: [{ name: 'speed', type: 'number' }] });
+    // The text names the member and the variable, but not the family: only a search widened to the members finds it
+    await writeFile(path('eventSheets', 'Broken.json'), '{ "name": "Broken", "events": [ Sprite speed');
+    const project = await readJson<{ eventSheets: { items: string[] } }>(path('project.c3proj'));
+    project.eventSheets.items.push('Broken');
+    await writeFile(path('project.c3proj'), JSON.stringify(project, null, '\t'));
+    await reader.loadProject();
+    resetProjectIndex();
+    const before = await contents();
+    const familyBefore = await readFile(path('families', 'Enemies.json'), 'utf8');
+    const data = await call('update_instance_variable', { familyName: 'Enemies', variableName: 'speed', newName: 'velocity' });
+    expect(data.action).toBe('update_blocked');
+    expect(data.unscannedFiles).toBeDefined();
+    expect(await contents()).toEqual(before);
+    expect(await readFile(path('families', 'Enemies.json'), 'utf8')).toBe(familyBefore);
   });
 
   it('renames a family variable on the instances of every member', async () => {
