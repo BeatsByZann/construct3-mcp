@@ -994,11 +994,16 @@ export class Construct3ProjectWriter {
   }
 
   /**
-   * Remove a name from a c3proj container.
+   * Take an entity's name out of project.c3proj. `alsoChange` edits the same
+   * parsed file in the same update, after the name is removed (delete_object
+   * takes the object type out of its containers there), so both land in one
+   * write built from the file as it is right before that write; it runs again
+   * on each retry round.
    */
   async removeFromProject(
     category: EntityCategory,
     name: string,
+    options: { alsoChange?: (project: Record<string, unknown>) => void } = {},
   ): Promise<void> {
     await this.updateProjectFile(project => {
       const container = project[category];
@@ -1011,6 +1016,7 @@ export class Construct3ProjectWriter {
         // Search subfolders
         this.removeFromSubfolders(container.subfolders, name);
       }
+      options.alsoChange?.(project);
     });
   }
 
