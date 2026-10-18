@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `C3MCP_MAX_FILE_MB`, a setting of whoever starts the server (whole megabytes, 1 to 128; default 10), sets the size limit for the object type, family, event sheet, layout and script files the server reads, and for the entity files and `project.c3proj` it writes. Another value keeps the default, and the refusals say it was ignored. Memory use grows with the whole project; TROUBLESHOOTING has measurements (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
@@ -13,6 +17,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 ### Fixed
 
 - When an object type, event sheet, layout or family write fails after replacing the file, the rollback of `update_layer`, `add_frame_to_animation`, `delete_frame_from_animation` and `rename_animation` puts the backup back only while the file holds that write's own content; a save made in the editor after the failure is kept, and the error names the file and its `.bak` (#ISSUE).
+- The write limit is the read limit and counts the UTF-8 bytes of the text written (line endings and BOM included). Before, a file between 5 and 10MB could be read but its entity writes were refused, and the check counted characters of the LF JSON, not the bytes written (#ISSUE).
 
 ## [1.10.0] - 2026-09-30
 
