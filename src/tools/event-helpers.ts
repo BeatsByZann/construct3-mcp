@@ -16,6 +16,7 @@ import type {
   CommentAction,
   CommentEvent,
   ScriptEvent,
+  CustomActionCall,
   C3Event,
 } from '../construct3/types.js';
 import { createBlockEvent, createCommentEvent } from '../construct3/templates.js';
@@ -41,6 +42,8 @@ import {
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import { findEnclosingEvents } from '../construct3/event-variable-names.js';
 import type { BehaviorLookupData } from '../construct3/analyzers/behavior-refs.js';
+import { customActionDefinitions, customActionOwnerError, resolveCustomActionCall, type CustomActionDefinition } from '../construct3/custom-actions.js';
+import { familiesContaining } from '../construct3/animation-rename.js';
 import {
   BEHAVIOR_TYPE_KEY,
   LEGACY_BEHAVIOR_TYPE_KEY,
@@ -239,14 +242,27 @@ export const commentActionSchema = z.object({
   errorMap: unknownKeysErrorMap('a comment row', 'A comment row has type, text, text-color and background-color.'),
 }).strict();
 
+/** Custom action call, in the editor's shape: { customAction, objectClass, customActionObjectClass?, sid, disabled?, parameters?: [...] } */
+export const customActionCallSchema = z.object({
+  customAction: z.string().min(1).max(500).describe('Name of the custom action (aceName of its custom action block)'),
+  objectClass: z.string().min(1).max(200).describe('Object type or family the action is called on'),
+  customActionObjectClass: z.string().min(1).max(200).optional()
+    .describe('The family whose custom action runs, when a member object type calls its family\'s custom action'),
+  parameters: z.array(z.union([z.string().max(10_000), z.boolean()])).max(100).optional()
+    .describe('Arguments in the order of the custom action\'s parameters, as expressions ("1", "\\"text\\"", "Player.X"), or true or false for a boolean parameter'),
+  disabled: z.boolean().optional().describe('Disable this individual action'),
+}, {
+  errorMap: unknownKeysErrorMap('a custom action call', 'A custom action call has customAction, objectClass, customActionObjectClass, parameters and disabled.'),
+}).strict();
+
 const ACTION_SHAPES =
   'An action is a plugin/behavior/System action { id, objectClass, behaviorType?, parameters?, disabled?, breakpoint? }, ' +
-  'a function call { callFunction, parameters?: [...], disabled? }, a script action { type: "script", script, language?, disabled? } ' +
+  'a function call { callFunction, parameters?: [...], disabled? }, a custom action call { customAction, objectClass, customActionObjectClass?, parameters?: [...], disabled? }, a script action { type: "script", script, language?, disabled? } ' +
   'or a comment row { type: "comment", text, "text-color"?, "background-color"? } (colours as [red, green, blue, alpha], each 0-1).';
 
 /** Union of standard, function call, script and comment actions; a "sid" key is ignored (see Strict Input). */
 export const actionSchema = z.preprocess(withoutSid, z.union(
-  [standardActionSchema, functionCallActionSchema, scriptActionSchema, commentActionSchema],
+  [standardActionSchema, functionCallActionSchema, customActionCallSchema, scriptActionSchema, commentActionSchema],
   {
     errorMap: (issue, ctx) => (issue.code === z.ZodIssueCode.invalid_union
       ? { message: `Not a valid action. ${ACTION_SHAPES} Why each shape does not fit is listed in unionErrors.` }
@@ -1704,6 +1720,95 @@ export function buildScriptEvent(s: ScriptChildInput): ScriptEvent {
   return event;
 }
 
+/** True when a stored action or an action input is a custom action call. */
+export function isCustomActionCall(ace: Readonly<Record<string, unknown>>): boolean {
+  return typeof ace.customAction === 'string';
+}
+
+/** Build a custom action call in the editor's key order: customAction, objectClass, customActionObjectClass, sid, disabled, parameters. */
+export function buildCustomActionCall(a: z.infer<typeof customActionCallSchema>, sid: number): CustomActionCall {
+  const call = { customAction: a.customAction, objectClass: a.objectClass } as CustomActionCall;
+  if (a.customActionObjectClass !== undefined) call.customActionObjectClass = a.customActionObjectClass;
+  call.sid = sid;
+  if (a.disabled) call.disabled = true;
+  if (a.parameters && a.parameters.length > 0) call.parameters = [...a.parameters];
+  return call;
+}
+
+/** A custom action call the tools refuse (the message says why); thrown by buildAction before any write. */
+export class CustomActionCallError extends Error {}
+
+/** The custom actions of the project, the families of each object type and the owner names, for building and checking calls. */
+export interface CustomActionContext {
+  definitions: CustomActionDefinition[];
+  familiesOf: (objectClass: string) => readonly string[];
+  objectTypes: readonly string[];
+  families: readonly string[];
+}
+
+/** Load the CustomActionContext from the event sheets and families the reader can parse. */
+export async function loadCustomActionContext(reader: Construct3ProjectReader): Promise<CustomActionContext> {
+  const sheets = new Map<string, unknown>();
+  for (const [name, sheet] of await reader.readAllEventSheets()) sheets.set(name, sheet.events);
+  let families = new Map<string, Record<string, unknown>>();
+  try {
+    families = await reader.readAllFamilies();
+  } catch {
+    // No families: calls resolve on their object type only
+  }
+  return {
+    definitions: customActionDefinitions(sheets),
+    familiesOf: objectClass => familiesContaining(objectClass, families),
+    objectTypes: await reader.listObjectTypes(),
+    families: await reader.listFamilies(),
+  };
+}
+
+/**
+ * Why a custom action call cannot be written, or undefined: its owner is no
+ * object type or family (upstream's object class check admits System and
+ * the Functions object), or customActionObjectClass names a family the
+ * owner is not a member of.
+ */
+export function customActionCallError(
+  call: { objectClass: string; customActionObjectClass?: string },
+  context: CustomActionContext,
+): string | undefined {
+  const ownerError = customActionOwnerError(call.objectClass, context.objectTypes, context.families);
+  if (ownerError) return ownerError;
+  const origin = call.customActionObjectClass;
+  if (origin !== undefined && origin !== call.objectClass && !context.familiesOf(call.objectClass).includes(origin)) {
+    return `A custom action call names customActionObjectClass "${origin}", but "${call.objectClass}" is not a member of that family.`;
+  }
+  return undefined;
+}
+
+/**
+ * The warnings for a custom action call: no definition it runs, a name that
+ * differs from its definition only in letter case, or another number of
+ * arguments than the definition's parameters. One helper for the tools that
+ * write calls and those that change their arguments.
+ */
+export function customActionCallWarnings(
+  call: { customAction: string; objectClass: string; customActionObjectClass?: string; parameters?: unknown[] },
+  context: CustomActionContext,
+  label: string,
+): string[] {
+  const definition = resolveCustomActionCall(call, context.definitions, context.familiesOf);
+  if (definition === undefined) {
+    return [`${label}: no custom action of that name is defined on "${call.objectClass}" or its families in the event sheets that could be read. Whether Construct 3 opens a project with such a call was not checked.`];
+  }
+  const warnings: string[] = [];
+  if (definition.name !== call.customAction) {
+    warnings.push(`${label}: the name differs only in letter case from the custom action "${definition.name}" on "${definition.owner}". Construct 3 r506.2 ran such a call and saved it with the definition's spelling, "${definition.name}".`);
+  }
+  const given = call.parameters?.length ?? 0;
+  if (given !== definition.parameters.length) {
+    warnings.push(`${label}: ${given} argument(s) for ${definition.parameters.length} parameter(s) (${definition.parameters.join(', ') || 'none'}).`);
+  }
+  return warnings;
+}
+
 /** True when an action input or stored action is a function call. */
 export const isFunctionCallInput = isFunctionCall;
 
@@ -1739,13 +1844,15 @@ export async function resolveFunctionMapParameter(
 export interface ActionBuildContext {
   warnings: string[];
   functions?: Map<string, FunctionSignature>;
+  customActions?: CustomActionContext;
 }
 
 /**
  * Build one action from tool input in the editor's shape: plugin/behavior
  * actions, function calls ({ callFunction, sid, parameters: [...] }, also from
  * the legacy { id, objectClass, callFunction, parameters: {...} } input),
- * script actions and comment rows.
+ * custom action calls, script actions and comment rows. Throws a
+ * CustomActionCallError for a custom action call that cannot be written.
  */
 export async function buildAction(
   reader: Construct3ProjectReader,
@@ -1756,6 +1863,25 @@ export async function buildAction(
 ): Promise<Action> {
   if ('type' in a && a.type === 'script') return buildScriptAction(a);
   if ('type' in a && a.type === 'comment') return buildCommentAction(a);
+  if (isCustomActionCall(a as Record<string, unknown>)) {
+    const input = a as z.infer<typeof customActionCallSchema>;
+    const label = `${where}, custom action call "${input.customAction}" on "${input.objectClass}"`;
+    ctx.customActions ??= await loadCustomActionContext(reader);
+    const callError = customActionCallError(input, ctx.customActions);
+    if (callError) throw new CustomActionCallError(callError);
+    ctx.warnings.push(...customActionCallWarnings(input, ctx.customActions, label));
+    // The call is written as the editor saves it: with the definition's spelling, and a member's call of its
+    // family's custom action naming that family
+    const definition = resolveCustomActionCall(input, ctx.customActions.definitions, ctx.customActions.familiesOf);
+    const written = definition === undefined ? input : {
+      ...input,
+      customAction: definition.name,
+      ...(definition.owner !== input.objectClass && input.customActionObjectClass === undefined
+        ? { customActionObjectClass: definition.owner }
+        : {}),
+    };
+    return buildCustomActionCall(written, await idGen.generateSid(reader)) as unknown as Action;
+  }
 
   const rec = a as Record<string, unknown>;
   if (isFunctionCallInput(rec)) {
@@ -1804,6 +1930,7 @@ export interface BlockBuildCounter {
   count: number;
   warnings: string[];
   functions?: Map<string, FunctionSignature>;
+  customActions?: CustomActionContext;
 }
 
 /** Count one more event of the tree being built, enforcing the depth and size limits. */

@@ -16,6 +16,7 @@ import {
   folderCaseClashError,
 } from './shared.js';
 import { findFolderPathClash, findNameClash } from '../construct3/names.js';
+import type { CustomActionCall } from '../construct3/types.js';
 import {
   SYSTEM_EXPRESSIONS_NOT_IN_R449,
   eventVariableNameUses,
@@ -50,6 +51,11 @@ import {
   type ResolvedContainer,
   buildCondition,
   buildAction,
+  isCustomActionCall,
+  CustomActionCallError,
+  customActionCallError,
+  customActionCallWarnings,
+  loadCustomActionContext,
   resolveEventBySid,
   parseEventPath,
   ambiguousSidMessage,
@@ -476,7 +482,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }).optional().describe('Optional, only "block": this tool adds block events. Comments, groups, variables, functions and includes: add_event_to_sheet (comments and scripts can also be sub-events in children)'),
         sid: z.number().optional().describe('Ignored: a block copied from get_eventsheet_details may carry its SID, but the new block always gets a new one'),
         conditions: z.array(conditionSchema).optional().default([]).describe(EVENT_INPUT_DESCRIPTIONS.conditions),
-        actions: z.array(actionSchema).optional().default([]).describe('Actions: plugin/behavior/System actions, function calls { callFunction, parameters: [...] }, script actions { type: "script", script } and comment rows { type: "comment", text, "text-color"?, "background-color"? }'),
+        actions: z.array(actionSchema).optional().default([]).describe('Actions: plugin/behavior/System actions, function calls { callFunction, parameters: [...] }, custom action calls { customAction, objectClass, customActionObjectClass?, parameters: [...] }, script actions { type: "script", script } and comment rows { type: "comment", text, "text-color"?, "background-color"? }'),
         groupPath: z.string().max(500).optional().describe('Insert inside group by title path (e.g., "Movement > Collision"). Titles match exactly first, then ignoring leading/trailing whitespace when that fits one group'),
         position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert the event block'),
         disabled: z.boolean().optional().default(false).describe('Create the event block disabled'),
@@ -578,6 +584,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         };
         return toolResult(result);
       } catch (error) {
+        if (error instanceof CustomActionCallError) return toolError(nothingChanged(error.message));
         console.error('[add_event_block] failed:', error);
         return toolError(`Error adding event block: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -1011,7 +1018,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   server.tool(
     'update_event_block_action',
-    'Replace parameters on a single action within an existing event block. Identify the block by SID and the action by its 0-based index. Use get_eventsheet_details to find SIDs and action indices. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Function calls take their arguments as an array in parameter order. Comment rows and script actions have no parameters and are refused. Parameters that would break a checked editor load-time rule (expression syntax, empty expressions) are refused.',
+    'Replace parameters on a single action within an existing event block. Identify the block by SID and the action by its 0-based index. Use get_eventsheet_details to find SIDs and action indices. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Function calls take their arguments as an array in parameter order. A custom action call takes its arguments as an array in parameter order, which replaces the stored ones. Comment rows and script actions have no parameters and are refused. Parameters that would break a checked editor load-time rule (expression syntax, empty expressions) are refused.',
     {
       sheetName: z.string().max(200).describe('Target event sheet'),
       blockSid: z.number().int().positive().describe('SID of the block event containing the action'),
@@ -1040,8 +1047,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const { event, path } = found.match;
         const eventType = event.eventType as string;
 
-        if (eventType !== 'block' && eventType !== 'function-block') {
-          return toolError(`Event with SID ${args.blockSid} is a "${eventType}", not a block or function-block. Only block events have actions.`);
+        if (eventType !== 'block' && eventType !== 'function-block' && eventType !== 'custom-ace-block') {
+          return toolError(`Event with SID ${args.blockSid} is a "${eventType}", not a block, function-block or custom action block. Only those have actions.`);
         }
 
         const actions = event.actions as Record<string, unknown>[];
@@ -1057,7 +1064,18 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const rowProblem = parameterlessRowError(action, args.actionIndex);
         if (rowProblem) return toolError(rowProblem);
         let warnings: string[];
-        if (isFunctionCall(action)) {
+        if (isCustomActionCall(action)) {
+          // A custom action call takes its arguments as an array; the refusal and the project read come before the call changes
+          if (!Array.isArray(args.parameters)) {
+            return toolError(nothingChanged(`Action ${args.actionIndex} is a custom action call: pass its arguments as an array in parameter order.`));
+          }
+          const customContext = await loadCustomActionContext(reader);
+          const argumentsGiven = args.parameters.map(value => (typeof value === 'boolean' ? value : String(value)));
+          if (argumentsGiven.length > 0) action.parameters = argumentsGiven;
+          else delete action.parameters;
+          warnings = customActionCallWarnings(action as unknown as CustomActionCall, customContext,
+            `Action ${args.actionIndex}, custom action call "${String(action.customAction)}" on "${String(action.objectClass)}"`);
+        } else if (isFunctionCall(action)) {
           // Function calls take positional arguments, as the editor saves them
           const name = action.callFunction as string;
           const label = `Call to "${name}"`;
@@ -1105,7 +1123,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           updatedBlockSid: args.blockSid,
           eventPath: path,
           updatedActionIndex: args.actionIndex,
-          ...(isFunctionCall(action) ? { callFunction: action.callFunction } : { actionId: action.id }),
+          ...(isFunctionCall(action) ? { callFunction: action.callFunction } : isCustomActionCall(action) ? { customAction: action.customAction } : { actionId: action.id }),
           ...(warnings.length > 0 ? { warnings } : {}),
           backupFile: backupPath,
         });
@@ -1413,7 +1431,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       description: 'Update an existing block event in an event sheet — modify action parameters, add/remove actions or conditions, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
-        sid: z.number().int().positive().describe('SID of the block event to update'),
+        sid: z.number().int().positive().describe('SID of the block, function block or custom action block to update'),
         eventPath: eventPathSchema,
         disabled: z.boolean().optional().describe('Enable or disable the entire block'),
         isElse: z.boolean().optional().describe('true: make the block an else block (puts the System "else" condition first; existing conditions then make an else-if). false: remove the leading "else" condition. Applied after all other condition changes.'),
@@ -1482,12 +1500,27 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const { event, path } = found.match;
         const eventType = event.eventType as string;
 
-        // Must be a block or function-block (not a group, variable, include, etc.)
-        if (eventType !== 'block' && eventType !== 'function-block') {
-          return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block or function-block. Only block events can be updated with this tool.`);
+        // Must be a block, function-block or custom action block (not a group, variable, include, etc.)
+        if (eventType !== 'block' && eventType !== 'function-block' && eventType !== 'custom-ace-block') {
+          return toolError(nothingChanged(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action block. Only those can be updated with this tool.`));
         }
         if (args.isElse !== undefined && eventType !== 'block') {
-          return toolError('isElse applies to block events only; a function block cannot be an else block.');
+          return toolError(nothingChanged('isElse applies to block events only; a function block or custom action block cannot be an else block.'));
+        }
+
+        // Custom action calls: checked before anything changes, so a refusal leaves the block as it was
+        const customAdds = (args.addActions ?? []).filter(a => isCustomActionCall(a as Record<string, unknown>));
+        const storedActions = Array.isArray(event.actions) ? event.actions as Record<string, unknown>[] : [];
+        const customUpdates = (args.updateActions ?? []).filter(u => storedActions[u.index] !== undefined && isCustomActionCall(storedActions[u.index]));
+        for (const upd of customUpdates) {
+          if (upd.parameters !== undefined && !Array.isArray(upd.parameters)) {
+            return toolError(nothingChanged(`Action ${upd.index} is a custom action call: pass its arguments as an array in parameter order.`));
+          }
+        }
+        const customContext = customAdds.length > 0 || customUpdates.length > 0 ? await loadCustomActionContext(reader) : undefined;
+        for (const add of customAdds) {
+          const callError = customActionCallError(add as { objectClass: string; customActionObjectClass?: string }, customContext!);
+          if (callError) return toolError(nothingChanged(callError));
         }
 
         if (!Array.isArray(event.conditions)) event.conditions = [];
@@ -1607,7 +1640,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
               return toolError(`Action ${upd.index} is a comment row, which cannot be disabled (editor-saved comment rows are { type, text } with optional "text-color" and "background-color"; none carries "disabled").`);
             }
             if (upd.parameters) {
-              if (isFunctionCall(act)) {
+              if (isCustomActionCall(act)) {
+                const argumentsGiven = (upd.parameters as unknown[]).map(value => (typeof value === 'boolean' ? value : String(value)));
+                if (argumentsGiven.length > 0) act.parameters = argumentsGiven;
+                else delete act.parameters;
+                warnings.push(...customActionCallWarnings(act as unknown as CustomActionCall, customContext!,
+                  `${where}, action ${upd.index}, custom action call "${String(act.customAction)}" on "${String(act.objectClass)}"`));
+              } else if (isFunctionCall(act)) {
                 const name = act.callFunction as string;
                 const label = `${where}, action ${upd.index} (call to "${name}")`;
                 const signature = await signatureOf(name);
@@ -1629,7 +1668,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
                   return functions;
                 });
               }
-            } else if (!isFunctionCall(act)) {
+            } else if (!isFunctionCall(act) && !isCustomActionCall(act)) {
               touched.push({ ace: act, kind: 'action' });
             }
             if (upd.disabled !== undefined) {
@@ -1685,7 +1724,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
         // ── Add new actions (validated up front) ──
         if (args.addActions && args.addActions.length > 0) {
-          const ctx = { warnings, functions };
+          const ctx = { warnings, functions, customActions: customContext };
           for (const a of args.addActions) {
             actions.push(await buildAction(reader, idGen, a, ctx, where) as unknown as Record<string, unknown>);
           }
@@ -1711,9 +1750,11 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // Only warn when this call removed the last condition. Blocks that
         // never had conditions (function blocks, sub-events) are normal.
         if (removedConditions && conditionCountBefore > 0 && conditions.length === 0) {
-          warnings.push(eventType === 'function-block'
-            ? 'All conditions were removed: the function body now runs on every call.'
-            : 'All conditions were removed: the block now runs whenever its parent runs (every tick at the top level).');
+          warnings.push(eventType === 'block'
+            ? 'All conditions were removed: the block now runs whenever its parent runs (every tick at the top level).'
+            : eventType === 'function-block'
+              ? 'All conditions were removed: the function body now runs on every call.'
+              : 'All conditions were removed: the custom action body now runs on every call.');
         }
 
         // Edited conditions/actions written by older versions may still carry
@@ -1747,6 +1788,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         };
         return toolResult({ ...result, eventPath: path });
       } catch (error) {
+        if (error instanceof CustomActionCallError) return toolError(nothingChanged(error.message));
         console.error('[update_event_block] failed:', error);
         return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
       }
