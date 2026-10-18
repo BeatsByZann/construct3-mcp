@@ -1135,6 +1135,93 @@ Remove an addon from `usedAddons`. Construct 3 errors on load if objects or beha
 
 The removal is written through the project writer: `project.c3proj` is backed up once per call (`project.c3proj.bak`), written through a temp file and read back. A `project.c3proj` saved in the editor during the call is merged with the removal, not refused.
 
+### `list_effects`
+
+List the effects of an object type, a family, a layout or one of its layers, in order, as saved, and the effect addons registered in the project (the effect ids `add_effect` accepts). Nothing is written.
+
+The five effect tools (`list_effects`, `add_effect`, `update_effect`, `remove_effect` and `reorder_effects`) take the same target. Give exactly one of `objectName`, `familyName` and `layoutName`; with `layoutName`, `layerName` makes a layer of that layout the target instead of the layout. Names are matched with their letter case, as registered; an object type or family name that differs only in case is refused with a hint giving the registered spelling. `layerName` without `layoutName` is refused.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | One of the three | Object type that holds the effect, as registered |
+| `familyName` | string | One of the three | Family that holds the effect, as registered |
+| `layoutName` | string | One of the three | Layout that holds the effect, or whose layer does |
+| `layerName` | string | No | With `layoutName`: the layer that holds the effect, by its name or, for a sub-layer, its path (`"Main > HUD"`), found as `update_layer` finds it |
+
+Where the state of an effect is kept:
+
+- An object type's or family's effect is an entry `{ effectId, name }` in the `effectTypes` of its file (the shape of an r495.2 editor-saved project). Its state is on every placed instance of the object type, or of each member of the family, in the instance's `effects`, under the effect's name, as `{ isEnabled, parameters }`.
+- A layer's or layout's effect is an entry `{ effectId, name, instance: { isEnabled, parameters } }` in the `effectTypes` of the layer or of the layout: the layer entry of an r495.2 editor-saved project, and the layout entry Construct 3 r506-2 saved.
+
+The result is `{ target, effects, registeredEffectAddons }`. `target` is `{ kind, name }` for an object type, a family or a layout, and `{ kind: "layer", layout, layer }` for a layer; `effects` lists the entries in order; `registeredEffectAddons` lists the `usedAddons` entries of type `effect`.
+
+### `add_effect`
+
+Add an effect to an object type, a family, a layout or a layer, at the end of its stack or at `index`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName`, `familyName`, `layoutName`, `layerName` | string | See `list_effects` | The target, as in `list_effects` |
+| `effectId` | string | Yes | Effect addon id, as registered in `usedAddons` (for example `"fogexponential"`) |
+| `name` | string | No | Effect name: letters, digits, underscores and spaces (default: the effect id with its first letter in upper case, so `"fogexponential"` is named `"Fogexponential"`) |
+| `parameters` | object | No | Parameter values, as the editor saves them for this effect (default: `{}`) |
+| `isEnabled` | boolean | No | Whether the effect starts enabled (default: true) |
+| `index` | integer | No | Position in the stack, from 0 (default: after the last effect) |
+
+- `effectId` must be an entry of `usedAddons` of type `effect`. The tool never registers an addon, since the addon's files must be in the project: a refusal names `register_addon`.
+- `name` passes the name check the other tools use, and must not match, ignoring case, a name the instances key their entries by: an effect of the holder; for an object type, also an effect of one of its families; for a family, an effect that any member gets from itself or from another family.
+- `index` past the end of the stack is refused; `index` equal to the number of effects appends.
+- `parameters` is optional. When it is left out, `{}` is written: Construct 3 r506-2 opened and kept an entry with `parameters: {}`.
+- An object type's or family's effect gets `{ isEnabled, parameters }` on every placed instance of the object type, or of each member of the family. Instances placed after the effect was added get none, because `add_instance_to_layout` does not write effect entries; `update_effect` refuses such an instance.
+- A layer's or layout's effect writes only its own layout.
+
+The result is `{ success, entity, category, action: "updated", effect, effects, backupFile }`, with `warnings` and `unscannedFiles` when there are some.
+
+### `update_effect`
+
+Change an effect's `isEnabled` and `parameters`. The parameters given are merged key by key into the existing ones; keys not given keep their values. Give `name` (the effect's name, letter case included) and at least one of `isEnabled` and `parameters`, or the call is refused.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | The effect's name, as registered on the holder |
+| `isEnabled` | boolean | No | Enable or disable the effect |
+| `parameters` | object | No | Parameter values to set, merged key by key |
+| `instanceLayoutName` | string | Object type and family only | The layout of the instance to change |
+| `instanceUid` | integer | Object type and family only | The UID of the instance to change |
+
+- A layer's or layout's effect: its entry's `instance` is changed, and the layout is the only file written.
+- An object type's or family's effect: the state is on one placed instance, so `instanceLayoutName` and `instanceUid` are required. The instance must be of the object type, or of one of the family's members, and must hold an entry for the effect; otherwise the call is refused and nothing is changed. An instance placed after the effect was added holds no entry, because `add_instance_to_layout` does not write effect entries, and the refusal says so.
+- One layout is written, and the holder is not. A call that changes nothing returns `action: "unchanged"` and writes nothing.
+
+The result is as for `add_effect`; for an object type or a family it also carries `instance: { layout, uid }`, the instance that changed.
+
+### `remove_effect`
+
+Remove an effect from the holder: its entry and, for an object type or a family, its entries on the placed instances. Parameters are the target, `name` (the effect's name, letter case included) and `force` (boolean, default false).
+
+Before anything changes, the uses of the effect in the event sheets are checked. A use refuses the call unless `force` is given; with `force` the effect is removed and a warning lists the uses. Uses are never changed.
+
+- Object type: actions and conditions on the object type that name the effect. This check is skipped when one of the object type's families keeps an effect of that name: actions on the object type still reach the family's effect, so no use check runs, and the instance entries are kept (an entry a family still has is not removed).
+- Family: actions and conditions on the family, and those on each member that keeps no effect of that name of its own (a member's action reaches the family's effect without naming the family).
+- Layer and layout: System actions and conditions that name an effect of that name. Which layer or layout a System action means is not checked, so each of them counts as a possible use.
+- A use whose effect is given by an expression that is not a quoted name cannot be checked: it is listed in a warning, not counted as a use.
+- Event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched as text: for an object type, for the effect's name together with the object type's name; for a family, for the effect's name together with the family's name or a member's name that keeps no effect of that name; for a layer or layout, for the effect's name alone. A match, or such a sheet that cannot be read at all, refuses without `force` as well (`unscannedFiles`).
+
+A refusal returns `{ success: false, action: "remove_blocked", message, references: { eventSheets, effectUses } }`, with `layer` for a layer target, and changes nothing. With `force`, each removed entry on a placed instance is named in a warning, and the layouts' `.bak` files hold those entries afterwards.
+
+### `reorder_effects`
+
+Put the effects of the holder in a new order. `names` lists every effect of the holder once, with its exact name (1 to 100 names). An order the holder already has is reported as `action: "unchanged"` and writes nothing.
+
+- `names` must be a permutation of the holder's effects; any other list is refused, and the refusal gives the current order.
+- A holder whose effects share a name is refused, and the refusal names them, since their entries cannot be told apart.
+- For an object type or a family, the placed instances' entries of these effects are put in the new order among the places they hold. Entries of other effects, and of other families, stay where they are.
+- The result carries `effects` (the new order) and no `effect` key, since the change is to the whole stack.
+
+**Writes and rollback** (the four tools that write; `list_effects` writes nothing): each tool writes the layouts whose instance entries it changes first and the holder's file last. A call stopped between those writes leaves the holder as it was, and running the call again finishes the work: an entry already added is skipped, and an entry already gone is not removed again. A failed write is rolled back: the files the call wrote earlier are put back from their `.bak`, and a file that an editor saved after its failed write is left as it is and named with its `.bak`. A layer or layout target writes only its layout, and `update_effect` writes one layout. A process that is stopped in the middle of a call rolls nothing back. The check of `remove_effect` covers event sheets only, not scripts, timelines or flowcharts.
+
+Each of the four write tools returns `success`, `entity`, `category` (`object`, `family`, `layout` or `layer`), `action` (`updated` or `unchanged`), `effects` and, except for `reorder_effects`, `effect`, with `backupFile` for a write and `layer` for a layer target. `list_effects` returns the fields listed in its section. Every refusal ends with "Nothing was changed."
+
 ### `add_animation_to_sprite`
 
 Add a new animation to a Sprite object.

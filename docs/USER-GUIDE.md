@@ -26,7 +26,7 @@ This guide is for Construct 3 developers who want to use the server with Claude 
 
 ## What it does and what it doesn't
 
-construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 85 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
+construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 90 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
 
 - **Read and explain**: list objects, layouts, event sheets, families, timelines and addons, show an event sheet as a readable outline with the editor's event numbers, find where an object is used, map functions, find unused objects and assets.
 - **Check**: `validate_project` runs 29 checks, including rules the Construct 3 editor enforces when it opens a project. `find_runtime_traps` looks for logic that loads fine but hangs or does nothing.
@@ -133,7 +133,7 @@ To see the tool list without any AI tool, use the MCP Inspector in CLI mode:
 npx -y @modelcontextprotocol/inspector --cli node "C:/Tools/construct3-mcp/dist/index.js" "C:/Games/My Game" --method tools/list
 ```
 
-This prints a JSON list of 85 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools`; both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
+This prints a JSON list of 90 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools`; both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
 
 ### Alternative: run from GitHub without cloning
 
@@ -262,7 +262,7 @@ This format works, and so does the one `claude mcp add` writes (the same with `"
 
 #### Tool permissions
 
-Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 26 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
+Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 27 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
 
 ```json
 {
@@ -281,7 +281,7 @@ Claude Code asks before it uses an MCP tool. In Claude Code the tools are named 
 }
 ```
 
-Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 26 read-only tools was checked against the server's tool list over stdio (85 tools). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
+Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 27 read-only tools was checked against the server's tool list over stdio (90 tools). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
 
 ### Claude Desktop
 
@@ -354,12 +354,12 @@ Confirm the trust prompt when the server starts. Logs: Command Palette > **MCP: 
 
 *From each vendor's documentation, not tested for this guide.* Always pass an explicit project path.
 
-- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 85, so disable other servers or tools you don't need if you hit the limit.
+- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 90, so disable other servers or tools you don't need if you hit the limit.
 - **Antigravity**: open the file through the Agent panel > **MCP Servers** > **Manage MCP Servers** > **View raw config**. Current documentation names `~/.gemini/config/mcp_config.json` (global) and `.agents/mcp_config.json` (per workspace).
 
 ### Check that it works
 
-Your client should show `construct3` with 85 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
+Your client should show `construct3` with 90 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
 
 > Give me an overview of this project.
 
@@ -602,21 +602,22 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 ## Read tools and write tools
 
-**Read-only tools (26)**, safe to auto-approve:
+**Read-only tools (27)**, safe to auto-approve:
 
-- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_addons`, `list_timelines`, `search_objects`
+- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_addons`, `list_effects`, `list_timelines`, `search_objects`
 - Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
 - Runtime helpers that only return text: `get_bridge_commands`, `generate_bridge_eval_script`
 - Runtime read: `get_canvas_size` (the canvas geometry of a game you connected to with `connect_to_game`; it sends nothing to the game)
 
-**Tools that write files (49)**, review before approving:
+**Tools that write files (53)**, review before approving:
 
 - Objects and families: `create_object`, `update_object_properties`, `delete_object`, `create_family`, `update_family`, `update_instance_variable`, `reorder_behaviors`, `delete_family`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `move_events_between_sheets`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `delete_layer`, `add_instance_to_layout`, `update_instance`, `delete_instance_from_layout`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `replace_sprite_image`
+- Effects of object types, families, layouts and layers: `add_effect`, `update_effect`, `remove_effect`, `reorder_effects`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
@@ -631,6 +632,7 @@ Defaults to know:
   - On `delete_object`, `delete_family`, `delete_event_sheet`, `delete_event_from_sheet`, `delete_layout`, `update_object_properties` and `update_family` it skips the reference checks and leaves the references behind.
   - On `move_events_between_sheets` it moves an event variable out of the scope of events that still use it (e.g. a used global variable into a group) and lists those uses; without it such a move is refused.
   - On `delete_layer` it deletes the layer together with the instances on it.
+  - On `remove_effect` it removes the effect although events still use it, and lists those uses; the uses are not changed, so fix them in the editor.
   - `unregister_addon` checks no references at all; `force` only allows removing a Scirra built-in addon. It also removes an addon that objects still use (it only adds the warning `If any objects/behaviors still reference it, C3 will error on load.`). Before you approve it, ask which objects use the addon. Afterwards `validate_project` reports leftover uses as `missing-addon` warnings, while the project still counts as `"valid": true`.
   - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_timeline`, `remove_event_from_sheet`) have no `force` option.
 
@@ -749,4 +751,4 @@ Install it and add one object that uses the addon in the Construct 3 editor, sav
 - Third-party addons must be installed and added in the editor; `register_addon` only edits the addon list.
 - The documentation resources only return links to the Construct 3 manual.
 - The runtime tools need Node.js 22 or later and Chrome or Edge, start from an export or the editor's preview (the server cannot export), and the bridge must be removed before you ship.
-- Windsurf / Devin Desktop allows 100 tools in total; this server uses 85 of them.
+- Windsurf / Devin Desktop allows 100 tools in total; this server uses 90 of them.

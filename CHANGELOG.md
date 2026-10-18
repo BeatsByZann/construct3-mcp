@@ -8,6 +8,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 - `update_instance_variable`: rename an instance variable of an object type or family, or change its type or description. Placed instances keep their values under the new name; values that do not fit a new type get the default and are listed. A rename that events use is refused without `force`, as removing the variable is; uses are never rewritten (#ISSUE).
 - `reorder_behaviors`: put the behaviors of an object type or family in a new order, and those behaviors' entries on placed instances with them; other entries keep their places, except a same-named entry of another owner, which moves with this owner's order (#ISSUE).
+- `list_effects`, `add_effect`, `update_effect`, `remove_effect` and `reorder_effects` edit the effects of object types, families, layouts and layers. An object type's or family's effect gets an entry on every placed instance of the object type (or of each member of the family), and that entry holds the instance's state; a layer's or layout's effect keeps its state in its own entry. `remove_effect` refuses while event sheets name the effect, and every write goes through the project writer: the layouts are written first and the holder's file last, and a failed write rolls the layouts written before it back (#ISSUE).
 
 ### Changed
 
