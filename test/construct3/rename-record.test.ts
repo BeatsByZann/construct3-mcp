@@ -105,7 +105,10 @@ describe('renameImageFiles', () => {
     failFrom.add('b.png');
     statPlan.set('a.png', 1);
     const scope = await runInToolCall(async () => {
-      const error = await writer.renameImageFiles([{ from: 'a.png', to: 'c.png' }, { from: 'b.png', to: 'd.png' }]).catch(e => e as Error);
+      const error = await writer.renameImageFiles([{ from: 'a.png', to: 'c.png' }, { from: 'b.png', to: 'd.png' }]).then(
+        () => { throw new Error('expected the rename to fail'); },
+        (e: unknown) => (e instanceof Error ? e : new Error(String(e))),
+      );
       expect(error.message).not.toContain('could not be renamed back');
       return currentToolCall() as ToolCallScope;
     });

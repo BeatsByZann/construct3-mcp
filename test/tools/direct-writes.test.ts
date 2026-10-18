@@ -95,14 +95,15 @@ function arrivesAt(method: 'replaceFile' | 'updateProjectProperties'): ReturnTyp
 function watchProjectLock(): { stayedOutFor: (ms: number) => Promise<void>; entered: () => boolean } {
   const inside = gate();
   let entered = false;
-  const original = (writer as unknown as { createBackup: (p: string, o?: unknown) => Promise<unknown> }).createBackup.bind(writer);
-  vi.spyOn(writer as never, 'createBackup').mockImplementation((async (p: string, o?: unknown) => {
+  const internals = writer as unknown as { createBackup: (p: string, o?: { freeName?: boolean }) => Promise<string> };
+  const original = internals.createBackup.bind(writer);
+  vi.spyOn(internals, 'createBackup').mockImplementation(async (p, o) => {
     if (p.toLowerCase().endsWith('project.c3proj')) {
       entered = true;
       inside.open();
     }
     return original(p, o);
-  }) as never);
+  });
   return {
     stayedOutFor: ms => Promise.race([inside.opened, new Promise<void>(resolve => setTimeout(resolve, ms))]),
     entered: () => entered,
