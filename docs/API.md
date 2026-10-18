@@ -1171,7 +1171,7 @@ Add an effect to an object type, a family, a layout or a layer, at the end of it
 - `effectId` must be an entry of `usedAddons` of type `effect`. The tool never registers an addon, since the addon's files must be in the project: a refusal names `register_addon`.
 - `name` passes the name check the other tools use, and must not match, ignoring case, a name the instances key their entries by: an effect of the holder; for an object type, also an effect of one of its families; for a family, an effect that any member gets from itself or from another family.
 - `index` past the end of the stack is refused; `index` equal to the number of effects appends.
-- `parameters` is optional. When it is left out, `{}` is written: Construct 3 r506-2 opened and kept an entry with `parameters: {}`.
+- `parameters` is optional. When it is left out, `{}` is written. Construct 3 r506-2 opened and kept such an entry for an object type's effect and for a layout's effect. A family's effect has the same entry shape as an object type's, and a layer's the same as a layout's; neither was opened in the editor, so the editor's handling of those two is not checked.
 - An object type's or family's effect gets `{ isEnabled, parameters }` on every placed instance of the object type, or of each member of the family. Instances placed after the effect was added get none, because `add_instance_to_layout` does not write effect entries; `update_effect` refuses such an instance.
 - A layer's or layout's effect writes only its own layout.
 
@@ -1207,7 +1207,7 @@ Before anything changes, the uses of the effect in the event sheets are checked.
 - A use whose effect is given by an expression that is not a quoted name cannot be checked: it is listed in a warning, not counted as a use.
 - Event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched as text: for an object type, for the effect's name together with the object type's name; for a family, for the effect's name together with the family's name or a member's name that keeps no effect of that name; for a layer or layout, for the effect's name alone. A match, or such a sheet that cannot be read at all, refuses without `force` as well (`unscannedFiles`).
 
-A refusal returns `{ success: false, action: "remove_blocked", message, references: { eventSheets, effectUses } }`, with `layer` for a layer target, and changes nothing. With `force`, each removed entry on a placed instance is named in a warning, and the layouts' `.bak` files hold those entries afterwards.
+A blocked removal returns `{ success: false, action: "remove_blocked", message, entity, category, references: { eventSheets, effectUses } }`, with `layer` for a layer target and `unscannedFiles` when event sheets that could not be parsed were searched as text (the field is absent when there are none). It changes nothing, and its message says so before the hint about `force`. Each removal that drops entries on placed instances, with or without `force`, names them in a warning: the first ten, then a count of the rest. Only the layouts' `.bak` files hold those entries afterwards. With `force`, the uses are listed in a warning and are not changed.
 
 ### `reorder_effects`
 
@@ -1220,7 +1220,7 @@ Put the effects of the holder in a new order. `names` lists every effect of the 
 
 **Writes and rollback** (the four tools that write; `list_effects` writes nothing): each tool writes the layouts whose instance entries it changes first and the holder's file last. A call stopped between those writes leaves the holder as it was, and running the call again finishes the work: an entry already added is skipped, and an entry already gone is not removed again. A failed write is rolled back: the files the call wrote earlier are put back from their `.bak`, and a file that an editor saved after its failed write is left as it is and named with its `.bak`. A layer or layout target writes only its layout, and `update_effect` writes one layout. A process that is stopped in the middle of a call rolls nothing back. The check of `remove_effect` covers event sheets only, not scripts, timelines or flowcharts.
 
-Each of the four write tools returns `success`, `entity`, `category` (`object`, `family`, `layout` or `layer`), `action` (`updated` or `unchanged`), `effects` and, except for `reorder_effects`, `effect`, with `backupFile` for a write and `layer` for a layer target. `list_effects` returns the fields listed in its section. Every refusal ends with "Nothing was changed."
+Each of the four write tools returns `success`, `entity`, `category` (`object`, `family`, `layout` or `layer`), `action` (`updated` or `unchanged`), `effects` and, except for `reorder_effects`, `effect`, with `backupFile` for a write and `layer` for a layer target. `list_effects` returns the fields listed in its section. A refusal made before any write changes nothing. Most refusals end with "Nothing was changed."; a name that is not found, and an error raised while a file is read ("Error ...: <cause>"), do not say so.
 
 ### `add_animation_to_sprite`
 
