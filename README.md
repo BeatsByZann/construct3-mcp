@@ -167,6 +167,7 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `update_event_variable` | Rename a variable or change its type, initial value, static or constant flag; a new name is checked like in the editor |
 | `move_events_between_sheets` | Copy or move top-level events between sheets by SID (optionally into a group); load-time checked, so copying an event that breaks a load-time rule is refused; a copy or move that would clash event variable names (e.g. a copied global variable) is refused, and so is (without `force`) a move that takes a used variable out of scope, e.g. a global variable moved into a group |
 | `delete_event_from_sheet` | Delete an event from a sheet by SID or include name (dry-run, force); refuses while functions or event variables it removes are still referenced elsewhere (by calls, function maps, System variable ACEs or by name in expressions); warns about an else block the delete leaves behind |
+| `move_event_block_items` | Move, reorder or copy conditions or actions within or between blocks of a sheet (copies get new SIDs); refuses moving an else condition and (without `force`) a move that takes a used variable or parameter out of scope, and warns when "Set return value" leaves a function block. `update_event_block` also inserts conditions and actions at an index and replaces conditions in place |
 | `remove_event_from_sheet` | Remove an include from a sheet by included sheet name |
 | `delete_event_sheet` | Delete an event sheet (with reference checking and optional force): includes, layout bindings, and uses in other sheets of the functions and global variables it defines |
 | `fix_legacy_behavior_keys` | Rename legacy `"behavior-type"` keys (written by older versions) to `"behaviorType"` in all event sheets, checking each name against the object's behaviors (dry-run by default) |
@@ -440,7 +441,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 84.
 
 ### Standalone Testing
 
@@ -548,9 +549,10 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (6)
-│   │   ├── event-tools.ts          # Event sheet tools (12)
+│   │   ├── event-tools.ts          # Event sheet tools (13)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)

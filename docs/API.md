@@ -771,22 +771,30 @@ Update an existing block event — modify action parameters, add/remove actions 
 | `addConditions` | array | No | Append new conditions |
 | `removeActionIndices` | number[] | No | Remove actions by 0-based index |
 | `removeConditionIndices` | number[] | No | Remove conditions by 0-based index |
+| `insertActions` | array | No | `[{ index, action }]`: insert actions, in the shapes of `addActions`, at indexes. `index` counts the actions after `removeActionIndices`, before this call's other inserts and `addActions`; it may equal that count, which appends. Two inserts at one index are refused. |
+| `insertConditions` | array | No | `[{ index, condition }]`: insert conditions at indexes, counted as `insertActions` counts actions. A System `else` condition inserted at index 0 stays first; one inserted anywhere else gets a warning (use `isElse: true`). |
+| `replaceConditions` | array | No | `[{ index, condition }]`: replace conditions in place. `index` is the condition's index before this call; the new condition gets a new SID. A condition cannot be replaced and also removed or updated by the same call. |
 
 At least one update parameter must be provided.
 
-**Operation ordering** (all indices reference the ORIGINAL array positions):
+**Operation ordering** (indexes are the ORIGINAL array positions, except for inserts):
 1. Block toggles (`disabled`, `isOrBlock`)
-2. Updates (non-length-mutating) — merge parameters, toggle flags
-3. Removals (descending order, deduped) — shrink arrays
-4. Additions (append) — grow arrays
-5. `isElse` — adds or removes the leading `else` condition
-6. Final state checks — warn if this call removed the last condition
+2. Condition updates (`updateConditions`): merge parameters, toggle flags
+3. Action updates (`updateActions`)
+4. Replacements (`replaceConditions`), indexes before the call
+5. Removals (descending order, deduped): shrink arrays
+6. Inserts (`insertConditions`, `insertActions`), indexes after the removals; two at one index are refused
+7. Additions (`addConditions`, `addActions`): append
+8. `isElse`: adds or removes the leading `else` condition
+
+A call refuses, changing nothing, each of these; the message ends "Nothing was changed.": an insert index past the list after the removals; two inserts at one index; a replacement index past the block's conditions; a condition replaced twice, or replaced and also removed or updated; an insert at index 0 when the block's first condition, after this call's replacements and removals, is a System `else` condition (it stays first, also when disabled); and a call that adds conditions or actions (through `addConditions`, `addActions`, `insertConditions` or `insertActions`) when the block would then hold more than 100 of them. A call that adds none edits a block of any size. Each of these is checked before the block changes. If a step throws after the block has changed, the block is put back as it was read and the error reads "The change was stopped before anything was written: ... Nothing was changed."; a failed write keeps its own message.
 
 **Notes:**
 - Only works on `block` or `function-block` events (not groups, variables, etc.)
 - New actions/conditions get fresh SIDs via the ID generator
 - `objectClass` is validated on new conditions/actions; `behaviorType` is soft-validated and the deprecated `"behavior-type"` alias is normalized, as in `add_event_block`. All additions are validated in one pass before anything changes, so each warning appears once and a conflicting key aborts the call without writing.
 - Existing conditions/actions edited through `updateConditions`/`updateActions` that still carry the legacy `"behavior-type"` key are normalized to `"behaviorType"` with the same rules as `fix_legacy_behavior_keys`, and each one is reported in `warnings`. `update_event_block_action` does the same for the action it edits.
+- `insertActions`, `insertConditions` and `replaceConditions` are checked like additions: object classes, the deprecated `isOr` flag, the load-time gate and the *Set return value* warning. Replacing or inserting a condition with a System `else` condition in the wrong place gets a warning.
 - Duplicate removal indices are automatically deduplicated
 - Warns only when this call removed the last condition (the block then runs whenever its parent runs; a function body on every call). Blocks that never had conditions, such as function blocks and condition-less sub-events, get no warning.
 - `disabled` on the block, an action or a condition is written right after its `sid`, as the editor does. Parameters added to a condition that has `isInverted` but no `parameters` go before `isInverted`, and a new `isInverted` goes last, where the editor writes them.
@@ -855,6 +863,29 @@ Only top-level events count: a SID shared by two top-level events of the source 
 Copied events keep their SIDs. When a copied event, or one of its sub-events, has a SID that another event of the target sheet already has (for example, the same event copied twice), the copy is still written, since the editor opens such sheets, and `warnings` names each such SID with the paths of its events there: the SID-based event tools then refuse it in the target sheet unless `eventPath` picks one.
 
 Returns `movedSids`, `movedCount`, `backupFiles` (target first, then source when modified) and `warnings`, if any: new load-time warnings, the shared-SID warning and, with `force`, the uses left out of scope (also in `references`).
+
+### `move_event_block_items`
+
+Move, reorder or copy conditions or actions within a block, function block or custom action block of an event sheet, or into another such block of the same sheet. A moved item keeps its SID. A copy (`copy: true`) gets a new SID and the source keeps its items; an item without a SID is copied without one. This tool moves conditions and actions only, never events.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `sourceBlockSid` / `sourceEventPath` | number / string | Yes / No | The block, function block or custom action block the items are in; the path picks one of several events that share the SID |
+| `targetBlockSid` / `targetEventPath` | number / string | Yes / No | The block the items go to (the same SID to reorder); the path picks one of several events that share the SID |
+| `itemType` | `"actions"` \| `"conditions"` | Yes | Which list the items are in |
+| `indices` | number[] | Yes | Indexes of the items in the source, 1 to 100 of them, each once; they keep their order whatever order they are given in |
+| `targetIndex` | number | Yes | Where the items go in the target. A move within one block counts it after the items are taken out; otherwise it counts the target as it is, and it ranges from 0 to the number of items there |
+| `copy` | boolean | No | Copy instead of move (default: false) |
+| `force` | boolean | No | Move even when an item then uses an event variable or function parameter outside its scope (default: false); the uses are listed in `references` and in a warning |
+
+Refused, changing nothing (each message ends "Nothing was changed."): an index listed twice or past the end of the source; a `targetIndex` past the place the items can go; a move between blocks or a copy that would give the target more than 100 items of the kind (a reorder is not capped); a source or target SID that matches no event, or several without its path argument (the candidates are listed), or an event that is not a block, function block or custom action block; moving or copying an else condition, which stays first in its own block; an item put at index 0 in front of the target's else condition, enabled or disabled (use index 1 or later); an object class that is no object type, family, System or the Functions object, checked against the target as `add_event_block` checks it; a new load-time error of the sheet.
+
+Without `force`, a move or copy after which an item uses an event variable or function parameter (a custom action parameter included) outside its scope, or where a use finds another declaration of the same name, returns `{ success: false, action: "move_blocked", message, references }` (with `reboundReferences` for a name that then finds another declaration) and changes nothing. The check stops at its traversal limit, 100,000 events (sub-events included) across all event sheets; then the move is refused without `force` too, since the uses beyond the limit are unknown.
+
+Written moves carry warnings, if any: new load-time warnings; *Set return value* where it stands outside a function block after the move (never refused); a notice when every condition of the source has moved, so the source then runs whenever its parent runs; and, with `force`, the uses left out of scope.
+
+Returns `{ success, entity, category: "eventsheet", action: "updated", sourceBlockSid, targetBlockSid, itemType, copy, sids, targetIndex, warnings?, references?, reboundReferences?, backupFile }`; `sids` are the SIDs of the moved items (the new ones for a copy). A call that leaves the items where they were writes nothing and returns `action: "unchanged"`. When the write fails, the sheet is put back, unless another write changed it since; the error then names it with its `.bak`. A failure before the write puts the sheet back and reads "The change was stopped before anything was written: ... Nothing was changed."
 
 ### `remove_event_from_sheet`
 
