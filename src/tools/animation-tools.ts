@@ -707,7 +707,12 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
    * object is written; a failure renames them back and restores the object
    * file by the image rollback rule (recoverFrameChange).
    */
-  const reorderFrames = async (objectName: string, animationName: string, orderOf: (frameCount: number) => number[]) => {
+  const reorderFrames = async (
+    objectName: string,
+    animationName: string,
+    orderOf: (frameCount: number) => number[],
+    orderGiven: boolean,
+  ) => {
     const loaded = await loadSpriteAnimation(reader, objectName, animationName);
     if ('error' in loaded) return loaded.error;
     const { obj, anim } = loaded;
@@ -717,7 +722,9 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
     const orderError = frameOrderError(order, frames.length, anim.name);
     if (orderError) return toolError(orderError);
     if (order.every((from, to) => from === to)) {
-      return toolError(`The order leaves every frame of "${anim.name}" at its index. Nothing was changed.`);
+      return toolError(orderGiven
+        ? `The order leaves every frame of "${anim.name}" at its index. Nothing was changed.`
+        : `Animation "${anim.name}" has one frame, so reversing it changes nothing. Nothing was changed.`);
     }
     // Animations whose names differ only in case use the same image files: moving them would give the other one other images
     const sharing = animationsSharingImageFiles(obj.animations, anim);
@@ -772,7 +779,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
     },
     oneAtATime(async (args) => {
       try {
-        return await reorderFrames(args.objectName, args.animationName, () => args.order);
+        return await reorderFrames(args.objectName, args.animationName, () => args.order, true);
       } catch (error) {
         console.error('[reorder_frames] failed:', error);
         return toolError(`Error reordering frames: ${fileErrorText(error, path => writer.projectRelative(path))}`);
@@ -789,7 +796,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
     },
     oneAtATime(async (args) => {
       try {
-        return await reorderFrames(args.objectName, args.animationName, count => Array.from({ length: count }, (_, k) => count - 1 - k));
+        return await reorderFrames(args.objectName, args.animationName, count => Array.from({ length: count }, (_, k) => count - 1 - k), false);
       } catch (error) {
         console.error('[reverse_frames] failed:', error);
         return toolError(`Error reversing frames: ${fileErrorText(error, path => writer.projectRelative(path))}`);
@@ -1473,8 +1480,9 @@ async function recoverFrameChangeOrThrow(
  * name, in any animation folder) for a frame tool that renames or writes the
  * animation's frame image files, or the tool error that says why there is
  * none to change: no such object, not a Sprite, no animations structure, no
- * such animation, or an animation name that cannot be part of an image file
- * name. It only reads.
+ * such animation, an animation name that cannot be part of an image file
+ * name, or an animation without a frames list or without frames. It only
+ * reads.
  */
 async function loadSpriteAnimation(
   reader: MutationToolDeps['reader'],
@@ -1497,6 +1505,12 @@ async function loadSpriteAnimation(
   }
   const nameError = animationNameFileError(anim.name, true);
   if (nameError) return { error: toolError(nameError) };
+  if (!Array.isArray(anim.frames)) {
+    return { error: toolError(`Animation "${anim.name}" on "${objectName}" has no frames list in its object file. Nothing was changed.`) };
+  }
+  if (anim.frames.length === 0) {
+    return { error: toolError(`Animation "${anim.name}" on "${objectName}" has no frames. Nothing was changed.`) };
+  }
   return { obj, anim };
 }
 
@@ -1507,9 +1521,12 @@ async function loadSpriteAnimation(
  * on ...", e.g. "reorder the frames of".
  */
 function sharedImageFilesError(action: string, objectName: string, anim: { name: string }, sharing: readonly string[]): string {
-  return `Cannot ${action} "${anim.name}" on "${objectName}": animation ${sharing.map(n => `"${n}"`).join(', ')} `
-    + 'differs from it only in case, so both use the same frame image files, and changing them would give '
-    + `${sharing.length > 1 ? 'those animations' : 'that animation'} other images. Nothing was changed. Delete the other animation first.`;
+  const names = sharing.map(n => `"${n}"`).join(', ');
+  return sharing.length > 1
+    ? `Cannot ${action} "${anim.name}" on "${objectName}": animations ${names} differ from it only in case, so all use the same frame `
+      + 'image files, and changing them would give those animations other images. Nothing was changed. Delete the other animations first.'
+    : `Cannot ${action} "${anim.name}" on "${objectName}": animation ${names} differs from it only in case, so both use the same frame `
+      + 'image files, and changing them would give that animation other images. Nothing was changed. Delete the other animation first.';
 }
 
 /** Why `order` is not a full permutation of the animation's frame indexes, or undefined when it is. */

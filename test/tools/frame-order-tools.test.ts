@@ -135,6 +135,30 @@ async function refused(tool: string, args: Record<string, unknown>, mock = serve
   return result.content[0].text;
 }
 
+/**
+ * A refused call that must have changed nothing: the object file's bytes,
+ * images/ and the files in objectTypes/ (so no .bak was made) are the same
+ * after it. Returns the error text.
+ */
+async function refusedUnchanged(tool: string, args: Record<string, unknown>, mock = server): Promise<string> {
+  const objectBefore = await readFile(objectPath());
+  const imagesBefore = await snapshot();
+  const objectFilesBefore = (await readdir(join(tmpDir, 'objectTypes'))).sort();
+  const text = await refused(tool, args, mock);
+  expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
+  expect(await snapshot()).toEqual(imagesBefore);
+  expect((await readdir(join(tmpDir, 'objectTypes'))).sort()).toEqual(objectFilesBefore);
+  return text;
+}
+
+/** Add animations to the fixture Sprite that differ from "Animation 1" only in case (they share its image file names). */
+async function addCaseVariantAnimations(...names: string[]): Promise<void> {
+  const obj = JSON.parse(await readFile(objectPath(), 'utf8'));
+  names.forEach((name, i) => obj.animations.items.push({ ...obj.animations.items[0], name, sid: 300000000000009 + i }));
+  await writeFile(objectPath(), JSON.stringify(obj, null, '\t'));
+  reader.invalidateCaches();
+}
+
 /** A server whose writer refuses to write the object file (before replacing it), with `error`. */
 function failingObjectWrite(error: () => Error = () => new Error('disk full')): MockServer {
   class FailingObjectWriter extends Construct3ProjectWriter {
@@ -237,35 +261,71 @@ describe('reorder_frames and reverse_frames keep every frame\'s image', () => {
 
   it('refuses an order that does not list every frame once, before writing anything', async () => {
     await setupFrames(ABC);
-    const before = await snapshot();
-    const objectBefore = await readFile(objectPath());
-    expect(await refused('reorder_frames', { order: [0, 1] }))
+    expect(await refusedUnchanged('reorder_frames', { order: [0, 1] }))
       .toBe('order must list each of the 3 frame(s) of "Animation 1" once, by its index before the call (0 to 2); it lists 2. Nothing was changed.');
-    expect(await refused('reorder_frames', { order: [0, 1, 3] }))
+    expect(await refusedUnchanged('reorder_frames', { order: [0, 1, 3] }))
       .toBe('order names frame index 3, but "Animation 1" has 3 frame(s) (0 to 2). Nothing was changed.');
-    expect(await refused('reorder_frames', { order: [0, 0, 1] }))
+    expect(await refusedUnchanged('reorder_frames', { order: [0, 0, 1] }))
       .toBe('order names frame index 0 twice; it must list each frame index once. Nothing was changed.');
-    expect(await snapshot()).toEqual(before);
-    expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
-    expect(await readdir(join(tmpDir, 'objectTypes'))).not.toContain('Sprite.json.bak');
   });
 
   it('refuses an order that leaves every frame where it is', async () => {
     await setupFrames(ABC);
-    expect(await refused('reorder_frames', { order: [0, 1, 2] }))
+    expect(await refusedUnchanged('reorder_frames', { order: [0, 1, 2] }))
       .toBe('The order leaves every frame of "Animation 1" at its index. Nothing was changed.');
+  });
+
+  it('refuses to reverse an animation with one frame, saying it has one frame', async () => {
     await setupFrames([{ label: 'A' }]);
-    expect(await refused('reverse_frames', {})).toBe('The order leaves every frame of "Animation 1" at its index. Nothing was changed.');
+    expect(await refusedUnchanged('reverse_frames', {}))
+      .toBe('Animation "Animation 1" has one frame, so reversing it changes nothing. Nothing was changed.');
+  });
+
+  it('refuses an animation with no frames, or with a frames list that is not a list, as one tool error', async () => {
+    await setupFrames([]);
+    const empty = 'Animation "Animation 1" on "Sprite" has no frames. Nothing was changed.';
+    expect(await refusedUnchanged('reorder_frames', { order: [0] })).toBe(empty);
+    expect(await refusedUnchanged('reverse_frames', {})).toBe(empty);
+    expect(await refusedUnchanged('duplicate_frame', { frameIndex: 0 })).toBe(empty);
+    const obj = JSON.parse(await readFile(objectPath(), 'utf8'));
+    obj.animations.items[0].frames = 'not a list';
+    await writeFile(objectPath(), JSON.stringify(obj, null, '\t'));
+    reader.invalidateCaches();
+    const malformed = 'Animation "Animation 1" on "Sprite" has no frames list in its object file. Nothing was changed.';
+    expect(await refusedUnchanged('reorder_frames', { order: [0] })).toBe(malformed);
+    expect(await refusedUnchanged('reverse_frames', {})).toBe(malformed);
+    expect(await refusedUnchanged('duplicate_frame', { frameIndex: 0 })).toBe(malformed);
   });
 
   it('refuses while another animation shares the image files', async () => {
     await setupFrames(ABC);
-    const obj = JSON.parse(await readFile(objectPath(), 'utf8'));
-    obj.animations.items.push({ ...obj.animations.items[0], name: 'ANIMATION 1', sid: 300000000000009 });
-    await writeFile(objectPath(), JSON.stringify(obj, null, '\t'));
-    const before = await snapshot();
-    expect(await refused('reverse_frames', {})).toContain('animation "ANIMATION 1" differs from it only in case');
-    expect(await snapshot()).toEqual(before);
+    await addCaseVariantAnimations('ANIMATION 1');
+    expect(await refusedUnchanged('reverse_frames', {}))
+      .toBe('Cannot reorder the frames of "Animation 1" on "Sprite": animation "ANIMATION 1" differs from it only in case, so both use the '
+        + 'same frame image files, and changing them would give that animation other images. Nothing was changed. Delete the other animation first.');
+  });
+
+  it('says "animations" and "those" when several animations share the image files', async () => {
+    await setupFrames(ABC);
+    await addCaseVariantAnimations('ANIMATION 1', 'animation 1');
+    expect(await refusedUnchanged('reverse_frames', {}))
+      .toBe('Cannot reorder the frames of "Animation 1" on "Sprite": animations "ANIMATION 1", "animation 1" differ from it only in case, so all '
+        + 'use the same frame image files, and changing them would give those animations other images. Nothing was changed. Delete the other animations first.');
+  });
+
+  it('refuses when the image file renames cannot be planned without replacing a file, and changes nothing', async () => {
+    await setupFrames(ABC);
+    // The listing reports a file that differs from frame 0's image only in case (as a case-sensitive file system would): both would get one name
+    class CaseVariantListing extends Construct3ProjectWriter {
+      override async listImageFiles(): Promise<string[]> {
+        return [...await super.listImageFiles(), `${PREFIX.toUpperCase()}000.png`];
+      }
+    }
+    const idGen = new IdGenerator();
+    const text = await refusedUnchanged('reverse_frames', {}, register(new CaseVariantListing(reader, idGen), idGen));
+    expect(text).toBe(`Cannot reorder the frames of "Animation 1" on "Sprite": the frame image files cannot be renamed to their new indexes `
+      + `("images/${PREFIX}000.png and images/${PREFIX.toUpperCase()}000.png would both be renamed to images/${PREFIX}002.png"). `
+      + 'Nothing was changed. Check these files in images/.');
   });
 });
 
@@ -422,26 +482,18 @@ describe('duplicate_frame copies a frame with its image', () => {
 
   it('refuses while another animation shares the image files, and changes nothing', async () => {
     await setupFrames(ABC);
-    const obj = JSON.parse(await readFile(objectPath(), 'utf8'));
-    obj.animations.items.push({ ...obj.animations.items[0], name: 'ANIMATION 1', sid: 300000000000009 });
-    await writeFile(objectPath(), JSON.stringify(obj, null, '\t'));
-    const objectBefore = await readFile(objectPath());
-    const imagesBefore = await snapshot();
-    expect(await refused('duplicate_frame', { frameIndex: 0 })).toContain('animation "ANIMATION 1" differs from it only in case');
-    expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
-    expect(await snapshot()).toEqual(imagesBefore);
-    expect(await readdir(join(tmpDir, 'objectTypes'))).not.toContain('Sprite.json.bak');
+    await addCaseVariantAnimations('ANIMATION 1');
+    expect(await refusedUnchanged('duplicate_frame', { frameIndex: 0 }))
+      .toBe('Cannot copy a frame of "Animation 1" on "Sprite": animation "ANIMATION 1" differs from it only in case, so both use the '
+        + 'same frame image files, and changing them would give that animation other images. Nothing was changed. Delete the other animation first.');
   });
 
   it('refuses a frame or an index out of range before writing anything', async () => {
     await setupFrames(ABC);
-    const before = await snapshot();
-    expect(await refused('duplicate_frame', { frameIndex: 3 }))
+    expect(await refusedUnchanged('duplicate_frame', { frameIndex: 3 }))
       .toBe('Frame index 3 is out of range. Animation "Animation 1" has 3 frame(s). Nothing was changed.');
-    expect(await refused('duplicate_frame', { frameIndex: 0, index: 4 }))
+    expect(await refusedUnchanged('duplicate_frame', { frameIndex: 0, index: 4 }))
       .toBe('Index 4 is out of range: insert the copy at an index from 0 to 3, or leave index out to insert it right after frame 0. Nothing was changed.');
-    expect(await snapshot()).toEqual(before);
-    expect(await readdir(join(tmpDir, 'objectTypes'))).not.toContain('Sprite.json.bak');
   });
 });
 

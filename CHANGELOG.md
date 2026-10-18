@@ -6,7 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
-- `reorder_frames` and `reverse_frames` put a Sprite animation's frames in a new order and rename each frame's image file to its new index (through a free `<file>.reorder` name where two files would swap), keeping a file no frame uses in the way as `.bak`; `duplicate_frame` inserts a copy of a frame with a new `imageSpriteId` when the frame has one, and a copy of its image file, written only to a free name. When a write fails, the files are renamed back and the copies removed only if the object file, read again, holds the frames from before the call; a file whose old name is taken keeps its new name and the error says which file is in the way (#ISSUE).
+- `reorder_frames` and `reverse_frames` put a Sprite animation's frames in a new order and rename each frame's image file to its new index (through a free `<file>.reorder` name where files take each other's names in a cycle), keeping a file no frame uses in the way as `.bak`; `duplicate_frame` inserts a copy of a frame with a new `imageSpriteId` when the frame has one, and a copy of its image file, written only to a free name. When a write fails, the files are renamed back and the copies removed only if the object file, read again, holds the frames from before the call; a file whose old name is taken keeps its new name and the error says which file is in the way (#ISSUE).
 
 ### Changed
 
