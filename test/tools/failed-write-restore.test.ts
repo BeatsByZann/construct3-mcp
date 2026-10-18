@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
@@ -84,5 +84,19 @@ describe('rolling back a failed entity write', () => {
     expect(await readFile(sheetPath(), 'utf8')).toBe(saved);
     expect(result.content[0].text).toContain('eventSheets/MainSheet.json (another write changed it after this call\'s write failed; '
       + 'its state from before the call is in eventSheets/MainSheet.json.bak)');
+  });
+
+  it('leaves a file that cannot be read after the failed write as it is, and says it could not be read', async () => {
+    // A directory where the sheet was: it exists, and reading it fails with EISDIR, not ENOENT
+    failReadBackOf('MainSheet.json', async () => {
+      await rm(sheetPath());
+      await mkdir(sheetPath());
+    });
+    const result = await server.callTool('update_layer', { layoutName: 'Layout 1', layerName: 'Main', newName: 'Game' });
+    expect(result.isError).toBe(true);
+    expect((await stat(sheetPath())).isDirectory()).toBe(true);
+    expect(result.content[0].text).toContain('eventSheets/MainSheet.json (it could not be read; '
+      + 'its state from before the call is in eventSheets/MainSheet.json.bak)');
+    expect(result.content[0].text).not.toContain('another write changed it');
   });
 });

@@ -119,8 +119,28 @@ export class ConcurrentWriteError extends Error {
 }
 
 /**
- * A write through replaceFile or deleteFile replaced the file, but reading
- * it back did not find the bytes written: another write landed after it, or
+ * What restoreFailedWrite did: `restored` true when the file was put back
+ * (or already held the backup's content); false when it was left as it is,
+ * with the `reason` (see restoreFailedWrite) and `label`, its project-relative path.
+ */
+export interface RestoreFailedWriteResult {
+  restored: boolean;
+  label: string;
+  reason?: 'changed' | 'unreadable';
+}
+
+/**
+ * Why a rollback left a file as it is, as a clause for an error message:
+ * "another write changed it after this call's write failed" or "it could not
+ * be read".
+ */
+export function failedWriteLeftReason(reason: RestoreFailedWriteResult['reason']): string {
+  return reason === 'unreadable' ? 'it could not be read' : 'another write changed it after this call\'s write failed';
+}
+
+/**
+ * A write through replaceFile (or restoreForCall) replaced the file, but
+ * reading it back did not find the bytes written: another write landed after it, or
  * the file could not be read. The file may hold this call's text or someone
  * else's, so a caller undoing the call must not take it for unchanged.
  */
@@ -1271,10 +1291,12 @@ export class Construct3ProjectWriter {
    * write's own text, the backup's content already, or nothing (a write that
    * removed it). Any other content is someone else's (a save in the editor,
    * another call) made after this write: it is left as it is, and
-   * `restored: false` tells the caller to name the file and its .bak.
-   * `label` is the file, project-relative.
+   * `restored: false` tells the caller to name the file and its .bak, with
+   * `reason` saying why it was left ('changed': it holds other content;
+   * 'unreadable': it exists but could not be read, so it is not known to be
+   * the write's own). `label` is the file, project-relative.
    */
-  async restoreFailedWrite(error: EntityWriteError): Promise<{ restored: boolean; label: string }> {
+  async restoreFailedWrite(error: EntityWriteError): Promise<RestoreFailedWriteResult> {
     const { backupPath, written } = error;
     if (!backupPath.endsWith('.json.bak')) {
       throw new Error(`Not a backup of an entity file: ${this.projectRelative(backupPath)}.`);
@@ -1288,11 +1310,11 @@ export class Construct3ProjectWriter {
         current = await readFile(filePath);
       } catch (e: unknown) {
         // Missing: nothing of anyone else's to keep. Unreadable: not known to be ours
-        if (!isNotFound(e)) return { restored: false, label };
+        if (!isNotFound(e)) return { restored: false, label, reason: 'unreadable' };
       }
       const ours = current === undefined || current.equals(content)
         || (written !== undefined && current.equals(Buffer.from(written, 'utf-8')));
-      if (!ours) return { restored: false, label };
+      if (!ours) return { restored: false, label, reason: 'changed' };
       if (current === undefined || !current.equals(content)) await this.atomicWrite(filePath, content);
       this.afterOwnWrite(filePath, await statFileState(filePath), content.toString('utf-8'));
       return { restored: true, label };

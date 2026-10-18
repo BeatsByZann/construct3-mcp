@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, cp, mkdir, readFile, readdir, rm, writeFile } from 'fs/promises';
+import { mkdtemp, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
@@ -171,8 +171,22 @@ describe('restoreFailedWrite', () => {
     await writeFile(path, saved);
 
     const result = await writer.restoreFailedWrite(new EntityWriteError(new Error('failed'), backup, written));
-    expect(result).toEqual({ restored: false, label: 'objectTypes/Sprite.json' });
+    expect(result).toEqual({ restored: false, label: 'objectTypes/Sprite.json', reason: 'changed' });
     expect(await readFile(path, 'utf8')).toBe(saved);
+  });
+
+  it('leaves a file that exists but cannot be read, and says it was unreadable', async () => {
+    const path = join(tmpDir, 'objectTypes', 'Sprite.json');
+    const obj = JSON.parse(await readFile(path, 'utf8'));
+    const backup = await writer.writeEntityFile('objectTypes', 'Sprite', { ...obj, isGlobal: !obj.isGlobal });
+    const written = await readFile(path, 'utf8');
+    // A directory where the file was: it exists, and reading it fails with EISDIR, not ENOENT
+    await rm(path);
+    await mkdir(path);
+
+    const result = await writer.restoreFailedWrite(new EntityWriteError(new Error('failed'), backup, written));
+    expect(result).toEqual({ restored: false, label: 'objectTypes/Sprite.json', reason: 'unreadable' });
+    expect((await stat(path)).isDirectory()).toBe(true);
   });
 });
 

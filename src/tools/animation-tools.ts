@@ -12,7 +12,7 @@ import { findNameClash } from '../construct3/names.js';
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
 import { describeCharacter, getImageFileName, invalidImageNameCharacter } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
-import { EntityWriteError, filesLeftClause } from '../construct3/project-writer.js';
+import { EntityWriteError, failedWriteLeftReason, filesLeftClause } from '../construct3/project-writer.js';
 import { StaleFileError } from '../construct3/disk-state.js';
 import {
   animationsSharingImageFiles,
@@ -1019,9 +1019,9 @@ async function rollBackFrameChange(
   let restoredFile = false;
   if (restore) {
     try {
-      const { restored, label } = await writer.restoreFailedWrite(error);
+      const { restored, label, reason } = await writer.restoreFailedWrite(error);
       if (restored) restoredFile = true;
-      else failed.push(`${label} (another write changed it after this call's write failed; it was left as it is)`);
+      else failed.push(`${label} (${failedWriteLeftReason(reason)}; it was left as it is)`);
     } catch {
       failed.push(error.backupPath.replace(/\.bak$/, ''));
     }
@@ -1071,9 +1071,9 @@ async function rollBackFrameChange(
  * failed is not among them: it is restored from its backup when the write
  * may have replaced it (EntityWriteError), unless another write replaced it
  * during this one (changedByOtherWrite) or after it failed
- * (restoreFailedWrite finds other content), such as a save in the editor,
- * which is kept. Last, the frame image files, which the writer does not track, are
- * renamed back.
+ * (restoreFailedWrite finds other content or cannot read the file), such as
+ * a save in the editor, which is kept. Last, the frame image files, which
+ * the writer does not track, are renamed back.
  */
 async function rollBackAnimationRename(
   writer: MutationToolDeps['writer'],
@@ -1106,9 +1106,9 @@ async function rollBackAnimationRename(
       otherWrite = `${failedFile} was left as that write left it. `;
     } else {
       try {
-        const { restored } = await writer.restoreFailedWrite(error);
+        const { restored, reason } = await writer.restoreFailedWrite(error);
         if (restored) done.push(`${failedFile} was restored from its backup`);
-        else problems.push(`${failedFile} was left as it is, since another write changed it after this call's write failed (${failedFile}.bak holds the previous JSON)`);
+        else problems.push(`${failedFile} was left as it is, since ${failedWriteLeftReason(reason)} (${failedFile}.bak holds the previous JSON)`);
       } catch {
         problems.push(`restoring ${failedFile} from its backup failed (${failedFile}.bak holds the previous JSON)`);
       }

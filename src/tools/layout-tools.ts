@@ -57,7 +57,7 @@ import {
   renameLayerParameters,
   type LayerNameUse,
 } from '../construct3/layer-references.js';
-import { EntityWriteError, filesLeftClause } from '../construct3/project-writer.js';
+import { EntityWriteError, failedWriteLeftReason, filesLeftClause, type RestoreFailedWriteResult } from '../construct3/project-writer.js';
 import { StaleFileError } from '../construct3/disk-state.js';
 import { withProjectSync } from './project-sync.js';
 
@@ -1127,22 +1127,23 @@ function undeclaredVariablesError(
  * its backup, unless another write replaced it during this one
  * (EntityWriteError.changedByOtherWrite): only a write from outside the
  * server can land there, such as a save in the editor, so it is left as that
- * write left it. The same holds for a save that lands after the failure
- * (restoreFailedWrite leaves it and the error names the file and its .bak).
+ * write left it. The same holds for a save that lands after the failure, or
+ * a file that cannot be read (restoreFailedWrite leaves it, and the error
+ * names the file, why, and its .bak).
  */
 async function rollBackLayerRename(writer: MutationToolDeps['writer'], error: unknown): Promise<string> {
   // A refusal of the writer ends with a full stop already
   const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
   const failed: string[] = [];
-  const kept: string[] = [];
+  const kept: Array<{ label: string; reason: RestoreFailedWriteResult['reason'] }> = [];
   let otherWrite = '';
   if (error instanceof EntityWriteError) {
     if (error.changedByOtherWrite) {
       otherWrite = ' The event sheet was left as that write left it.';
     } else {
       try {
-        const { restored, label } = await writer.restoreFailedWrite(error);
-        if (!restored) kept.push(label);
+        const { restored, label, reason } = await writer.restoreFailedWrite(error);
+        if (!restored) kept.push({ label, reason });
       } catch {
         failed.push(error.backupPath.replace(/\.bak$/, ''));
       }
@@ -1156,7 +1157,7 @@ async function rollBackLayerRename(writer: MutationToolDeps['writer'], error: un
     ...(undo.restored.length > 0 ? [`put back as they were before the call: ${undo.restored.join(', ')}`] : []),
     ...(undo.left.length > 0 ? [filesLeftClause(undo.left)] : []),
     ...(failed.length > 0 ? [`restoring failed for: ${failed.join(', ')} (the .bak file holds the previous JSON)`] : []),
-    ...(kept.length > 0 ? [`left as it is: ${kept.map(l => `${l} (another write changed it after this call's write failed; its state from before the call is in ${l}.bak)`).join(', ')}`] : []),
+    ...(kept.length > 0 ? [`left as it is: ${kept.map(k => `${k.label} (${failedWriteLeftReason(k.reason)}; its state from before the call is in ${k.label}.bak)`).join(', ')}`] : []),
   ];
   return `${cause}.${otherWrite} The rename was rolled back only in part: ${parts.join('; ')}. ` +
     'Check the project (validate_project, git diff) before you run the tool again.';

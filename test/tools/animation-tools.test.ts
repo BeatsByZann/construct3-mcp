@@ -614,6 +614,27 @@ describe('rename_animation', () => {
     ]);
   });
 
+  it.each([
+    ['changed', 'was left as it is, since another write changed it after this call\'s write failed'],
+    ['unreadable', 'was left as it is, since it could not be read'],
+  ] as const)('names an object file the restore left as it is (%s) among the problems, not as restored', async (reason, clause) => {
+    const { server, writer } = setup({ objects: new Map([['Hero', walkSprite()]]) });
+    writer.imageFiles = ['hero-walk-000.png'];
+    writer.writeEntityFile = async () => {
+      throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
+    };
+    let restoreCalls = 0;
+    writer.restoreFailedWrite = async () => { restoreCalls++; return { restored: false, label: 'objectTypes/Hero.json', reason }; };
+
+    const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain(`The rename was rolled back only in part: its frame image files have their old names again; objectTypes/Hero.json ${clause} `
+      + '(objectTypes/Hero.json.bak holds the previous JSON).');
+    expect(text).not.toContain('was restored from its backup');
+    expect(restoreCalls).toBe(1);
+  });
+
   it('writes no JSON when renaming the image files fails', async () => {
     const level = { name: 'Level', layers: [{ name: 'Main', instances: [instance('Hero', 'Walk', 1)] }] };
     const { server, writer } = setup({
@@ -750,6 +771,27 @@ describe('add_frame_to_animation', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Post-write verification failed for "Hero". Rolling back failed for: '
       + '/mock/backup/objectTypes/Hero.json; image files (EBUSY).');
+  });
+
+  it.each([
+    ['changed', 'another write changed it after this call\'s write failed'],
+    ['unreadable', 'it could not be read'],
+  ] as const)('lists an object file the restore left as it is (%s) under what failed, not as restored', async (reason, why) => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
+    writer.imageFiles = ['hero-animation 1-000.png'];
+    writer.writeEntityFile = async () => {
+      throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
+    };
+    let restoreCalls = 0;
+    writer.restoreFailedWrite = async () => { restoreCalls++; return { restored: false, label: 'objectTypes/Hero.json', reason }; };
+
+    const result = await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain(`Post-write verification failed for "Hero". Rolling back failed for: objectTypes/Hero.json (${why}; it was left as it is). `
+      + 'Check these (the .bak file holds the previous object JSON).');
+    expect(text).not.toContain('the object file was restored from its backup');
+    expect(restoreCalls).toBe(1);
   });
 });
 
