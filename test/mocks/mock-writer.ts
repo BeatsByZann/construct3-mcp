@@ -146,6 +146,11 @@ export class MockWriter {
     return { restored: true, label: error.backupPath.replace(/\.bak$/, '') };
   }
 
+  /** A path inside the mock project as shown in messages: the real writer's project-relative form, here relative to /mock/backup */
+  projectRelative(filePath: string): string {
+    return filePath.replace(/^\/mock\/backup\//, '');
+  }
+
   /** The mock changes no files, so undoing a tool call puts nothing back */
   async undoToolCall(): Promise<{ restored: string[]; left: Array<{ label: string; backup: string | null }> }> {
     this.calls.push({ method: 'undoToolCall', args: [] });

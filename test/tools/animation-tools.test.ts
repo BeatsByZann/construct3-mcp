@@ -770,7 +770,9 @@ describe('add_frame_to_animation', () => {
     const result = await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Post-write verification failed for "Hero". Rolling back failed for: '
-      + '/mock/backup/objectTypes/Hero.json; image files (EBUSY).');
+      + 'objectTypes/Hero.json; image files (EBUSY).');
+    // The file is named by its project-relative path, never an absolute one
+    expect(result.content[0].text).not.toContain('/mock/backup');
   });
 
   it.each([

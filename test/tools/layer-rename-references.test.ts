@@ -15,7 +15,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
-import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
+import { Construct3ProjectWriter, EntityWriteError } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { registerLayoutTools } from '../../src/tools/layout-tools.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
@@ -287,6 +287,21 @@ describe('update_layer whose event sheet write fails otherwise', () => {
     expect(layout.width).toBe(12345);
     expect(layout.layers[0].name).toBe('Game');
     expect((await params())[0].layer).toBe('"Main"');
+  });
+
+  it('names a sheet whose restore failed by its project-relative path', async () => {
+    await addActions(LAYER_ACTIONS);
+    const write = writer.writeEntityFile.bind(writer);
+    writer.writeEntityFile = async (category, name, ...rest) => {
+      if (category === 'eventSheets') throw new EntityWriteError(new Error('disk full'), join(tmpDir, 'eventSheets', `${name}.json.bak`));
+      return write(category, name, ...rest);
+    };
+    writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
+
+    const data = await rename('Game');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('restoring failed for: eventSheets/MainSheet.json (the .bak file holds the previous JSON)');
+    expect(data.text).not.toContain(tmpDir);
   });
 });
 

@@ -1023,7 +1023,7 @@ async function rollBackFrameChange(
       if (restored) restoredFile = true;
       else failed.push(`${label} (${failedWriteLeftReason(reason)}; it was left as it is)`);
     } catch {
-      failed.push(error.backupPath.replace(/\.bak$/, ''));
+      failed.push(writer.projectRelative(error.backupPath.replace(/\.bak$/, '')));
     }
   }
   let placeholderRemoved = false;

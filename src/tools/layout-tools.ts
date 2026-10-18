@@ -1145,7 +1145,7 @@ async function rollBackLayerRename(writer: MutationToolDeps['writer'], error: un
         const { restored, label, reason } = await writer.restoreFailedWrite(error);
         if (!restored) kept.push({ label, reason });
       } catch {
-        failed.push(error.backupPath.replace(/\.bak$/, ''));
+        failed.push(writer.projectRelative(error.backupPath.replace(/\.bak$/, '')));
       }
     }
   }

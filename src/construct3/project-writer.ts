@@ -448,15 +448,14 @@ export class Construct3ProjectWriter {
    * (null: the call created it, so it is removed). It runs under the file's
    * one lock and takes no new backup. It is refused when the file changed
    * on disk after this call wrote it, so a later change is never replaced,
-   * and when the call has no state of its own for the file to compare with:
-   * the state it recorded, or `options.expected`, the state the caller knows
-   * the file to be in (it takes precedence; null: there is no file).
+   * and when the call has no state of its own recorded for the file to
+   * compare with.
    */
-  async restoreForCall(path: string, content: string | Buffer | null, options: { expected?: FileState } = {}): Promise<void> {
+  async restoreForCall(path: string, content: string | Buffer | null): Promise<void> {
     const filePath = await existingSpelling(path);
     const key = fileKey(filePath);
     await this.underLockOf(filePath, async () => {
-      const ours = options.expected !== undefined ? options.expected : currentToolCall()?.reads.get(key);
+      const ours = currentToolCall()?.reads.get(key);
       if (ours === undefined) {
         throw new Error(`${this.projectRelative(filePath)} has no state recorded by this call to compare with, so it was left as it is.`);
       }
@@ -933,7 +932,7 @@ export class Construct3ProjectWriter {
   }
 
   /** A path inside the project as shown in messages ("layouts/Level 1.json"). */
-  private projectRelative(filePath: string): string {
+  projectRelative(filePath: string): string {
     return relative(this.reader.getProjectDir(), filePath).split(sep).join('/');
   }
 
