@@ -19,6 +19,7 @@ import { findFolderPathClash, findNameClash } from '../construct3/names.js';
 import {
   SYSTEM_EXPRESSIONS_NOT_IN_R449,
   eventVariableNameUses,
+  listEventVariableDeclarations,
   findEnclosingEvents,
   findEventVariableNameProblem,
   findNewEventVariableNameClashes,
@@ -128,6 +129,7 @@ import {
   type UnscannedFileReport,
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
+import { writeEntityOrRollBack } from './call-rollback.js';
 import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-keys.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
@@ -1791,6 +1793,160 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
     }
   );
 
+  // ─── move_event_block ─────────────────────────────
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
+    'move_event_block',
+    {
+      description: 'Move an event, with its sub-events, to another place in the same event sheet: the top level, a group (groupPath), the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"). Blocks, groups, variables, function blocks and custom action blocks are moved by SID (comments, includes and script events have none). The event keeps its SID and everything in it. Refused, changing nothing: a move into the event itself or its sub-events, a place that no editor-saved project on record or checked editor case shows for that kind of event, a function block (or an event holding one) under or below a block that has a trigger condition or under or below a function block or a custom action block, a new load-time error, a name that would clash in the new scope, and (unless force=true) a move that leaves events using an event variable or function parameter out of its scope. Event sheets that could not be parsed are searched as text for a global variable the move makes local. A move to where the event already is changes nothing.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        sid: z.number().int().positive().describe('SID of the event to move'),
+        eventPath: eventPathSchema,
+        ...locatorShape,
+        force: z.boolean().optional().default(false).describe('Move even when events then use an event variable or function parameter outside its scope (the uses are listed in "references" and a warning, and left as they are)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of move_event_block', 'move_event_block takes sheetName, sid, eventPath, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position and force.'),
+      }).strict(),
+    },
+    async (args) => {
+      try {
+        // Its scope check compares the sheet with the other sheets by registered name
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return unregistered;
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        // A refusal after the move below puts the sheet's events back first
+        const refuse = (message: string) => {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(message));
+        };
+
+        const found = resolveEventBySid(events, args.sid, { sheetName: args.sheetName, action: 'move', eventPath: args.eventPath });
+        if ('error' in found) return refuse(`${found.error}\nComments, includes and script events have no SID and cannot be moved with this tool.`);
+        const moving = found.match.event;
+        const kind = placedKindOf(moving.eventType);
+        if (kind === undefined) return refuse(`The event with SID ${args.sid} is a "${String(moving.eventType)}", which this tool does not move.`);
+
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
+        });
+        if ('error' in resolution) return refuse(resolution.error);
+        const container = resolution.container;
+        if (container.siblingEvent === moving) return refuse('An event cannot be placed beside itself.');
+        if (container.owner !== undefined && (container.owner === moving || isWithin(moving, container.owner))) {
+          return refuse(`The event with SID ${args.sid} cannot go into its own sub-events: the destination is inside the event being moved.`);
+        }
+        const placement = placementError(kind, container);
+        if (placement) return refuse(placement);
+        // A function block, or an event that holds one, goes only where a function block is placed
+        const functionRefusal = movedFunctionBlockRefusal(moving, containerParents(sheet.events, container));
+        if (functionRefusal) return refuse(functionRefusal);
+
+        // The declaration each use of this sheet's variables and parameters finds now, for the scope check after the move
+        const sheetsNow = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        const declared = new Map(listEventVariableDeclarations(sheet.events).map(d => [d.name.toLowerCase(), d.name] as const));
+        const bindingsBefore = recordVariableBindings(sheetsNow, declared);
+        const globalsBefore = globalVariableNames(sheetsNow);
+
+        // Take the event out, then insert it (the sibling's index is read after the removal)
+        const from = found.match.path;
+        const sourceOwner = (findEnclosingEvents(sheet.events, moving as unknown as C3Event) ?? []).at(-1) as Record<string, unknown> | undefined;
+        found.match.parentArray.splice(found.match.index, 1);
+        insertIntoContainer(container, args.position, moving);
+        // An event left without sub-events is written without the key, as the editor and the builders do (templates.ts:535)
+        if (sourceOwner !== undefined && sourceOwner.eventType !== 'group'
+          && Array.isArray(sourceOwner.children) && sourceOwner.children.length === 0) {
+          delete sourceOwner.children;
+        }
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({
+            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged',
+            movedSid: args.sid, movedType: moving.eventType, from, to: from, childrenMoved: countDescendants(moving),
+          }, { projectWritten: false });
+        }
+        const to = eventPathOf(events, moving) ?? from;
+
+        // Names: the variables and parameters in the moved event, in their new scope
+        const sheetsBefore = new Map(sheetsNow);
+        sheetsBefore.set(args.sheetName, beforeEvents);
+        const original = eventAtEventPath(beforeEvents as unknown as Record<string, unknown>[], from);
+        const clashes = findNewEventVariableNameClashes(
+          sheetsBefore, args.sheetName, [original as unknown as C3Event], sheetsNow, args.sheetName, [moving as unknown as C3Event]);
+        if (clashes.length > 0) return refuse(sameSheetNameClashMessage(clashes));
+
+        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+        if (loadCheck.errors.length > 0) return refuse(loadRuleErrorMessage(loadCheck.errors));
+
+        // Uses that found a declaration before and now find none, or another one, in this sheet and the others
+        const { lost, rebound } = findVariableBindingChanges(bindingsBefore, sheetsNow);
+        const lostCount = countDeleteReferences(lost);
+        const reboundCount = countDeleteReferences(rebound);
+        const globalsAfter = globalVariableNames(sheetsNow);
+        const noLongerGlobal = [...declared].filter(([key]) => globalsBefore.has(key) && !globalsAfter.has(key)).map(([, name]) => name);
+        let unscanned: UnscannedFileReport[] = [];
+        if (noLongerGlobal.length > 0) {
+          const allSheets = await reader.readAllEventSheets();
+          const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), allSheets, reader.getReadFailures('eventSheets'))
+            .filter(f => f.name !== args.sheetName);
+          unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [noLongerGlobal.map(n => nameTerm(n))] }]);
+        }
+        const unscannedBlock = blocksWithoutForce(unscanned);
+        const whereLost = 'where it is no longer in scope after the move';
+        const whereRebound = 'where the name now finds another event variable or function parameter after the move';
+        const checked = 'uses of the event variables and function parameters of this sheet';
+        if ((lostCount > 0 || reboundCount > 0 || unscannedBlock || !lost.complete) && !args.force) {
+          sheet.events = beforeEvents;
+          const reasons = [
+            ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
+            ...(reboundCount > 0 ? [`${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`] : []),
+            ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
+            ...(!lost.complete ? [traversalLimitReason(checked, lost.limit)] : []),
+          ];
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'move_blocked',
+            message: nothingChanged(`${reasons.join(' ')} Move the events that use it along, pick another place, or use force=true to move anyway.`),
+            references: danglingReferenceList(lost),
+            ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+            ...unscannedFields(unscanned),
+          }, { projectWritten: false });
+        }
+        const warnings = [...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events)];
+        if (lostCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
+        }
+        if (reboundCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`);
+        }
+        if (!lost.complete) warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
+        warnings.push(...unscannedWarnings(unscanned, 'Moved'));
+
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated',
+          movedSid: args.sid, movedType: moving.eventType, from, to, childrenMoved: countDescendants(moving),
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
+          ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          ...unscannedFields(unscanned),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[move_event_block] failed:', error);
+        return toolError(`Error moving event: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
   // ─── fix_legacy_behavior_keys ───────────────────────────────
 
   server.tool(
@@ -2195,6 +2351,59 @@ function copiedSidsWarning(
     `update_event_block, update_event_block_action, update_event_variable and delete_event_from_sheet refuse ${one ? 'this SID' : 'these SIDs'} ` +
     `in "${sheetName}" unless eventPath names one of the events.`
   );
+}
+
+/** True when `target` (compared by identity) is among the sub-events of `event`, at any depth. */
+function isWithin(event: Record<string, unknown>, target: Record<string, unknown>): boolean {
+  const stack: unknown[] = Array.isArray(event.children) ? [...event.children] : [];
+  let nodes = 0;
+  while (stack.length > 0) {
+    if (++nodes > MAX_SEARCH_NODES) throw new Error(`Sub-event scan exceeded ${MAX_SEARCH_NODES} nodes`);
+    const current = stack.pop();
+    if (current === target) return true;
+    if (typeof current === 'object' && current !== null && Array.isArray((current as Record<string, unknown>).children)) {
+      stack.push(...((current as Record<string, unknown>).children as unknown[]));
+    }
+  }
+  return false;
+}
+
+/**
+ * Why `moving`, once it stands below `parents` (the events enclosing its new
+ * place, outermost first), puts a function block where one is not placed
+ * (functionBlockTriggerRefusal), or undefined. Every function block in it counts,
+ * `moving` itself and those at any depth; what stands between one and `moving`
+ * does not change with the move, so only `parents` is checked.
+ */
+function movedFunctionBlockRefusal(moving: Record<string, unknown>, parents: readonly C3Event[]): string | undefined {
+  const stack: Array<Record<string, unknown>> = [moving];
+  while (stack.length > 0) {
+    const event = stack.pop()!;
+    if (event.eventType === 'function-block') {
+      const refusal = functionBlockTriggerRefusal(parents);
+      if (refusal) return refusal;
+    }
+    if (!Array.isArray(event.children)) continue;
+    for (const child of event.children as unknown[]) {
+      if (typeof child === 'object' && child !== null) {
+        stack.push(child as Record<string, unknown>);
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Error text for a move within one sheet that would put names Construct 3 treats as the same into one scope. */
+function sameSheetNameClashMessage(clashes: readonly NewEventVariableNameClash[]): string {
+  const lines = clashes.slice(0, 10).map(({ declaration, use }) => {
+    const what = declaration.kind === 'function parameter' ? 'function parameter' : declaration.parents.length === 0 ? 'global variable' : 'local variable';
+    const other = use.kind === 'variable' ? 'event variable' : 'function parameter';
+    const relation = use.name === declaration.name ? 'has the same name as' : 'differs only in case from';
+    return `- the ${what} "${declaration.name}" ${relation} the ${other} "${use.name}" in sheet "${use.sheet}"`;
+  });
+  if (clashes.length > 10) lines.push(`- and ${clashes.length - 10} more`);
+  return 'Moving the event would put names that Construct 3 treats as the same (ignoring case) into one event variable scope:\n' +
+    `${lines.join('\n')}\n\nRename one of them first (update_event_variable).`;
 }
 
 /**
