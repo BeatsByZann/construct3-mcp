@@ -161,7 +161,7 @@ describe('add_custom_action', () => {
 
   it('refuses an empty aceName', async () => {
     const { server } = setup();
-    expect(errorText(await server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: '  ' }))).toBe('aceName is empty. Nothing was changed.');
+    expect(errorText(await server.callTool('add_custom_action', { sheetName: 'Sheet1', objectClass: 'Alpha', aceName: '  ' }))).toBe('aceName is empty or only spaces. Nothing was changed.');
   });
 
   it('refuses a second custom action of the same name on the same owner, ignoring case, naming the sheet', async () => {

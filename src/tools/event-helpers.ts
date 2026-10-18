@@ -1812,7 +1812,11 @@ export function customActionCallWarnings(
     const others = context.familiesOf(call.objectClass).filter(family => family !== definition.owner
       && context.definitions.some(d => d.owner === family && nameKey(d.name) === nameKey(call.customAction)));
     if (others.length > 0) {
-      warnings.push(`${label}: "${call.objectClass}" belongs to the families "${definition.owner}" and ${others.map(f => `"${f}"`).join(', ')}, which both define a custom action of that name. The call uses the one on "${definition.owner}"; which one Construct 3 runs was not checked in the editor.`);
+      // The family taken is the first that defines the name in any letter case; another family with the call's own spelling does not take its place
+      const exactSpelling = definition.name === call.customAction
+        ? []
+        : others.filter(family => context.definitions.some(d => d.owner === family && d.name === call.customAction));
+      warnings.push(`${label}: "${call.objectClass}" belongs to the families "${definition.owner}" and ${others.map(f => `"${f}"`).join(', ')}, which both define a custom action of that name. The call uses the one on "${definition.owner}"; which one Construct 3 runs was not checked in the editor.${exactSpelling.length > 0 ? ` ${exactSpelling.map(f => `"${f}"`).join(', ')} defines the name in the call's exact spelling; the first family is used whatever the spelling.` : ''}`);
     }
   }
   const given = call.parameters?.length ?? 0;

@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import type { z } from 'zod';
 import { MockServer } from '../mocks/mock-server.js';
 import { MockReader } from '../mocks/mock-reader.js';
 import { MockWriter } from '../mocks/mock-writer.js';
@@ -231,6 +232,48 @@ describe('add_event_block with a custom action call', () => {
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
+  it('accepts customActionObjectClass equal to objectClass, on an object type and on a family', async () => {
+    const { server, writer } = setup();
+    const own = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Hurt', objectClass: 'Alpha', customActionObjectClass: 'Alpha', parameters: ['1'] }],
+    }));
+    expect(own.warnings).toBeUndefined();
+    expect(Object.keys(actionsOf(eventWith(written(writer), own.generatedSid as number))[0])).toEqual(['customAction', 'objectClass', 'customActionObjectClass', 'sid', 'parameters']);
+    const onFamily = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Wave', objectClass: 'Fam', customActionObjectClass: 'Fam' }],
+    }));
+    expect(onFamily.success).toBe(true);
+    expect(onFamily.warnings).toBeUndefined();
+  });
+
+  it('names the exact spelling of another family when the first family defines the name in other letter case', async () => {
+    const events = [customAction('Fam', 'wave', 560), customAction('Fam2', 'Wave', 561)];
+    const { server, writer } = setup(events, [['Fam2', { name: 'Fam2', members: ['Alpha'], sid: 4 }]]);
+    const data = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Wave', objectClass: 'Alpha' }],
+    }));
+    expect(data.warnings).toEqual([
+      'Block, custom action call "Wave" on "Alpha": the name differs only in letter case from the custom action "wave" on "Fam". Construct 3 r506-2 (Free edition) ran such a call and saved it with the definition\'s spelling, "wave". The call is written with that spelling.',
+      'Block, custom action call "Wave" on "Alpha": "Alpha" belongs to the families "Fam" and "Fam2", which both define a custom action of that name. The call uses the one on "Fam"; which one Construct 3 runs was not checked in the editor. "Fam2" defines the name in the call\'s exact spelling; the first family is used whatever the spelling.',
+    ]);
+    expect(actionsOf(eventWith(written(writer), data.generatedSid as number))[0]).toMatchObject({ customAction: 'wave', customActionObjectClass: 'Fam' });
+  });
+
+  it('refuses a number argument in a custom action call', async () => {
+    const { server, writer } = setup();
+    await expect(server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Hurt', objectClass: 'Alpha', parameters: [5] }],
+    })).rejects.toThrow();
+    await expect(server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'Hurt', objectClass: 'Alpha', parameters: [5] }],
+    })).rejects.toThrow();
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
   it('keeps a boolean argument of a custom action call as the editor saves it', async () => {
     const { server, writer } = setup();
     const data = parse(await server.callTool('add_event_block', {
@@ -345,6 +388,12 @@ describe('update_event_block_action and custom actions', () => {
     expect(actionsOf(eventWith(written(writer), 610))[0].parameters).toEqual(['2', false]);
   });
 
+  it('writes a number argument of a custom action call as a string', async () => {
+    const { server, writer } = setup();
+    await server.callTool('update_event_block_action', { sheetName: 'Sheet1', blockSid: 610, actionIndex: 0, parameters: [3, true] });
+    expect(actionsOf(eventWith(written(writer), 610))[0].parameters).toEqual(['3', true]);
+  });
+
   it('warns when a call is given another number of arguments than the definition has parameters', async () => {
     const { server } = setup();
     const data = parse(await server.callTool('update_event_block_action', {
@@ -381,6 +430,35 @@ describe('update_event_block and custom actions', () => {
     expect(actionsOf(eventWith(written(writer), 600))[0].parameters).toEqual(['9']);
     await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 610, updateActions: [{ index: 0, parameters: ['2', false] }] });
     expect(actionsOf(eventWith(written(writer), 610))[0].parameters).toEqual(['2', false]);
+  });
+
+  it('writes a number argument given in updateActions as a string', async () => {
+    const { server, writer } = setup();
+    await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 610, updateActions: [{ index: 0, parameters: [4, false] }] });
+    expect(actionsOf(eventWith(written(writer), 610))[0].parameters).toEqual(['4', false]);
+  });
+
+  it('writes a call added with addActions in the definition\'s spelling, with a warning', async () => {
+    const { server, writer } = setup();
+    const data = parse(await server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'hurt', objectClass: 'Alpha', parameters: ['1'] }],
+    }));
+    expect(actionsOf(eventWith(written(writer), 600))[1].customAction).toBe('Hurt');
+    expect(data.warnings).toEqual([
+      'Block (SID 600), custom action call "hurt" on "Alpha": the name differs only in letter case from the custom action "Hurt" on "Alpha". Construct 3 r506-2 (Free edition) ran such a call and saved it with the definition\'s spelling, "Hurt". The call is written with that spelling.',
+    ]);
+  });
+
+  it('keeps the stored name of a call that differs from its definition only in letter case when updateActions changes its arguments', async () => {
+    const events = [...sheetEvents(), block(620, { actions: [{ customAction: 'hurt', objectClass: 'Alpha', sid: 621, parameters: ['1'] }] })];
+    const { server, writer } = setup(events);
+    const data = parse(await server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 620, updateActions: [{ index: 0, parameters: ['2'] }],
+    }));
+    expect(actionsOf(eventWith(written(writer), 620))[0]).toMatchObject({ customAction: 'hurt', parameters: ['2'] });
+    expect(data.warnings).toEqual([
+      'Block (SID 620), action 0, custom action call "hurt" on "Alpha": the name differs only in letter case from the custom action "Hurt" on "Alpha". Construct 3 r506-2 (Free edition) ran such a call and saved it with the definition\'s spelling, "Hurt". The stored name was kept.',
+    ]);
   });
 
   it('warns when updateActions gives a call another number of arguments than the definition has parameters', async () => {
@@ -420,18 +498,38 @@ describe('update_event_block and custom actions', () => {
     expect(actionsOf(eventWith(written(writer), 500))[0]).toMatchObject({ id: 'set-visible', objectClass: 'Alpha' });
   });
 
-  it('refuses isElse on a custom action block, and an event that is no block, function block or custom action block', async () => {
-    const { server } = setup();
+  it('refuses isElse on a custom action block, and an event that is no block, function block or custom action block, in the wording of the refusals update_event_block already had', async () => {
+    const { server, writer, events } = setup();
+    const before = JSON.stringify(events);
     expect(errorText(await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 500, isElse: true })))
-      .toBe('isElse applies to block events only; a function block or custom action block cannot be an else block. Nothing was changed.');
+      .toBe('isElse applies to block events only; a function block or custom action block cannot be an else block.');
     expect(errorText(await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 700, disabled: true })))
-      .toBe('Event with SID 700 is a "variable", not a block, function-block or custom action block. Only those can be updated with this tool. Nothing was changed.');
+      .toBe('Event with SID 700 is a "variable", not a block, function-block or custom action block. Only those can be updated with this tool.');
+    expect(JSON.stringify(events)).toBe(before);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
   it('says a custom action body runs on every call when its last condition is removed', async () => {
     const { server } = setup();
     const data = parse(await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 540, removeConditionIndices: [0] }));
     expect(data.warnings).toContain('All conditions were removed: the custom action body now runs on every call.');
+  });
+});
+
+describe('tool descriptions about custom action calls', () => {
+  it('say a custom action call takes an array in parameter order, and that an object is refused', () => {
+    const { server } = setup();
+    const optional = server.getTool('update_event_block')!.schema.updateActions as z.ZodOptional<z.ZodArray<z.ZodObject<Record<string, z.ZodTypeAny>>>>;
+    const updateActionsText = optional.unwrap().element.shape.parameters.description ?? '';
+    const actionText = server.getTool('update_event_block_action')!.schema.parameters.description ?? '';
+    expect(actionText).toContain('for a function call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted); for a custom action call, an array in parameter order (an object is refused)');
+    expect(updateActionsText).toContain('For a function call: an array replaces the arguments; an object keyed by position ("0", "1", …) or parameter name replaces single arguments. For a custom action call: an array in parameter order replaces them, and an object is refused');
+  });
+
+  it('name the release of move_events_between_sheets as Construct 3 r506-2 (Free edition)', () => {
+    const { server } = setup();
+    const text = server.getTool('move_events_between_sheets')!.description;
+    expect(text).toContain('(Construct 3 r506-2 (Free edition) renamed the second of two such definitions on save)');
   });
 });
 
@@ -447,8 +545,6 @@ describe('refusals of custom action edits', () => {
       { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'Wave', objectClass: 'Beta', customActionObjectClass: 'Fam' }] } },
       { tool: 'update_event_block_action', args: { sheetName: 'Sheet1', blockSid: 600, actionIndex: 0, parameters: { amount: '7' } } },
       { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 600, updateActions: [{ index: 0, parameters: { amount: '9' } }] } },
-      { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 500, isElse: true } },
-      { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 700, disabled: true } },
       // An earlier change (the block's own toggle) combined with the refused operation
       { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 600, disabled: true, updateActions: [{ index: 0, parameters: { amount: '9' } }] } },
       { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 600, disabled: true, addActions: [{ customAction: 'Hurt', objectClass: 'System' }] } },

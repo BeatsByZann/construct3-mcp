@@ -637,7 +637,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         const ownerError = customActionOwnerError(args.objectClass, await reader.listObjectTypes(), await reader.listFamilies());
         if (ownerError) return toolError(nothingChanged(ownerError));
-        if (args.aceName.trim() === '') return toolError(nothingChanged('aceName is empty.'));
+        if (args.aceName.trim() === '') return toolError(nothingChanged('aceName is empty or only spaces.'));
 
         let sheet: EventSheet;
         try {
@@ -1180,7 +1180,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       eventPath: eventPathSchema,
       actionIndex: z.number().int().min(0).describe('0-based index of the action to update'),
       parameters: z.union([boundedRecord(), z.array(functionCallArgumentSchema).max(100)])
-        .describe('New parameter values — replaces existing parameters entirely. Key-value pairs for plugin/behavior/System actions (max 100 keys, depth 6); for a function call or a custom action call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted)'),
+        .describe('New parameter values — replaces existing parameters entirely. Key-value pairs for plugin/behavior/System actions (max 100 keys, depth 6); for a function call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted); for a custom action call, an array in parameter order (an object is refused)'),
     },
     async (args) => {
       try {
@@ -1293,7 +1293,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   server.tool(
     'move_events_between_sheets',
-    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). SIDs and all nested children are preserved; the result warns when a copied SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force. A copy (deleteSource=false) that would leave two custom actions of one name on one object type or family is refused, and so is any copy while the check for custom actions stopped at its traversal limit; a move is not (Construct 3 r506-2, Free edition, renamed the second of two such definitions on save).',
+    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). SIDs and all nested children are preserved; the result warns when a copied SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force. A copy (deleteSource=false) that would leave two custom actions of one name on one object type or family is refused, and so is any copy while the check for custom actions stopped at its traversal limit; a move is not (Construct 3 r506-2 (Free edition) renamed the second of two such definitions on save).',
     {
       sourceSheet: z.string().max(200).describe('Event sheet to copy/move events from, as registered (letter case included)'),
       targetSheet: z.string().max(200).describe('Event sheet to copy/move events into, as registered (letter case included)'),
@@ -1609,7 +1609,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         updateActions: z.array(z.object({
           index: z.number().int().min(0).describe('Action index (0-based)'),
           parameters: z.union([boundedRecord(), z.array(functionCallArgumentSchema).max(100)]).optional()
-            .describe('New parameter values — merged with existing (max 100 keys, depth 6). For a function call: an array replaces the arguments; for a custom action call: an array in parameter order replaces them; an object keyed by position ("0", "1", …) or parameter name replaces single arguments'),
+            .describe('New parameter values — merged with existing (max 100 keys, depth 6). For a function call: an array replaces the arguments; an object keyed by position ("0", "1", …) or parameter name replaces single arguments. For a custom action call: an array in parameter order replaces them, and an object is refused'),
           disabled: z.boolean().optional().describe('Enable or disable this action'),
           text: z.string().max(10_000).optional().describe('Comment rows only: the new text; the row keeps its place and colours'),
           'text-color': commentColorSchema.nullable().optional().describe('Comment rows only: the new text colour [red, green, blue, alpha], each 0-1; null removes it'),
@@ -1672,10 +1672,10 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
         // Must be a block, function-block or custom action block (not a group, variable, include, etc.)
         if (eventType !== 'block' && eventType !== 'function-block' && eventType !== 'custom-ace-block') {
-          return toolError(nothingChanged(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action block. Only those can be updated with this tool.`));
+          return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action block. Only those can be updated with this tool.`);
         }
         if (args.isElse !== undefined && eventType !== 'block') {
-          return toolError(nothingChanged('isElse applies to block events only; a function block or custom action block cannot be an else block.'));
+          return toolError('isElse applies to block events only; a function block or custom action block cannot be an else block.');
         }
 
         // Custom action calls: checked before anything changes, so a refusal leaves the block as it was
