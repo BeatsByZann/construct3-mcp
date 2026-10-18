@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { C3Event, EventSheet, FunctionBlockEvent, WriteResult } from '../construct3/types.js';
+import type { C3Event, EventSheet, FunctionBlockEvent, VariableEvent, WriteResult } from '../construct3/types.js';
 import {
   validateName,
   validateSubfolder,
@@ -63,6 +63,7 @@ import {
   countDescendants,
   summarizeEvents,
   loadBehaviorLookup,
+  buildScriptEvent,
   normalizeLegacyBehaviorKeys,
   snapshotEvents,
   checkLoadRulesBeforeWrite,
@@ -113,6 +114,7 @@ import {
   type DeleteReferenceReport,
 } from '../construct3/analyzers/delete-references.js';
 import { scanLegacyEventShapes, type LegacyEventShapeHit } from '../construct3/analyzers/legacy-event-shapes.js';
+import { isTriggerId } from '../construct3/analyzers/load-rules.js';
 import type { ObjectRef, SidMatch } from './event-helpers.js';
 import { getProjectIndex, resetProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
@@ -303,33 +305,49 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   // ─── add_event_to_sheet ───────────────────────────────────
 
-  server.tool(
+  // The argument fields are held apart so the handler can tell a misspelled destination argument from a known one
+  const addEventToSheetShape = {
+    sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
+    eventType: z.enum(['group', 'function', 'variable', 'include', 'comment', 'script']).describe('Type of event to add'),
+    title: z.string().max(500).optional().describe('For groups: the group title'),
+    functionName: z.string().max(200).optional().describe('For functions: function name. Refused like in the editor: a name that matches, ignoring case, another function in the project or a System expression; with a return type also whitespace, punctuation such as - . : or a leading underscore (the name is used in expressions). Without a return type the editor accepts any name that is not empty'),
+    functionParams: z.array(z.object({
+      name: z.string().describe('Parameter name'),
+      type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+    })).optional().describe('For functions: parameter definitions. Names are refused like in the editor: a name that matches, ignoring case, a global variable of the project, another parameter of the function or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+    functionReturnType: z.enum(['none', 'number', 'string', 'any']).optional()
+      .describe('For functions: the editor\'s "Return type" (default "none"); a function with a return type sets its value with the Functions "Set return value" action'),
+    functionIsAsync: z.boolean().optional().describe('For functions: the editor\'s "Asynchronous" option, so a call can be waited for with "Wait for previous actions to complete" (default false)'),
+    functionCopyPicked: z.boolean().optional().describe('For functions: the editor\'s "Copy picked" option, which passes the instances picked where the function is called into the function (default false)'),
+    variableName: z.string().max(200).optional().describe('For variables: name of the new variable (global at the top level, local elsewhere). Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in its scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+    variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
+    initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
+    variableComment: z.string().max(2000).optional().describe('For variables: the declaration comment (default empty)'),
+    variableIsStatic: z.boolean().optional().describe('For variables: "Static", which keeps a local variable\'s value between runs of its event (default false)'),
+    variableIsConstant: z.boolean().optional().describe('For variables: "Constant" (default false)'),
+    includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
+    commentText: z.string().max(2000).optional().describe('For comments: comment text'),
+    commentTextColor: commentColorSchema.optional().describe('For comments: the text colour, written as "text-color": [red, green, blue, alpha], each 0-1, as the editor saves it'),
+    commentBackgroundColor: commentColorSchema.optional().describe('For comments: the background colour, written as "background-color": [red, green, blue, alpha], each 0-1'),
+    script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional().describe('For script events: JavaScript as one string (split into lines) or an array of lines, written as the editor saves it'),
+    ...locatorShape,
+  };
+
+  server.registerTool(
     'add_event_to_sheet',
-    'Add an event (group, function, variable, include, or comment) to the top level of an event sheet. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile.',
     {
-      sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
-      eventType: z.enum(['group', 'function', 'variable', 'include', 'comment']).describe('Type of event to add'),
-      title: z.string().max(500).optional().describe('For groups: the group title'),
-      functionName: z.string().max(200).optional().describe('For functions: function name. Refused like in the editor: a name that matches, ignoring case, another function in the project or a System expression; with a return type also whitespace, punctuation such as - . : or a leading underscore (the name is used in expressions). Without a return type the editor accepts any name that is not empty'),
-      functionParams: z.array(z.object({
-        name: z.string().describe('Parameter name'),
-        type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
-      })).optional().describe('For functions: parameter definitions. Names are refused like in the editor: a name that matches, ignoring case, a global variable of the project, another parameter of the function or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
-      functionReturnType: z.enum(['none', 'number', 'string', 'any']).optional()
-        .describe('For functions: the editor\'s "Return type" (default "none"); a function with a return type sets its value with the Functions "Set return value" action'),
-      functionIsAsync: z.boolean().optional().describe('For functions: the editor\'s "Asynchronous" option, so a call can be waited for with "Wait for previous actions to complete" (default false)'),
-      functionCopyPicked: z.boolean().optional().describe('For functions: the editor\'s "Copy picked" option, which passes the instances picked where the function is called into the function (default false)'),
-      variableName: z.string().max(200).optional().describe('For variables: name of the new global variable. Refused like in the editor: a name that matches, ignoring case, any event variable or function parameter in the project or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
-      variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
-      initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
-      includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
-      commentText: z.string().max(2000).optional().describe('For comments: comment text'),
-      commentTextColor: commentColorSchema.optional().describe('For comments: the text colour, written as "text-color": [red, green, blue, alpha], each 0-1, as the editor saves it'),
-      commentBackgroundColor: commentColorSchema.optional().describe('For comments: the background colour, written as "background-color": [red, green, blue, alpha], each 0-1'),
-      position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert the event'),
+      description: 'Add an event (group, function, variable, include, comment or script) to an event sheet: at the top level, in a group (groupPath), among the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"); a place that no editor-saved project on record or checked editor case shows for that kind of event is refused, and includes go only at the top level. A variable at the top level is a global variable, anywhere else a local one. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile.',
+      inputSchema: z.object(addEventToSheetShape).passthrough(),
     },
     async (args) => {
       try {
+        // A destination argument misspelled would otherwise be dropped and the event written at the top level
+        const known = new Set(Object.keys(addEventToSheetShape));
+        const misspelled = Object.keys(args).find(k => !known.has(k) && /(Sid|SID|EventPath)$/.test(k));
+        if (misspelled !== undefined) {
+          return toolError(nothingChanged(`add_event_to_sheet does not take "${misspelled}". The destination arguments are groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath and position.`));
+        }
+
         // Its checks compare the sheet with the other sheets by registered name
         const unregistered = await unregisteredSheetError(reader, args.sheetName);
         if (unregistered) return unregistered;
@@ -342,6 +360,24 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
         }
         const beforeEvents = snapshotEvents(sheet.events);
+
+        const PLACED: Record<typeof args.eventType, PlacedEventKind> = {
+          group: 'group', function: 'function-block', variable: 'variable', include: 'include', comment: 'comment', script: 'script',
+        };
+        const resolution = resolveContainer(sheet.events as Record<string, unknown>[], args.sheetName, {
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
+        });
+        if ('error' in resolution) return toolError(nothingChanged(resolution.error));
+        const container = resolution.container;
+        const placement = placementError(PLACED[args.eventType], container);
+        if (placement) return toolError(nothingChanged(placement));
+        // The events enclosing the new event, for the name rules of its scope (empty at the top level)
+        const parents = containerParents(sheet.events, container);
+        if (args.eventType === 'function') {
+          const triggered = functionBlockTriggerRefusal(parents);
+          if (triggered) return toolError(nothingChanged(triggered));
+        }
 
         let event: C3Event;
         // SIDs of what is created, for the result (includes and comments have none)
@@ -364,7 +400,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             if (nameProblem) return toolError(functionNameMessage(nameProblem, args.functionName, args.functionReturnType ?? 'none'));
             // Parameter names are checked like in the editor's Function parameter dialog
             if (args.functionParams && args.functionParams.length > 0) {
-              const paramError = functionParameterNamesError(allSheets, args.sheetName, args.functionParams.map(p => p.name));
+              const paramError = functionParameterNamesError(allSheets, args.sheetName, args.functionParams.map(p => p.name), parents);
               if (paramError) return toolError(paramError);
             }
             const sid = await idGen.generateSid(reader);
@@ -388,14 +424,18 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
           case 'variable': {
             if (!args.variableName) return toolError('variableName is required for variable events');
-            // The variable goes to the top level of the sheet: a global variable
+            // At the top level a global variable, anywhere else a local one
             const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
-            const nameError = eventVariableNameError(sheets, args.sheetName, [], args.variableName);
+            const nameError = eventVariableNameError(sheets, args.sheetName, parents, args.variableName);
             if (nameError) return toolError(nameError);
             const varType = args.variableType || 'number';
             const defaultValue = args.initialValue || (varType === 'number' ? '0' : varType === 'boolean' ? 'false' : '');
             const sid = await idGen.generateSid(reader);
             event = createVariableEvent(args.variableName, varType, defaultValue, sid);
+            const variable = event as VariableEvent;
+            if (args.variableComment !== undefined) variable.comment = args.variableComment;
+            if (args.variableIsStatic !== undefined) variable.isStatic = args.variableIsStatic;
+            if (args.variableIsConstant !== undefined) variable.isConstant = args.variableIsConstant;
             generatedSid = sid;
             break;
           }
@@ -418,13 +458,15 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             });
             break;
           }
+          case 'script': {
+            if (args.script === undefined) return toolError(nothingChanged('script is required for script events.'));
+            event = buildScriptEvent({ eventType: 'script', script: args.script });
+            break;
+          }
         }
 
-        if (args.position === 'start') {
-          sheet.events.unshift(event);
-        } else {
-          sheet.events.push(event);
-        }
+        insertIntoContainer(container, args.position, event as unknown as Record<string, unknown>);
+        const eventPath = eventPathOf(sheet.events as Record<string, unknown>[], event as unknown as Record<string, unknown>);
 
         // Editor load-time rules: block the write if it introduces an error
         const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
@@ -432,6 +474,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           sheet.events = beforeEvents;
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
+        // A new event right before an else block makes that block continue it; both arrangements load, so the gate does not report it
+        const warnings = [...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events)];
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
@@ -443,13 +487,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           category: 'eventsheet',
           action: 'updated',
           ...(generatedSid !== undefined ? { generatedSid } : {}),
-          warnings: loadCheck.warnings.length > 0 ? loadCheck.warnings : undefined,
+          warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
         };
         return toolResult({
           ...result,
           ...(functionParameterSids && functionParameterSids.length > 0 ? { functionParameterSids } : {}),
-          eventPath: `events[${sheet.events.indexOf(event)}]`,
+          eventPath,
         });
       } catch (error) {
         console.error('[add_event_to_sheet] failed:', error);
@@ -465,7 +509,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'add_event_block',
     {
-      description: 'Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Written in the shapes the Construct 3 editor saves: sub-events (blocks, also without conditions, which run whenever their parent runs; comments; scripts), else and else-if blocks (a System "else" first condition), OR blocks (isOrBlock), function calls ({ callFunction, parameters: [...] }), script actions (lines, language "javascript"), comment rows and per-condition/per-action disabling. Unknown keys, in the arguments and at any depth, are refused, never dropped. Writes that would break a checked editor load-time rule (expression syntax, empty expressions, trigger placement) are refused.',
+      description: 'Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Written in the shapes the Construct 3 editor saves: sub-events (blocks, also without conditions, which run whenever their parent runs; comments; scripts), else and else-if blocks (a System "else" first condition), OR blocks (isOrBlock), function calls ({ callFunction, parameters: [...] }), script actions (lines, language "javascript"), comment rows and per-condition/per-action disabling. Unknown keys, in the arguments and at any depth, are refused, never dropped. Writes that would break a checked editor load-time rule (expression syntax, empty expressions, trigger placement) are refused. Place it at the top level, in a group (groupPath), among the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"); a place that no editor-saved project on record or checked editor case shows for that kind of event is refused (see the API reference). Returns generatedSid, eventPath and backupFile.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
         eventType: z.literal('block', {
@@ -477,14 +521,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         sid: z.number().optional().describe('Ignored: a block copied from get_eventsheet_details may carry its SID, but the new block always gets a new one'),
         conditions: z.array(conditionSchema).optional().default([]).describe(EVENT_INPUT_DESCRIPTIONS.conditions),
         actions: z.array(actionSchema).optional().default([]).describe('Actions: plugin/behavior/System actions, function calls { callFunction, parameters: [...] }, script actions { type: "script", script } and comment rows { type: "comment", text, "text-color"?, "background-color"? }'),
-        groupPath: z.string().max(500).optional().describe('Insert inside group by title path (e.g., "Movement > Collision"). Titles match exactly first, then ignoring leading/trailing whitespace when that fits one group'),
-        position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert the event block'),
+        ...locatorShape,
         disabled: z.boolean().optional().default(false).describe('Create the event block disabled'),
         isElse: z.boolean().optional().default(false).describe(EVENT_INPUT_DESCRIPTIONS.isElse),
         isOrBlock: z.boolean().optional().describe(EVENT_INPUT_DESCRIPTIONS.isOrBlock),
         children: z.array(childEventSchema).optional().default([]).describe('Sub-events nested inside this block (recursive, max depth 10, max 200 total events): blocks { conditions?, actions?, disabled?, isElse?, isOrBlock?, children? }, comments { eventType: "comment", text } and scripts { eventType: "script", script }. Other event types (variables, groups, functions, includes) and unknown keys are refused'),
       }, {
-        errorMap: unknownKeysErrorMap('the arguments of add_event_block', 'add_event_block takes sheetName, eventType, conditions, actions, groupPath, position, disabled, isElse, isOrBlock and children; a "sid" is ignored. Comments, groups, variables, functions and includes are added with add_event_to_sheet.'),
+        errorMap: unknownKeysErrorMap('the arguments of add_event_block', 'add_event_block takes sheetName, eventType, conditions, actions, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position, disabled, isElse, isOrBlock and children; a "sid" is ignored. Comments, groups, variables, functions and includes are added with add_event_to_sheet.'),
       }).strict(),
     },
     async (args) => {
@@ -498,6 +541,17 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
         const beforeEvents = snapshotEvents(sheet.events);
 
+        // Where the block goes, resolved before any SID is drawn, so a refusal changes nothing
+        const events = sheet.events as Record<string, unknown>[];
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
+        });
+        if ('error' in resolution) return toolError(nothingChanged(resolution.error));
+        const container = resolution.container;
+        const placement = placementError('block', container);
+        if (placement) return toolError(nothingChanged(placement));
+
         // Collect all objectClass references from entire tree (parent + descendants)
         const allRefs: ObjectRef[] = [];
         collectObjectRefs(
@@ -507,8 +561,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           allRefs,
         );
 
-        // The block goes to the top level or into a group, never into a function block
-        const { errors, warnings } = await validateObjectClasses(reader, allRefs, { insideFunction: false });
+        // The Set return value warning is checked against the block's destination
+        const { errors, warnings } = await validateObjectClasses(reader, allRefs, { insideFunction: containerInFunction(events, container) });
         if (errors.length > 0) {
           return toolError(`Object class validation failed:\n${errors.join('\n')}`);
         }
@@ -532,26 +586,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         warnings.push(...counter.warnings);
         const blockSid = blockEvent.sid as number;
 
-        // Determine target events array
-        let targetEvents: Record<string, unknown>[];
-        const events = sheet.events as Record<string, unknown>[];
-
-        if (args.groupPath) {
-          const resolved = resolveGroupPath(events, args.groupPath);
-          if (resolved.problem) {
-            return toolError(describeGroupPathProblem(resolved.problem, args.groupPath, args.sheetName));
-          }
-          targetEvents = resolved.children;
-        } else {
-          targetEvents = events;
-        }
-
-        // Insert at position
-        if (args.position === 'start') {
-          targetEvents.unshift(blockEvent);
-        } else {
-          targetEvents.push(blockEvent);
-        }
+        insertIntoContainer(container, args.position, blockEvent as unknown as Record<string, unknown>);
+        const eventPath = eventPathOf(events, blockEvent as unknown as Record<string, unknown>);
 
         // Editor load-time rules, checked on the whole sheet so the insertion
         // context (the new block's ancestors, the event before an else block) counts too
@@ -561,6 +597,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
         warnings.push(...loadCheck.warnings);
+        // A block right before an else block (or between a block and its else block) makes that block continue it; both arrangements load, so the gate does not report it
+        warnings.push(...elsePredecessorWarnings(beforeEvents, sheet.events));
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
@@ -576,7 +614,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
         };
-        return toolResult(result);
+        return toolResult({ ...result, eventPath });
       } catch (error) {
         console.error('[add_event_block] failed:', error);
         return toolError(`Error adding event block: ${error instanceof Error ? error.message : String(error)}`);
@@ -2276,29 +2314,54 @@ function eventVariableNameError(
 
 /**
  * Why the editor would refuse the parameter `names` of a new function that
- * goes to the top level of sheet `sheetName`, checked in order like the
+ * goes into sheet `sheetName` under `parents` (the events enclosing it,
+ * outermost first; empty at the top level), checked in order like the
  * editor's Function parameter dialog when the parameters are added one by
  * one; undefined when it would accept them all. `sheets` holds the events of
- * every event sheet (from readEventSheetsFresh).
+ * every event sheet (from readEventSheetsFresh). `argument` is the tool
+ * argument that lists the names, for the messages about duplicates.
  */
 function functionParameterNamesError(
   sheets: ReadonlyMap<string, readonly C3Event[]>,
   sheetName: string,
   names: readonly string[],
+  parents: readonly C3Event[] = [],
+  argument = 'functionParams',
 ): string | undefined {
-  // The new function has no enclosing events and no sub-events yet, so a
-  // parameter's scope is every global variable and the parameters before it
+  // The new function has no sub-events yet, so a parameter's scope is every global variable, the variables of the events enclosing it and the parameters before it
   const fn = { eventType: 'function-block', functionParameters: [] as Array<{ name: string }>, children: [] };
+  const parameterRule = parents.length === 0
+    ? NAME_SCOPE_RULE.parameter
+    : `${NAME_SCOPE_RULE.parameter} This tool also refuses a name the variables of the events enclosing the new function have (its own rule for a function in a group or event, not checked in the Construct 3 editor).`;
   for (const name of names) {
-    const problem = findEventVariableNameProblem(name, eventVariableNameUses(sheets, sheetName, [fn as unknown as C3Event]));
+    const problem = findEventVariableNameProblem(name, eventVariableNameUses(sheets, sheetName, [...parents, fn as unknown as C3Event]));
     if (problem?.problem === 'in-use' && problem.use.kind === 'function parameter') {
       return problem.use.name === name
-        ? `functionParams lists "${name}" more than once. ${NAME_SCOPE_RULE.parameter}`
-        : `functionParams lists "${problem.use.name}" and "${name}", which differ only in case. Construct 3 treats ` +
+        ? `${argument} lists "${name}" more than once. ${NAME_SCOPE_RULE.parameter}`
+        : `${argument} lists "${problem.use.name}" and "${name}", which differ only in case. Construct 3 treats ` +
           `them as the same function parameter name. ${NAME_SCOPE_RULE.parameter}`;
     }
-    if (problem) return eventVariableNameMessage(problem, name, 'function parameter', NAME_SCOPE_RULE.parameter);
+    if (problem) return eventVariableNameMessage(problem, name, 'function parameter', parameterRule);
     fn.functionParameters.push({ name });
+  }
+  return undefined;
+}
+
+/**
+ * Why a function block may not go below `parents` (the events enclosing it,
+ * outermost first; empty at the top level), or undefined. A function block
+ * under a block that holds a trigger condition, or below one, is refused: a
+ * project with one there does not open in Construct 3 r506-2 (free edition).
+ * Groups do not count. A condition is a trigger by its id (isTriggerId), as in
+ * the load-time gate, whatever addon it belongs to.
+ */
+function functionBlockTriggerRefusal(parents: readonly C3Event[]): string | undefined {
+  for (const parent of parents as ReadonlyArray<Record<string, unknown>>) {
+    if (!Array.isArray(parent.conditions)) continue;
+    const trigger = (parent.conditions as Array<Record<string, unknown> | null>).find(c => isTriggerId(c?.id));
+    if (!trigger) continue;
+    return `A function block is not placed under the block${typeof parent.sid === 'number' ? ` with SID ${parent.sid}` : ''}, which has the trigger "${String(trigger.id)}", or below it: Construct 3 r506-2 (free edition) refuses to open a project that has one there ("cannot add another trigger to event branch"). ` +
+      'It can go at the top level, in a group, or among the sub-events of blocks that have no trigger in them or above them.';
   }
   return undefined;
 }
