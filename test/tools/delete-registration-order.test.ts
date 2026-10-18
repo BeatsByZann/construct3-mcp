@@ -239,7 +239,7 @@ describe('what a failed delete can leave, and edge cases (#ISSUE)', () => {
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain('layouts/Level.json was deleted, but project.c3proj was saved again during the delete ' +
-      '(in the Construct 3 editor?) and lists "Level" again. Put the file back from layouts/Level.json.bak, or remove "Level" in the editor.');
+      '(saved in the Construct 3 editor, restored with git, or written by another program) and lists "Level" again. Put the file back from layouts/Level.json.bak, or remove "Level" in the editor.');
     expect(isRegistered('layouts', 'Level')).toBe(true);
     expect(existsSync(onDisk('layouts/Level.json'))).toBe(false);
   });

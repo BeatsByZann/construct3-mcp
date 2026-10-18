@@ -255,7 +255,8 @@ export class Construct3ProjectWriter {
    * The exception (#ISSUE): updateProjectFile drops the call's earlier backup
    * of project.c3proj and backs the file up again when it changed on disk
    * after that update read it and the call has not written it yet. Then the
-   * .bak holds the state from before that change, not from before the call.
+   * .bak holds the file as changed on disk, which the update merges into, not
+   * the state from before the call.
    */
   private async createBackup(path: string): Promise<string> {
     // The backup takes the file's name as spelled on disk

@@ -479,15 +479,26 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         // An object file saved in the editor since the server read it refuses
         // the delete before the images are touched (deleteRegisteredEntity checks
         // again)
-        await writer.assertEntityFileCurrent('objectTypes', args.name, writer.getSubfolderForEntity('objectTypes', args.name));
+        const subfolder = writer.getSubfolderForEntity('objectTypes', args.name);
+        await writer.assertEntityFileCurrent('objectTypes', args.name, subfolder);
         if (renames.length > 0) await writer.renameImageFiles(renames);
         let backupPath: string;
         try {
           backupPath = await deleteRegisteredEntity(writer, 'objectTypes', args.name);
         } catch (error) {
-          const imagesBack = await renameObjectImagesBack(writer, renames);
           const message = error instanceof Error ? error.message : String(error);
-          throw new Error(imagesBack ? `${message} ${imagesBack}` : message);
+          if (renames.length === 0) throw new Error(message);
+          // The images go back to their live names only when the delete was
+          // undone: project.c3proj lists the object and its file is there. An
+          // object that is gone, or whose state is unknown, keeps its images
+          // as .bak, so a later create_object or add_animation_to_sprite
+          // placeholder cannot overwrite them without a backup.
+          const now = await writer.entityOnDisk('objectTypes', args.name, subfolder);
+          const undone = now.project === 'lists' && now.file === 'present';
+          const imagesNote = undone
+            ? await renameObjectImagesBack(writer, renames)
+            : `Its image files are kept as .bak: ${renames.map(r => `"images/${r.to}"`).join(', ')}.`;
+          throw new Error(`${message} ${imagesNote}`);
         }
         warnings.push(...images.warnings);
 

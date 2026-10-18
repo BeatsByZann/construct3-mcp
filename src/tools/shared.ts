@@ -118,7 +118,7 @@ export function toolError(message: string) {
  *   anything is written;
  * - take the name out of project.c3proj;
  * - delete the file, backed up.
- * A failure never leaves a name registered without its file. When a step
+ * A failed step never leaves a name registered without its file. When a step
  * fails, the writer puts back what the call changed (undoToolCall; after a
  * refusal as stale it has done so already), and one Error is thrown that
  * says what was put back and what is on disk now, read again
@@ -156,7 +156,7 @@ export async function deleteRegisteredEntity(
   }
   const onDisk = await writer.entityOnDisk(category, name, subfolder);
   if (onDisk.project === 'lists' && onDisk.file === 'absent') {
-    throw new Error(`${file} was deleted, but project.c3proj was saved again during the delete (in the Construct 3 editor?) ` +
+    throw new Error(`${file} was deleted, but project.c3proj was saved again during the delete (saved in the Construct 3 editor, restored with git, or written by another program) ` +
       `and lists "${name}" again. Put the file back from ${file}.bak, or remove "${name}" in the editor.`);
   }
   if (onDisk.project !== 'omits' || onDisk.file !== 'absent') {

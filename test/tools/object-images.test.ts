@@ -295,21 +295,25 @@ describe('delete_object whose project.c3proj update fails otherwise', () => {
     const text = result.content[0].text;
     expect(text).toContain('project.c3proj changed on disk and could not be read again');
     expect(text).toContain('project.c3proj could not be read. Check the project (validate_project, git diff) before you run the tool again. ' +
-      'Its image files were renamed back from .bak.');
+      'Its image files are kept as .bak: "images/coin-animation 1-000.png.bak", "images/coin-spin-000.png.bak", "images/coin-spin-001.jpg.bak".');
+    expect(text).not.toContain('renamed back');
     expect(text).not.toContain('Left as they are');
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(saved);
-    expect(await images()).toEqual(['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg']);
+    // Whether the object is still registered is unknown, so the images are not given live names
+    expect(await images()).toEqual(['coin-animation 1-000.png.bak', 'coin-spin-000.png.bak', 'coin-spin-001.jpg.bak']);
   });
 });
 
 /**
  * The object file was deleted, then project.c3proj was saved again from before
  * the call (the editor holds it) and lists the object again: the call is an
- * error, the object file stays deleted (its .bak holds it), and only the
- * images are renamed back to their live names.
+ * error, the object file stays deleted (its .bak holds it), and the images
+ * stay as .bak too: renamed back to live names, nothing would hold them
+ * while no object file uses them, and a later create_object or
+ * add_animation_to_sprite placeholder would overwrite them without a backup.
  */
 describe('delete_object whose object file was deleted and then project.c3proj lists the name again', () => {
-  it('leaves the object file deleted and renames only the images back', async () => {
+  it('leaves the object file deleted and keeps the images as .bak', async () => {
     await createCoin();
     const objectBefore = await readFile(objectPath('Coin'), 'utf8');
     const projectBefore = await readFile(join(tmpDir, 'project.c3proj'), 'utf8');
@@ -324,12 +328,31 @@ describe('delete_object whose object file was deleted and then project.c3proj li
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('objectTypes/Coin.json was deleted, but project.c3proj was saved again during the delete ' +
-      '(in the Construct 3 editor?) and lists "Coin" again. Put the file back from objectTypes/Coin.json.bak, or remove "Coin" in the editor. ' +
-      'Its image files were renamed back from .bak.');
+      '(saved in the Construct 3 editor, restored with git, or written by another program) and lists "Coin" again. ' +
+      'Put the file back from objectTypes/Coin.json.bak, or remove "Coin" in the editor. ' +
+      'Its image files are kept as .bak: "images/coin-animation 1-000.png.bak", "images/coin-spin-000.png.bak", "images/coin-spin-001.jpg.bak".');
+    expect(result.content[0].text).not.toContain('renamed back');
     expect(existsSync(objectPath('Coin'))).toBe(false);
     expect(await readFile(`${objectPath('Coin')}.bak`, 'utf8')).toBe(objectBefore);
-    expect(await images()).toEqual(['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg']);
+    expect(await images()).toEqual(['coin-animation 1-000.png.bak', 'coin-spin-000.png.bak', 'coin-spin-001.jpg.bak']);
     expect(JSON.parse(await readFile(join(tmpDir, 'project.c3proj'), 'utf8')).objectTypes.items).toContain('Coin');
+  });
+
+  it('keeps the images as .bak when project.c3proj no longer lists the object but its file is still on disk', async () => {
+    await createCoin();
+    // The delete fails after the name left project.c3proj, and the undo does not put it back
+    writer.deleteEntityFile = async () => { throw new Error('disk full'); };
+    writer.undoToolCall = async () => ({ restored: [], left: [] });
+
+    const result = await server.callTool('delete_object', { name: 'Coin' });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('project.c3proj no longer lists "Coin", but objectTypes/Coin.json is still on disk: check it and delete it by hand.');
+    expect(text).toContain('Its image files are kept as .bak: "images/coin-animation 1-000.png.bak"');
+    expect(text).not.toContain('renamed back');
+    expect(existsSync(objectPath('Coin'))).toBe(true);
+    expect(await images()).toEqual(['coin-animation 1-000.png.bak', 'coin-spin-000.png.bak', 'coin-spin-001.jpg.bak']);
   });
 });
 
