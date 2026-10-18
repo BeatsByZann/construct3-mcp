@@ -32,6 +32,7 @@ import {
   statFileState,
   StaleFileError,
   type CallChange,
+  type CallMove,
   type FileState,
   type ToolCallScope,
 } from './disk-state.js';
@@ -713,6 +714,46 @@ export class Construct3ProjectWriter {
     const scope = currentToolCall();
     if (!scope || scope.changes.size === 0) return { restored: [], left: [] };
     return this.undoCallChanges(scope);
+  }
+
+  /**
+   * For revert_last_change (change-journal.ts): put back one recorded change
+   * under the file's one lock, when the file is still in the state `asLeft`
+   * returns (read inside the lock) and its backup still holds the state
+   * from before the call.
+   */
+  async putBackChange(change: CallChange, asLeft: () => FileState | undefined): Promise<boolean> {
+    return this.putBackLocked(change, asLeft);
+  }
+
+  /**
+   * For revert_last_change: rename a file a recorded call renamed back, only
+   * when `to` is in the state `toState` and nothing is at `from` (on Windows
+   * a rename replaces the file in its way). A `toState` of undefined (not
+   * known) or null (absent) is refused: the call left a file at `to`. Run
+   * inside withAnimationLock.
+   */
+  async renameBack(move: CallMove, toState: FileState | undefined): Promise<boolean> {
+    if (!toState || !sameFileState(await statFileState(move.to), toState)) return false;
+    if ((await statFileState(move.from)) !== null) return false;
+    await mkdir(dirname(move.from), { recursive: true });
+    await rename(move.to, move.from);
+    noteFileWritten(fileKey(move.to), null);
+    noteFileWritten(fileKey(move.from), await statFileState(move.from));
+    return true;
+  }
+
+  /** After revert_last_change put files back: load project.c3proj again when it was among them, and drop the caches and the index. */
+  async afterRevert(projectPutBack: boolean): Promise<void> {
+    if (projectPutBack) {
+      try {
+        await this.reader.reloadProject();
+      } catch {
+        // Not valid JSON right now: the next tool call's check loads it again
+      }
+    }
+    this.reader.invalidateCaches();
+    resetProjectIndex(this.reader);
   }
 
   /**
