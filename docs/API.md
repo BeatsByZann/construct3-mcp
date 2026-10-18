@@ -576,7 +576,7 @@ Delete a family. The member object types are kept. The layout instances of its m
 
 List the containers of `project.c3proj`, in the order of their `containers` list. A container makes object types be created, picked and destroyed together. It has no name, so each container is identified by its `index` (its position in the list) and its `members`. Read-only.
 
-**Returns:** `{ containers: [{ index, members, notObjectTypes? }], count }`. `notObjectTypes` is listed only when a member is no object type of the project, or differs from one only in letter case: Construct 3 does not open a project with such a member, and [`validate_project`](#validate_project) reports it (the `container-member` row of its load-time rules).
+**Returns:** `{ containers: [{ index, members, notObjectTypes? }], count }`. `notObjectTypes` is listed when a member is no object type of the project: Construct 3 r506-2 does not open a project with such a member. A member that differs from an object type only in letter case is listed too, because the tools refuse it; whether Construct 3 accepts it was not checked. [`validate_project`](#validate_project) reports both (the `container-member` row of its load-time rules).
 
 ### `create_container`
 
@@ -612,7 +612,7 @@ Add object types to a container, or take some out. The container is found by one
 - A name already in the container (to add) or not in it (to remove) gives a warning in `warnings` and is skipped.
 - The result is checked with the rules of [`create_container`](#create_container), except that the container itself is not counted as "another container" for the one-container rule: every member is an object type spelled as registered, listed once, not a family, and no other container lists it. Added members are appended after the existing ones; the others keep their order.
 - A container left with fewer than two object types is refused, and the error names [`delete_container`](#delete_container).
-- When nothing changes, the result is `action: "unchanged"`, nothing is written, and there is no `backupFile`.
+- When nothing changes, the result is `action: "unchanged"`, nothing is written, and there is no `backupFile`. This also happens when a save of `project.c3proj` in the editor during the call already holds the change: `project.c3proj` stays as saved, and a `project.c3proj.bak` from an earlier round of the same call can remain.
 - A save of `project.c3proj` in the editor during the call is merged, not replaced: the update runs again on the saved file. A save that makes the change invalid (for example one that puts the object type in another container) is refused inside the update, before the write, and says "Nothing was changed." A `project.c3proj.bak` from an earlier round of the same call can remain in that case; `project.c3proj` itself is unchanged.
 - Backs up `project.c3proj` to `project.c3proj.bak` when it changes. When the write fails, the error says what is on disk, as for [`create_container`](#create_container).
 

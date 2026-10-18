@@ -7,9 +7,11 @@
  * container in its root "containers" array (see containers.ts), so each
  * write here is one writer.updateProject whose `change` checks and edits the
  * file as it is right before the write. A save of project.c3proj in the
- * editor during the call is merged, not lost, and a refusal found inside
- * `change` is thrown before the writer makes its backup, so nothing is
- * written.
+ * editor during the call is merged, not lost. A refusal found inside `change`
+ * in the first round is thrown before the writer makes its backup, so nothing
+ * is written. One found in a later round, or a later round that finds nothing
+ * left to change (an "unchanged" result), can leave round 1's
+ * project.c3proj.bak behind while project.c3proj itself is as saved.
  *
  * Construct 3 r506-2 refuses to open a project with a container of fewer
  * than two object types, one naming a missing object type, or one in which
@@ -117,7 +119,7 @@ export function registerContainerTools({ server: mcpServer, reader, writer }: Mu
 
   server.tool(
     'list_containers',
-    'List the containers of project.c3proj. A container makes object types be created, picked and destroyed together; it has no name, so each is identified by its index and its members. A member that is no object type of the project (or differs from one only in letter case) is listed in notObjectTypes: Construct 3 r506-2 does not open such a project. Read-only.',
+    'List the containers of project.c3proj. A container makes object types be created, picked and destroyed together; it has no name, so each is identified by its index and its members. A member that is no object type of the project is listed in notObjectTypes: Construct 3 r506-2 does not open such a project. A member that differs from an object type only in letter case is listed there too, because these tools refuse it; whether Construct 3 accepts it was not checked. Read-only.',
     {},
     async () => {
       try {

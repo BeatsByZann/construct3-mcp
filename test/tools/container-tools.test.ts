@@ -196,6 +196,12 @@ describe('list_containers', () => {
     expect(existsSync(projectPath() + '.bak')).toBe(false);
   });
 
+  it('describes a letter-case variant as refused by the tools, not as refused by Construct 3', () => {
+    const description = server.getTool('list_containers')!.description;
+    expect(description).toContain('whether Construct 3 accepts it was not checked');
+    expect(description).not.toContain('(or differs from one only in letter case)');
+  });
+
   it('lists nothing for a project without containers', async () => {
     expect(await call('list_containers')).toEqual({ containers: [], count: 0 });
   });
@@ -387,6 +393,19 @@ describe('a save of project.c3proj during the call', () => {
     expect(occurrences(data.text, NOTHING_CHANGED)).toBe(1);
     // project.c3proj is the save, byte for byte. The writer made its backup in round 1, before it saw the file change,
     // so project.c3proj.bak is left next to the refusal (it holds the file as round 1 read it)
+    expect(await projectText()).toBe(saved);
+    expect(existsSync(projectPath() + '.bak')).toBe(true);
+  });
+
+  it('reports "unchanged" when a save during the call already holds the change: no backupFile, the save as it is, round 1\'s .bak left', async () => {
+    await seed(['Hitbox', 'Shield']);
+    const saved = await savedWith([['Hitbox', 'Shield', 'Key']]);
+    saveDuringUpdate(() => writeFile(projectPath(), saved));
+    const data = await call('update_container', { member: 'Hitbox', addMembers: ['Key'] });
+    expect(data).toMatchObject({ success: true, action: 'unchanged', index: 0, members: ['Hitbox', 'Shield', 'Key'] });
+    expect(data.backupFile).toBeUndefined();
+    expect(data.editorNote).toBeUndefined();
+    // The writer made its backup in round 1, before it saw the file change, so project.c3proj.bak is left next to the "unchanged" result
     expect(await projectText()).toBe(saved);
     expect(existsSync(projectPath() + '.bak')).toBe(true);
   });
