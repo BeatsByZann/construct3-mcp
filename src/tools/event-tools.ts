@@ -60,6 +60,7 @@ import {
   EVENT_INPUT_DESCRIPTIONS,
   commentColorSchema,
   buildCommentEvent,
+  reassignSids,
 } from './event-helpers.js';
 import {
   isElseCondition,
@@ -1094,7 +1095,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   server.tool(
     'move_events_between_sheets',
-    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). SIDs and all nested children are preserved; the result warns when a copied SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force.',
+    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). A move keeps the events\' SIDs and all nested children; a copy (deleteSource=false) gives the copied events and everything in them new SIDs (reassignedSids in the result). The result warns when a moved SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force.',
     {
       sourceSheet: z.string().max(200).describe('Event sheet to copy/move events from, as registered (letter case included)'),
       targetSheet: z.string().max(200).describe('Event sheet to copy/move events into, as registered (letter case included)'),
@@ -1332,9 +1333,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           });
         }
 
-        // Copies keep their SIDs, so a copied event whose SID the target already
-        // has leaves several events with that SID there. The editor opens such
-        // sheets, so this is a warning, not a refusal.
+        // A move keeps its SIDs (the original goes), so a moved event whose SID the target
+        // already has leaves several events with that SID there: a warning, since the
+        // editor opens such sheets. A copy gets new SIDs, drawn only now that every check passed.
         const warnings = [...loadCheck.warnings];
         if (lostCount > 0) {
           warnings.push(`Moved with force=true: ${describeDanglingReferences(lost, whereLost)} ` +
@@ -1344,8 +1345,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           warnings.push(`Moved with force=true: ${traversalLimitReason(checked)}`);
         }
         warnings.push(...unscannedWarnings(unscanned, 'Moved'));
-        const sharedSids = copiedSidsWarning(args.targetSheet, targetSheetData.events as unknown as Record<string, unknown>[], copiedEvents);
-        if (sharedSids) warnings.push(sharedSids);
+        let reassignedSids = 0;
+        if (args.deleteSource) {
+          const sharedSids = copiedSidsWarning(args.targetSheet, targetSheetData.events as unknown as Record<string, unknown>[], copiedEvents);
+          if (sharedSids) warnings.push(sharedSids);
+        } else {
+          for (const copy of copiedEvents) reassignedSids += await reassignSids(reader, idGen, copy);
+        }
 
         // Write target sheet first, then source (if modified)
         const targetSubfolder = writer.getSubfolderForEntity('eventSheets', args.targetSheet);
@@ -1366,6 +1372,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           movedSids: args.sids,
           movedCount: eventsToMove.length,
           deleteSource: args.deleteSource,
+          ...(args.deleteSource ? {} : { reassignedSids }),
           backupFiles: [targetBackup, ...(sourceBackup ? [sourceBackup] : [])].filter(Boolean),
           warnings: warnings.length > 0 ? warnings : undefined,
           ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
@@ -2103,7 +2110,7 @@ function editCommentRowInPlace(
 const MAX_LISTED_SHARED_SIDS = 10;
 
 /**
- * Warning for events copied into a sheet (already inserted there) whose SIDs,
+ * Warning for events moved into a sheet (already inserted there) whose SIDs,
  * or those of their sub-events, now match more than one event of that sheet,
  * or undefined when every copied SID is unique there. Such SIDs are refused by
  * the SID-based tools in that sheet unless an eventPath picks one.
@@ -2126,8 +2133,8 @@ function copiedSidsWarning(
   const more = entries.length > MAX_LISTED_SHARED_SIDS ? `; and ${entries.length - MAX_LISTED_SHARED_SIDS} more` : '';
   const one = shared.size === 1;
   return (
-    `${one ? 'A SID' : `${shared.size} SIDs`} of the copied events now ${one ? 'matches' : 'match'} more than one event in "${sheetName}", ` +
-    `because copied events keep their SIDs: ${listed}${more}. ` +
+    `${one ? 'A SID' : `${shared.size} SIDs`} of the moved events now ${one ? 'matches' : 'match'} more than one event in "${sheetName}", ` +
+    `because moved events keep their SIDs: ${listed}${more}. ` +
     `update_event_block, update_event_block_action, update_event_variable and delete_event_from_sheet refuse ${one ? 'this SID' : 'these SIDs'} ` +
     `in "${sheetName}" unless eventPath names one of the events.`
   );
