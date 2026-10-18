@@ -36,6 +36,14 @@ const call = async (tool: string, args: Record<string, unknown>): Promise<ToolDa
   return result.isError ? { isError: true, text: result.content[0].text } : JSON.parse(result.content[0].text) as ToolData;
 };
 const instance0 = async () => (await readJson<LayoutFile>(path('layouts', 'Layout 1.json'))).layers[0].instances[0];
+/** Every file under the project directory with its text, so a test sees any change and any new .bak. */
+async function snapshot(): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const file of (await readdir(tmpDir, { recursive: true })).map(String).sort()) {
+    out[file] = await readFile(path(file), 'utf8').catch(() => '(directory)');
+  }
+  return out;
+}
 const behaviorNames = async (file: string) => (await readJson<{ behaviorTypes: Array<{ name: string }> }>(file)).behaviorTypes.map(b => b.name);
 
 beforeEach(async () => {
@@ -110,8 +118,22 @@ describe('reorder_behaviors', () => {
     object.behaviorTypes.push({ ...object.behaviorTypes[1] });
     await writeFile(file, JSON.stringify(object, null, '\t'));
     await reader.loadProject();
+    const before = await snapshot();
     const data = await call('reorder_behaviors', { objectName: 'Sprite', order: ['Pin', 'Platform', 'Fade'] });
     expect(data.text).toContain('Behaviors of "Sprite" share a name ("Fade"): rename one in the Construct 3 editor first. Nothing was changed.');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('reports a layout it could not parse that names the object type, and says it was not updated', async () => {
+    await writeFile(path('layouts', 'Broken.json'), '{ "name": "Broken", "layers": [ Sprite');
+    const project = await readJson<{ layouts: { items: string[] } }>(path('project.c3proj'));
+    project.layouts.items.push('Broken');
+    await writeFile(path('project.c3proj'), JSON.stringify(project, null, '\t'));
+    await reader.loadProject();
+    const data = await call('reorder_behaviors', { objectName: 'Sprite', order: ['Pin', 'Platform', 'Fade'] });
+    expect(data.action).toBe('updated');
+    expect(data.unscannedFiles).toBeDefined();
+    expect((data.warnings ?? []).join(' ')).toContain('Instances in layouts that could not be parsed were NOT updated');
   });
 
   it('refuses an order that leaves out, repeats or adds a behavior, and changes nothing', async () => {
@@ -126,10 +148,12 @@ describe('reorder_behaviors', () => {
 
   it('reports the order it has as unchanged and writes nothing', async () => {
     const filesBefore = (await readdir(path('objectTypes'))).sort();
+    const layoutsBefore = await Promise.all((await readdir(path('layouts'))).sort().map(f => readFile(path('layouts', f), 'utf8')));
     const data = await call('reorder_behaviors', { objectName: 'Sprite', order: ['Platform', 'Fade', 'Pin'] });
     expect(data.action).toBe('unchanged');
     expect(data.editorNote).toBeUndefined();
     expect((await readdir(path('objectTypes'))).sort()).toEqual(filesBefore);
+    expect(await Promise.all((await readdir(path('layouts'))).sort().map(f => readFile(path('layouts', f), 'utf8')))).toEqual(layoutsBefore);
   });
 
   it('rolls back the layout when the object type write, which comes last, fails', async () => {

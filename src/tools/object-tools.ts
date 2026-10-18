@@ -999,7 +999,9 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
     'reorder_behaviors',
     'Put the behaviors of an object type or family in a new order: order lists every behavior once, with its exact name. '
       + 'On placed instances, the entries of these behaviors are put in the new order among the places they hold; the '
-      + 'entries of other families and for other names stay where they are.',
+      + 'entries of other families and for other names stay where they are. An instance holds one entry per behavior name: '
+      + 'when another owner has a behavior of the same name (the object\'s own and a family\'s, say), that one entry moves with '
+      + 'this owner\'s order.',
     {
       objectName: z.string().max(200).optional().describe('Object type whose behaviors to reorder, as registered (give this or familyName)'),
       familyName: z.string().max(200).optional().describe('Family whose behaviors to reorder, as registered (give this or objectName)'),
