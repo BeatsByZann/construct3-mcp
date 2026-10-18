@@ -103,7 +103,10 @@ describe('withArchiveSync', () => {
     expect(JSON.parse(result.content[0].text).success).toBe(true);
     const files = await archiveFiles();
     expect(files.get('eventSheets/MainSheet.json')).toContain('written through the tool');
-    expect(notesOf(result)).toEqual([`Saved the project to "${archivePath}" (${files.size} files).`]);
+    expect(notesOf(result)).toEqual([
+      'Changed 1 file(s): eventSheets/MainSheet.json (1 with a .bak backup; revert_last_change undoes this call).',
+      `Saved the project to "${archivePath}" (${files.size} files).`,
+    ]);
   });
 
   it('writes nothing after a call that changed nothing, and adds no note', async () => {

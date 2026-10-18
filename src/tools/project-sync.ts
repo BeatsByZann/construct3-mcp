@@ -6,11 +6,14 @@
  * caches hold are checked when the call first uses them (ensureCachesFresh).
  * In the scope the writer backs each file up once, with its state from before
  * the call, and refuses to write a file that changed on disk after the call
- * read it.
+ * read it. Each tool call that opens the scope is recorded in the change
+ * journal (change-journal.ts) when it ends, and a result that is not an error
+ * then ends with a line naming the files the call changed.
  */
 
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
-import { runInToolCall } from '../construct3/disk-state.js';
+import { currentToolCall, runInToolCall } from '../construct3/disk-state.js';
+import { changedFilesLine, recordToolCall, type JournalEntry } from '../construct3/change-journal.js';
 import { toolError } from './shared.js';
 
 /** The registration methods whose last argument is the handler (McpServer and the test double). */
@@ -38,7 +41,8 @@ export function withProjectSync<S extends object>(server: S, reader: Construct3P
         const last = args.length - 1;
         const handler = args[last];
         if (typeof handler === 'function') {
-          args[last] = syncedHandler(handler as (...a: unknown[]) => unknown, reader, isTool);
+          const tool = isTool && typeof args[0] === 'string' ? args[0] : undefined;
+          args[last] = syncedHandler(handler as (...a: unknown[]) => unknown, reader, isTool, tool);
         }
         return value.apply(target, args);
       };
@@ -50,15 +54,60 @@ function syncedHandler(
   handler: (...args: unknown[]) => unknown,
   reader: Construct3ProjectReader,
   isTool: boolean,
+  tool: string | undefined,
 ): (...args: unknown[]) => Promise<unknown> {
-  return (...args: unknown[]) => runInToolCall(async () => {
-    try {
-      await reader.checkProjectFile();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (isTool) return toolError(message);
-      throw new Error(message);
+  return (...args: unknown[]) => {
+    // Only the call that opens the scope is journaled: a handler run inside
+    // another call's scope is part of that call
+    const journaled = tool !== undefined && currentToolCall() === undefined;
+    return runInToolCall(async () => {
+      try {
+        await reader.checkProjectFile();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isTool) return toolError(message);
+        throw new Error(message);
+      }
+      if (!journaled) return handler(...args);
+      return journaledCall(reader, tool as string, () => handler(...args));
+    });
+  };
+}
+
+/**
+ * Run a tool handler as a journaled call: what it changed is recorded in the
+ * change journal when it ends, also when it throws, and a result that is not
+ * an error gets the line naming the changed files as its last content item.
+ * A fault in this bookkeeping is logged and never changes the result.
+ */
+async function journaledCall(reader: Construct3ProjectReader, tool: string, run: () => unknown): Promise<unknown> {
+  const startedAt = Date.now();
+  let result: unknown;
+  try {
+    result = await run();
+  } catch (error) {
+    recordSafely(reader, tool, startedAt);
+    throw error;
+  }
+  const entry = recordSafely(reader, tool, startedAt);
+  try {
+    const shaped = result as { content?: unknown; isError?: unknown } | undefined;
+    if (entry && shaped && Array.isArray(shaped.content) && shaped.isError !== true) {
+      shaped.content.push({ type: 'text', text: changedFilesLine(entry) });
     }
-    return handler(...args);
-  });
+  } catch (error) {
+    console.error('[change journal] could not add the changed files to the result:', error);
+  }
+  return result;
+}
+
+/** Record the running call in the change journal; a fault is logged, not thrown. */
+function recordSafely(reader: Construct3ProjectReader, tool: string, startedAt: number): JournalEntry | undefined {
+  try {
+    const scope = currentToolCall();
+    return scope ? recordToolCall(reader, tool, startedAt, scope) : undefined;
+  } catch (error) {
+    console.error('[change journal] could not record the call:', error);
+    return undefined;
+  }
 }
