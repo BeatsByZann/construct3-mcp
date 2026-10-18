@@ -13,10 +13,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'crypto';
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
+import { fileKey } from '../../src/construct3/disk-state.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { generatePlaceholderPng } from '../../src/construct3/png-generator.js';
 import { registerAnimationTools } from '../../src/tools/animation-tools.js';
@@ -385,30 +386,112 @@ describe('frame image changes are undone when a step fails', () => {
     return register(writer, idGen);
   }
 
-  /** A server whose writer creates the placeholder file, then fails writing it (e.g. a full disk). */
+  /** Whether `path` is a file directly in images/. */
+  const inImages = (path: string) => fileKey(dirname(path)) === fileKey(imagesDir());
+
+  /** A server whose writer fails the placeholder write before it writes anything (e.g. a full disk). */
   function failingPlaceholderWrite(): MockServer {
-    class PartialPlaceholderWriter extends Construct3ProjectWriter {
-      override async writeImageFile(objectName: string, animationName: string, frameIndex: number): Promise<string> {
-        const name = `${objectName}-${animationName}-${String(frameIndex).padStart(3, '0')}.png`.toLowerCase();
-        await writeFile(join(imagesDir(), name), Buffer.alloc(0));
-        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+    class FailingPlaceholderWriter extends Construct3ProjectWriter {
+      override async replaceFile(...args: Parameters<Construct3ProjectWriter['replaceFile']>): Promise<string | undefined> {
+        if (inImages(args[0])) throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+        return super.replaceFile(...args);
       }
     }
     const idGen = new IdGenerator();
-    return register(new PartialPlaceholderWriter(reader, idGen), idGen);
+    return register(new FailingPlaceholderWriter(reader, idGen), idGen);
+  }
+
+  /** A server whose writer finds another program's file under the placeholder's name when it writes the placeholder. */
+  function otherFileUnderPlaceholder(): MockServer {
+    class OtherFileWriter extends Construct3ProjectWriter {
+      override async replaceFile(...args: Parameters<Construct3ProjectWriter['replaceFile']>): Promise<string | undefined> {
+        if (inImages(args[0])) {
+          const content = Buffer.from('image OTHER');
+          labels.set(sha(content), 'OTHER');
+          await writeFile(args[0], content);
+        }
+        return super.replaceFile(...args);
+      }
+    }
+    const idGen = new IdGenerator();
+    return register(new OtherFileWriter(reader, idGen), idGen);
+  }
+
+  /** A server whose writer's object write fails with an fs error, whose message holds the absolute path. */
+  function fsErrorObjectWrite(): MockServer {
+    class FsErrorWriter extends Construct3ProjectWriter {
+      override async writeEntityFile(...args: Parameters<Construct3ProjectWriter['writeEntityFile']>): Promise<string> {
+        if (args[0] === 'objectTypes') {
+          throw Object.assign(new Error(`EPERM: operation not permitted, open '${objectPath()}'`), { code: 'EPERM', path: objectPath() });
+        }
+        return super.writeEntityFile(...args);
+      }
+    }
+    const idGen = new IdGenerator();
+    return register(new FsErrorWriter(reader, idGen), idGen);
   }
 
   const insert = { objectName: 'Sprite', animationName: ANIMATION, index: 0 };
   const remove = { objectName: 'Sprite', animationName: ANIMATION, frameIndex: 0 };
 
-  it('add_frame_to_animation: a placeholder write that failed part way is removed before the files are renamed back', async () => {
-    for (const index of [0, 1]) {
-      const result = await failingPlaceholderWrite().callTool('add_frame_to_animation', { ...insert, index });
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toBe('Error adding frame: ENOSPC: no space left on device, write. Nothing was changed: '
-        + 'the image files have their old names again and the placeholder image was removed.');
-      await expectUnchanged();
-    }
+  it('add_frame_to_animation: a placeholder write that failed before writing leaves nothing to remove, and the files are renamed back', async () => {
+    const result = await failingPlaceholderWrite().callTool('add_frame_to_animation', insert);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('Error adding frame: ENOSPC: no space left on device, write. Nothing was changed: '
+      + 'the image files have their old names again.');
+    await expectUnchanged();
+  });
+
+  it('add_frame_to_animation: a file under the placeholder\'s name that appeared after the renames is never written over', async () => {
+    const result = await otherFileUnderPlaceholder().callTool('add_frame_to_animation', insert);
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('Error adding frame: images/sprite-animation 1-000.png appeared after this call planned the frame '
+      + 'image renames (written by another program, or saved in the editor?), so the new frame\'s image was not written over it. '
+      + 'Rolling back failed for: image files (');
+    expect(text).toContain('the files whose old names were free were renamed back; images/sprite-animation 1-001.png holds the file that was '
+      + 'images/sprite-animation 1-000.png before the call, and images/sprite-animation 1-000.png is taken by images/sprite-animation 1-000.png). '
+      + 'Check these before you run the tool again.');
+    // Nothing is lost: the other file stays where it was written, and every file whose old name is free has it again
+    expect(await snapshot()).toEqual(images({ '000.png': 'OTHER', '001.png': 'A', '001.jpg': 'J', '002.gif': 'G', '003.png': 'orphan' }));
+    expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
+  });
+
+  it('add_frame_to_animation: an append keeps a file that appeared under the placeholder\'s name, and the file it had moved aside', async () => {
+    // The orphan at 003.png is moved to .bak for the placeholder; then a file appears at 003.png
+    const result = await otherFileUnderPlaceholder().callTool('add_frame_to_animation', { ...insert, index: 3 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('images/sprite-animation 1-003.png.bak holds the file that was images/sprite-animation 1-003.png '
+      + 'before the call, and images/sprite-animation 1-003.png is taken by images/sprite-animation 1-003.png)');
+    expect(await snapshot()).toEqual(images({
+      '000.png': 'A', '001.jpg': 'J', '002.gif': 'G', '003.png': 'OTHER', '003.png.bak': 'orphan',
+    }));
+    expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
+  });
+
+  it('add_frame_to_animation: an fs error of the object write is named by its code and project-relative path', async () => {
+    const text = (await fsErrorObjectWrite().callTool('add_frame_to_animation', insert)).content[0].text;
+    expect(text).toBe('Error adding frame: EPERM on objectTypes/Sprite.json. Nothing was changed: the image files have their old names '
+      + 'again and the placeholder image was removed.');
+    expect(text).not.toContain(tmpDir);
+    await expectUnchanged();
+  });
+
+  it('add_frame_to_animation: keeps the images when the object file, left as another write left it, holds the new frames', async () => {
+    // The read-back fails, and a save made on top of this call's write lands before the rollback: the backup is not restored over it
+    const idGen = new IdGenerator();
+    const writer = new Construct3ProjectWriter(reader, idGen);
+    const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<void> };
+    internals.verifyWrittenFile = async (path, name, text) => {
+      const obj = JSON.parse(text);
+      obj.animations.items[0].speed = 42;
+      await writeFile(path, JSON.stringify(obj, null, '\t'));
+      throw new Error(`Post-write verification failed for "${name}"`);
+    };
+    const text = (await register(writer, idGen).callTool('add_frame_to_animation', insert)).content[0].text;
+    expect(text).toContain('The object file was not restored: objectTypes/Sprite.json (another write changed it after this call\'s write failed; '
+      + 'it was left as it is). objectTypes/Sprite.json holds this call\'s frames, so the image files keep the names this call gave them');
+    expect(await snapshot()).toEqual(images({ '000.png': 'NEW', '001.png': 'A', '002.jpg': 'J', '003.gif': 'G', '003.png': 'orphan' }));
   });
 
   it('add_frame_to_animation: a failed image rename renames the files back and writes nothing', async () => {
@@ -429,8 +512,9 @@ describe('frame image changes are undone when a step fails', () => {
   it('add_frame_to_animation: an object write that failed after replacing the file restores it too', async () => {
     const result = await failingObjectVerify().callTool('add_frame_to_animation', insert);
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Post-write verification failed for "Sprite". Nothing was changed: the image files have '
-      + 'their old names again, the placeholder image was removed and the object file was restored from its backup.');
+    expect(result.content[0].text).toContain('Post-write verification failed for "Sprite". The change was rolled back: the image files have '
+      + 'their old names again, the placeholder image was removed and objectTypes/Sprite.json was restored from its backup (its .bak stays).');
+    expect(await readdir(join(tmpDir, 'objectTypes'))).toContain('Sprite.json.bak');
     await expectUnchanged();
   });
 
@@ -444,7 +528,7 @@ describe('frame image changes are undone when a step fails', () => {
     for (const mock of [failingObjectWrite(), failingObjectVerify()]) {
       const result = await mock.callTool('delete_frame_from_animation', remove);
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('Nothing was changed: the image files have their old names again');
+      expect(result.content[0].text).toContain('the image files have their old names again');
       await expectUnchanged();
     }
   });
@@ -617,29 +701,32 @@ describe('another write to the object file during a frame change', () => {
     };
   }
 
-  it('add_frame_to_animation: a write it cannot read again is kept, never restored over', async () => {
+  it('add_frame_to_animation: a write it cannot read again is kept, and the images stay with a note that recovery is unresolved', async () => {
     const server = withOtherWrite((_written, before) => withSpeed42(before), objectBefore);
     failSecondObjectRead();
     const result = await server.callTool('add_frame_to_animation', insert);
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Another write replaced the object file during this one (a tool call running in parallel?), '
-      + 'and the file could not be read again to tell whether it kept this call\'s change; it was left as that write left it: '
-      + 're-read the object to check its frames. The rest was rolled back: the image files have their old names again and the placeholder image was removed.');
+    const text = result.content[0].text;
+    expect(text).toContain('Another write replaced the object file during this one (a tool call running in parallel?); it was left as that '
+      + 'write left it. objectTypes/Sprite.json could not be read again to tell which frames it holds, so the image files were left as this call left them');
+    expect(text).toContain('Recovery is unresolved');
     expect(await readFile(objectPath(), 'utf8')).toBe(withSpeed42(objectBefore));
-    expect(await snapshot()).toEqual(imagesBefore);
+    expect(await snapshot()).toEqual(images({ '000.png': 'NEW', '001.png': 'A', '002.png': 'B', '003.png': 'C' }));
   });
 
-  it('delete_frame_from_animation: a write it cannot read again is kept, never restored over', async () => {
+  it('delete_frame_from_animation: a write it cannot read again is kept, and the images stay with a note that recovery is unresolved', async () => {
     const server = withOtherWrite((_written, before) => withSpeed42(before), objectBefore);
     failSecondObjectRead();
     const result = await server.callTool('delete_frame_from_animation', remove);
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('it was left as that write left it: re-read the object to check its frames. '
-      + 'The rest was rolled back: the image files have their old names again.');
+    const text = result.content[0].text;
+    expect(text).toContain('Another write replaced the object file during this one (a tool call running in parallel?); it was left as that '
+      + 'write left it. objectTypes/Sprite.json could not be read again to tell which frames it holds, so the image files were left as this call left them');
+    expect(text).toContain('Recovery is unresolved');
     expect(await readFile(objectPath(), 'utf8')).toBe(withSpeed42(objectBefore));
-    expect(await snapshot()).toEqual(imagesBefore);
+    expect(await snapshot()).toEqual(images({ '000.png': 'B', '000.png.bak': 'A', '001.png': 'C' }));
   });
 
   it('delete_frame_from_animation: a write made on top of the deletion keeps it, with the images moved', async () => {

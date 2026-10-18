@@ -175,7 +175,7 @@ class Construct3ProjectWriter {
   writeImageFiles(files): Promise<string[]>
   listImageFiles(): Promise<string[]>
   renameImageFiles(renames): Promise<void>
-  deleteImageFile(name): Promise<boolean>
+  putBackImage(path): Promise<'removed' | 'restored' | false>   // put back an image this call wrote: from its backup, or removed
 
   // Runs the animation tools one at a time
   withAnimationLock(fn): Promise<T>
@@ -199,9 +199,9 @@ class Construct3ProjectWriter {
 - **Animation lock**: The animation tools run each call under `withAnimationLock()` and read the object inside it, so parallel calls cannot move each other's frame image files or write a Sprite's object file without each other's frames. `delete_object` takes it around its image renames, its delete and its rollback. Other tools that write an object file do not take it
 - **Text style**: An existing file keeps its line endings, trailing whitespace and BOM; a new file follows `project.c3proj` (`json-format.ts`)
 - **Cache invalidation**: Reader caches and project index reset (for the written project only); the file's new state is recorded as the server's own (`noteOwnWrite`), and the ID generator adds the IDs in the written text (`noteWrittenText`) instead of scanning again
-- **Image rollback**: `writeImageFiles()` deletes the images it already wrote when a later one fails; `renameImageFiles()` renames files in order (a name an earlier rename freed can be reused, so frame images can move along a chain), refuses to replace a file, and renames everything back when one rename fails
+- **Image rollback**: `writeImageFiles()` puts back the images it already wrote when a later one fails (`putBackImage()`: from their backup, or removed); `renameImageFiles()` renames files in order (a name an earlier rename freed can be reused, so frame images can move along a chain), refuses to replace a file, and renames everything back when one rename fails; the frame tools write a new frame's image create-only and put it back through `putBackImage()`
 
-Every write, delete and restore of a project file through the writer takes one lock: the project lock for `project.c3proj` (`underLockOf`), the file's own lock otherwise, so two of them on one file are serialized. Renaming image files (`renameImageFiles`) and deleting one (`deleteImageFile`) take no file lock and make no backup; every rename of image files runs under the animation lock (the animation tools hold it for their whole call; `delete_object` holds it around its renames, its delete and its rollback, and checks references outside it). The tools differ in the steps they run around those writes; the README's Safety Model lists the differences. `clone_project` writes the bridge into its new copy directly, since the copy is outside the open project.
+Every write, delete and restore of a project file through the writer takes one lock: the project lock for `project.c3proj` (`underLockOf`), the file's own lock otherwise, so two of them on one file are serialized. Renaming image files (`renameImageFiles`) makes no backup and takes the lock of each target file in turn, never two at once, checking there that no other file has the name; every rename of image files runs under the animation lock (the animation tools hold it for their whole call; `delete_object` holds it around its renames, its delete and its rollback, and checks references outside it). The tools differ in the steps they run around those writes; the README's Safety Model lists the differences. `clone_project` writes the bridge into its new copy directly, since the copy is outside the open project.
 
 ### 4. ID Generator (`src/construct3/id-generator.ts`)
 
