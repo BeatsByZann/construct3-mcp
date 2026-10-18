@@ -105,8 +105,9 @@ export function containerMemberships(project: { containers?: unknown }): Map<str
  * Take `objectName` (matched ignoring case) out of every container of a
  * parsed project.c3proj, in place, inside a writer update. With
  * `dropUnderTwo`, a container left with fewer than two members (members that
- * are names; an entry of another type does not count) is removed from
- * "containers"; otherwise it stays in its place.
+ * are names, each distinct name ignoring case counted once; an entry of
+ * another type does not count) is removed from "containers"; otherwise it
+ * stays in its place.
  */
 export function removeContainerMember(
   project: { containers?: unknown },
@@ -128,9 +129,10 @@ export function removeContainerMember(
       kept.push(entry);
       return;
     }
-    // Only members that are names count toward the two a container needs
+    // Only members that are names count toward the two a container needs, and a name listed twice counts once
     const namesAfter = after.filter((member): member is string => typeof member === 'string');
-    if (options.dropUnderTwo && namesAfter.length < 2) {
+    const distinctAfter = new Set(namesAfter.map(nameKey));
+    if (options.dropUnderTwo && distinctAfter.size < 2) {
       removal.removed.push({ index, members: before });
       return;
     }

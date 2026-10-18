@@ -240,6 +240,14 @@ describe('delete_object and containers', () => {
     expect((await readProject()).containers).toEqual([{ members: ['Gem', 'Coin', 'Key'] }]);
     expect((data.warnings ?? []).join(' ')).toContain('Removed the container with "Hitbox", "Shield", since fewer than two members were left.');
   });
+
+  it('counts a name listed twice once, so a container left with one distinct member is removed', async () => {
+    await setProject(project => { project.containers = [{ members: ['Sprite', 'Sprite', 'Hitbox'] }]; });
+    const data = await call('delete_object', { name: 'Hitbox' });
+    expect(data.success).toBe(true);
+    expect(data.containersRemoved).toEqual([{ index: 0, members: ['Sprite', 'Sprite', 'Hitbox'] }]);
+    expect((await readProject()).containers).toEqual([]);
+  });
 });
 
 interface Orphans { orphanedObjects: Array<{ name: string; containers?: ContainerJson[] }> }
