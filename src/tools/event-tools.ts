@@ -96,6 +96,11 @@ import {
   findReferencesLeftByDelete,
   findVariableReferencesLostByChange,
   recordVariableScopes,
+  recordVariableBindings,
+  findVariableBindingChanges,
+  REBOUND_USE_CONSEQUENCE,
+  REFERENCE_CHECK_MAX_DEPTH,
+  type ReferenceCheckLimit,
   variablesDeclaredIn,
   mapCopiedAces,
   definesFunctionsOrVariables,
@@ -155,8 +160,14 @@ const DANGLING_KIND_LABELS: Record<DeleteReferenceKind, string> = {
 /**
  * Why a reference check that stopped at its traversal limit refuses without
  * force: what it did not reach is unknown, as for a file it could not parse.
+ * `limit` says which limit it was: the event count (the default) or the depth
+ * events are nested to.
  */
-function traversalLimitReason(checked: string): string {
+function traversalLimitReason(checked: string, limit: ReferenceCheckLimit = 'events'): string {
+  if (limit === 'depth') {
+    return `The check for ${checked} stopped at its nesting-depth limit (events nested more than ${REFERENCE_CHECK_MAX_DEPTH} deep), ` +
+      'so uses further on are unknown.';
+  }
   return `The check for ${checked} stopped at its traversal limit (${REFERENCE_CHECK_MAX_EVENTS.toLocaleString('en-US')} events ` +
     'across all event sheets), so uses further on are unknown.';
 }
@@ -647,7 +658,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             ...(hasRefs ? ['Event sheet is still referenced.'] : []),
             ...(danglingCount > 0 ? [`${describeDanglingReferences(dangling, outsideSheet)} ${DANGLING_REFERENCE_CONSEQUENCE}`] : []),
             ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
-            ...(!dangling.complete ? [traversalLimitReason(checked)] : []),
+            ...(!dangling.complete ? [traversalLimitReason(checked, dangling.limit)] : []),
           ];
           return toolResult({
             success: false,
@@ -674,7 +685,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             `${DANGLING_REFERENCE_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
         }
         if (!dangling.complete) {
-          warnings.push(`Deleted with force=true: ${traversalLimitReason(checked)}`);
+          warnings.push(`Deleted with force=true: ${traversalLimitReason(checked, dangling.limit)}`);
         }
         warnings.push(...unscannedWarnings(unscanned, 'Deleted'));
 
@@ -830,7 +841,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           const reasons = [
             ...(danglingCount > 0 ? [`${describeDanglingReferences(dangling)} ${DANGLING_REFERENCE_CONSEQUENCE}`] : []),
             ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
-            ...(!dangling.complete ? [traversalLimitReason(checked)] : []),
+            ...(!dangling.complete ? [traversalLimitReason(checked, dangling.limit)] : []),
           ];
           return toolResult({
             success: false,
@@ -849,7 +860,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
         warnings.push(...unscannedWarnings(unscanned, args.dryRun ? 'Would delete' : 'Deleted'));
         if (!dangling.complete) {
-          warnings.push(`${args.dryRun ? 'Would delete' : 'Deleted'} with force=true: ${traversalLimitReason(checked)}`);
+          warnings.push(`${args.dryRun ? 'Would delete' : 'Deleted'} with force=true: ${traversalLimitReason(checked, dangling.limit)}`);
         }
 
         // Report children for groups
@@ -1333,7 +1344,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           const reasons = [
             ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
             ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
-            ...(!lost.complete ? [traversalLimitReason(checked)] : []),
+            ...(!lost.complete ? [traversalLimitReason(checked, lost.limit)] : []),
           ];
           return toolResult({
             success: false,
@@ -1356,7 +1367,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             `${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
         }
         if (!lost.complete) {
-          warnings.push(`Moved with force=true: ${traversalLimitReason(checked)}`);
+          warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
         }
         warnings.push(...unscannedWarnings(unscanned, 'Moved'));
         const sharedSids = copiedSidsWarning(args.targetSheet, targetSheetData.events as unknown as Record<string, unknown>[], copiedEvents);
