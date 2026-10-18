@@ -67,6 +67,50 @@ function busy(path: unknown): Error {
   return Object.assign(new Error(`EBUSY: resource busy or locked, open '${String(path)}'`), { code: 'EBUSY' });
 }
 
+describe('inject_runtime_bridge when the main script cannot be read back after it is written', () => {
+  it('puts the main script back, because the file is the one the read-back saw, and says so', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'c3-bridge-unreadable-'));
+    dirs.push(dir);
+    await cp(join(FIXTURES, 'minimal-project'), dir, { recursive: true });
+    const projectPath = join(dir, 'project.c3proj');
+    const project = JSON.parse(await readFile(projectPath, 'utf8'));
+    project.rootFileFolders.script.items.push({ name: 'main.js', type: 'application/javascript', sid: 402118576391205, 'script-info': { purpose: 'main' } });
+    await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf8');
+    await mkdir(join(dir, 'scripts'), { recursive: true });
+    const mainPath = join(dir, 'scripts', 'main.js');
+    const original = 'runOnStartup(async (runtime) => {});\n';
+    await writeFile(mainPath, original, 'utf8');
+    const reader = new Construct3ProjectReader(projectPath);
+    await reader.loadProject();
+    const server = new MockServer();
+    registerRuntimeTools({ server, reader, writer: new Construct3ProjectWriter(reader, new IdGenerator()) } as never);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const before = await snapshot(dir);
+
+    // Held by another program right after the write: the writer's read-back (a read without an encoding) of main.js fails once
+    const readText = vi.mocked(readFile).getMockImplementation()!;
+    let failed = false;
+    vi.mocked(readFile).mockImplementation((async (path: unknown, ...rest: unknown[]) => {
+      if (!failed && rest.length === 0 && typeof path === 'string' && resolve(path) === resolve(mainPath)) {
+        failed = true;
+        throw busy(path);
+      }
+      return (readText as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as never);
+
+    const result = await server.callTool('inject_runtime_bridge', {});
+    vi.mocked(readFile).mockImplementation(readText);
+    logged.mockRestore();
+    expect(failed, 'the read-back of main.js was made to fail').toBe(true);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('the files this call had written are back as they were');
+    expect(await readFile(mainPath, 'utf8')).toBe(original);
+    // Every file as before, apart from the backups the writer made
+    const after = Object.fromEntries(Object.entries(await snapshot(dir)).filter(([path]) => !path.endsWith('.bak')));
+    expect(after).toEqual(before);
+  });
+});
+
 describe('remove_runtime_bridge with scripts it cannot read', () => {
   it('refuses, changing nothing, while a script that may import the bridge cannot be read', async () => {
     const { dir, server } = await projectWithBridge();

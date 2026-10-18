@@ -148,12 +148,20 @@ export function failedWriteLeftReason(reason: RestoreFailedWriteResult['reason']
 }
 
 /**
- * A write through replaceFile (or restoreForCall) replaced the file, but
- * reading it back did not find the bytes written: another write landed after it, or
- * the file could not be read. The file may hold this call's text or someone
- * else's, so a caller undoing the call must not take it for unchanged.
+ * A write through the writer replaced the file, but reading it back did not
+ * find the bytes written. `readBack` says why: 'other', the file holds other
+ * bytes (another write landed after it, or the file is gone), so a caller
+ * undoing the call must not write over it; 'unreadable', the file could not
+ * be read, so its bytes are most likely the call's own. `state` is the
+ * file's state as the read-back saw it, when that could be taken (stat
+ * before read); a caller restoring the file passes it to restoreForCall as
+ * the state to compare with.
  */
-export class UnconfirmedWriteError extends ConcurrentWriteError {}
+export class UnconfirmedWriteError extends ConcurrentWriteError {
+  constructor(message: string, readonly readBack: 'other' | 'unreadable', readonly state?: FileState) {
+    super(message);
+  }
+}
 
 /**
  * How often an update of project.c3proj reads the file again when it changed
@@ -192,7 +200,7 @@ export interface EntityOnDisk {
 type ReadBack =
   | { readonly kind: 'holds'; readonly state: FileState }
   | { readonly kind: 'other' }
-  | { readonly kind: 'unreadable' };
+  | { readonly kind: 'unreadable'; /** The stat taken before the failed read, when it succeeded. */ readonly state?: FileState };
 
 /**
  * The files undoing a tool call left as they are (UndoReport.left), for a
@@ -467,14 +475,15 @@ export class Construct3ProjectWriter {
   private async afterToolWrite(filePath: string, content: string | Buffer | null): Promise<void> {
     const key = fileKey(filePath);
     const isProject = key === fileKey(this.reader.getProjectPath());
-    const state = content === null ? null : await this.stateIfHolding(filePath, content);
+    const held = content === null ? undefined : await this.readBack(filePath, content);
     // On record for the change journal; a file another write landed on is never the call's to revert
     this.noteCallChange(filePath, isProject, true);
-    if (state === undefined) {
+    if (held !== undefined && held.kind !== 'holds') {
       currentToolCall()?.unowned.add(key);
       throw new UnconfirmedWriteError(`${this.projectRelative(filePath)} was changed by another write right after this one (the Construct 3 editor, `
-        + 'or a tool call running in parallel?): it does not hold what this call wrote. Re-read it and retry.');
+        + 'or a tool call running in parallel?): it does not hold what this call wrote. Re-read it and retry.', held.kind, held.kind === 'unreadable' ? held.state : undefined);
     }
+    const state = held === undefined ? null : held.state;
     if (isProject) noteFileWritten(key, state);
     else this.afterOwnWrite(filePath, state);
   }
@@ -541,14 +550,15 @@ export class Construct3ProjectWriter {
    * (null: the call created it, so it is removed). It runs under the file's
    * one lock and takes no new backup. It is refused when the file changed
    * on disk after this call wrote it, so a later change is never replaced,
-   * and when the call has no state of its own recorded for the file to
-   * compare with.
+   * and when the call has no state of its own for the file to compare with:
+   * the state it recorded, or `options.expected`, the state the caller knows
+   * the file to be in (it takes precedence; null: there is no file).
    */
-  async restoreForCall(path: string, content: string | Buffer | null): Promise<void> {
+  async restoreForCall(path: string, content: string | Buffer | null, options: { expected?: FileState } = {}): Promise<void> {
     const filePath = await existingSpelling(path);
     const key = fileKey(filePath);
     await this.underLockOf(filePath, async () => {
-      const ours = currentToolCall()?.reads.get(key);
+      const ours = options.expected !== undefined ? options.expected : currentToolCall()?.reads.get(key);
       if (ours === undefined) {
         throw new Error(`${this.projectRelative(filePath)} has no state recorded by this call to compare with, so it was left as it is.`);
       }
@@ -998,14 +1008,15 @@ export class Construct3ProjectWriter {
    * taken before the read, as in stateIfHolding.
    */
   private async readBack(filePath: string, content: string | Buffer): Promise<ReadBack> {
+    let state: FileState | undefined;
     try {
-      const state = await statFileState(filePath);
+      state = await statFileState(filePath);
       const bytes = await readFile(filePath);
       return bytes.equals(typeof content === 'string' ? Buffer.from(content, 'utf-8') : content)
         ? { kind: 'holds', state }
         : { kind: 'other' };
     } catch (e: unknown) {
-      return isNotFound(e) ? { kind: 'other' } : { kind: 'unreadable' };
+      return isNotFound(e) ? { kind: 'other' } : { kind: 'unreadable', state };
     }
   }
 

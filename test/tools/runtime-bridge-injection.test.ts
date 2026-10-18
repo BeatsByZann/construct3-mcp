@@ -16,7 +16,7 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { getProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
-import { fileKey, runInToolCall } from '../../src/construct3/disk-state.js';
+import { fileKey, runInToolCall, statFileState } from '../../src/construct3/disk-state.js';
 import { registerRuntimeTools } from '../../src/tools/runtime-tools.js';
 import { MockServer } from '../mocks/mock-server.js';
 
@@ -552,28 +552,65 @@ describe('project.c3proj saved in the editor while a bridge tool runs', () => {
 
 /**
  * A bridge write that replaced a file but could not be confirmed by reading
- * it back did land: the rollback must not report the file as back as it was.
+ * it back did land: the rollback must not report the file as back as it was
+ * unless it put it back. A file that could not be read (its bytes are most
+ * likely the call's) is restored when the state seen is still its state;
+ * a file that holds other bytes is never written over.
  */
 describe('a bridge write whose read-back fails', () => {
-  it('does not claim the files are back as they were, and names the file to check', async () => {
+  const ORIGINAL_MAIN = 'runOnStartup(async (runtime) => {});\n';
+
+  /** inject_runtime_bridge on a project with a main script, whose read-back of that script gives `outcome` after the real write. */
+  async function injectWithMainReadBack(outcome: (path: string) => Promise<{ kind: 'unreadable'; state?: unknown } | { kind: 'other' }>) {
     const dir = await copyFixture('minimal-project');
-    const mainPath = await addMainScript(dir, 'game', 'runOnStartup(async (runtime) => {});\n');
+    const mainPath = await addMainScript(dir, 'game', ORIGINAL_MAIN);
+    const projectBefore = await readFile(join(dir, 'project.c3proj'), 'utf8');
     const { server, writer } = await runtimeSetup(dir);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const internals = writer as unknown as { stateIfHolding: (path: string, content: string | Buffer) => Promise<unknown> };
-    const real = internals.stateIfHolding.bind(writer);
-    // The main script is replaced, then reading it back finds nothing it can confirm
-    vi.spyOn(internals, 'stateIfHolding').mockImplementation(async (path, content) => (path.endsWith('main.js') ? undefined : real(path, content)));
-
+    const internals = writer as unknown as { readBack: (path: string, content: string | Buffer) => Promise<unknown> };
+    const real = internals.readBack.bind(writer);
+    // Only the read-back right after the write: the undo's own reads see the file as it is
+    let failed = false;
+    vi.spyOn(internals, 'readBack').mockImplementation(async (path, content) => {
+      if (failed || !path.endsWith('main.js')) return real(path, content);
+      failed = true;
+      return outcome(path);
+    });
     const result = await server.callTool('inject_runtime_bridge', {});
-
+    // The injected read-back outcome was used
+    expect(failed).toBe(true);
     expect(result.isError).toBe(true);
-    const message = result.content[0].text;
+    return { dir, mainPath, projectBefore, message: result.content[0].text };
+  }
+
+  it('does not claim the files are back as they were, and names the file to check, when the file cannot be read and no state was seen', async () => {
+    const { dir, mainPath, message } = await injectWithMainReadBack(async () => ({ kind: 'unreadable' }));
+
     expect(message).not.toContain('back as they were');
     expect(message).toContain('scripts/game/main.js could not be put back as it was: check it before going on.');
     // The write landed: the main script imports the bridge, which the earlier steps' undo removed
     expect(await readFile(mainPath, 'utf8')).toContain('c3-runtime-bridge.js');
     expect(existsSync(join(dir, 'scripts', 'c3-runtime-bridge.js'))).toBe(false);
+  });
+
+  it('puts back a file that could not be read when the state seen is still its state', async () => {
+    const { dir, mainPath, projectBefore, message } = await injectWithMainReadBack(async (path) => ({ kind: 'unreadable', state: await statFileState(path) }));
+
+    expect(message).toContain('the files this call had written are back as they were');
+    expect(await readFile(mainPath, 'utf8')).toBe(ORIGINAL_MAIN);
+    expect(existsSync(join(dir, 'scripts', 'c3-runtime-bridge.js'))).toBe(false);
+    expect(await readFile(join(dir, 'project.c3proj'), 'utf8')).toBe(projectBefore);
+  });
+
+  it('does not write over a file that holds other bytes, and names it', async () => {
+    const { mainPath, message } = await injectWithMainReadBack(async (path) => {
+      await writeFile(path, 'saved by someone else\n', 'utf8');
+      return { kind: 'other' };
+    });
+
+    expect(message).not.toContain('back as they were');
+    expect(message).toContain('scripts/game/main.js could not be put back as it was: check it before going on.');
+    expect(await readFile(mainPath, 'utf8')).toBe('saved by someone else\n');
   });
 });
 

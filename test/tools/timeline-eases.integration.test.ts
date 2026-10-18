@@ -687,7 +687,7 @@ describe('custom eases (real project on disk)', () => {
       vi.spyOn(writer, 'replaceFile').mockImplementation(async (path, content, options) => {
         const written = await replaceFile(path, content, options);
         if (slashed(path).endsWith('/timelines/transitions/Bouncy.json')) {
-          throw new UnconfirmedWriteError('timelines/transitions/Bouncy.json was changed by another write right after this one');
+          throw new UnconfirmedWriteError('timelines/transitions/Bouncy.json was changed by another write right after this one', 'other');
         }
         return written;
       });
@@ -721,15 +721,15 @@ describe('custom eases (real project on disk)', () => {
     it('update_ease reports a confirmation that failed before the new state was recorded', async () => {
       await setupUsed();
       const before = await snapshot();
-      const internals = writer as unknown as { stateIfHolding: (...args: unknown[]) => Promise<unknown> };
-      const stateIfHolding = internals.stateIfHolding.bind(writer);
+      const internals = writer as unknown as { readBack: (...args: unknown[]) => Promise<unknown> };
+      const readBack = internals.readBack.bind(writer);
       let failed = false;
-      vi.spyOn(internals, 'stateIfHolding').mockImplementation(async (...args: unknown[]) => {
+      vi.spyOn(internals, 'readBack').mockImplementation(async (...args: unknown[]) => {
         if (!failed && slashed(String(args[0])).endsWith('/timelines/transitions/Bouncy.json')) {
           failed = true;
           throw new Error('EIO');
         }
-        return stateIfHolding(...args);
+        return readBack(...args);
       });
 
       const result = await call('update_ease', { name: 'Bouncy', linear: true });

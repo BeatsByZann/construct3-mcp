@@ -312,7 +312,7 @@ describe('rollBackToolCall', () => {
     const original = writer.replaceFile.bind(writer);
     vi.spyOn(writer, 'replaceFile').mockImplementation(async (...args: Parameters<typeof original>) => {
       await original(...args);
-      throw new UnconfirmedWriteError('timelines/A.json was changed by another write right after this one');
+      throw new UnconfirmedWriteError('timelines/A.json was changed by another write right after this one', 'other');
     });
     const message = await inCall(async () => {
       const changed: ChangedFile[] = [];
@@ -390,8 +390,8 @@ describe('rollBackToolCall', () => {
   });
 
   it('reports a confirmation that fails before the new state is recorded as not put back', async () => {
-    const internals = writer as unknown as { stateIfHolding: (...args: unknown[]) => Promise<unknown> };
-    vi.spyOn(internals, 'stateIfHolding').mockRejectedValueOnce(new Error('EIO'));
+    const internals = writer as unknown as { readBack: (...args: unknown[]) => Promise<unknown> };
+    vi.spyOn(internals, 'readBack').mockRejectedValueOnce(new Error('EIO'));
     const message = await inCall(async () => {
       const changed: ChangedFile[] = [];
       const { file, read } = await prepare('A', '{"v":1}', changed);

@@ -500,8 +500,12 @@ interface BridgeFiles {
   write(path: string, text: string, expected: FileState): Promise<unknown>;
   /** Delete a file. */
   remove(path: string): Promise<unknown>;
-  /** Undo this call's write of a file: put back `text`, its content before the call (null: remove it). */
-  restore(path: string, text: string | null): Promise<unknown>;
+  /**
+   * Undo this call's write of a file: put back `text`, its content before
+   * the call (null: remove it). `current`, when the write was not confirmed
+   * by reading it back, is the state the file was seen in, to compare with.
+   */
+  restore(path: string, text: string | null, current?: FileState): Promise<unknown>;
   /** Writes replace the file through a temp file, so a failed write leaves it as it was. */
   readonly atomic: boolean;
 }
@@ -518,14 +522,17 @@ const RAW_BRIDGE_FILES: BridgeFiles = {
  * A step that writes `text` over a file. Its undo puts `before` back (null:
  * removes the file) only when the write landed, or when the files are not
  * written atomically (a failed direct write can leave a file half written).
- * A write whose read-back found other bytes (UnconfirmedWriteError) did
- * replace the file, so it may have landed: the file may hold this call's
- * text or someone else's, and the undo does not write over it. It throws,
- * so the file is named among those to check.
+ * A write whose read-back did not confirm the bytes (UnconfirmedWriteError)
+ * did replace the file, so it may have landed. When the file could not be
+ * read ('unreadable'; its bytes are most likely this call's) the undo
+ * restores it, compared with the state the read-back saw, so a file it
+ * cannot vouch for is refused. When it holds other bytes ('other'; someone
+ * else's, or gone) the undo does not write over them. Either refusal
+ * throws, so the file is named among those to check.
  */
 function writeStep(files: BridgeFiles, path: string, text: string, expected: FileState, before: string | null): BridgeStep {
   let landed = false;
-  let unconfirmed = false;
+  let unconfirmed: UnconfirmedWriteError | undefined;
   return {
     path,
     apply: async () => {
@@ -533,13 +540,17 @@ function writeStep(files: BridgeFiles, path: string, text: string, expected: Fil
         await files.write(path, text, expected);
         landed = true;
       } catch (error) {
-        if (error instanceof UnconfirmedWriteError) unconfirmed = true;
+        if (error instanceof UnconfirmedWriteError) unconfirmed = error;
         throw error;
       }
     },
     undo: async () => {
-      if (unconfirmed) throw new Error('The file was replaced, but what it holds now could not be confirmed.');
-      if (landed || !files.atomic) await files.restore(path, before);
+      if (unconfirmed) {
+        if (unconfirmed.readBack === 'other') throw new Error('The file holds bytes this call did not write, so it was left as it is.');
+        await files.restore(path, before, unconfirmed.state);
+      } else if (landed || !files.atomic) {
+        await files.restore(path, before);
+      }
     },
   };
 }
@@ -714,7 +725,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
   const projectFiles: BridgeFiles = {
     write: (path, text, expected) => writer.replaceFile(path, text, { expected }),
     remove: path => writer.deleteFile(path),
-    restore: (path, text) => writer.restoreForCall(path, text),
+    restore: (path, text, current) => writer.restoreForCall(path, text, current === undefined ? {} : { expected: current }),
     atomic: true,
   };
   /**
