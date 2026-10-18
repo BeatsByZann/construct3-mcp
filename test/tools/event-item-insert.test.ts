@@ -326,6 +326,8 @@ describe('update_event_block insertActions, insertConditions and replaceConditio
       ['insertConditions', sid => ({ sid, insertConditions: [{ index: 0, condition: onStart }] })],
       ['replaceConditions', sid => ({ sid, replaceConditions: [{ index: 0, condition: onStart }] })],
       ['addConditions', sid => ({ sid, addConditions: [onStart] })],
+      // The block was already toggled and edited in memory when the gate refused
+      ['a toggle, an update and addConditions', sid => ({ sid, disabled: true, updateConditions: [{ index: 0, isInverted: true }], addConditions: [onStart] })],
     ];
     for (const sid of holders) {
       for (const [name, args] of shapes) {
@@ -522,6 +524,8 @@ describe('update_event_block insertActions, insertConditions and replaceConditio
       { args: { sid: 100, replaceConditions: [{ index: 0, condition: { id: 'else', objectClass: 'System' } }], insertConditions: [{ index: 0, condition: isMoving }] } },
       { args: { sid: 100, insertActions: [{ index: 0, action: setVisible }] }, prepare: fillActions },
       { args: { sid: 100, addActions: [setVisible] }, prepare: fillActions },
+      { args: { sid: 100, removeConditionIndices: [9], insertConditions: [{ index: 2, condition: isMoving }] } },
+      { args: { sid: 100, isElse: true, addConditions: [isMoving] }, prepare: events => { (events[0].conditions as Ev[]).splice(0, 2, ...Array.from({ length: 99 }, (_, i) => cond(1000 + i, 'is-visible'))); } },
       // Earlier changes in the same call: a block toggle, a condition update and an action update come before the refused operation
       { args: { sid: 100, disabled: true, updateConditions: [{ index: 1, isInverted: true }], replaceConditions: [{ index: 1, condition: isMoving }] } },
       { args: { sid: 100, disabled: true, isOrBlock: true, updateActions: [{ index: 0, disabled: true }], insertActions: [{ index: 3, action: setVisible }] } },
