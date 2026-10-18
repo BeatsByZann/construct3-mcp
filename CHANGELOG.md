@@ -6,7 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
-- `replace_object_image` replaces the single image of an object type that has one image instead of animations (checked for a Tiled Background) with PNG data: it writes `images/<object>.png` through the project writer, keeping the image it replaces as `.bak`, and sets the image record's fileType to PNG and its width and height each when given. A failed object write puts the image back only when the object file, read again, still holds the image record from before the call and neither file changed on disk since; otherwise the new image stays and the error says so (#ISSUE).
+- `replace_object_image` replaces the single image of an object type that has one image instead of animations (checked for a Tiled Background) with PNG data: it writes `images/<object>.png` through the project writer, keeping the image it replaces as `.bak` when there is one, and sets the image record's fileType to PNG and its width and height each when given. A failed object write puts the image back only when the object file, read again, still holds the image record from before the call and neither file changed on disk since; otherwise the new image stays and the error says so, except that after another write made on top of this one that kept the new image record the call succeeds with a warning (#ISSUE).
 
 ### Changed
 

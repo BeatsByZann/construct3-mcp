@@ -176,6 +176,14 @@ describe('replace_object_image', () => {
     expect(await imageOf('Bg')).toMatchObject({ width: 4, height: 2, fileType: 'image/png' });
   });
 
+  it('sets only the dimension that is given: width alone, then height alone', async () => {
+    const before = await imageOf('Bg');
+    await replace('Bg', { width: 7 });
+    expect(await imageOf('Bg')).toMatchObject({ width: 7, height: before.height, fileType: 'image/png' });
+    await replace('Bg', { height: 9 });
+    expect(await imageOf('Bg')).toMatchObject({ width: 7, height: 9, fileType: 'image/png' });
+  });
+
   it('switches a JPEG image to PNG, leaves the old file, and says so', async () => {
     await addSingleImageObject('Panel', 'NinePatch', { width: 32, height: 32, originX: 0.5, originY: 0.5, fileType: 'image/jpeg', imageSpriteId: 5000 },
       ['panel.jpg', Buffer.from('image JPEG')]);
@@ -259,6 +267,8 @@ describe('replace_object_image when a write fails', () => {
     const text = (await replace('Bg', {}, staleObjectWrite(withGlobal))).text;
     expect(text).toContain('was changed on disk after this server read it');
     expect(text).toContain('images/bg.png has its image from before the call again');
+    // A full rollback: running the tool again is the right next step
+    expect(text).toContain('Run the tool again: it reads the file as it is now.');
     expect(JSON.parse(await readFile(objectPath('Bg'), 'utf8')).isGlobal).toBe(true);
     expect(Buffer.compare(await readFile(imagePath('bg.png')), PLACEHOLDER)).toBe(0);
   });
@@ -268,6 +278,8 @@ describe('replace_object_image when a write fails', () => {
     expect(text).toContain('was changed on disk after this server read it');
     expect(text).toContain('objectTypes/Bg.json holds neither the image record from before the call nor this call\'s, so the new image stays');
     expect(text).toContain('Recovery is unresolved');
+    // The image is left for the user to check: the message must not also tell to run the tool again
+    expect(text).not.toContain('Run the tool again');
     expect(Buffer.compare(await readFile(imagePath('bg.png')), PNG)).toBe(0);
     expect((await imageOf('Bg')).fileType).toBe('image/jpeg');
   });
@@ -324,6 +336,28 @@ describe('replace_object_image when a write fails', () => {
     expect(text).toContain('holds neither the image record from before the call nor this call\'s, so the new image stays');
     expect(text).toContain('Recovery is unresolved');
     expect(Buffer.compare(await readFile(imagePath('bg.png')), PNG)).toBe(0);
+  });
+
+  it('keeps the image, and says recovery is unresolved, when another write kept the image record but changed the object\'s stored name', async () => {
+    // The image file is named after the stored name, so a record with another name is neither state
+    const before = await readFile(objectPath('Bg'), 'utf8');
+    const renamed = (written: string) => JSON.stringify({ ...JSON.parse(written), name: 'Bg2' }, null, '\t');
+    const text = (await replace('Bg', SIZE, withOtherObjectWrite(written => renamed(written), before))).text;
+    expect(text).toContain('holds neither the image record from before the call nor this call\'s, so the new image stays');
+    expect(text).toContain('Recovery is unresolved');
+    expect(Buffer.compare(await readFile(imagePath('bg.png')), PNG)).toBe(0);
+    expect(JSON.parse(await readFile(objectPath('Bg'), 'utf8')).name).toBe('Bg2');
+  });
+
+  it('gives the reason when restoring the object file from its backup failed', async () => {
+    const idGen = new IdGenerator();
+    const writer = new Construct3ProjectWriter(reader, idGen);
+    const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<void> };
+    internals.verifyWrittenFile = async () => { throw new Error('Post-write verification failed for "Bg"'); };
+    writer.restoreFailedWrite = async () => { throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${objectPath('Bg')}'`), { code: 'EBUSY', path: objectPath('Bg') }); };
+    const text = (await replace('Bg', SIZE, register(writer, idGen))).text;
+    expect(text).toContain('The object file was not restored: restoring objectTypes/Bg.json from its backup failed (EBUSY on objectTypes/Bg.json). ');
+    expect(text).not.toContain(tmpDir);
   });
 
   it('puts the image back when another write replaced the object file without this call\'s change', async () => {

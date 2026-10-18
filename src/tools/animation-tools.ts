@@ -948,7 +948,12 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
           const outcome = await recoverObjectImage(writer, reader, error, {
             objectName: args.objectName, before, after, imagePath: filePath, imageBackup,
           });
-          if ('message' in outcome) throw new Error(`${fileErrorText(error, relative).replace(/\.$/, '')}. ${outcome.message}`);
+          if ('message' in outcome) {
+            let cause = fileErrorText(error, relative).replace(/\.$/, '');
+            // A stale refusal tells to run the tool again; after anything but a full rollback the recovery sentences say what to check first
+            if (!outcome.complete) cause = cause.replace(/ Run the tool again: it reads the files? as (?:it is|they are) now$/, '');
+            throw new Error(`${cause}. ${outcome.message}`);
+          }
           backupPath = (error as EntityWriteError).backupPath;
           warnings.push('Another write changed the object file right after this one (a tool call running in parallel?). The file still has '
             + 'the new image record, so the new image stays, but the other write may have been made on older content: re-read the object to check it.');
@@ -1551,7 +1556,7 @@ async function recoverObjectImage(
   reader: MutationToolDeps['reader'],
   error: unknown,
   change: { objectName: string; before: string | undefined; after: string | undefined; imagePath: string; imageBackup: string | undefined },
-): Promise<{ kept: true } | { message: string }> {
+): Promise<{ kept: true } | { message: string; complete: boolean }> {
   const relative = (path: string) => writer.projectRelative(path);
   const otherWrite = error instanceof EntityWriteError && error.changedByOtherWrite;
   const objectFile = error instanceof EntityWriteError
@@ -1566,8 +1571,8 @@ async function recoverObjectImage(
       const { restored, label, reason } = await writer.restoreFailedWrite(error);
       if (restored) restoredFile = true;
       else notRestored = `${label} (${failedWriteLeftReason(reason)}; it was left as it is)`;
-    } catch {
-      notRestored = `restoring ${objectFile} from its backup failed`;
+    } catch (e) {
+      notRestored = `restoring ${objectFile} from its backup failed (${fileErrorText(e, relative).replace(/\.$/, '')})`;
     }
   }
   const state = await imageStateAfterFailure(reader, change.objectName, change.before, change.after);
@@ -1584,7 +1589,7 @@ async function recoverObjectImage(
       ? `${objectFile} holds this call's image record, so the new image stays: ${where}. Check the object file before you run the tool again.`
       : `${objectFile} ${state === 'unreadable' ? 'could not be read again to tell which image record it holds' : 'holds neither the image record from before the call nor this call\'s'}, `
         + `so the new image stays: ${where}. Recovery is unresolved: check the object's image record against images/ before you run the tool again.`;
-    return { message: `${otherWriteNote}${notRestoredNote}${outcome}` };
+    return { message: `${otherWriteNote}${notRestoredNote}${outcome}`, complete: false };
   }
 
   const done: string[] = [];
@@ -1608,7 +1613,7 @@ async function recoverObjectImage(
   if (problems.length > 0) {
     const lead = done.length === 0 ? 'The change was not rolled back' : 'The change was rolled back only in part';
     return { message: `${otherWriteNote}${notRestoredNote}${lead}: ${[...done, ...problems].join('; ')}. `
-      + 'Check the project before you run the tool again.' };
+      + 'Check the project before you run the tool again.', complete: false };
   }
-  return { message: `${otherWriteNote}${notRestoredNote}The change was rolled back: ${done.join('; ')}.` };
+  return { message: `${otherWriteNote}${notRestoredNote}The change was rolled back: ${done.join('; ')}.`, complete: true };
 }
