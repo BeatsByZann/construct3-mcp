@@ -4,6 +4,11 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `update_instance_variable`: rename an instance variable of an object type or family, or change its type or description. Placed instances keep their values under the new name; values that do not fit a new type get the default and are listed. A rename that events use is refused without `force`, as removing the variable is; uses are never rewritten (#ISSUE).
+- `reorder_behaviors`: put the behaviors of an object type or family in a new order, and those behaviors' entries on placed instances with them; other entries keep their places, except a same-named entry of another owner, which moves with this owner's order (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
