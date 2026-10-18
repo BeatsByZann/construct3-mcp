@@ -23,10 +23,11 @@ export const DEFAULT_MAX_FILE_MB = 10;
 
 /**
  * The largest C3MCP_MAX_FILE_MB accepted, in megabytes. Measured on whole
- * projects: seven layouts whose largest is the size (the others about 0.75,
- * 0.5, 0.35, 0.25, 0.25 and 0.12 of it), three event sheets of a tenth of
- * it, an index build (validate_project) and seven update_layer renames, with
- * V8's heap capped at half its default. The generator factor sets how much
+ * projects of S MB, the setting under test: seven layouts whose sizes are 1,
+ * 0.75, 0.5, 0.35, 0.25, 0.25 and 0.12 of S (the largest exactly S MB), three
+ * event sheets of about 0.1 S each, an index build (validate_project) and
+ * seven update_layer renames, with V8's heap capped at half its default.
+ * The generator factor sets how much
  * of each layout is instances; the rest is padding. Factor 0.6 (about 23.5%
  * of each layout is padding): 16, 32, 64 and 128MB passed every counted run,
  * and 256MB ran out of memory in all four runs. Factor 0.7 (about 10%
