@@ -19,6 +19,7 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { registerLayoutTools } from '../../src/tools/layout-tools.js';
 import { registerLayerRenameTools } from '../../src/tools/layer-rename.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import { ConcurrentWriteError } from '../../src/construct3/project-writer.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 const ALL = ['Layout 1', 'Layout 2', 'Layout 3'];
@@ -183,6 +184,42 @@ describe('rename_layer', () => {
     expect(await readFile(sheetPath(), 'utf8')).toBe(sheetBefore);
   });
 
+  it('names the old name of a layout it renames, not of one listed first that already has the new name', async () => {
+    // Layout 2's layer is "MAIN" already; only Layout 1's "Main" changes
+    const data = await rename(['Layout 2', 'Layout 1'], 'MAIN');
+    expect(data.success).toBe(true);
+    expect(data.entity).toBe('Main');
+    expect(data.layouts).toEqual(['Layout 1']);
+    expect(await layerOf()).toBe('MAIN');
+  });
+
+  it('refuses before writing anything when every listed layout has the layer under the new name already', async () => {
+    const before = await contents();
+    const data = await rename(['Layout 1', 'Layout 3'], 'Main');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('The layer is already named "Main" in "Layout 1", "Layout 3". Nothing was changed.');
+    expect(await contents()).toEqual(before);
+  });
+
+  it('refuses before writing anything when a listed layout does not exist', async () => {
+    const before = await contents();
+    const data = await rename(['Layout 1', 'No such layout'], 'Game');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('Layout "No such layout" not found.');
+    expect(await contents()).toEqual(before);
+  });
+
+  it.each([false, true])('says nothing was changed when planning the event sheet changes fails before any write (dryRun %s)', async dryRun => {
+    const before = await contents();
+    const namesBefore = await fileNames();
+    reader.readAllEventSheets = async () => { throw new Error('event sheets unreadable'); };
+    const data = await rename(ALL, 'Game', { dryRun });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe('Error renaming layer: event sheets unreadable. Nothing was changed.');
+    expect(await contents()).toEqual(before);
+    expect(await fileNames()).toEqual(namesBefore);
+  });
+
   it('finds a sub-layer by its path', async () => {
     const layout = await readJson<LayoutFile>(layoutPath());
     layout.layers[0].subLayers = [{ ...structuredClone(layout.layers[0]), name: 'HUD', sid: 540000000000001, instances: [], subLayers: [] }];
@@ -243,6 +280,65 @@ describe('rename_layer when a write fails', () => {
     expect(await readFile(layoutPath(), 'utf8')).toBe(layout1Before);
     expect(await layerOf('Layout 3')).toBe('Main');
     expect((await layerParams())[0]).toBe('"Main"');
+  });
+
+  it('names the layout and its .bak when another write replaced it during its write, and puts back the rest', async () => {
+    // The write of Layout 2 finds other valid JSON where it wrote (ConcurrentWriteError), a write from outside the server
+    const layout1Before = await readFile(layoutPath(), 'utf8');
+    const saved = JSON.stringify({ ...(await readJson<LayoutFile>(layoutPath('Layout 2'))), width: 4321 }, null, '\t');
+    const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<unknown> };
+    const verify = internals.verifyWrittenFile.bind(writer);
+    internals.verifyWrittenFile = async (path, name, text) => {
+      if (path.endsWith('Layout 2.json')) {
+        await writeFile(layoutPath('Layout 2'), saved);
+        throw new ConcurrentWriteError(`Post-write verification failed for "${name}": the file was changed by another write during this one`);
+      }
+      return verify(path, name, text);
+    };
+    const data = await rename(ALL, 'Game');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('the file was changed by another write during this one');
+    expect(data.text).toContain('The rename was rolled back only in part');
+    expect(data.text).toContain('left as it is: layouts/Layout 2.json (another write changed it after this call\'s write failed; '
+      + 'its state from before the call is in layouts/Layout 2.json.bak)');
+    expect(await readFile(layoutPath('Layout 2'), 'utf8')).toBe(saved);
+    expect(await readFile(layoutPath(), 'utf8')).toBe(layout1Before);
+    expect(await layerOf('Layout 3')).toBe('Main');
+    expect((await layerParams())[0]).toBe('"Main"');
+  });
+
+  it('names a layout it could not restore by its project-relative path', async () => {
+    const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<unknown> };
+    const verify = internals.verifyWrittenFile.bind(writer);
+    internals.verifyWrittenFile = async (path, name, text) => {
+      if (path.endsWith('Layout 2.json')) throw new Error(`Post-write verification failed for "${name}": the file could not be read back`);
+      return verify(path, name, text);
+    };
+    writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
+    const data = await rename(ALL, 'Game');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('restoring failed for: layouts/Layout 2.json (the .bak file holds the previous JSON)');
+    expect(data.text).not.toContain(tmpDir);
+    expect(await layerOf()).toBe('Main');
+  });
+
+  it('rethrows a write refused as stale, which the writer has undone, without rolling back again', async () => {
+    // An editor saves Layout 2 after the call read it and before the call writes it
+    const layout1Before = await readFile(layoutPath(), 'utf8');
+    const saved = JSON.stringify({ ...(await readJson<LayoutFile>(layoutPath('Layout 2'))), width: 4321 }, null, '\t');
+    const write = writer.writeEntityFile.bind(writer);
+    writer.writeEntityFile = async (category, ...rest) => {
+      if (category === 'layouts' && rest[0] === 'Layout 2') await writeFile(layoutPath('Layout 2'), saved);
+      return write(category, ...rest);
+    };
+    const data = await rename(ALL, 'Game');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('layouts/Layout 2.json was changed on disk after this server read it');
+    expect(data.text).toContain('were put back as they were before the call (layouts/Layout 1.json), so the call changed nothing');
+    expect(data.text).not.toContain('The rename was rolled back');
+    expect(await readFile(layoutPath('Layout 2'), 'utf8')).toBe(saved);
+    expect(await readFile(layoutPath(), 'utf8')).toBe(layout1Before);
+    expect(await layerOf('Layout 3')).toBe('Main');
   });
 
   it('leaves a layout the editor saved again after the call wrote it as it is, names it, and puts back the rest', async () => {

@@ -1130,9 +1130,13 @@ function undeclaredVariablesError(
  * its backup, unless another write replaced it during this one
  * (EntityWriteError.changedByOtherWrite): only a write from outside the
  * server can land there, such as a save in the editor, so it is left as that
- * write left it. The same holds for a save that lands after the failure, or
- * a file that cannot be read (restoreFailedWrite leaves it, and the error
- * names the file, why, and its .bak).
+ * write left it; update_layer's message says so without naming the file (it
+ * is the one event sheet), while for several layouts (`written` 'the
+ * layouts') restoreFailedWrite decides, finds other content there and leaves
+ * it, and the error names the file and its .bak. The same holds for a save
+ * that lands after the failure, or a file that cannot be read
+ * (restoreFailedWrite leaves it, and the error names the file, why, and its
+ * .bak).
  */
 export async function rollBackLayerRename(
   writer: MutationToolDeps['writer'], error: unknown, written: 'the layout' | 'the layouts' = 'the layout',
@@ -1143,9 +1147,11 @@ export async function rollBackLayerRename(
   const kept: Array<{ label: string; reason: RestoreFailedWriteResult['reason'] }> = [];
   let otherWrite = '';
   if (error instanceof EntityWriteError) {
-    if (error.changedByOtherWrite) {
-      otherWrite = ` ${written === 'the layout' ? 'The event sheet' : 'The file'} was left as that write left it.`;
+    if (error.changedByOtherWrite && written === 'the layout') {
+      otherWrite = ' The event sheet was left as that write left it.';
     } else {
+      // For several layouts the restore decides: it leaves a file that holds another write's content
+      // and reports it, so the message names the file and its .bak
       try {
         const { restored, label, reason } = await writer.restoreFailedWrite(error);
         if (!restored) kept.push({ label, reason });

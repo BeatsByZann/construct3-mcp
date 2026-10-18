@@ -55,6 +55,7 @@ export function registerLayerRenameTools({ server: mcpServer, reader, writer }: 
       dryRun: z.boolean().optional().default(false).describe('Report what would change and write nothing (default: false)'),
     },
     async (args) => {
+      let writing = false;
       try {
         // Each layout once, by its registered name (the editor compares layout names ignoring case)
         const registered = await reader.listLayouts();
@@ -83,11 +84,12 @@ export function registerLayerRenameTools({ server: mcpServer, reader, writer }: 
           targets.push({ name, layout, layer: found.layer });
         }
 
-        const oldName = String(targets[0].layer.name);
         const renamed = targets.filter(t => t.layer.name !== args.newName);
         if (renamed.length === 0) {
           return toolError(`The layer is already named "${args.newName}" in ${listUses(layoutNames.map(n => `"${n}"`))}. Nothing was changed.`);
         }
+        // The old name as a layout that is renamed has it (a layout listed first may already carry the new name)
+        const oldName = String(renamed[0].layer.name);
         for (const target of renamed) target.layer.name = args.newName;
         // A rename that only changes the letter case breaks no reference: the editor looks layer names up ignoring case
         const references = layerNameKey(oldName) !== layerNameKey(args.newName)
@@ -112,6 +114,7 @@ export function registerLayerRenameTools({ server: mcpServer, reader, writer }: 
 
         // The layouts first, then the event sheets; when a write fails, what the call wrote is rolled back.
         // A write refused because its file changed on disk during the call (StaleFileError) has had the writer do so already
+        writing = true;
         try {
           for (const target of renamed) {
             await writer.writeEntityFile('layouts', target.name, target.layout, writer.getSubfolderForEntity('layouts', target.name));
@@ -127,7 +130,9 @@ export function registerLayerRenameTools({ server: mcpServer, reader, writer }: 
         return toolResult({ ...common, action: 'renamed', filesWritten: files });
       } catch (error) {
         console.error('[rename_layer] failed:', error);
-        return toolError(`Error renaming layer: ${error instanceof Error ? error.message : String(error)}`);
+        const cause = error instanceof Error ? error.message : String(error);
+        // Before the first write nothing on disk changed; after it, the message of a rollback or a stale refusal says what became of the files
+        return toolError(`Error renaming layer: ${writing ? cause : `${cause.replace(/\.$/, '')}. Nothing was changed.`}`);
       }
     }
   );
