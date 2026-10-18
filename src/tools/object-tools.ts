@@ -1,6 +1,7 @@
 /**
  * Object type tools: create_object, update_object_properties, delete_object,
- * create_family, update_family, update_instance_variable, delete_family.
+ * create_family, update_family, update_instance_variable, reorder_behaviors,
+ * delete_family.
  */
 
 import { z } from 'zod';
@@ -988,6 +989,98 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
       } catch (error) {
         console.error('[update_instance_variable] failed:', error);
         return toolError(`Error updating instance variable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── reorder_behaviors ────────────────────────────────────
+
+  server.tool(
+    'reorder_behaviors',
+    'Put the behaviors of an object type or family in a new order: order lists every behavior once, with its exact name. '
+      + 'On placed instances, the entries of these behaviors are put in the new order among the places they hold; the '
+      + 'entries of other families and for other names stay where they are.',
+    {
+      objectName: z.string().max(200).optional().describe('Object type whose behaviors to reorder, as registered (give this or familyName)'),
+      familyName: z.string().max(200).optional().describe('Family whose behaviors to reorder, as registered (give this or objectName)'),
+      order: z.array(z.string().max(200)).min(1).max(100).describe('Every behavior once, letter case included, in the new order'),
+    },
+    async (args) => {
+      try {
+        if ((args.objectName === undefined) === (args.familyName === undefined)) {
+          return toolError('Give exactly one of objectName and familyName. Nothing was changed.');
+        }
+        const isFamily = args.familyName !== undefined;
+        const ownerName = (isFamily ? args.familyName : args.objectName)!;
+        const category = isFamily ? 'families' : 'objectTypes';
+        const registered = isFamily ? await reader.listFamilies() : await reader.listObjectTypes();
+        if (!registered.includes(ownerName)) {
+          return isFamily
+            ? entityNotFound('Family', ownerName, registered, [], 'list_families')
+            : entityNotFound('Object', ownerName, registered, reader.findNearestName(ownerName, 'objects'), 'list_objects');
+        }
+        let owner: Record<string, unknown>;
+        try {
+          owner = isFamily ? await reader.readFamily(ownerName) : await reader.readObjectType(ownerName) as unknown as Record<string, unknown>;
+        } catch (error) {
+          return toolError(`${isFamily ? 'Family' : 'Object type'} "${ownerName}" could not be read: `
+            + `${error instanceof Error ? error.message : String(error)}. Nothing was changed.`);
+        }
+        const behaviors = Array.isArray(owner.behaviorTypes) ? owner.behaviorTypes as Array<Record<string, unknown>> : [];
+        const current = behaviors.map(b => String(b.name));
+        const repeated = [...new Set(current.filter((n, i) => current.indexOf(n) !== i))];
+        if (repeated.length > 0) {
+          return toolError(`Behaviors of "${ownerName}" share a name (${repeated.map(n => `"${n}"`).join(', ')}): `
+            + 'rename one in the Construct 3 editor first. Nothing was changed.');
+        }
+        const valid = args.order.length === current.length
+          && new Set(args.order).size === args.order.length && args.order.every(n => current.includes(n));
+        if (!valid) {
+          return toolError(`order must list every behavior of "${ownerName}" exactly once, with its exact name. `
+            + `Current order: ${current.map(n => `"${n}"`).join(', ') || '(no behaviors)'}. Nothing was changed.`);
+        }
+        const common = { success: true, entity: ownerName, category: isFamily ? 'family' : 'object', order: args.order };
+        if (args.order.every((n, i) => n === current[i])) {
+          return toolResult({ ...common, action: 'unchanged' }, { projectWritten: false });
+        }
+        owner.behaviorTypes = args.order.map(n => behaviors[current.indexOf(n)]);
+
+        const warnings: string[] = [];
+        let unscanned: UnscannedFileReport[] = [];
+        let backupPath: string;
+        try {
+          // The layouts first, the owner file last (as update_instance_variable), so running a stopped call again finishes it
+          const objectTypes = await reader.listObjectTypes();
+          const holders = isFamily
+            ? [...new Set((Array.isArray(owner.members) ? owner.members : [])
+              .filter((m): m is string => typeof m === 'string' && objectTypes.includes(m)))]
+            : [ownerName];
+          const familiesAfter = new Map(await readFamiliesForInstances(reader));
+          if (isFamily) familiesAfter.set(ownerName, owner);
+          const holderObjects = isFamily ? await readMemberObjects(reader, holders) : new Map([[ownerName, owner]]);
+          const plans = new Map<string, InstanceSyncPlan>();
+          for (const holder of holders) {
+            const object = holderObjects.get(holder);
+            if (object === undefined) {
+              warnings.push(`Instances of "${holder}" were NOT updated: its object type file could not be read, so their behavior entries keep their order.`);
+              continue;
+            }
+            plans.set(holder, { expected: expectedInstanceBehaviors(holder, object, familiesAfter), orderBehaviors: args.order });
+          }
+          const sync = await syncLayoutInstances(reader, writer, plans);
+          warnings.push(...sync.warnings);
+          unscanned = sync.unscanned;
+          backupPath = await writer.writeEntityFile(category, ownerName, owner, writer.getSubfolderForEntity(category, ownerName));
+        } catch (error) {
+          throw new Error(await rollBackFailedCall(writer, error));
+        }
+        return toolResult({
+          ...common, action: 'updated', backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined, ...unscannedFields(unscanned),
+        });
+      } catch (error) {
+        console.error('[reorder_behaviors] failed:', error);
+        return toolError(`Error reordering behaviors: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );

@@ -16,6 +16,7 @@ import {
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
 import {
+  orderInstanceBehaviors,
   syncInstanceBehaviors,
   unknownDefaultsWarning,
 } from '../construct3/instance-behaviors.js';
@@ -65,6 +66,8 @@ export interface InstanceSyncPlan {
   renameVariables?: ReadonlyArray<{ from: string; to: string }>;
   /** Instance variables whose type changed: a value that does not fit gets the type's default (update_instance_variable) */
   retypeVariables?: ReadonlyArray<{ name: string; type: string }>;
+  /** The reordered owner's behavior names in their new order; the instance's entries for them are put in it (reorder_behaviors) */
+  orderBehaviors?: readonly string[];
 }
 
 /**
@@ -135,6 +138,7 @@ export async function syncLayoutInstances(
       unknownDefaults.push(...synced.unknownDefaults);
       noteBackfill(backfilled, instance.type, synced.added.filter(name => !(plan.add ?? []).includes(name)));
       const where = `"${layoutName}" UID ${String(instance.uid)}`;
+      if (plan.orderBehaviors) modified = orderInstanceBehaviors(instance, plan.orderBehaviors) || modified;
       for (const { from, to } of plan.renameVariables ?? []) {
         const renamed = renameInstanceVariableValue(instance, from, to);
         modified = renamed.modified || modified;
@@ -217,7 +221,7 @@ export async function syncLayoutInstances(
 
 /** Whether a plan adds, drops, moves, retypes or reorders anything (else it only fills in missing entries). */
 function planChanges(plan: InstanceSyncPlan): boolean {
-  return [plan.add, plan.drop, plan.addVariables, plan.dropVariables, plan.dropEffects, plan.renameVariables, plan.retypeVariables]
+  return [plan.add, plan.drop, plan.addVariables, plan.dropVariables, plan.dropEffects, plan.renameVariables, plan.retypeVariables, plan.orderBehaviors]
     .some(list => (list?.length ?? 0) > 0);
 }
 
