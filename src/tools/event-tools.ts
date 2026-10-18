@@ -336,14 +336,14 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'add_event_to_sheet',
     {
-      description: 'Add an event (group, function, variable, include, comment or script) to an event sheet: at the top level, in a group (groupPath), among the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"); a place that no editor-saved project on record or checked editor case shows for that kind of event is refused, and includes go only at the top level. A variable at the top level is a global variable, anywhere else a local one. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile.',
+      description: 'Add an event (group, function, variable, include, comment or script) to an event sheet: at the top level, in a group (groupPath), among the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"); a place that no editor-saved project on record or checked editor case shows for that kind of event is refused, and includes go only at the top level. A function block is refused under or below a block that has a trigger condition and under or below a function block or a custom action block. A variable at the top level is a global variable, anywhere else a local one. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile.',
       inputSchema: z.object(addEventToSheetShape).passthrough(),
     },
     async (args) => {
       try {
         // A destination argument misspelled would otherwise be dropped and the event written at the top level
         const known = new Set(Object.keys(addEventToSheetShape));
-        const misspelled = Object.keys(args).find(k => !known.has(k) && /(Sid|SID|EventPath)$/.test(k));
+        const misspelled = Object.keys(args).find(k => !known.has(k) && /(sid|eventpath|grouppath)$/i.test(k));
         if (misspelled !== undefined) {
           return toolError(nothingChanged(`add_event_to_sheet does not take "${misspelled}". The destination arguments are groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath and position.`));
         }
@@ -2321,7 +2321,7 @@ function eventVariableNameError(
  * every event sheet (from readEventSheetsFresh). `argument` is the tool
  * argument that lists the names, for the messages about duplicates.
  */
-function functionParameterNamesError(
+export function functionParameterNamesError(
   sheets: ReadonlyMap<string, readonly C3Event[]>,
   sheetName: string,
   names: readonly string[],
@@ -2335,6 +2335,12 @@ function functionParameterNamesError(
     : `${NAME_SCOPE_RULE.parameter} This tool also refuses a name the variables of the events enclosing the new function have (its own rule for a function in a group or event, not checked in the Construct 3 editor).`;
   for (const name of names) {
     const problem = findEventVariableNameProblem(name, eventVariableNameUses(sheets, sheetName, [...parents, fn as unknown as C3Event]));
+    if (problem?.problem === 'in-use' && problem.use.kind === 'function parameter'
+      && !fn.functionParameters.some(p => p.name === problem.use.name)) {
+      // Not one of the new function's own parameters: a parameter of a function enclosing it
+      return `${argument} lists "${name}", which ${problem.use.name === name ? 'is also a parameter of' : `differs only in case from the parameter "${problem.use.name}" of`} the function that encloses the new function (sheet "${problem.use.sheet}"). ` +
+        'This tool refuses a parameter name that a function enclosing the new function has (its own rule, not checked in the Construct 3 editor). Choose a different name.';
+    }
     if (problem?.problem === 'in-use' && problem.use.kind === 'function parameter') {
       return problem.use.name === name
         ? `${argument} lists "${name}" more than once. ${NAME_SCOPE_RULE.parameter}`
@@ -2349,19 +2355,31 @@ function functionParameterNamesError(
 
 /**
  * Why a function block may not go below `parents` (the events enclosing it,
- * outermost first; empty at the top level), or undefined. A function block
- * under a block that holds a trigger condition, or below one, is refused: a
- * project with one there does not open in Construct 3 r506-2 (free edition).
- * Groups do not count. A condition is a trigger by its id (isTriggerId), as in
- * the load-time gate, whatever addon it belongs to.
+ * outermost first; empty at the top level), or undefined. An event branch
+ * holds one trigger, and a function block is a trigger root, so a function
+ * block is refused under or below a block that holds a trigger condition and
+ * under or below a function block or a custom action block (the load-time
+ * check, load-rules.ts, counts both kinds of block as triggers). Recorded
+ * editor case: Construct 3 r506-2 (free edition) refused to open a function
+ * block under an "On start" block. The other arrangements follow the
+ * load-time check and were not tried in the editor. Groups do not count. A
+ * condition is a trigger by its id (isTriggerId), as in the load-time check,
+ * whatever addon it belongs to.
  */
 function functionBlockTriggerRefusal(parents: readonly C3Event[]): string | undefined {
+  const recorded = 'Construct 3 r506-2 (free edition) refused to open a project with a function block under an "On start" block ("cannot add another trigger to event branch")';
+  const goes = 'It can go at the top level, in a group, or among the sub-events of blocks that have no trigger in them or above them and are not inside a function block or a custom action block.';
   for (const parent of parents as ReadonlyArray<Record<string, unknown>>) {
+    const sid = typeof parent.sid === 'number' ? ` with SID ${parent.sid}` : '';
+    if (parent.eventType === 'function-block' || parent.eventType === 'custom-ace-block') {
+      const kind = parent.eventType === 'function-block' ? 'function block' : 'custom action block';
+      return `A function block is not placed under or below the ${kind}${sid}: the load-time check of this tool counts a function block and a custom action block as a trigger, and an event branch holds one trigger. ` +
+        `${recorded}; this arrangement was not tried in the editor. ${goes}`;
+    }
     if (!Array.isArray(parent.conditions)) continue;
     const trigger = (parent.conditions as Array<Record<string, unknown> | null>).find(c => isTriggerId(c?.id));
     if (!trigger) continue;
-    return `A function block is not placed under the block${typeof parent.sid === 'number' ? ` with SID ${parent.sid}` : ''}, which has the trigger "${String(trigger.id)}", or below it: Construct 3 r506-2 (free edition) refuses to open a project that has one there ("cannot add another trigger to event branch"). ` +
-      'It can go at the top level, in a group, or among the sub-events of blocks that have no trigger in them or above them.';
+    return `A function block is not placed under the block${sid}, which has the trigger "${String(trigger.id)}", or below it: ${recorded}, and the load-time check of this tool treats a trigger in an enclosing event the same way. ${goes}`;
   }
   return undefined;
 }

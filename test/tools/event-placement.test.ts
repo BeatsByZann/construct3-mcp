@@ -10,7 +10,7 @@ import { MockServer } from '../mocks/mock-server.js';
 import { MockReader } from '../mocks/mock-reader.js';
 import { MockWriter } from '../mocks/mock-writer.js';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
-import { registerEventTools } from '../../src/tools/event-tools.js';
+import { functionParameterNamesError, registerEventTools } from '../../src/tools/event-tools.js';
 import type { MutationToolDeps } from '../../src/tools/shared.js';
 
 type Ev = Record<string, unknown>;
@@ -30,8 +30,14 @@ function sheetEvents(): Ev[] {
   ];
 }
 
-/** A custom action block, which no block, comment or function is placed into. */
-const customActionBlock: Ev = { eventType: 'custom-ace-block', objectClass: 'Sprite1', aceName: 'Do', conditions: [], actions: [], sid: 700 };
+/** A custom action block (sub-event block 710), which no block, comment or function is placed into. */
+const customActionBlock: Ev = { eventType: 'custom-ace-block', objectClass: 'Sprite1', aceName: 'Do', conditions: [], actions: [], sid: 700, children: [block(710, { children: [block(711)] })] };
+/** A function block "F2" with the parameter "p" and the sub-event block 311. */
+const functionWithBlock: Ev = {
+  functionName: 'F2', functionDescription: '', functionCategory: '', functionReturnType: 'none', functionCopyPicked: false, functionIsAsync: false,
+  functionParameters: [{ name: 'p', type: 'number', initialValue: '', comment: '', sid: 320 }],
+  eventType: 'function-block', conditions: [], actions: [], sid: 310, children: [block(311, { children: [block(312)] })],
+};
 
 function setup(events: Ev[] = sheetEvents()) {
   const server = new MockServer();
@@ -42,7 +48,11 @@ function setup(events: Ev[] = sheetEvents()) {
   const writer = new MockWriter();
   const idGen = new MockIdGenerator();
   registerEventTools({ server, reader, writer, idGen } as unknown as MutationToolDeps);
-  return { server, reader, writer };
+  // Counts the SIDs the tools draw, to show a refusal draws none
+  const drawn = { count: 0 };
+  const drawSid = idGen.generateSid.bind(idGen);
+  idGen.generateSid = async (r: unknown) => { drawn.count++; return drawSid(r); };
+  return { server, reader, writer, drawn };
 }
 const parse = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0].text) as Record<string, unknown>;
 const errorText = (result: { content: Array<{ text: string }>; isError?: boolean }) => (result.isError ? result.content[0].text : '');
@@ -60,9 +70,10 @@ describe('add_event_block destinations', () => {
 
   it('adds a block before and after a sibling, in the sibling\'s own list', async () => {
     const { server, writer } = setup();
-    await server.callTool('add_event_block', { sheetName: 'Sheet1', siblingSid: 101, position: 'before', actions: [setVisible] });
+    const first = parse(await server.callTool('add_event_block', { sheetName: 'Sheet1', siblingSid: 101, position: 'before', actions: [setVisible] }));
     const before = written(writer)[0].children as Ev[];
-    expect(before[1].sid).toBe(101);
+    expect(before.map(c => c.sid)).toEqual([first.generatedSid, 101]);
+    expect(first.eventPath).toBe('events[0].children[0]');
     const after = parse(await server.callTool('add_event_block', { sheetName: 'Sheet1', siblingSid: 400, position: 'after', actions: [setVisible] }));
     expect(after.eventPath).toBe('events[4]');
   });
@@ -79,7 +90,7 @@ describe('add_event_block destinations', () => {
     expect(String(outside.warnings)).toContain('is not inside a function block');
   });
 
-  it('refuses a sid, parentSid or siblingSid several events share, naming the eventPath argument that picks one', async () => {
+  it('refuses a parentSid or siblingSid several events share, in both tools, naming the eventPath argument that picks one', async () => {
     const shared = [block(100, { children: [block(7)] }), block(7)];
     const forBlock = setup(shared);
     const parentText = errorText(await forBlock.server.callTool('add_event_block', { sheetName: 'Sheet1', parentSid: 7 }));
@@ -112,6 +123,14 @@ describe('add_event_block destinations', () => {
     const data = parse(await server.callTool('add_event_block', { sheetName: 'Sheet1', groupPath: 'G', position: 'start', isElse: true, actions: [setVisible] }));
     expect(data.success).toBe(true);
     expect(String(data.warnings)).toContain('Else block:');
+  });
+
+  it('warns when a block placed before an else block makes it continue the new block', async () => {
+    const elseBlock = block(510, { conditions: [{ id: 'else', objectClass: 'System', sid: 511 }] });
+    const { server } = setup([block(500), elseBlock]);
+    const data = parse(await server.callTool('add_event_block', { sheetName: 'Sheet1', siblingSid: 510, position: 'before', actions: [setVisible] }));
+    expect(data.success).toBe(true);
+    expect(data.warnings).toContain(`The else block with SID 510 now follows the event with SID ${String(data.generatedSid)} instead of the event with SID 500, so it runs when that event's conditions are false.`);
   });
 
   it('refuses a block among the sub-events of a custom action block', async () => {
@@ -192,8 +211,10 @@ describe('add_event_to_sheet destinations', () => {
   });
 
   it('refuses an include anywhere but the top level', async () => {
-    const { server } = setup();
+    const { server, writer } = setup();
     const result = await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'include', groupPath: 'G', includeSheet: 'Sheet1' });
+    expect(result.isError).toBe(true);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
     expect(errorText(result)).toBe('An include is not placed in a group: remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only. It can go at the top level of a sheet. Nothing was changed.');
   });
 
@@ -205,14 +226,6 @@ describe('add_event_to_sheet destinations', () => {
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
     const stored = (await reader.readEventSheet('Sheet1')).events as unknown as Ev[];
     expect('children' in stored[4]).toBe(false);
-  });
-
-  it('warns when a block placed before an else block makes it continue the new block', async () => {
-    const elseBlock = block(510, { conditions: [{ id: 'else', objectClass: 'System', sid: 511 }] });
-    const { server } = setup([block(500), elseBlock]);
-    const data = parse(await server.callTool('add_event_block', { sheetName: 'Sheet1', siblingSid: 510, position: 'before', actions: [setVisible] }));
-    expect(data.success).toBe(true);
-    expect(data.warnings).toContain(`The else block with SID 510 now follows the event with SID ${String(data.generatedSid)} instead of the event with SID 500, so it runs when that event's conditions are false.`);
   });
 
   it('warns when an event added with add_event_to_sheet before an else block makes it continue the new event', async () => {
@@ -231,6 +244,10 @@ describe('add_event_to_sheet destinations', () => {
 
   it('refuses an unknown argument that ends in Sid or EventPath instead of writing at the top level', async () => {
     const { server, writer } = setup();
+    for (const wrong of ['parentsid', 'siblingEventpath', 'grouppath']) {
+      const text = errorText(await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x', [wrong]: 'G' }));
+      expect(text, wrong).toContain(`add_event_to_sheet does not take "${wrong}".`);
+    }
     const result = await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x', parentSID: 100 });
     expect(errorText(result)).toBe('add_event_to_sheet does not take "parentSID". The destination arguments are groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath and position. Nothing was changed.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
@@ -283,6 +300,58 @@ describe('a function block under an event with a trigger', () => {
   });
 });
 
+describe('a trigger the guard recognises by id', () => {
+  it('refuses a function block under a block whose trigger is not its first condition, or belongs to another addon', async () => {
+    const conditions = [
+      [{ id: 'is-visible', objectClass: 'Sprite1', sid: 910 }, { ...onStart, sid: 911 }],
+      [{ id: 'on-thing-happened', objectClass: 'OtherAddon', sid: 912 }],
+    ];
+    for (const list of conditions) {
+      const { server, writer } = setup([block(650, { conditions: list })]);
+      const text = errorText(await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'Fn', parentSid: 650 }));
+      expect(text, JSON.stringify(list)).toContain('which has the trigger');
+      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    }
+  });
+});
+
+describe('a function block inside a function block or a custom action block', () => {
+  const rooted = (): Ev[] => [...sheetEvents(), customActionBlock, functionWithBlock];
+
+  it('is refused by add_event_to_sheet under a block below either kind, and beside a sub-event of that block', async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['function block', { parentSid: 311 }],
+      ['custom action block', { parentSid: 710 }],
+      ['function block', { siblingSid: 312, position: 'after' }],
+      ['custom action block', { siblingSid: 711, position: 'before' }],
+    ];
+    for (const [kind, where] of cases) {
+      const { server, writer } = setup(rooted());
+      const text = errorText(await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'Fn', ...where }));
+      expect(text, JSON.stringify(where)).toContain(`A function block is not placed under or below the ${kind} with SID`);
+      expect(text).toContain('was not tried in the editor');
+      expect(text).toMatch(/Nothing was changed\.$/);
+      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    }
+  });
+
+  it('still places the other kinds of event below those blocks', async () => {
+    const { server } = setup(rooted());
+    const data = parse(await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x', parentSid: 311 }));
+    expect(data.success).toBe(true);
+  });
+
+  it('names the parameter of the enclosing function when a new function parameter repeats it', () => {
+    const sheets = new Map([['Sheet1', rooted() as never]]);
+    const parents = [functionWithBlock, (functionWithBlock.children as Ev[])[0]] as never[];
+    expect(functionParameterNamesError(sheets, 'Sheet1', ['p'], parents)).toBe(
+      'functionParams lists "p", which is also a parameter of the function that encloses the new function (sheet "Sheet1"). ' +
+      'This tool refuses a parameter name that a function enclosing the new function has (its own rule, not checked in the Construct 3 editor). Choose a different name.');
+    expect(functionParameterNamesError(sheets, 'Sheet1', ['P'], parents)).toContain('differs only in case from the parameter "p" of the function that encloses the new function');
+    expect(functionParameterNamesError(sheets, 'Sheet1', ['q', 'q'], parents)).toContain('functionParams lists "q" more than once.');
+  });
+});
+
 describe('refusals', () => {
   it('every refusal ends with Nothing was changed. and leaves the sheet as it was', async () => {
     const calls: Array<[string, Record<string, unknown>]> = [
@@ -299,16 +368,19 @@ describe('refusals', () => {
       ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'X', parentSid: 300 }],
       ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'X', parentSid: 100 }],
       ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'X', siblingSid: 101, position: 'before' }],
+      ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'X', parentSid: 311 }],
+      ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'X', parentSid: 710 }],
       ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x', siblingSID: 101 }],
     ];
     for (const [tool, args] of calls) {
-      const { server, reader, writer } = setup([...sheetEvents(), customActionBlock]);
+      const { server, reader, writer, drawn } = setup([...sheetEvents(), customActionBlock, functionWithBlock]);
       const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
       const result = await server.callTool(tool, args);
       expect(result.isError, `${tool} ${JSON.stringify(args)}`).toBe(true);
       expect(errorText(result), `${tool} ${JSON.stringify(args)}`).toMatch(/Nothing was changed\.$/);
       expect(errorText(result)).not.toMatch(/Nothing was changed\..*Nothing was changed\./s);
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+      expect(drawn.count, `${tool} ${JSON.stringify(args)} drew a SID`).toBe(0);
       expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
     }
   });
