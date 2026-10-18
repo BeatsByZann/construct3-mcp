@@ -7,6 +7,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 ### Added
 
 - `add_custom_action`: add a custom action definition to an object type or family; a second custom action of one name on one owner is refused. `add_event_block` and `update_event_block` write custom action calls `{ customAction, objectClass, customActionObjectClass?, parameters }` in the editor's shape, and `update_event_block` edits the conditions and actions of a custom action block (#ISSUE).
+- `update_function`: change a function block or custom action block and, with `updateCallers`, the calls that run it (#ISSUE).
 
 ### Changed
 

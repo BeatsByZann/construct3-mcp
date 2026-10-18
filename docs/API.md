@@ -923,6 +923,61 @@ A call is an action of `add_event_block` (in `actions`) or of `update_event_bloc
 - `update_event_block` edits the conditions and actions of a custom action block by its SID (it has no `isElse`, since a custom action block cannot be an else block). It adds no sub-events, and no tool on this branch places an event inside a custom action block.
 - `update_event_block` and `update_event_block_action` replace a call's arguments with an array in parameter order (key-value parameters are refused); an empty array removes them. An argument count that differs from the definition's parameter count is written with a warning.
 
+### `update_function`
+
+Change a function block (`eventType` `"function-block"`) or a custom action block (`"custom-ace-block"`), found by its SID: its name and parameters and, for a function block, its return type and options. A custom action block has no return type, so `returnType` is refused for it. The calls that run the block are rewritten only with `updateCallers`. Arguments the tool does not take are refused, and nothing is written.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet that holds the block, as registered (letter case included) |
+| `sid` | number | Yes | SID of the function block or custom action block |
+| `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
+| `functionName` | string | No | The new name: a function's name, or a custom action's `aceName`. A function name is checked as in [Function names](#function-names); a custom action name as in [`add_custom_action`](#add_custom_action) |
+| `returnType` | `"none"` \| `"number"` \| `"string"` \| `"any"` | No | The editor's Return type. Function blocks only |
+| `description` | string | No | The editor's Description |
+| `category` | string | No | The editor's Category |
+| `isAsync` | boolean | No | The editor's Asynchronous option |
+| `copyPicked` | boolean | No | The editor's Copy picked option |
+| `addParameters` | array | No | Parameters to append, in order: `{ name, type, initialValue?, comment? }`, with `type` `"number"`, `"string"` or `"boolean"` |
+| `removeParameters` | string[] | No | Names of parameters to remove |
+| `renameParameters` | array | No | `{ from, to }` renames. Uses in the body keep their old names |
+| `updateCallers` | boolean | No | Rewrite the calls that run the block and, for a function block, its function map registrations (default: false) |
+| `force` | boolean | No | Update past the refusals marked "without `force`" below; the uses are listed in `references` and in a warning (default: false) |
+| `dryRun` | boolean | No | Report what would change and write nothing (default: false) |
+
+**Calls and function maps.** A call is found by its name, ignoring letter case. With `updateCallers`, a rename rewrites the name of each call (`callFunction`, or `customAction` for a custom action block) and the function name of each function map registration. A `Functions.Name(...)` call in an expression is listed and left as it is. Scripts are not checked: a script action is neither found nor rewritten.
+
+**Refused, with or without `force`.** Nothing is written:
+- A function name the editor refuses, as in [Function names](#function-names).
+- `returnType` on a custom action block.
+- An empty custom action name, or one of only spaces: `functionName is empty or only spaces.`
+- A custom action name its owner already has, ignoring letter case, with the rule of [`add_custom_action`](#add_custom_action).
+- A parameter to remove or rename that the block does not have, or a parameter name the editor refuses (see [Event variable names](#event-variable-names)).
+- A rename, or a parameter added or removed, while calls exist and `updateCallers` is not given: the calls are listed.
+
+**Refused without `force`.** Each refusal lists what it found and writes nothing:
+- Removing a parameter that the body still uses, or a rename after which a use in the body finds another parameter.
+- A `Functions.Name(...)` call in an expression, when the block is renamed, a parameter is added or removed, or its return type changes to `none`.
+- An event sheet that could not be parsed, whose text may hold the old name or, for a rename, the new name, when the block is renamed, a parameter is added or removed, or the return type becomes `none`. Such a sheet is searched as text.
+- A check of the uses of the block that stopped at its limit: 100,000 events across all event sheets, or events nested more than 50 levels deep.
+
+**Refused even with `force`.**
+- A custom action rename that would make a call the scan reached run another definition, or stop running the renamed one. The message lists up to ten calls, with what each runs now and what it would run after the rename.
+- Removing and adding the same number of parameters in one call while calls exist. Each call would keep its argument count, so a run repeated after a stop could not tell a call already rewritten from one not yet rewritten. Make two calls: one that removes, then one that adds. With no calls, the same update is made.
+
+**Calls rewritten with `updateCallers`.**
+- A call's arguments are rewritten only when it passes the parameter count from before the update: arguments at removed positions are dropped and new ones appended. A call with another count keeps its arguments and is listed in `warnings`, so a run repeated after a stop changes nothing more.
+- A new parameter's argument is its initial value: a number as its numeric literal, a string as a Construct string literal with each inner quote doubled, or `true` or `false` for a boolean.
+- The initial value is checked before anything is written: a number must be a number (`1 + x` is refused), a boolean must be `true` or `false`, and a string cannot hold a line break (a newline or a carriage return). That refusal is this tool's own rule: whether Construct 3 accepts a line break inside a string literal was not checked in the editor.
+
+**Custom action calls.** A call is matched to the definition it runs as [`add_custom_action`](#add_custom_action) describes. A plain call on an object that belongs to two families that both define the new name gets a warning: it uses the definition on the renamed block's owner, and which one Construct 3 runs was not checked in the editor.
+
+**Order and rollback.** Every sheet is read before the first write. The caller sheets are written first, in the order the project registers them, and the sheet of the block last. A failure after the first write puts back what the call wrote. A file that another program saved meanwhile is left as it is, and the message names it with its `.bak`. "Nothing was changed." appears only when nothing was written. The message says what is on disk.
+
+**Unchanged and dry runs.** An update to the values the block already has returns `action: "unchanged"` and writes nothing. `dryRun` reports what would change (`calls`, `maps`, `expressions`, `parameters`, and `warnings` when there are any) and writes nothing.
+
+**Returns.** `kind` (`"function"` or `"custom-action"`), `name`, `previousName`, `parameters` (each with its `sid`), `updatedSheets` in the order written, `rewrittenCalls`, `rewrittenMaps`, and `warnings` when there are any.
+
 ### `fix_legacy_behavior_keys`
 
 Repair event sheets written by construct3-mcp 1.8.1 and earlier, which stored the behavior of a condition/action under `"behavior-type"`. Construct 3 reads `"behaviorType"`; with only the legacy key it looks the ACE up on the object's base plugin and fails to open the project (e.g. `Error: missing action id 'flash'`, issue #16).
