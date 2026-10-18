@@ -18,7 +18,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 ### Fixed
 
 - When an object type, event sheet, layout or family write fails after replacing the file, the rollback of `update_layer`, `add_frame_to_animation`, `delete_frame_from_animation` and `rename_animation` puts the backup back only while the file holds that write's own content; a save made in the editor after the failure is kept, and the error names the file and its `.bak` (#ISSUE).
-- The reference checks of `delete_event_from_sheet`, `delete_event_sheet` and `move_events_between_sheets` count a custom action's parameters as in scope in its body (before, a use of one counted as a use of an event variable of that name), and a sheet nested deeper than 50 levels makes those checks incomplete, so they refuse without `force` as at their event limit (#ISSUE).
+- The reference check shared by the move and delete tools counts a custom action's parameters as in scope in its body (before, a use of one counted as a use of an event variable of that name). `delete_event_sheet` names the nesting-depth limit, not the event limit, when a sheet is nested more than 50 levels deep (#ISSUE).
 
 ## [1.10.0] - 2026-09-30
 
