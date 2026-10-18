@@ -17,6 +17,7 @@ import type {
   FunctionBlockEvent,
   IncludeEvent,
   CommentEvent,
+  CustomActionBlockEvent,
   BlockEvent,
   Animation,
   AnimationFrame,
@@ -507,6 +508,41 @@ export function createCommentEvent(text: string): CommentEvent {
   return {
     eventType: 'comment',
     text,
+  };
+}
+
+/**
+ * A custom action block in the key order the editor saves it (Construct 3
+ * r506-2, Free edition: aceType, aceName, objectClass, the function keys,
+ * eventType, conditions, actions, sid; no children key without sub-events).
+ */
+export function createCustomActionEvent(
+  aceName: string,
+  objectClass: string,
+  sid: number,
+  params?: Array<{ name: string; type: string; initialValue?: string; comment?: string; sid: number }>,
+  options?: { description?: string; category?: string; isAsync?: boolean; copyPicked?: boolean },
+): CustomActionBlockEvent {
+  return {
+    aceType: 'action',
+    aceName,
+    objectClass,
+    functionDescription: options?.description ?? '',
+    functionCategory: options?.category ?? '',
+    functionReturnType: 'none',
+    functionCopyPicked: options?.copyPicked ?? false,
+    functionIsAsync: options?.isAsync ?? false,
+    functionParameters: (params ?? []).map(p => ({
+      name: p.name,
+      type: p.type,
+      initialValue: p.initialValue ?? (p.type === 'number' ? '0' : p.type === 'boolean' ? 'false' : ''),
+      comment: p.comment ?? '',
+      sid: p.sid,
+    })),
+    eventType: 'custom-ace-block',
+    conditions: [],
+    actions: [],
+    sid,
   };
 }
 

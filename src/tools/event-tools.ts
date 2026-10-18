@@ -132,15 +132,18 @@ import {
   type UnscannedFileReport,
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
+import { writeEntityOrRollBack } from './call-rollback.js';
 import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-keys.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
+import { customActionDefinitionClashes, customActionOwnerError, customActionScan, newCustomActionDuplicates } from '../construct3/custom-actions.js';
 import {
   createEmptySheet,
   createVariableEvent,
   createGroupEvent,
   createFunctionEvent,
   createIncludeEvent,
+  createCustomActionEvent,
 } from '../construct3/templates.js';
 import { withProjectSync } from './project-sync.js';
 
@@ -184,6 +187,11 @@ const SCOPE_LOSS_CONSEQUENCE =
   'After loading a project, Construct 3 resolves these names and throws "cannot find event variable" when one is ' +
   'not in scope (loader code; whether the project then fails to open has not been confirmed in the editor), and an ' +
   'expression that uses it by name would name a variable that is not there.';
+
+/** Why two custom actions of one name on one object type or family are refused. */
+const DUPLICATE_CUSTOM_ACTION_RULE =
+  'A call names a custom action by its name, so it could not tell two apart (Construct 3 r506-2 (Free edition) opened such a project, ' +
+  'ran the first definition, and renamed the second one when it saved: DoK became DoK2). Choose another name.';
 
 /**
  * One sentence per deleted function or variable that is still referenced
@@ -587,6 +595,141 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (error instanceof CustomActionCallError) return toolError(nothingChanged(error.message));
         console.error('[add_event_block] failed:', error);
         return toolError(`Error adding event block: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── add_custom_action ────────────────────────────────────
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
+    'add_custom_action',
+    {
+      description: 'Add a custom action definition (a custom action block) to an event sheet. A custom action belongs to an object type or family and is called on it with { customAction, objectClass, parameters: [...] } in add_event_block or update_event_block; its conditions and actions are added with update_event_block on the returned SID. Placed like add_event_to_sheet places events (the top level, a group, or beside an event), where an editor-saved project on record or a checked editor case shows custom action blocks. Runs the load-time gate (new warnings are returned). Event sheets that could not be parsed are searched as text for the name; a possible match refuses without force=true. Refused, changing nothing: an owner that is no object type or family, an empty name, a second custom action of the same name on the same owner (ignoring case), parameter names the editor refuses, and a place that no editor-saved project on record or checked editor case shows for custom action blocks. Returns generatedSid, parameterSids, eventPath and backupFile.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
+        objectClass: z.string().max(200).describe('The object type or family the custom action belongs to'),
+        aceName: z.string().max(200).describe('The custom action\'s name, as calls give it in customAction'),
+        description: z.string().max(2000).optional().describe('The description shown in the editor'),
+        category: z.string().max(200).optional().describe('The category it is listed under in the editor'),
+        isAsync: z.boolean().optional().describe('The editor\'s "Asynchronous" option (default false)'),
+        copyPicked: z.boolean().optional().describe('The editor\'s "Copy picked" option (default false)'),
+        parameters: z.array(z.object({
+          name: z.string().max(200).describe('Parameter name'),
+          type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+          initialValue: z.string().max(500).optional().describe('Default value (by type: "0", "" or "false")'),
+          comment: z.string().max(500).optional().describe('Parameter comment'),
+        }, {
+          errorMap: unknownKeysErrorMap('a parameter', 'A parameter has name, type, initialValue and comment.'),
+        }).strict()).max(100).optional().describe('Parameters in call order; names follow the editor\'s function parameter rules'),
+        ...locatorShape,
+        force: z.boolean().optional().default(false).describe('Add even while an event sheet the server could not parse may define a custom action of that name (the sheets are listed in unscannedFiles and a warning)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of add_custom_action', 'add_custom_action takes sheetName, objectClass, aceName, description, category, isAsync, copyPicked, parameters, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position and force.'),
+      }).strict(),
+    },
+    async (args) => {
+      // Set once the new block is in the sheet in memory, so a throw before the write puts the sheet back
+      let undoInsert: (() => void) | undefined;
+      let writeStarted = false;
+      try {
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return unregistered;
+        const ownerError = customActionOwnerError(args.objectClass, await reader.listObjectTypes(), await reader.listFamilies());
+        if (ownerError) return toolError(nothingChanged(ownerError));
+        if (args.aceName.trim() === '') return toolError(nothingChanged('aceName is empty.'));
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
+        });
+        if ('error' in resolution) return toolError(nothingChanged(resolution.error));
+        const container = resolution.container;
+        const placement = placementError('custom-ace-block', container);
+        if (placement) return toolError(nothingChanged(placement));
+
+        // One custom action of a name per owner, across the project
+        const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        const scan = customActionScan(sheets);
+        const clashes = customActionDefinitionClashes(scan.definitions, args.objectClass, args.aceName);
+        if (clashes.length > 0) {
+          const c = clashes[0];
+          return toolError(nothingChanged(`"${args.objectClass}" already has a custom action "${c.name}" (sheet "${c.sheet}", ${c.eventPath}${c.sid !== undefined ? `, SID ${c.sid}` : ''}). ${DUPLICATE_CUSTOM_ACTION_RULE}`));
+        }
+        // A definition past the scan's limits is unknown, as in a sheet that could not be parsed
+        const scanChecked = 'custom actions of that name';
+        if (!scan.complete && !args.force) {
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'add_blocked',
+            message: nothingChanged(`${traversalLimitReason(scanChecked)} Use force=true to add it anyway.`),
+          }, { projectWritten: false });
+        }
+        const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'))
+          .filter(f => f.name !== args.sheetName);
+        const unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [[nameTerm(args.aceName)], [nameTerm(args.objectClass)]] }]);
+        if (blocksWithoutForce(unscanned) && !args.force) {
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'add_blocked',
+            message: nothingChanged(`${unscannedRefusal(unscanned)} One of them may already define a custom action "${args.aceName}" on "${args.objectClass}". Use force=true to add it anyway.`),
+            ...unscannedFields(unscanned),
+          }, { projectWritten: false });
+        }
+
+        const names = (args.parameters ?? []).map(p => p.name);
+        if (names.length > 0) {
+          const paramError = functionParameterNamesError(sheets, args.sheetName, names, containerParents(sheet.events, container), 'parameters');
+          if (paramError) return toolError(nothingChanged(paramError));
+        }
+
+        const beforeEvents = snapshotEvents(sheet.events);
+        const sid = await idGen.generateSid(reader);
+        const params: Array<NonNullable<typeof args.parameters>[number] & { sid: number }> = [];
+        for (const p of args.parameters ?? []) params.push({ ...p, sid: await idGen.generateSid(reader) });
+        const event = createCustomActionEvent(args.aceName, args.objectClass, sid, params, {
+          description: args.description, category: args.category, isAsync: args.isAsync, copyPicked: args.copyPicked,
+        }) as unknown as Record<string, unknown>;
+        undoInsert = () => { sheet.events = beforeEvents; };
+        insertIntoContainer(container, args.position, event);
+        const eventPath = eventPathOf(events, event);
+
+        // The load-time gate, as add_event_block runs it: the new block may stand between a block and its else block
+        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+        if (loadCheck.errors.length > 0) {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(loadRuleErrorMessage(loadCheck.errors)));
+        }
+        // With force, the sheets that may define the name; without a block, those searched as text without a match
+        const warnings = [...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events), ...unscannedWarnings(unscanned, 'Added')];
+        if (!scan.complete) warnings.push(`Added with force=true: ${traversalLimitReason(scanChecked)}`);
+
+        writeStarted = true;
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', generatedSid: sid,
+          ...(params.length > 0 ? { parameterSids: params.map(p => ({ name: p.name, sid: p.sid })) } : {}),
+          eventPath,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...unscannedFields(unscanned),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[add_custom_action] failed:', error);
+        if (undoInsert) {
+          undoInsert();
+          // Nothing reached the disk: the sheet in memory is as it was
+          if (!writeStarted) {
+            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          }
+        }
+        return toolError(`Error adding custom action: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
@@ -1319,6 +1462,21 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           sourceSheetData.events = sourceEvents as unknown as C3Event[];
           targetSheetData.events = targetBefore;
           return toolError(copiedFunctionNameClashMessage(args.targetSheet, functionClashes));
+        }
+        // Custom actions: a copied definition keeps its name, which its original still has on the same owner
+        const scanBefore = customActionScan(sheetsBefore);
+        const scanAfter = customActionScan(sheetsAfter);
+        if ((!scanBefore.complete || !scanAfter.complete) && !args.deleteSource) {
+          sourceSheetData.events = sourceEvents as unknown as C3Event[];
+          targetSheetData.events = targetBefore;
+          return toolError(nothingChanged(`${traversalLimitReason('custom actions the copy would duplicate')} Move the events instead (deleteSource: true).`));
+        }
+        const customDuplicates = newCustomActionDuplicates(scanBefore.definitions, scanAfter.definitions);
+        if (customDuplicates.length > 0) {
+          sourceSheetData.events = sourceEvents as unknown as C3Event[];
+          targetSheetData.events = targetBefore;
+          const listed = customDuplicates.slice(0, 10).map(g => `- "${g[0].owner}.${g[0].name}": ${g.map(d => `sheet "${d.sheet}" (${d.eventPath})`).join(', ')}`);
+          return toolError(nothingChanged(`Copying these events to "${args.targetSheet}" would leave two custom actions of one name on one object type or family:\n${listed.join('\n')}\n\n${DUPLICATE_CUSTOM_ACTION_RULE} Move the custom action instead (deleteSource: true).`));
         }
 
         // Editor load-time rules over both sheets: a copy of an event that
@@ -2317,28 +2475,40 @@ function eventVariableNameError(
 
 /**
  * Why the editor would refuse the parameter `names` of a new function that
- * goes to the top level of sheet `sheetName`, checked in order like the
+ * goes into sheet `sheetName` under `parents` (the events enclosing it,
+ * outermost first; empty at the top level), checked in order like the
  * editor's Function parameter dialog when the parameters are added one by
  * one; undefined when it would accept them all. `sheets` holds the events of
- * every event sheet (from readEventSheetsFresh).
+ * every event sheet (from readEventSheetsFresh). `argument` is the tool
+ * argument that lists the names, for the messages about duplicates.
  */
-function functionParameterNamesError(
+export function functionParameterNamesError(
   sheets: ReadonlyMap<string, readonly C3Event[]>,
   sheetName: string,
   names: readonly string[],
+  parents: readonly C3Event[] = [],
+  argument = 'functionParams',
 ): string | undefined {
-  // The new function has no enclosing events and no sub-events yet, so a
-  // parameter's scope is every global variable and the parameters before it
+  // The new function has no sub-events yet, so a parameter's scope is every global variable, the variables of the events enclosing it and the parameters before it
   const fn = { eventType: 'function-block', functionParameters: [] as Array<{ name: string }>, children: [] };
+  const parameterRule = parents.length === 0
+    ? NAME_SCOPE_RULE.parameter
+    : `${NAME_SCOPE_RULE.parameter} This tool also refuses a name the variables of the events enclosing the new function have (its own rule for a function in a group or event, not checked in the Construct 3 editor).`;
   for (const name of names) {
-    const problem = findEventVariableNameProblem(name, eventVariableNameUses(sheets, sheetName, [fn as unknown as C3Event]));
+    const problem = findEventVariableNameProblem(name, eventVariableNameUses(sheets, sheetName, [...parents, fn as unknown as C3Event]));
+    if (problem?.problem === 'in-use' && problem.use.kind === 'function parameter'
+      && !fn.functionParameters.some(p => p.name === problem.use.name)) {
+      // Not one of the new function's own parameters: a parameter of a function enclosing it
+      return `${argument} lists "${name}", which ${problem.use.name === name ? 'is also a parameter of' : `differs only in case from the parameter "${problem.use.name}" of`} the function that encloses the new function (sheet "${problem.use.sheet}"). ` +
+        'This tool refuses a parameter name that a function enclosing the new function has (its own rule, not checked in the Construct 3 editor). Choose a different name.';
+    }
     if (problem?.problem === 'in-use' && problem.use.kind === 'function parameter') {
       return problem.use.name === name
-        ? `functionParams lists "${name}" more than once. ${NAME_SCOPE_RULE.parameter}`
-        : `functionParams lists "${problem.use.name}" and "${name}", which differ only in case. Construct 3 treats ` +
+        ? `${argument} lists "${name}" more than once. ${NAME_SCOPE_RULE.parameter}`
+        : `${argument} lists "${problem.use.name}" and "${name}", which differ only in case. Construct 3 treats ` +
           `them as the same function parameter name. ${NAME_SCOPE_RULE.parameter}`;
     }
-    if (problem) return eventVariableNameMessage(problem, name, 'function parameter', NAME_SCOPE_RULE.parameter);
+    if (problem) return eventVariableNameMessage(problem, name, 'function parameter', parameterRule);
     fn.functionParameters.push({ name });
   }
   return undefined;
