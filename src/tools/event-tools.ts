@@ -277,12 +277,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   // ─── add_event_to_sheet ───────────────────────────────────
 
-  // Registered with a strict object schema, so unknown arguments are refused
-  // (server.tool() with a raw shape would drop them; see Strict Input in event-helpers.ts) (#ISSUE).
+  // Registered with a strict object schema, so unknown top-level arguments are
+  // refused (server.tool() with a raw shape would drop them; see Strict Input in
+  // event-helpers.ts) (#ISSUE).
   server.registerTool(
     'add_event_to_sheet',
     {
-      description: 'Add an event (group, function, variable, include, or comment) to the top level of an event sheet. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile. Arguments it does not take are refused, never dropped.',
+      description: 'Add an event (group, function, variable, include, or comment) to the top level of an event sheet. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile. Unknown top-level arguments are refused, never dropped; keys inside a functionParams entry other than name and type are still dropped.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
         eventType: z.enum(['group', 'function', 'variable', 'include', 'comment']).describe('Type of event to add'),

@@ -440,6 +440,9 @@ describe('unknown arguments of add_event_block, update_event_block and add_event
       const sheetTypo = await client.callTool({ name: 'add_event_to_sheet', arguments: { sheetName: 'Sheet1', eventType: 'variable', variableName: 'Score', varType: 'string' } });
       expect(sheetTypo.isError).toBe(true);
       expect(text(sheetTypo)).toContain('Unknown key(s) \\"varType\\" in the arguments of add_event_to_sheet');
+      const sheetSid = await client.callTool({ name: 'add_event_to_sheet', arguments: { sheetName: 'Sheet1', eventType: 'comment', sid: 5 } });
+      expect(sheetSid.isError).toBe(true);
+      expect(text(sheetSid)).toContain('Unknown key(s) \\"sid\\" in the arguments of add_event_to_sheet');
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
 
       const ok = await client.callTool({ name: 'add_event_block', arguments: { sheetName: 'Sheet1', sid: 7, conditions: [onStart], children: [{ eventType: 'comment', text: 'Kept' }] } });

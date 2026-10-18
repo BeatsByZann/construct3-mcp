@@ -141,7 +141,7 @@ Same as above but for behaviors. Add a behavior of that type to any object in th
 
 ### "Unknown key(s) ... in the arguments of add_event_to_sheet"
 
-**Cause**: The call named a key the tool does not take, usually a misspelling such as `varType` for `variableType`. The tool would not write that key, so it refuses the call instead of dropping the key.
+**Cause**: The call named a top-level key the tool does not take, usually a misspelling such as `varType` for `variableType`. The tool would not write that key, so it refuses the call instead of dropping the key. (Keys inside a `functionParams` entry are not checked this way; they are still dropped.)
 
 **Solution**: Correct the key or remove it, then run the call again. Nothing was written.
 
