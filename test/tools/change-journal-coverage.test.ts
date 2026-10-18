@@ -98,6 +98,8 @@ describe('revert_last_change returns every file to its state before the call', (
     ['rename_animation', [['create_object', HERO]], { ...FRAME, newName: 'Run' }],
     ['add_frame_to_animation', [['create_object', HERO], ['add_frame_to_animation', FRAME]], { ...FRAME, index: 0 }],
     ['delete_frame_from_animation', [['create_object', HERO], ['add_frame_to_animation', FRAME]], { ...FRAME, frameIndex: 0 }],
+    ['delete_object', [['create_object', HERO], ['add_frame_to_animation', FRAME]], { name: 'Hero', force: true }],
+    ['add_animation_to_sprite', [['create_object', HERO]], { objectName: 'Hero', animationName: 'Run' }],
     ['inject_runtime_bridge', [], {}],
     ['remove_runtime_bridge', [['inject_runtime_bridge', {}]], {}],
   ] as Array<[string, Array<[string, Record<string, unknown>]>, Record<string, unknown>]>)('%s', async (tool, setup, args) => {
