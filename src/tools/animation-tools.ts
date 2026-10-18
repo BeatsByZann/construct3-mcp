@@ -325,7 +325,8 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
     oneAtATime(async (args) => {
       const relative = (path: string) => writer.projectRelative(path);
       try {
-        validateSubfolder(args.folderPath);
+        const invalid = invalidFolderPath(args.folderPath);
+        if (invalid !== undefined) return toolError(`Error creating animation folder: ${invalid}. Nothing was changed.`);
         const sprite = await loadSpriteAnimations(reader, args.objectName, true);
         if (sprite.refusal !== undefined) return sprite.refusal;
         const { obj, animations } = sprite;
@@ -379,7 +380,8 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
       const relative = (path: string) => writer.projectRelative(path);
       try {
         const targetPath = args.folderPath ?? '';
-        if (targetPath !== '') validateSubfolder(targetPath);
+        const invalid = targetPath === '' ? undefined : invalidFolderPath(targetPath);
+        if (invalid !== undefined) return toolError(`Error moving animation: ${invalid}. Nothing was changed.`);
         const sprite = await loadSpriteAnimations(reader, args.objectName, false);
         if (sprite.refusal !== undefined) return sprite.refusal;
         const { obj, animations } = sprite;
@@ -1091,14 +1093,26 @@ function findAnimationFolder(animations: AnimationsContainer, path: string): Ani
   return node;
 }
 
+/** Why `path` is not a valid animation folder path (the message of validateSubfolder), or undefined when it is. */
+function invalidFolderPath(path: string): string | undefined {
+  try {
+    validateSubfolder(path);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 /**
  * The part of the requested folder path `requested` that exists on the
  * Sprite only in another spelling: `spelled` is the path as
- * findFolderPathClash gives it (the existing folders' spelling for the
- * folders that exist, the requested one after the first that does not).
- * Returns the longest leading part of it that is an existing folder
- * (`existing`) and the same part as requested (`requested`), or undefined
- * when no leading part exists. A folder below that part is not claimed.
+ * findFolderPathClash gives it, which holds an invariant this relies on: it
+ * spells every leading folder that exists (in any letter case) as the
+ * existing folder is, and every folder from the first one that does not
+ * exist on as requested. Returns the longest leading part of it that is an existing
+ * folder (`existing`) and the same part as requested (`requested`), or
+ * undefined when no leading part exists. A folder below that part is not
+ * claimed.
  */
 function existingCaseVariantFolder(
   animations: AnimationsContainer,

@@ -1204,7 +1204,7 @@ Create an animation folder among a Sprite object's animations, with the folders 
 | `objectName` | string | Yes | Sprite object name |
 | `folderPath` | string | Yes | Folder path, `/`-separated (e.g. `"Combat/Melee"`); no empty segment, `.`, `..` or `\` |
 
-Returns `foldersCreated` (the paths created, outermost first). A new folder is written as `{ "items": [], "subfolders": [], "name": ... }`, the key order of a new project-bar folder; the order the editor itself writes for animation folders was not checked. Refused, with nothing changed: a path that exists already; a folder that differs from an existing sibling folder only in case (a rule of the server, as for `subfolder` paths; whether the editor allows such folders was not checked); an object that is not a Sprite or whose animations have no folder list. If the object write fails after replacing the file, the file is restored from its backup while it holds that write's content; another write's content is left as it is.
+Returns `foldersCreated` (the paths created, outermost first). A new folder is written as `{ "items": [], "subfolders": [], "name": ... }`, the key order of a new project-bar folder; the order the editor itself writes for animation folders was not checked. Refused, with nothing changed: an invalid `folderPath`; an object that is not found, is not a Sprite, or whose animations have no folder list; a path that exists already; a folder that differs from an existing sibling folder only in case (a rule of the server, as for `subfolder` paths; whether the editor allows such folders was not checked); a folder on the path that has no list of items or subfolders. If the object write fails after replacing the file, the file is restored from its backup while it holds that write's content; another write's content is left as it is.
 
 ### `move_animation_to_folder`
 
@@ -1216,7 +1216,7 @@ Move an animation of a Sprite object into an existing animation folder, or back 
 | `animationName` | string | Yes | Animation to move |
 | `folderPath` | string \| null | No | Existing folder path, `/`-separated, compared exactly; left out, `null` or `""` for the top level |
 
-Returns `fromFolder` and `toFolder` (`null` for the top level). A warning says when this move leaves no animation outside animation folders; how the editor treats such an object was not checked. Refused, with nothing changed: a folder that does not exist (the error names an existing folder whose name differs only in case), an animation that is not found, and a move into the folder the animation is in. A failed object write is handled as for `create_animation_folder`.
+Returns `fromFolder` and `toFolder` (`null` for the top level). A warning says when this move leaves no animation outside animation folders; how the editor treats such an object was not checked. Refused, with nothing changed: an invalid `folderPath`; an object that is not found, is not a Sprite, or has no animations structure; an animation that is not found; a folder that does not exist, or has no items list (the error names an existing folder whose name differs only in case from the requested one); and a move into the folder the animation is in (also the top level, when it is there). A failed object write is handled as for `create_animation_folder`.
 
 ### `add_frame_to_animation`
 

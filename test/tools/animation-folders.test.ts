@@ -63,6 +63,21 @@ async function call(tool: string, args: Record<string, unknown>, mock = server):
     : { text: result.content[0].text, data: JSON.parse(result.content[0].text) as ToolData };
 }
 
+/** The object file and its .bak as bytes (the .bak undefined when there is none), to show a refused call changed neither. */
+async function objectFiles(): Promise<{ object: Buffer; backup: Buffer | undefined }> {
+  return { object: await readFile(objectPath()), backup: await readFile(`${objectPath()}.bak`).catch(() => undefined) };
+}
+
+/** A server whose writer replaces the object file, then fails its post-write check; `prepare` may change the writer first. */
+function failingObjectVerify(prepare: (writer: Construct3ProjectWriter) => void = () => undefined): MockServer {
+  const idGen = new IdGenerator();
+  const writer = new Construct3ProjectWriter(reader, idGen);
+  const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<void> };
+  internals.verifyWrittenFile = async () => { throw new Error('Post-write verification failed for "Sprite"'); };
+  prepare(writer);
+  return register(writer, idGen);
+}
+
 /** A server whose writer's object write fails as `error()` gives. */
 function failingObjectWrite(error: () => Error): MockServer {
   class FailingObjectWriter extends Construct3ProjectWriter {
@@ -102,14 +117,24 @@ describe('create_animation_folder', () => {
 
   it('refuses a folder that exists, or one that differs from an existing folder only in case, and changes nothing', async () => {
     await call('create_animation_folder', { folderPath: 'Combat' });
-    const before = await readFile(objectPath());
+    const before = await objectFiles();
+    expect(before.backup).toBeDefined();
     expect((await call('create_animation_folder', { folderPath: 'Combat' })).text)
       .toBe('Animation folder "Combat" already exists on "Sprite". Nothing was changed.');
     expect((await call('create_animation_folder', { folderPath: 'combat/Melee' })).text)
       .toBe('Animation folder path "combat/Melee" has a folder whose name differs only in case from an existing animation folder on "Sprite" '
         + '(spelled as the existing folders are: "Combat/Melee"): the server compares animation folder names ignoring case, as it does '
         + 'project-bar folders. Use "Combat/Melee". Nothing was changed.');
-    expect(Buffer.compare(await readFile(objectPath()), before)).toBe(0);
+    expect(await objectFiles()).toEqual(before);
+  });
+
+  it('says that nothing was changed when it refuses an invalid path', async () => {
+    const before = await objectFiles();
+    expect((await call('create_animation_folder', { folderPath: '../Up' })).text)
+      .toBe('Error creating animation folder: Subfolder path contains invalid characters (use forward slashes only, no ".."). Nothing was changed.');
+    expect((await call('create_animation_folder', { folderPath: 'A//B' })).text)
+      .toBe('Error creating animation folder: Subfolder path contains invalid segments. Nothing was changed.');
+    expect(await objectFiles()).toEqual(before);
   });
 
   it('refuses an invalid path and an object that is not a Sprite before writing anything', async () => {
@@ -144,6 +169,24 @@ describe('move_animation_to_folder', () => {
     expect((await readdir(join(tmpDir, 'images'))).sort()).toEqual(imagesBefore);
   });
 
+  it('moves an animation to the top level when folderPath is null, and refuses when it is already there', async () => {
+    await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'Moves/Ground' });
+    const back = await call('move_animation_to_folder', { animationName: 'Walk', folderPath: null });
+    expect(back.data).toMatchObject({ fromFolder: 'Moves/Ground', toFolder: null });
+    expect(await layout()).toEqual({ '': ['Animation 1', 'Walk'], Moves: [], 'Moves/Ground': [] });
+    const before = await objectFiles();
+    expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: null })).text)
+      .toBe('Animation "Walk" is already in the top level of the animations. Nothing was changed.');
+    expect(await objectFiles()).toEqual(before);
+  });
+
+  it('says that nothing was changed when it refuses an invalid folder path', async () => {
+    const before = await objectFiles();
+    expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'A//B' })).text)
+      .toBe('Error moving animation: Subfolder path contains invalid segments. Nothing was changed.');
+    expect(await objectFiles()).toEqual(before);
+  });
+
   it('names only the part of a path that exists in another case, never a folder below it that does not exist', async () => {
     const before = await readFile(objectPath());
     const backupBefore = await readFile(`${objectPath()}.bak`);
@@ -169,7 +212,8 @@ describe('move_animation_to_folder', () => {
   });
 
   it('refuses a missing folder, a case variant of one, a missing animation and a move that changes nothing', async () => {
-    const before = await readFile(objectPath());
+    const before = await objectFiles();
+    expect(before.backup).toBeDefined();
     expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'Air' })).text)
       .toBe('Animation folder "Air" does not exist on "Sprite". Create it with create_animation_folder first. Nothing was changed.');
     expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'moves' })).text)
@@ -178,7 +222,7 @@ describe('move_animation_to_folder', () => {
       .toContain('Animation "Run" not found on "Sprite". Available: Animation 1, Walk');
     expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: '' })).text)
       .toBe('Animation "Walk" is already in the top level of the animations. Nothing was changed.');
-    expect(Buffer.compare(await readFile(objectPath()), before)).toBe(0);
+    expect(await objectFiles()).toEqual(before);
   });
 });
 
@@ -209,6 +253,40 @@ describe('a failed object write', () => {
     expect((await call('create_animation_folder', { folderPath: 'Moves' }, register(writer, idGen))).text)
       .toContain('Another write replaced the object file during this one (a tool call running in parallel?); it was left as that write left it');
     expect(await readFile(objectPath(), 'utf8')).toBe(other);
+  });
+
+  it('leaves the object file as it is, and says so, when another write changed it after this call\'s write failed', async () => {
+    // A save lands in the object file during the failed post-write check, so the backup is not restored over it
+    const other = JSON.stringify({ ...JSON.parse(await readFile(objectPath(), 'utf8')), isGlobal: true }, null, '\t');
+    const server = failingObjectVerify(writer => {
+      const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<void> };
+      internals.verifyWrittenFile = async (path, name) => {
+        await writeFile(path, other);
+        throw new Error(`Post-write verification failed for "${name}"`);
+      };
+    });
+    expect((await call('create_animation_folder', { folderPath: 'Moves' }, server)).text)
+      .toBe('Error creating animation folder: Post-write verification failed for "Sprite". objectTypes/Sprite.json was left as it is, since '
+        + 'another write changed it after this call\'s write failed; objectTypes/Sprite.json.bak holds the previous JSON.');
+    expect(await readFile(objectPath(), 'utf8')).toBe(other);
+  });
+
+  it('leaves the object file as it is, and says so, when it could not be read to restore it', async () => {
+    const server = failingObjectVerify(writer => {
+      writer.restoreFailedWrite = async () => ({ restored: false, label: 'objectTypes/Sprite.json', reason: 'unreadable' });
+    });
+    expect((await call('create_animation_folder', { folderPath: 'Moves' }, server)).text)
+      .toBe('Error creating animation folder: Post-write verification failed for "Sprite". objectTypes/Sprite.json was left as it is, since '
+        + 'it could not be read; objectTypes/Sprite.json.bak holds the previous JSON.');
+  });
+
+  it('says that restoring from the backup failed when restoreFailedWrite throws', async () => {
+    const server = failingObjectVerify(writer => {
+      writer.restoreFailedWrite = async () => { throw new Error('EBUSY: resource busy or locked'); };
+    });
+    expect((await call('create_animation_folder', { folderPath: 'Moves' }, server)).text)
+      .toBe('Error creating animation folder: Post-write verification failed for "Sprite". Restoring objectTypes/Sprite.json from its backup '
+        + 'failed; objectTypes/Sprite.json.bak holds the previous JSON.');
   });
 
   it('names an fs error by its code and project-relative path', async () => {
