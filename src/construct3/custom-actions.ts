@@ -7,7 +7,7 @@
  * when the object overrides it (the editor's label "Name (Family)", manual:
  * Custom actions). Names of definitions are compared ignoring case for
  * clashes, as the other event names are; a call finds its definition ignoring
- * case too (Construct 3 r506.2 ran a call whose name differed from its
+ * case too (Construct 3 r506-2 (Free edition) ran a call whose name differed from its
  * definition only in letter case, and saved it with the definition's spelling).
  */
 
@@ -108,11 +108,13 @@ export function customActionOwnerError(objectClass: string, objectTypes: readonl
 /**
  * The definition a call runs: on customActionObjectClass when the call names
  * one, else on its objectClass, else on a family the objectClass belongs to
- * (the first such family in project order that defines the name).
+ * (the first such family, in the order the families are read, that defines the name).
  * `familiesOf` is upstream's familiesContaining over the project's
- * families. The name is matched ignoring letter case, as Construct 3 r506.2
- * ran a call in the editor check; a definition with the call's exact spelling
- * wins over one that differs in case. Undefined when none.
+ * families. The name is matched ignoring letter case: Construct 3 r506-2 (Free
+ * edition) ran a call whose name differed from its definition only in letter
+ * case. On one owner a definition with the call's exact spelling wins over one
+ * that differs in case; an owner earlier in the order above wins over a later
+ * one whatever the spelling. Undefined when none.
  */
 export function resolveCustomActionCall(
   call: { customAction: string; objectClass: string; customActionObjectClass?: string },

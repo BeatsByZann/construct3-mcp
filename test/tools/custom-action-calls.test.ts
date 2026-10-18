@@ -59,14 +59,14 @@ function sheetEvents(): Ev[] {
   ];
 }
 
-function setup(events: Ev[] = sheetEvents()) {
+function setup(events: Ev[] = sheetEvents(), moreFamilies: Array<[string, Ev]> = []) {
   const server = new MockServer();
   const reader = new MockReader({
     objects: new Map([
       ['Alpha', { name: 'Alpha', 'plugin-id': 'Sprite', sid: 1 }],
       ['Beta', { name: 'Beta', 'plugin-id': 'Sprite', sid: 2 }],
     ]),
-    families: new Map([['Fam', { name: 'Fam', members: ['Alpha'], sid: 3 }]]),
+    families: new Map<string, Ev>([['Fam', { name: 'Fam', members: ['Alpha'], sid: 3 }], ...moreFamilies]),
     eventSheets: new Map([['Sheet1', { name: 'Sheet1', sid: 10, events }]]),
   });
   const writer = new MockWriter();
@@ -138,9 +138,87 @@ describe('add_event_block with a custom action call', () => {
       sheetName: 'Sheet1', conditions: tick,
       actions: [{ customAction: 'Hurt', objectClass: 'Nope' }],
     }));
-    expect(text).toContain('Object class validation failed:');
-    expect(text).toContain('Unknown objectClass "Nope"');
+    expect(text).toBe('Unknown objectClass "Nope". A custom action belongs to an object type or family (not System or the Functions object). Nothing was changed.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('words the refusal of an unknown or case-variant owner alike in add_event_block and update_event_block', async () => {
+    const wording = 'Unknown objectClass "Nope". A custom action belongs to an object type or family (not System or the Functions object). Nothing was changed.';
+    const { server } = setup();
+    expect(errorText(await server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'Hurt', objectClass: 'Nope' }],
+    }))).toBe(wording);
+    const hint = 'Unknown objectClass "alpha": object type and family names are matched with their letter case. Did you mean "Alpha"? Nothing was changed.';
+    expect(errorText(await server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'Hurt', objectClass: 'alpha' }],
+    }))).toBe(hint);
+    expect(errorText(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick, actions: [{ customAction: 'Hurt', objectClass: 'alpha' }],
+    }))).toBe(hint);
+  });
+
+  it('accepts a call on a family that names that family', async () => {
+    const { server, writer } = setup();
+    const data = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Wave', objectClass: 'Fam', customActionObjectClass: 'Fam' }],
+    }));
+    expect(data.success).toBe(true);
+    expect(data.warnings).toBeUndefined();
+    expect(Object.keys(actionsOf(eventWith(written(writer), data.generatedSid as number))[0]))
+      .toEqual(['customAction', 'objectClass', 'customActionObjectClass', 'sid']);
+  });
+
+  it('resolves on the object type alone when the family files cannot be read', async () => {
+    const { server, reader } = setup();
+    reader.readAllFamilies = async () => { throw new Error('unreadable'); };
+    const own = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Hurt', objectClass: 'Alpha', parameters: ['1'] }],
+    }));
+    expect(own.success).toBe(true);
+    expect(own.warnings).toBeUndefined();
+    const family = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Wave', objectClass: 'Alpha' }],
+    }));
+    expect(family.warnings).toEqual([missingDefinition('Block', 'Wave', 'Alpha')]);
+  });
+
+  it('checks and writes a custom action call in a sub-event as it does in a block', async () => {
+    const { server, writer } = setup();
+    const refused = errorText(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      children: [{ actions: [{ customAction: 'Hurt', objectClass: 'System' }] }],
+    }));
+    expect(refused).toBe('Unknown objectClass "System". A custom action belongs to an object type or family (not System or the Functions object). Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    const data = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      children: [{ conditions: tick, actions: [{ customAction: 'Wave', objectClass: 'Alpha' }, { customAction: 'Missing', objectClass: 'Alpha' }] }],
+    }));
+    const child = (eventWith(written(writer), data.generatedSid as number).children as Ev[])[0];
+    expect(Object.keys(actionsOf(child)[0])).toEqual(['customAction', 'objectClass', 'customActionObjectClass', 'sid']);
+    expect(data.warnings).toEqual([missingDefinition('Sub-event at depth 2', 'Missing', 'Alpha')]);
+  });
+
+  it('warns when an object belongs to two families that both define the custom action, and uses the first', async () => {
+    const events = [...sheetEvents(), customAction('Fam2', 'Wave', 560)];
+    const { server, writer } = setup(events, [['Fam2', { name: 'Fam2', members: ['Alpha'], sid: 4 }]]);
+    const data = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Wave', objectClass: 'Alpha' }],
+    }));
+    expect(data.warnings).toEqual([
+      'Block, custom action call "Wave" on "Alpha": "Alpha" belongs to the families "Fam" and "Fam2", which both define a custom action of that name. The call uses the one on "Fam"; which one Construct 3 runs was not checked in the editor.',
+    ]);
+    expect(actionsOf(eventWith(written(writer), data.generatedSid as number))[0].customActionObjectClass).toBe('Fam');
+    // Naming the family settles it
+    const named = parse(await server.callTool('add_event_block', {
+      sheetName: 'Sheet1', conditions: tick,
+      actions: [{ customAction: 'Wave', objectClass: 'Alpha', customActionObjectClass: 'Fam2' }],
+    }));
+    expect(named.warnings).toBeUndefined();
   });
 
   it('refuses customActionObjectClass that is not a family the object belongs to', async () => {
@@ -182,7 +260,7 @@ describe('add_event_block with a custom action call', () => {
     const call = actionsOf(eventWith(written(writer), data.generatedSid as number))[0];
     expect(call.customAction).toBe('Hurt');
     expect(data.warnings).toEqual([
-      'Block, custom action call "hurt" on "Alpha": the name differs only in letter case from the custom action "Hurt" on "Alpha". Construct 3 r506.2 ran such a call and saved it with the definition\'s spelling, "Hurt".',
+      'Block, custom action call "hurt" on "Alpha": the name differs only in letter case from the custom action "Hurt" on "Alpha". Construct 3 r506-2 (Free edition) ran such a call and saved it with the definition\'s spelling, "Hurt". The call is written with that spelling.',
     ]);
   });
 
@@ -275,6 +353,18 @@ describe('update_event_block_action and custom actions', () => {
     expect(data.warnings).toEqual(['Action 0, custom action call "Hurt" on "Alpha": 2 argument(s) for 1 parameter(s) (amount).']);
   });
 
+  it('keeps the stored name of a call that differs from its definition only in letter case, and says so', async () => {
+    const events = [...sheetEvents(), block(620, { actions: [{ customAction: 'hurt', objectClass: 'Alpha', sid: 621, parameters: ['1'] }] })];
+    const { server, writer } = setup(events);
+    const data = parse(await server.callTool('update_event_block_action', {
+      sheetName: 'Sheet1', blockSid: 620, actionIndex: 0, parameters: ['2'],
+    }));
+    expect(actionsOf(eventWith(written(writer), 620))[0].customAction).toBe('hurt');
+    expect(data.warnings).toEqual([
+      'Action 0, custom action call "hurt" on "Alpha": the name differs only in letter case from the custom action "Hurt" on "Alpha". Construct 3 r506-2 (Free edition) ran such a call and saved it with the definition\'s spelling, "Hurt". The stored name was kept.',
+    ]);
+  });
+
   it('refuses an event that is no block, function block or custom action block', async () => {
     const { server } = setup();
     const text = errorText(await server.callTool('update_event_block_action', {
@@ -301,7 +391,7 @@ describe('update_event_block and custom actions', () => {
     expect(data.warnings).toEqual(['Block (SID 600), action 0, custom action call "Hurt" on "Alpha": 2 argument(s) for 1 parameter(s) (amount).']);
   });
 
-  it('adds a custom action call to a block, with the same checks as add_event_block', async () => {
+  it('adds the family key to a member\'s call of its family\'s custom action added with update_event_block', async () => {
     const { server, writer } = setup();
     const data = parse(await server.callTool('update_event_block', {
       sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'Wave', objectClass: 'Alpha' }],
@@ -351,6 +441,8 @@ describe('refusals of custom action edits', () => {
       { tool: 'add_event_block', args: { sheetName: 'Sheet1', actions: [{ customAction: 'Hurt', objectClass: 'System' }] } },
       { tool: 'add_event_block', args: { sheetName: 'Sheet1', actions: [{ customAction: 'Hurt', objectClass: 'Functions' }] } },
       { tool: 'add_event_block', args: { sheetName: 'Sheet1', actions: [{ customAction: 'Wave', objectClass: 'Beta', customActionObjectClass: 'Fam' }] } },
+      { tool: 'add_event_block', args: { sheetName: 'Sheet1', conditions: tick, actions: [{ customAction: 'Hurt', objectClass: 'Nope' }] } },
+      { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'Hurt', objectClass: 'Nope' }] } },
       { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'Hurt', objectClass: 'System' }] } },
       { tool: 'update_event_block', args: { sheetName: 'Sheet1', sid: 600, addActions: [{ customAction: 'Wave', objectClass: 'Beta', customActionObjectClass: 'Fam' }] } },
       { tool: 'update_event_block_action', args: { sheetName: 'Sheet1', blockSid: 600, actionIndex: 0, parameters: { amount: '7' } } },

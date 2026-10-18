@@ -1025,7 +1025,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       eventPath: eventPathSchema,
       actionIndex: z.number().int().min(0).describe('0-based index of the action to update'),
       parameters: z.union([boundedRecord(), z.array(functionCallArgumentSchema).max(100)])
-        .describe('New parameter values — replaces existing parameters entirely. Key-value pairs for plugin/behavior/System actions (max 100 keys, depth 6); for a function call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted)'),
+        .describe('New parameter values — replaces existing parameters entirely. Key-value pairs for plugin/behavior/System actions (max 100 keys, depth 6); for a function call or a custom action call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted)'),
     },
     async (args) => {
       try {
@@ -1074,7 +1074,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           if (argumentsGiven.length > 0) action.parameters = argumentsGiven;
           else delete action.parameters;
           warnings = customActionCallWarnings(action as unknown as CustomActionCall, customContext,
-            `Action ${args.actionIndex}, custom action call "${String(action.customAction)}" on "${String(action.objectClass)}"`);
+            `Action ${args.actionIndex}, custom action call "${String(action.customAction)}" on "${String(action.objectClass)}"`, 'kept');
         } else if (isFunctionCall(action)) {
           // Function calls take positional arguments, as the editor saves them
           const name = action.callFunction as string;
@@ -1428,7 +1428,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'update_event_block',
     {
-      description: 'Update an existing block event in an event sheet — modify action parameters, add/remove actions or conditions, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
+      description: 'Update an existing block, function block or custom action block in an event sheet — modify action parameters, add/remove actions or conditions, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
         sid: z.number().int().positive().describe('SID of the block, function block or custom action block to update'),
@@ -1439,7 +1439,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         updateActions: z.array(z.object({
           index: z.number().int().min(0).describe('Action index (0-based)'),
           parameters: z.union([boundedRecord(), z.array(functionCallArgumentSchema).max(100)]).optional()
-            .describe('New parameter values — merged with existing (max 100 keys, depth 6). For a function call: an array replaces the arguments; an object keyed by position ("0", "1", …) or parameter name replaces single arguments'),
+            .describe('New parameter values — merged with existing (max 100 keys, depth 6). For a function call: an array replaces the arguments; for a custom action call: an array in parameter order replaces them; an object keyed by position ("0", "1", …) or parameter name replaces single arguments'),
           disabled: z.boolean().optional().describe('Enable or disable this action'),
           text: z.string().max(10_000).optional().describe('Comment rows only: the new text; the row keeps its place and colours'),
           'text-color': commentColorSchema.nullable().optional().describe('Comment rows only: the new text colour [red, green, blue, alpha], each 0-1; null removes it'),
@@ -1645,7 +1645,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
                 if (argumentsGiven.length > 0) act.parameters = argumentsGiven;
                 else delete act.parameters;
                 warnings.push(...customActionCallWarnings(act as unknown as CustomActionCall, customContext!,
-                  `${where}, action ${upd.index}, custom action call "${String(act.customAction)}" on "${String(act.objectClass)}"`));
+                  `${where}, action ${upd.index}, custom action call "${String(act.customAction)}" on "${String(act.objectClass)}"`, 'kept'));
               } else if (isFunctionCall(act)) {
                 const name = act.callFunction as string;
                 const label = `${where}, action ${upd.index} (call to "${name}")`;
@@ -1788,7 +1788,6 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         };
         return toolResult({ ...result, eventPath: path });
       } catch (error) {
-        if (error instanceof CustomActionCallError) return toolError(nothingChanged(error.message));
         console.error('[update_event_block] failed:', error);
         return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
       }

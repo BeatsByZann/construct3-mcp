@@ -44,6 +44,7 @@ import { findEnclosingEvents } from '../construct3/event-variable-names.js';
 import type { BehaviorLookupData } from '../construct3/analyzers/behavior-refs.js';
 import { customActionDefinitions, customActionOwnerError, resolveCustomActionCall, type CustomActionDefinition } from '../construct3/custom-actions.js';
 import { familiesContaining } from '../construct3/animation-rename.js';
+import { nameKey } from '../construct3/names.js';
 import {
   BEHAVIOR_TYPE_KEY,
   LEGACY_BEHAVIOR_TYPE_KEY,
@@ -260,7 +261,7 @@ const ACTION_SHAPES =
   'a function call { callFunction, parameters?: [...], disabled? }, a custom action call { customAction, objectClass, customActionObjectClass?, parameters?: [...], disabled? }, a script action { type: "script", script, language?, disabled? } ' +
   'or a comment row { type: "comment", text, "text-color"?, "background-color"? } (colours as [red, green, blue, alpha], each 0-1).';
 
-/** Union of standard, function call, script and comment actions; a "sid" key is ignored (see Strict Input). */
+/** Union of standard, function call, custom action call, script and comment actions; a "sid" key is ignored (see Strict Input). */
 export const actionSchema = z.preprocess(withoutSid, z.union(
   [standardActionSchema, functionCallActionSchema, customActionCallSchema, scriptActionSchema, commentActionSchema],
   {
@@ -1581,6 +1582,8 @@ export function collectObjectRefs(
   for (const a of actions) {
     // Function calls name no object: the legacy form's id/objectClass are dropped when written
     if (isFunctionCallInput(a)) continue;
+    // Custom action calls are checked by buildAction and the update tools (customActionCallError), which word their refusals alike
+    if (isCustomActionCall(a)) continue;
     if ('objectClass' in a && typeof a.objectClass === 'string') {
       refs.push(toObjectRef(a as Record<string, unknown> & { objectClass: string }, 'action'));
     }
@@ -1785,14 +1788,17 @@ export function customActionCallError(
 
 /**
  * The warnings for a custom action call: no definition it runs, a name that
- * differs from its definition only in letter case, or another number of
- * arguments than the definition's parameters. One helper for the tools that
- * write calls and those that change their arguments.
+ * differs from its definition only in letter case, an object that belongs to
+ * several families which define the name, or another number of arguments than
+ * the definition's parameters. One helper for the tools that write calls
+ * (`nameHandling` "written": the call gets the definition's spelling) and
+ * those that change their arguments ("kept": the stored name stays).
  */
 export function customActionCallWarnings(
   call: { customAction: string; objectClass: string; customActionObjectClass?: string; parameters?: unknown[] },
   context: CustomActionContext,
   label: string,
+  nameHandling: 'written' | 'kept' = 'written',
 ): string[] {
   const definition = resolveCustomActionCall(call, context.definitions, context.familiesOf);
   if (definition === undefined) {
@@ -1800,7 +1806,14 @@ export function customActionCallWarnings(
   }
   const warnings: string[] = [];
   if (definition.name !== call.customAction) {
-    warnings.push(`${label}: the name differs only in letter case from the custom action "${definition.name}" on "${definition.owner}". Construct 3 r506.2 ran such a call and saved it with the definition's spelling, "${definition.name}".`);
+    warnings.push(`${label}: the name differs only in letter case from the custom action "${definition.name}" on "${definition.owner}". Construct 3 r506-2 (Free edition) ran such a call and saved it with the definition's spelling, "${definition.name}". ${nameHandling === 'written' ? 'The call is written with that spelling.' : 'The stored name was kept.'}`);
+  }
+  if (call.customActionObjectClass === undefined && definition.owner !== call.objectClass) {
+    const others = context.familiesOf(call.objectClass).filter(family => family !== definition.owner
+      && context.definitions.some(d => d.owner === family && nameKey(d.name) === nameKey(call.customAction)));
+    if (others.length > 0) {
+      warnings.push(`${label}: "${call.objectClass}" belongs to the families "${definition.owner}" and ${others.map(f => `"${f}"`).join(', ')}, which both define a custom action of that name. The call uses the one on "${definition.owner}"; which one Construct 3 runs was not checked in the editor.`);
+    }
   }
   const given = call.parameters?.length ?? 0;
   if (given !== definition.parameters.length) {
