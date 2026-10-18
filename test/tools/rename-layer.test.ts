@@ -246,6 +246,24 @@ describe('rename_layer when a write fails', () => {
     expect(await contents()).toEqual(before);
   });
 
+  it('says nothing was written, not that files were restored, when the first write fails', async () => {
+    const before = await contents();
+    const internals = writer as unknown as { atomicWrite: (path: string, content: string | Buffer) => Promise<void> };
+    const atomicWrite = internals.atomicWrite.bind(writer);
+    let writes = 0;
+    internals.atomicWrite = async (path, content) => {
+      if (writes++ === 0) throw new Error('disk full');
+      return atomicWrite(path, content);
+    };
+    const data = await rename(ALL, 'Game');
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe('Error renaming layer: disk full. Nothing was written before this failure and nothing was changed: '
+      + 'the layouts and the event sheets are as they were before the call.');
+    expect(data.text).not.toContain('restored');
+    expect(data.text).not.toContain('rolled back');
+    expect(await contents()).toEqual(before);
+  });
+
   it('puts back every layout when the event sheet write fails', async () => {
     const before = await contents();
     const write = writer.writeEntityFile.bind(writer);

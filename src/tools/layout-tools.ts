@@ -1123,7 +1123,9 @@ function undeclaredVariablesError(
 /**
  * Undo an update_layer or rename_layer rename whose write failed for a reason
  * other than a refusal as stale, and return the error message (`written`
- * names what the call wrote first: the layout, or the layouts). The layout(s)
+ * names what the call wrote first: the layout, or the layouts, or 'nothing'
+ * when the first write failed, which gets a message that says nothing was
+ * written instead of one that claims a restore). The layout(s)
  * and the event sheets written before are put back by the writer
  * (undoToolCall), which leaves a file saved again in the editor after the
  * call wrote it as it is. The file whose write failed is restored from
@@ -1139,7 +1141,7 @@ function undeclaredVariablesError(
  * .bak).
  */
 export async function rollBackLayerRename(
-  writer: MutationToolDeps['writer'], error: unknown, written: 'the layout' | 'the layouts' = 'the layout',
+  writer: MutationToolDeps['writer'], error: unknown, written: 'the layout' | 'the layouts' | 'nothing' = 'the layout',
 ): Promise<string> {
   // A refusal of the writer ends with a full stop already
   const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
@@ -1162,6 +1164,9 @@ export async function rollBackLayerRename(
   }
   const undo = await writer.undoToolCall();
   if (undo.left.length === 0 && failed.length === 0 && kept.length === 0) {
+    if (written === 'nothing') {
+      return `${cause}.${otherWrite} Nothing was written before this failure and nothing was changed: the layouts and the event sheets are as they were before the call.`;
+    }
     return `${cause}.${otherWrite} The rename was rolled back: ${written} and the event sheets written before were restored from their backups.`;
   }
   const parts = [

@@ -115,16 +115,20 @@ export function registerLayerRenameTools({ server: mcpServer, reader, writer }: 
         // The layouts first, then the event sheets; when a write fails, what the call wrote is rolled back.
         // A write refused because its file changed on disk during the call (StaleFileError) has had the writer do so already
         writing = true;
+        let written = 0;
         try {
           for (const target of renamed) {
             await writer.writeEntityFile('layouts', target.name, target.layout, writer.getSubfolderForEntity('layouts', target.name));
+            written++;
           }
           for (const [sheetName, sheet] of references?.rewrites ?? []) {
             await writer.writeEntityFile('eventSheets', sheetName, sheet, writer.getSubfolderForEntity('eventSheets', sheetName));
+            written++;
           }
         } catch (error) {
           if (error instanceof StaleFileError) throw error;
-          throw new Error(await rollBackLayerRename(writer, error, 'the layouts'));
+          // When the first write failed there is nothing of the call's to put back, and the message must not claim a restore
+          throw new Error(await rollBackLayerRename(writer, error, written === 0 ? 'nothing' : 'the layouts'));
         }
 
         return toolResult({ ...common, action: 'renamed', filesWritten: files });
