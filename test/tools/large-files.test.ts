@@ -2,7 +2,7 @@
  * Entity files the reader skips (issue #49), through the tools on a temp copy
  * of the minimal fixture with the real reader, writer and ID generator:
  * - add_instance_to_layout and create_object allocate UIDs above those in a
- *   layout or object type over the reader's 10MB cap, and refuse when a
+ *   layout or object type over the reader's size limit (10MB by default), and refuse when a
  *   registered file exists but cannot be scanned at all
  * - validate_project reports such files as not checked (`complete: false`)
  * - get_layout_details does not suggest other names for a file it found
@@ -94,7 +94,7 @@ afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
 });
 
-describe('UIDs next to files over the read cap', () => {
+describe('UIDs next to files over the size limit', () => {
   it('add_instance_to_layout allocates above the UIDs of a layout over 10MB', async () => {
     await registerInProject('layouts', 'Big');
     await writeBigLayout('Big', 40000);
@@ -153,7 +153,7 @@ describe('UIDs next to files over the read cap', () => {
   });
 });
 
-describe('validate_project and get_layout_details on a layout over the read cap', () => {
+describe('validate_project and get_layout_details on a layout over the size limit', () => {
   it('validate_project reports the layout as unscanned and the result as not complete', async () => {
     await registerInProject('layouts', 'Big');
     await writeBigLayout('Big', 40000);

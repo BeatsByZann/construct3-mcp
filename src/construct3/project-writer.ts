@@ -720,15 +720,16 @@ export class Construct3ProjectWriter {
     try {
       json = JSON.stringify(data, null, '\t');
     } catch (e) {
-      if (e instanceof RangeError) {
+      if (e instanceof RangeError && /Invalid string length/.test(e.message)) {
         throw new Error(`Generated JSON for "${entityName}" is too large to write (longer than a JavaScript string can hold). Nothing was written.`);
       }
       throw e;
     }
-    // Cheap early check: the written text is never shorter than this (see assertWritableSize)
+    // Cheap early check: the written text is never shorter than this, but its bytes may be more,
+    // so the size is a lower bound (see assertWritableSize for the exact one)
     const limit = fileSizeLimit();
     if (json.length > limit.bytes) {
-      throw new Error(`Generated JSON for "${entityName}" is too large (${describeSize(json.length, limit)}, over the ${describeFileSizeLimit(limit)}). Nothing was written.`);
+      throw new Error(`Generated JSON for "${entityName}" is too large (at least ${describeSize(json.length, limit)}, over the ${describeFileSizeLimit(limit)}). Nothing was written.`);
     }
 
     // Verify it round-trips cleanly

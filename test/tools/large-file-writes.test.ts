@@ -43,13 +43,14 @@ const call = async (tool: string, args: Record<string, unknown>): Promise<ToolDa
 const rename = (newName: string) => call('update_layer', { layoutName: 'Layout 1', layerName: 'Main', newName });
 
 /** "Layout 1" with `copies` copies of its first instance, its first instance's tags padded with spaces so the text is exactly `bytes`, in LF or CRLF. Returns its line breaks. */
-async function writeLayoutOfSize(bytes: number, options: { copies?: number; crlf?: boolean } = {}): Promise<number> {
+async function writeLayoutOfSize(bytes: number, options: { copies?: number; crlf?: boolean; bom?: boolean } = {}): Promise<number> {
   const layout = await readLayoutFile();
   const [first] = layout.layers[0].instances;
   if (options.copies) layout.layers[0].instances = Array.from({ length: options.copies }, (_, i) => ({ ...structuredClone(first), uid: 1000 + i }));
+  const bom = options.bom ? String.fromCharCode(0xfeff) : '';
   const render = (value: unknown) => {
     const lf = JSON.stringify(value, null, '\t');
-    return options.crlf ? lf.replace(/\n/g, '\r\n') : lf;
+    return bom + (options.crlf ? lf.replace(/\n/g, '\r\n') : lf);
   };
   layout.layers[0].instances[0].tags = '';
   const base = Buffer.byteLength(render(layout));
@@ -128,7 +129,7 @@ describe('the size limit for reads and writes', () => {
     vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
     const layout = await readLayoutFile();
     layout.name = 'Accents';
-    layout.layers[0].instances[0].tags = 'é'.repeat(Math.ceil(0.7 * MB));
+    layout.layers[0].instances[0].tags = String.fromCharCode(0xe9).repeat(Math.ceil(0.7 * MB));
     expect(JSON.stringify(layout, null, '\t').length).toBeLessThan(MB);
     await expect(writer.writeEntityFile('layouts', 'Accents', layout)).rejects.toThrow(/is too large/);
     expect(existsSync(layoutPath('Accents'))).toBe(false);
@@ -153,9 +154,45 @@ describe('the size limit for reads and writes', () => {
     expect(existsSync(`${layoutPath()}.bak`)).toBe(false);
   }, SLOW);
 
+  it('counts the three bytes of a BOM', async () => {
+    // The LF JSON after the rename is 2 bytes under 1MB; with the file's BOM the written text is 1 over it
+    await writeLayoutOfSize(MB - 16 + 3, { bom: true });
+    const text = await readFile(layoutPath());
+    expect([...text.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(text.length).toBeLessThanOrEqual(MB);
+
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const data = await rename('Main layer renamed');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('is too large');
+    expect(Buffer.compare(await readFile(layoutPath()), text)).toBe(0);
+    expect(existsSync(`${layoutPath()}.bak`)).toBe(false);
+
+    // Control: with room for the BOM the same rename is written, and the BOM stays
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '2');
+    const done = await rename('Main layer renamed');
+    expect(done.success).toBe(true);
+    expect([...(await readFile(layoutPath())).subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+  }, SLOW);
+
+  it('says the size of an early refusal is a lower bound', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const layout = await readLayoutFile();
+    layout.name = 'Plain';
+    layout.layers[0].instances[0].tags = ' '.repeat(MB + 100);
+    await expect(writer.writeEntityFile('layouts', 'Plain', layout)).rejects.toThrow(/is too large \(at least .*, over the 1MB limit/);
+    expect(existsSync(layoutPath('Plain'))).toBe(false);
+  }, SLOW);
+
   it('turns a value too large to stringify into the size refusal', async () => {
     const internals = writer as unknown as { validateJsonData: (data: unknown, name: string) => string };
     const huge = { toJSON: () => { throw new RangeError('Invalid string length'); } };
     expect(() => internals.validateJsonData(huge, 'Huge')).toThrow(/Generated JSON for "Huge" is too large to write/);
+  });
+
+  it('does not report a stack overflow as a size refusal', async () => {
+    const internals = writer as unknown as { validateJsonData: (data: unknown, name: string) => string };
+    const deep = { toJSON: () => { throw new RangeError('Maximum call stack size exceeded'); } };
+    expect(() => internals.validateJsonData(deep, 'Deep')).toThrow('Maximum call stack size exceeded');
   });
 });

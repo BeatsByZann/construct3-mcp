@@ -38,7 +38,7 @@ import {
   type ReadFailureCode,
 } from '../project-reader.js';
 import type { RawTextTerm } from '../raw-text-search.js';
-import { fileSizeLimit } from '../file-size-limit.js';
+import { describeIgnoredSetting, fileSizeLimit } from '../file-size-limit.js';
 
 /** A registered entity file that a bulk read skipped although it exists (or may exist). */
 export interface UnscannedFile {
@@ -84,7 +84,11 @@ const REASONS: Record<'E_INVALID_JSON' | 'E_READ_ERROR', string> = {
 /** Why a bulk read skipped a file, for messages: "over the 10MB size limit", "not valid JSON", ... */
 export function describeReadFailure(code: ReadFailureCode): string {
   if (code === 'E_FILE_NOT_FOUND') return 'not found';
-  if (code === 'E_FILE_TOO_LARGE') return `over the ${fileSizeLimit().megabytes}MB size limit`;
+  if (code === 'E_FILE_TOO_LARGE') {
+    const limit = fileSizeLimit();
+    const ignored = describeIgnoredSetting(limit);
+    return `over the ${limit.megabytes}MB size limit${ignored === undefined ? '' : ` (${ignored})`}`;
+  }
   return REASONS[code];
 }
 

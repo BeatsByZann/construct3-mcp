@@ -411,7 +411,7 @@ export class MockReader {
 
   /**
    * Register an entity that is present in c3proj but unreadable by the bulk
-   * reader (e.g. over the 10MB cap). It is absent from readAll*(), carries a
+   * reader (e.g. over the size limit). It is absent from readAll*(), carries a
    * typed read failure, and (optionally) serves raw text to scanEntityIdsRaw
    * for high-water UID recovery.
    */

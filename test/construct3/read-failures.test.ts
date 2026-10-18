@@ -109,7 +109,7 @@ afterEach(async () => {
 // ─── Read-failure recording ──────────────────────────────────
 
 describe('Construct3ProjectReader — read failures (real files)', () => {
-  it('records E_FILE_TOO_LARGE for a layout over the 10MB cap', async () => {
+  it('records E_FILE_TOO_LARGE for a layout over the default 10MB size limit', async () => {
     await registerInProject(tmpDir, 'layouts', 'Big');
     await writeOversizedLayout(tmpDir, 'Big', 30046);
     const reader = await openReader(tmpDir);

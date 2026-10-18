@@ -25,9 +25,10 @@ export const DEFAULT_MAX_FILE_MB = 10;
  * The largest C3MCP_MAX_FILE_MB accepted: the largest per-file size whose
  * whole-project measurements (an index build, reference planning and seven
  * update_layer rewrites of layouts of up to that size, with three event
- * sheets of a tenth of it) completed within half the default V8 heap, three
- * runs in three. Sizes of 16, 32, 64 and 128MB completed; 256MB ran out of
- * memory in every run.
+ * sheets of a tenth of it; layouts of instances, about a tenth of each only
+ * padding) completed within half the default V8 heap, three runs in three.
+ * Sizes of 16, 32, 64 and 128MB completed; 256MB ran out of memory in every
+ * run.
  */
 export const MAX_FILE_MB_CEILING = 128;
 
@@ -51,12 +52,17 @@ export function fileSizeLimit(env: NodeJS.ProcessEnv = process.env): FileSizeLim
   return { megabytes: value, bytes: value * MB };
 }
 
+/** The notice that C3MCP_MAX_FILE_MB was set to a value that does not count and the default applies; undefined when it counts or is unset. */
+export function describeIgnoredSetting(limit: FileSizeLimit = fileSizeLimit()): string | undefined {
+  if (limit.ignored === undefined) return undefined;
+  return `C3MCP_MAX_FILE_MB="${limit.ignored.slice(0, 40)}" was ignored: it must be a whole number `
+    + `of megabytes from 1 to ${MAX_FILE_MB_CEILING}`;
+}
+
 /** "10MB limit (...)" for refusals: the limit, and how to raise it, that it is at its maximum, or why the setting was ignored. */
 export function describeFileSizeLimit(limit: FileSizeLimit = fileSizeLimit()): string {
-  if (limit.ignored !== undefined) {
-    return `${limit.megabytes}MB limit (C3MCP_MAX_FILE_MB="${limit.ignored.slice(0, 40)}" was ignored: it must be a whole number `
-      + `of megabytes from 1 to ${MAX_FILE_MB_CEILING})`;
-  }
+  const ignored = describeIgnoredSetting(limit);
+  if (ignored !== undefined) return `${limit.megabytes}MB limit (${ignored})`;
   if (limit.megabytes >= MAX_FILE_MB_CEILING) return `${limit.megabytes}MB limit (the largest C3MCP_MAX_FILE_MB allows)`;
   return `${limit.megabytes}MB limit (the server setting C3MCP_MAX_FILE_MB raises it)`;
 }

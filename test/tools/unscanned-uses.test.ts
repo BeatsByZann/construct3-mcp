@@ -3,7 +3,7 @@
  * through the tools on a temp copy of the minimal fixture with the real
  * reader, writer and ID generator.
  *
- * A layout over the reader's 10MB cap, an event sheet or family that is not
+ * A layout over the reader's size limit (10MB by default), an event sheet or family that is not
  * valid JSON, or a file that cannot be read at all is left out of the
  * cross-reference index, so its uses were invisible to every reference check.
  * The checks now search such files as text for the names they look for:
@@ -97,7 +97,7 @@ const instance = (type: string, extra: Record<string, unknown> = {}) => ({
 });
 
 /**
- * A registered layout over the read cap: valid JSON whose layers (with
+ * A registered layout over the size limit: valid JSON whose layers (with
  * `instances`) and event sheet binding come after a string of spaces that
  * pushes them past the cap.
  */
@@ -168,7 +168,7 @@ afterEach(async () => {
 // ─── delete_object ──────────────────────────────────────────
 
 describe('delete_object with registered files that could not be parsed', () => {
-  it('refuses without force when a layout over the read cap names the object (the #55 repro)', async () => {
+  it('refuses without force when a layout over the size limit names the object (the #55 repro)', async () => {
     await addEnemy();
     await addBigLayout('Big', [instance('Enemy'), instance('Enemy')]);
     await startServer();
@@ -231,7 +231,7 @@ describe('delete_object with registered files that could not be parsed', () => {
     expect(result.unscannedFiles[0]).toMatchObject({ file: 'families/Foes', textSearch: 'possible-use' });
   });
 
-  it('refuses when an object property in a layout over the read cap holds the object\'s SID', async () => {
+  it('refuses when an object property in a layout over the size limit holds the object\'s SID', async () => {
     await addEnemy();
     await addBigLayout('Big', [instance('Sprite', { properties: { object: ENEMY_SID } })]);
     await startServer();
@@ -400,7 +400,7 @@ describe('delete_event_sheet with registered files that could not be parsed', ()
     await addEntity('eventSheets', 'Extra', { name: 'Extra', events: [], sid: 750000000000020 });
   });
 
-  it('refuses when a layout over the read cap is bound to the sheet, deletes with force', async () => {
+  it('refuses when a layout over the size limit is bound to the sheet, deletes with force', async () => {
     await addBigLayout('Big', [], 'Extra');
     await startServer();
 
@@ -638,7 +638,7 @@ describe('rename_animation with layouts that could not be parsed', () => {
     return enemy.animations.items.map((a: { name: string }) => a.name);
   }
 
-  it('refuses without force when a layout over the read cap names the object and the animation, renames with force', async () => {
+  it('refuses without force when a layout over the size limit names the object and the animation, renames with force', async () => {
     await addEnemy();
     await addBigLayout('Big', [instance('Enemy', { 'initial-animation': 'Walk' })]);
     await startServer();
