@@ -82,7 +82,7 @@ export interface IntegrityResult {
   info: IntegrityIssue[];
   /**
    * Registered files ("category/name") that exist but were not checked.
-   * Files over the read cap are `unscanned-file` warnings; files that could
+   * Files over the size limit are `unscanned-file` warnings; files that could
    * not be read or parsed are also `file-existence` errors.
    */
   unscannedFiles: string[];
