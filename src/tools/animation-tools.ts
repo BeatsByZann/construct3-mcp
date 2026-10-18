@@ -1,19 +1,21 @@
 /**
  * Animation tools: add_animation_to_sprite, update_animation_properties,
- * delete_animation, rename_animation, add_frame_to_animation,
- * delete_frame_from_animation, update_frame, replace_sprite_image.
+ * delete_animation, create_animation_folder, move_animation_to_folder,
+ * rename_animation, add_frame_to_animation, delete_frame_from_animation,
+ * update_frame, replace_sprite_image.
  */
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { WriteResult, ObjectType, Animation, AnimationFrame } from '../construct3/types.js';
-import { toolResult, toolError, notFoundError } from './shared.js';
-import { findNameClash } from '../construct3/names.js';
+import type { WriteResult, ObjectType, Animation, AnimationFrame, AnimationsContainer } from '../construct3/types.js';
+import { toolResult, toolError, notFoundError, validateSubfolder } from './shared.js';
+import { findNameClash, findFolderPathClash } from '../construct3/names.js';
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
 import { describeCharacter, getImageFileName, invalidImageNameCharacter } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { EntityWriteError, failedWriteLeftReason, filesLeftClause } from '../construct3/project-writer.js';
 import { StaleFileError } from '../construct3/disk-state.js';
+import { fileErrorText } from '../construct3/fs-errors.js';
 import {
   animationsSharingImageFiles,
   countAnimationNameParameters,
@@ -306,6 +308,119 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
       } catch (error) {
         console.error('[delete_animation] failed:', error);
         return toolError(`Error deleting animation: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }),
+  );
+
+  // ─── create_animation_folder ──────────────────────────────
+
+  server.tool(
+    'create_animation_folder',
+    'Create an animation folder, and the folders above it, among a Sprite object\'s animations (e.g. "Combat/Melee"). The folder is not '
+      + 'part of the frame image file names, so no image file changes. A folder whose name differs from a sibling folder only in case is refused',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      folderPath: z.string().min(1).max(500).describe('Animation folder path, "/"-separated (e.g. "Combat/Melee")'),
+    },
+    oneAtATime(async (args) => {
+      const relative = (path: string) => writer.projectRelative(path);
+      try {
+        validateSubfolder(args.folderPath);
+        const sprite = await loadSpriteAnimations(reader, args.objectName, true);
+        if (sprite.refusal !== undefined) return sprite.refusal;
+        const { obj, animations } = sprite;
+        const clash = findFolderPathClash(animations, args.folderPath);
+        if (clash !== undefined) return toolError(animationFolderCaseClashError(args.objectName, args.folderPath, clash));
+
+        // Each folder of the path that is not there yet, with the keys of a new project-bar folder (items, subfolders, name)
+        const parts = args.folderPath.split('/');
+        const created: string[] = [];
+        let node: AnimationsContainer = animations;
+        for (const [i, part] of parts.entries()) {
+          const path = parts.slice(0, i + 1).join('/');
+          let next = node.subfolders.find(folder => folder?.name === part);
+          if (next === undefined) {
+            next = { items: [], subfolders: [], name: part };
+            node.subfolders.push(next);
+            created.push(path);
+          } else if (!Array.isArray(next.items) || !Array.isArray(next.subfolders)) {
+            return toolError(`Animation folder "${path}" on "${args.objectName}" has no items or subfolders list. Nothing was changed.`);
+          }
+          node = next;
+        }
+        if (created.length === 0) {
+          return toolError(`Animation folder "${args.folderPath}" already exists on "${args.objectName}". Nothing was changed.`);
+        }
+
+        const backupPath = await writeObjectOrRollBack(writer, args.objectName, obj);
+        return toolResult({
+          success: true, entity: args.objectName, category: 'object', action: 'updated', backupFile: backupPath, foldersCreated: created,
+        });
+      } catch (error) {
+        console.error('[create_animation_folder] failed:', error);
+        return toolError(`Error creating animation folder: ${fileErrorText(error, relative)}`);
+      }
+    }),
+  );
+
+  // ─── move_animation_to_folder ─────────────────────────────
+
+  server.tool(
+    'move_animation_to_folder',
+    'Move an animation of a Sprite object to the end of an existing animation folder, or to the end of the top level of its animations '
+      + '(folderPath left out, null or ""). The folder is not part of the frame image file names, so no image file changes',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation to move'),
+      folderPath: z.string().max(500).nullable().optional()
+        .describe('Existing animation folder path, "/"-separated; left out, null or "" for the top level'),
+    },
+    oneAtATime(async (args) => {
+      const relative = (path: string) => writer.projectRelative(path);
+      try {
+        const targetPath = args.folderPath ?? '';
+        if (targetPath !== '') validateSubfolder(targetPath);
+        const sprite = await loadSpriteAnimations(reader, args.objectName, false);
+        if (sprite.refusal !== undefined) return sprite.refusal;
+        const { obj, animations } = sprite;
+        const found = findAnimation<Animation>(animations, args.animationName);
+        if (!found) {
+          return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${describeAvailableAnimations(animations)}. Nothing was changed.`);
+        }
+        const target = findAnimationFolder(animations, targetPath);
+        if (target === undefined || !Array.isArray(target.items)) {
+          const clash = findFolderPathClash(animations, targetPath);
+          return toolError(clash !== undefined
+            ? `Animation folder "${targetPath}" does not exist on "${args.objectName}"; "${clash}" does, whose name differs only in case. Nothing was changed.`
+            : `Animation folder "${targetPath}" does not exist on "${args.objectName}". Create it with create_animation_folder first. Nothing was changed.`);
+        }
+        const where = (path: string) => (path === '' ? 'the top level of the animations' : `animation folder "${path}"`);
+        if (found.items === target.items) {
+          return toolError(`Animation "${found.animation.name}" is already in ${where(targetPath)}. Nothing was changed.`);
+        }
+        const fromTop = found.items === animations.items;
+        const fromPath = fromTop ? '' : found.folders.join('/');
+
+        found.items.splice(found.items.indexOf(found.animation), 1);
+        target.items.push(found.animation);
+        const warnings = fromTop && animations.items.length === 0
+          ? [`"${found.animation.name}" was the last animation outside animation folders: the top level of the animations of "${args.objectName}" now has none.`]
+          : undefined;
+
+        const backupPath = await writeObjectOrRollBack(writer, args.objectName, obj);
+        return toolResult({
+          success: true,
+          entity: args.objectName,
+          category: 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          fromFolder: fromPath === '' ? null : fromPath,
+          toFolder: targetPath === '' ? null : targetPath,
+          warnings,
+        });
+      } catch (error) {
+        console.error('[move_animation_to_folder] failed:', error);
+        return toolError(`Error moving animation: ${fileErrorText(error, relative)}`);
       }
     }),
   );
@@ -912,6 +1027,104 @@ function animationNameFileError(animationName: string, existing = false): string
     + '(images/<object>-<animation>-000.png), and a file name cannot contain a path separator (/ or \\) or a character '
     + 'Windows does not allow in file names (: * ? " < > | or a control character). '
     + (existing ? 'Rename the animation first (rename_animation). Nothing was changed.' : 'Choose another name.');
+}
+
+/**
+ * The Sprite object `objectName` and its animations container, or the
+ * refusal to return from the tool (the object is not found, is not a Sprite,
+ * or has no animations structure); a refusal changed nothing. With
+ * `folderList`, the container and its folders must have lists of
+ * subfolders, as a tool that adds a folder needs.
+ */
+async function loadSpriteAnimations(
+  reader: MutationToolDeps['reader'],
+  objectName: string,
+  folderList: boolean,
+): Promise<{ obj: ObjectType; animations: AnimationsContainer; refusal?: undefined } | { refusal: ReturnType<typeof toolError> }> {
+  let obj: ObjectType;
+  try {
+    obj = await reader.readObjectType(objectName);
+  } catch {
+    return { refusal: notFoundError('Object', objectName, reader.findNearestName(objectName, 'objects'), 'list_objects') };
+  }
+  if (obj['plugin-id'] !== 'Sprite') {
+    return { refusal: toolError(`Object "${objectName}" is not a Sprite. Only Sprite objects have animations. Nothing was changed.`) };
+  }
+  const animations = obj.animations;
+  if (!animations || !Array.isArray(animations.items) || (folderList && !Array.isArray(animations.subfolders))) {
+    return { refusal: toolError(`Object "${objectName}" has no animations structure${folderList ? ' with a folder list' : ''}. Nothing was changed.`) };
+  }
+  return { obj, animations };
+}
+
+/**
+ * Write the Sprite object `obj` and return the path of its backup. When the
+ * write fails, throws an Error whose message names the cause (an fs error by
+ * its code and project-relative path) and what happened to the object file
+ * (rollBackObjectWrite).
+ */
+async function writeObjectOrRollBack(writer: MutationToolDeps['writer'], objectName: string, obj: ObjectType): Promise<string> {
+  const subfolder = writer.getSubfolderForEntity('objectTypes', objectName);
+  try {
+    return await writer.writeEntityFile('objectTypes', objectName, obj, subfolder);
+  } catch (error) {
+    const cause = fileErrorText(error, path => writer.projectRelative(path)).replace(/\.$/, '');
+    throw new Error(`${cause}. ${await rollBackObjectWrite(writer, error)}`);
+  }
+}
+
+/**
+ * The animation folder at `path` ("/"-separated folder names, compared
+ * exactly) among a Sprite's animations, or undefined when there is none.
+ * An empty path is the animations container itself (the top level).
+ */
+function findAnimationFolder(animations: AnimationsContainer, path: string): AnimationsContainer | undefined {
+  let node: AnimationsContainer = animations;
+  for (const part of path === '' ? [] : path.split('/')) {
+    const next: AnimationsContainer | undefined = Array.isArray(node.subfolders)
+      ? node.subfolders.find(folder => folder?.name === part)
+      : undefined;
+    if (next === undefined) return undefined;
+    node = next;
+  }
+  return node;
+}
+
+/**
+ * Error for an animation folder path with a folder that differs from an
+ * existing sibling folder only in case (findFolderPathClash). The rule is
+ * the server's, as for project-bar folders; how the editor compares
+ * animation folder names was not checked.
+ */
+function animationFolderCaseClashError(objectName: string, requested: string, existing: string): string {
+  return `Animation folder path "${requested}" has a folder whose name differs only in case from an existing animation folder on "${objectName}" `
+    + `(spelled as the existing folders are: "${existing}"): the server compares animation folder names ignoring case, as it does `
+    + `project-bar folders. Use "${existing}". Nothing was changed.`;
+}
+
+/**
+ * The sentence for the error of an animation tool whose one object file
+ * write failed (`error`): a write refused before it replaced the file
+ * changed nothing; one that failed after (EntityWriteError) is restored
+ * from its backup while the file holds that write's own content, and left
+ * as it is when another write replaced it during this one or changed it
+ * after.
+ */
+async function rollBackObjectWrite(writer: MutationToolDeps['writer'], error: unknown): Promise<string> {
+  if (!(error instanceof EntityWriteError)) return 'Nothing was changed.';
+  if (error.changedByOtherWrite) {
+    return 'Another write replaced the object file during this one (a tool call running in parallel?); it was left as that write left it: '
+      + 're-read the object to check it.';
+  }
+  const label = writer.projectRelative(error.backupPath.replace(/\.bak$/, ''));
+  try {
+    const { restored, reason } = await writer.restoreFailedWrite(error);
+    return restored
+      ? `The change was rolled back: ${label} was restored from its backup (its .bak stays).`
+      : `${label} was left as it is, since ${failedWriteLeftReason(reason)}; ${label}.bak holds the previous JSON.`;
+  } catch {
+    return `Restoring ${label} from its backup failed; ${label}.bak holds the previous JSON.`;
+  }
 }
 
 /** The first `max` items, quoted, and how many more there are. */
