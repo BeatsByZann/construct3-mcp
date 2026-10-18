@@ -3,7 +3,7 @@
  * consumers that depend on them (IdGenerator, validateProjectIntegrity).
  *
  * The in-memory MockReader fakes the I/O, so mock-only tests cannot catch a
- * broken production primitive: the 10MB size-cap bypass, path-map (subfolder)
+ * broken production primitive: the size-cap bypass (10MB by default), path-map (subfolder)
  * resolution, or the real fs error surface (ENOENT, EISDIR). Everything here
  * runs Construct3ProjectReader against files on disk in a temp copy of the
  * minimal-project fixture.

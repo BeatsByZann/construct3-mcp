@@ -87,7 +87,7 @@ export function describeReadFailure(code: ReadFailureCode): string {
   if (code === 'E_FILE_TOO_LARGE') {
     const limit = fileSizeLimit();
     const ignored = describeIgnoredSetting(limit);
-    return `over the ${limit.megabytes}MB size limit${ignored === undefined ? '' : ` (${ignored})`}`;
+    return `over the ${limit.megabytes}MB size limit${ignored === undefined ? '' : `; ${ignored}`}`;
   }
   return REASONS[code];
 }

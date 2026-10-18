@@ -22,13 +22,16 @@
 export const DEFAULT_MAX_FILE_MB = 10;
 
 /**
- * The largest C3MCP_MAX_FILE_MB accepted: the largest per-file size whose
- * whole-project measurements (an index build, reference planning and seven
- * update_layer rewrites of layouts of up to that size, with three event
- * sheets of a tenth of it; layouts of instances, about a tenth of each only
- * padding) completed within half the default V8 heap, three runs in three.
- * Sizes of 16, 32, 64 and 128MB completed; 256MB ran out of memory in every
- * run.
+ * The largest C3MCP_MAX_FILE_MB accepted, in megabytes. Measured on whole
+ * projects: seven layouts whose largest is the size (the others about 0.75,
+ * 0.5, 0.35, 0.25, 0.25 and 0.12 of it), three event sheets of a tenth of
+ * it, an index build (validate_project) and seven update_layer renames, with
+ * V8's heap capped at half its default. The generator factor sets how much
+ * of each layout is instances; the rest is padding. Factor 0.6 (about 23.5%
+ * of each layout is padding): 16, 32, 64 and 128MB passed every counted run,
+ * and 256MB ran out of memory in all four runs. Factor 0.7 (about 10%
+ * padding): 128MB passed every counted run. 16, 32 and 64MB were not run at
+ * 0.7; that they pass there is inferred from 128MB, not measured.
  */
 export const MAX_FILE_MB_CEILING = 128;
 
@@ -59,10 +62,10 @@ export function describeIgnoredSetting(limit: FileSizeLimit = fileSizeLimit()): 
     + `of megabytes from 1 to ${MAX_FILE_MB_CEILING}`;
 }
 
-/** "10MB limit (...)" for refusals: the limit, and how to raise it, that it is at its maximum, or why the setting was ignored. */
+/** "10MB limit (...)" for refusals: the limit, and how to raise it, or that it is at its maximum; when the setting was ignored, "10MB limit; ..." says why, without a second pair of parentheses. */
 export function describeFileSizeLimit(limit: FileSizeLimit = fileSizeLimit()): string {
   const ignored = describeIgnoredSetting(limit);
-  if (ignored !== undefined) return `${limit.megabytes}MB limit (${ignored})`;
+  if (ignored !== undefined) return `${limit.megabytes}MB limit; ${ignored}`;
   if (limit.megabytes >= MAX_FILE_MB_CEILING) return `${limit.megabytes}MB limit (the largest C3MCP_MAX_FILE_MB allows)`;
   return `${limit.megabytes}MB limit (the server setting C3MCP_MAX_FILE_MB raises it)`;
 }

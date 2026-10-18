@@ -31,8 +31,8 @@ describe('fileSizeLimit', () => {
     for (const value of ['0', String(MAX_FILE_MB_CEILING + 1), '1.5', 'abc', '-3', '1e2', '64MB']) {
       const limit = fileSizeLimit({ C3MCP_MAX_FILE_MB: value });
       expect(limit).toEqual({ megabytes: 10, bytes: 10 * MB, ignored: value });
-      expect(describeFileSizeLimit(limit)).toBe(`10MB limit (C3MCP_MAX_FILE_MB="${value}" was ignored: it must be a whole number `
-        + `of megabytes from 1 to ${MAX_FILE_MB_CEILING})`);
+      expect(describeFileSizeLimit(limit)).toBe(`10MB limit; C3MCP_MAX_FILE_MB="${value}" was ignored: it must be a whole number `
+        + `of megabytes from 1 to ${MAX_FILE_MB_CEILING}`);
     }
   });
 
@@ -63,8 +63,8 @@ describe('fileSizeLimit', () => {
 
   it('says in a skipped file reason that the setting was ignored', () => {
     vi.stubEnv('C3MCP_MAX_FILE_MB', '1e2');
-    expect(describeReadFailure('E_FILE_TOO_LARGE')).toBe('over the 10MB size limit (C3MCP_MAX_FILE_MB="1e2" was ignored: '
-      + `it must be a whole number of megabytes from 1 to ${MAX_FILE_MB_CEILING})`);
+    expect(describeReadFailure('E_FILE_TOO_LARGE')).toBe('over the 10MB size limit; C3MCP_MAX_FILE_MB="1e2" was ignored: '
+      + `it must be a whole number of megabytes from 1 to ${MAX_FILE_MB_CEILING}`);
     expect(describeReadFailure('E_INVALID_JSON')).toBe('not valid JSON');
   });
 });
