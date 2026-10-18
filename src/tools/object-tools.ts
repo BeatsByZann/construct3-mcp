@@ -7,9 +7,8 @@ import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, ObjectType, Instance, ObjectReference } from '../construct3/types.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
-import type { Construct3ProjectWriter, UndoReport } from '../construct3/project-writer.js';
-import { filesLeftClause } from '../construct3/project-writer.js';
-import { validateName, validateSubfolder, toolResult, toolError, notFoundError, folderCaseClashError } from './shared.js';
+import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
+import { validateName, validateSubfolder, toolResult, toolError, notFoundError, folderCaseClashError, deleteRegisteredEntity } from './shared.js';
 import { findFolderPathClash } from '../construct3/names.js';
 import {
   getProjectIndex,
@@ -85,7 +84,6 @@ import {
   findEffectUses,
   type EffectUse,
 } from '../construct3/analyzers/effect-uses.js';
-import { StaleFileError } from '../construct3/disk-state.js';
 import { withProjectSync } from './project-sync.js';
 
 export function registerObjectTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
@@ -471,29 +469,21 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         warnings.push(...unscannedWarnings(unscanned, 'Deleted'));
 
         // Its frame images (or single image) lose their user: kept as .bak, like
-        // the image of a deleted frame. Renamed first; when the object file cannot
-        // be deleted or project.c3proj not updated, the writer puts back the files
-        // the call changed (undoToolCall), leaving one changed on disk after the
-        // call changed it (an object file saved again in the editor) as it is,
-        // and the images are renamed back. A write refused because a file changed
-        // on disk during the call (StaleFileError) has had the writer put back the
-        // files already, so only the image renames, which the writer does not
-        // track, are undone here.
+        // the image of a deleted frame. They are renamed first; then the name
+        // leaves project.c3proj and the object file is deleted (#ISSUE). When a
+        // step fails, the writer has put back what the call changed (see
+        // deleteRegisteredEntity) and the images are renamed back here, since
+        // the writer does not track them.
         const images = await planDeletedObjectImages(reader, writer, args.name);
         const renames = images.parking?.renames ?? [];
         if (renames.length > 0) await writer.renameImageFiles(renames);
-        const subfolder = writer.getSubfolderForEntity('objectTypes', args.name);
-        let backupPath: string | undefined;
+        let backupPath: string;
         try {
-          backupPath = await writer.deleteEntityFile('objectTypes', args.name, subfolder);
-          await writer.removeFromProject('objectTypes', args.name);
+          backupPath = await deleteRegisteredEntity(writer, 'objectTypes', args.name);
         } catch (error) {
-          const undo = error instanceof StaleFileError ? undefined : await writer.undoToolCall();
-          const rollback = await rollBackObjectDelete(writer, undo, renames);
-          if (rollback === '') throw error;
-          // A refusal of the writer ends with a full stop already
-          const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
-          throw new Error(`${cause}. ${rollback}`);
+          const imagesBack = await renameObjectImagesBack(writer, renames);
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(imagesBack ? `${message} ${imagesBack}` : message);
         }
         warnings.push(...images.warnings);
 
@@ -912,9 +902,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         warnings.push(...effectUseWarnings({ broken: args.force ? effects.broken : [], unknown: effects.unknown }, 'Deleted'));
         warnings.push(...unscannedWarnings(unscanned, 'Deleted'));
 
-        const subfolder = writer.getSubfolderForEntity('families', args.name);
-        const backupPath = await writer.deleteEntityFile('families', args.name, subfolder);
-        await writer.removeFromProject('families', args.name);
+        const backupPath = await deleteRegisteredEntity(writer, 'families', args.name);
 
         // Instances of the former members lose the entries for the family's
         // behaviors and effects and the values of its instance variables
@@ -956,41 +944,24 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
 }
 
 /**
- * Undo what delete_object did before a step failed: say what the writer put
- * back of the files the call changed and what it left as it is (`undo`, from
- * Construct3ProjectWriter.undoToolCall; none after a write refused as stale,
- * whose error says so), and rename the image files back from .bak
- * (`renames`, as made). Returns sentences on what was undone and what could
- * not be, naming the files to recover by hand; empty when there was nothing
- * to undo.
+ * Rename the image files delete_object kept as .bak back (`renames`, as
+ * made), after a later step of the delete failed. Returns a sentence on how
+ * that went, naming the files to rename by hand when it failed; empty when
+ * there was nothing to rename.
  */
-async function rollBackObjectDelete(
+async function renameObjectImagesBack(
   writer: Construct3ProjectWriter,
-  undo: UndoReport | undefined,
   renames: ReadonlyArray<{ from: string; to: string }>,
 ): Promise<string> {
-  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-  const sentences: string[] = [];
-  if (undo !== undefined) {
-    const isObjectFile = (label: string) => label.startsWith('objectTypes/');
-    if (undo.restored.some(isObjectFile)) sentences.push('The object file was restored from its backup.');
-    const others = undo.restored.filter(label => !isObjectFile(label));
-    if (others.length > 0) sentences.push(`Put back as it was before the call: ${others.join(', ')}.`);
-    if (undo.left.length > 0) {
-      const left = filesLeftClause(undo.left);
-      sentences.push(`${left[0].toUpperCase()}${left.slice(1)}. Check the project (validate_project, git diff) before you run the tool again.`);
-    }
+  if (renames.length === 0) return '';
+  try {
+    await writer.renameImageFiles(renames.map(r => ({ from: r.to, to: r.from })).reverse());
+    return 'Its image files were renamed back from .bak.';
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return `Renaming its image files back from .bak failed too (${message}); rename them back by hand: ` +
+      `${renames.map(r => `"images/${r.to}" → "images/${r.from}"`).join(', ')}.`;
   }
-  if (renames.length > 0) {
-    try {
-      await writer.renameImageFiles(renames.map(r => ({ from: r.to, to: r.from })).reverse());
-      sentences.push('Its image files were renamed back from .bak.');
-    } catch (e) {
-      sentences.push(`Renaming its image files back from .bak failed too (${message(e)}); rename them back by hand: ` +
-        `${renames.map(r => `"images/${r.to}" → "images/${r.from}"`).join(', ')}.`);
-    }
-  }
-  return sentences.join(' ');
 }
 
 /**

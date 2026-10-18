@@ -419,14 +419,9 @@ describe('the writer\'s own updates of project.c3proj merge a change made on dis
     expect((await expectSuccess('validate_project')).data.valid).toBe(true);
   });
 
-  it('delete_event_sheet unregisters its sheet when project.c3proj is saved in the editor after the sheet was deleted', async () => {
+  it('delete_event_sheet unregisters its sheet when project.c3proj is saved in the editor before the deregistration', async () => {
     await expectSuccess('create_event_sheet', { name: 'Other' });
-    const deleteEntityFile = writer.deleteEntityFile.bind(writer);
-    vi.spyOn(writer, 'deleteEntityFile').mockImplementation(async (...args) => {
-      const backup = await deleteEntityFile(...args);
-      saveProjectInEditor();
-      return backup;
-    });
+    editorSavesProjectBeforeFirstCallOf(writer, 'removeFromProject');
 
     await expectSuccess('delete_event_sheet', { name: 'Other' });
 

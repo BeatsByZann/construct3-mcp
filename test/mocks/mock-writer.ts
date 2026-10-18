@@ -39,6 +39,15 @@ export class MockWriter {
     return `/mock/backup/${category}/${name}.json.bak`;
   }
 
+  async assertEntityFileCurrent(category: string, name: string, subfolder?: string): Promise<void> {
+    this.calls.push({ method: 'assertEntityFileCurrent', args: [category, name, subfolder] });
+  }
+
+  async entityOnDisk(category: string, name: string, subfolder?: string): Promise<{ project: 'omits'; file: 'absent' }> {
+    this.calls.push({ method: 'entityOnDisk', args: [category, name, subfolder] });
+    return { project: 'omits', file: 'absent' };
+  }
+
   async addToProject(
     category: string,
     name: string,

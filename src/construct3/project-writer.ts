@@ -9,7 +9,7 @@ import { readFile, writeFile, copyFile, unlink, mkdir, stat, rename, readdir } f
 import { dirname, relative, sep } from 'path';
 import { resolveProjectPath } from './path-utils.js';
 import { atomicReplace, existingSpelling, findFileIgnoringCase } from './atomic-write.js';
-import type { Construct3ProjectReader } from './project-reader.js';
+import { entityFolderPaths, type Construct3ProjectReader } from './project-reader.js';
 import type { IdGenerator } from './id-generator.js';
 import type { Addon, Subfolder, ProjectProperties } from './types.js';
 import { resetProjectIndex } from './analyzers/index-builder.js';
@@ -131,6 +131,14 @@ export interface UndoReport {
   restored: string[];
   /** Files that could not be put back, with their backup (null: the file did not exist before the call). */
   left: Array<{ label: string; backup: string | null }>;
+}
+
+/** What is on disk for a registered entity, read again (see Construct3ProjectWriter.entityOnDisk). */
+export interface EntityOnDisk {
+  /** project.c3proj: missing, not readable, or whether it lists the entity. */
+  readonly project: 'missing' | 'unreadable' | 'lists' | 'omits';
+  /** The entity's file. */
+  readonly file: 'present' | 'absent' | 'unknown';
 }
 
 /**
@@ -555,9 +563,11 @@ export class Construct3ProjectWriter {
    * scan are renewed), the file is read right before the write, and when it
    * changes between that read and the write it is read and changed again.
    * Only when it keeps changing is the update refused (StaleFileError).
-   * These updates run after the tool call wrote other files (registering a
-   * new entity, removing a deleted one), so refusing them for a change they
-   * can merge would leave the project half changed.
+   * These updates mostly run after the tool call wrote other files (registering
+   * a new entity), so refusing them for a change they can merge would leave the
+   * project half changed. A delete tool deregisters before it deletes the file;
+   * it checks that file first (assertEntityFileCurrent) and undoes the call when
+   * a later step fails.
    */
   private async updateProjectFile(change: (project: any) => boolean | void): Promise<string | undefined> {
     const projectPath = this.reader.getProjectPath();
@@ -574,7 +584,16 @@ export class Construct3ProjectWriter {
 
           const backupPath = await this.createBackup(projectPath);
           // Changed since the read: read it again, so that change is kept
-          if (!sameFileState(await statFileState(projectPath), asRead)) continue;
+          if (!sameFileState(await statFileState(projectPath), asRead)) {
+            // The backup may be from before that change. While this call has not
+            // written project.c3proj, back the changed file up again, so undoing
+            // the call (a delete tool whose file delete then fails) keeps the
+            // change instead of putting back the older file (#ISSUE)
+            const scope = currentToolCall();
+            const key = fileKey(projectPath);
+            if (scope && !scope.changes.has(key)) scope.backups.delete(key);
+            continue;
+          }
           await this.atomicWrite(projectPath, text);
           // Replaced: from here on the file counts as changed by the call, also
           // when the check below fails, so undoing the call puts it back or,
@@ -733,6 +752,41 @@ export class Construct3ProjectWriter {
       // Refused as stale: first put back what the call changed before
       throw await this.refusalAfterUndo(error);
     }
+  }
+
+  /**
+   * Refuse (StaleFileError) when an entity's file changed on disk after the
+   * server read it, as deleteEntityFile would, but before the tool writes
+   * anything: the delete tools check the file before they take its name out
+   * of project.c3proj (#ISSUE), so such a refusal changes nothing.
+   * deleteEntityFile checks again under the file's lock.
+   */
+  async assertEntityFileCurrent(category: EntityCategory, name: string, subfolder?: string): Promise<void> {
+    const filePath = this.entityFilePath(category, name, subfolder);
+    await this.assertUnchangedSinceRead(filePath, this.projectRelative(filePath));
+  }
+
+  /**
+   * What is on disk for an entity now, read again rather than inferred from
+   * what the call wrote: whether project.c3proj exists, can be read and lists
+   * the name (it is loaded again when it was saved meanwhile), and whether
+   * the entity's file exists. The delete tools report this after a failed
+   * step and check it after the delete (#ISSUE).
+   */
+  async entityOnDisk(category: EntityCategory, name: string, subfolder?: string): Promise<EntityOnDisk> {
+    let file: EntityOnDisk['file'];
+    try {
+      file = (await statFileState(this.entityFilePath(category, name, subfolder))) === null ? 'absent' : 'present';
+    } catch {
+      file = 'unknown';
+    }
+    try {
+      if ((await statFileState(this.reader.getProjectPath())) === null) return { project: 'missing', file };
+      await this.reader.checkProjectFile();
+    } catch {
+      return { project: 'unreadable', file };
+    }
+    return { project: entityFolderPaths(this.reader.getProject()[category]).has(name) ? 'lists' : 'omits', file };
   }
 
   /**

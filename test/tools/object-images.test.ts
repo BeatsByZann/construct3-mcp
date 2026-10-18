@@ -130,14 +130,14 @@ describe('delete_object keeps the object\'s image files as .bak', () => {
     expect(await images()).toEqual(['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg']);
   });
 
-  it('restores the object file and renames the images back when project.c3proj cannot be updated', async () => {
+  it('leaves the object file in place and renames the images back when project.c3proj cannot be updated', async () => {
     await createCoin();
     const before = await readFile(objectPath('Coin'), 'utf8');
     writer.removeFromProject = async () => { throw new Error('project.c3proj is read-only'); };
 
     const result = await server.callTool('delete_object', { name: 'Coin' });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('project.c3proj is read-only. The object file was restored from its backup. ' +
+    expect(result.content[0].text).toContain('project.c3proj is read-only. project.c3proj still lists "Coin", and objectTypes/Coin.json is on disk. ' +
       'Its image files were renamed back from .bak.');
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(before);
     expect(await images()).toEqual(['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg']);
@@ -159,7 +159,7 @@ describe('delete_object keeps the object\'s image files as .bak', () => {
     const result = await server.callTool('delete_object', { name: 'Coin' });
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
-    expect(text).toContain('The object file was restored from its backup.');
+    expect(text).toContain('project.c3proj is read-only. project.c3proj still lists "Coin", and objectTypes/Coin.json is on disk.');
     expect(text).toContain('Renaming its image files back from .bak failed too (images/ is locked); rename them back by hand: ' +
       '"images/coin-animation 1-000.png.bak" → "images/coin-animation 1-000.png"');
     expect(text).toContain('"images/coin-spin-001.jpg.bak" → "images/coin-spin-001.jpg".');
@@ -170,8 +170,8 @@ describe('delete_object keeps the object\'s image files as .bak', () => {
  * A write refused because its file changed on disk during the call (#51):
  * the writer puts back what the call changed, or names the files it has to
  * leave as they are; delete_object renames the images back, which the writer
- * does not track, and never restores the object file over a save of the
- * editor.
+ * does not track, and the object file, deleted last, is never touched when
+ * the editor saved it.
  */
 describe('delete_object refused because a file changed on disk during the call', () => {
   const IMAGES = ['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg'];
@@ -196,19 +196,20 @@ describe('delete_object refused because a file changed on disk during the call',
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
     expect(text).toContain('objectTypes/Coin.json was changed on disk after this server read it');
-    expect(text).toContain('it reads the file as it is now. Its image files were renamed back from .bak.');
+    expect(text).toContain('so the call changed nothing. Run the tool again: it reads the files as they are now. ' +
+      'project.c3proj still lists "Coin", and objectTypes/Coin.json is on disk. Its image files were renamed back from .bak.');
     expect(text).not.toContain('The object file was restored');
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(saved);
     expect(await images()).toEqual(IMAGES);
     expect(reader.getProject().objectTypes.items).toContain('Coin');
   });
 
-  it('leaves an object file the editor saved again after the delete as it is when project.c3proj keeps changing', async () => {
+  it('keeps an object file the editor saved during the call when project.c3proj keeps changing', async () => {
     await createCoin();
     const saved = await editorText();
     const removeFromProject = writer.removeFromProject.bind(writer);
     writer.removeFromProject = async (...args) => {
-      // The object file is deleted by now: the editor saves it again
+      // The editor saves the object file before project.c3proj is updated
       await writeFile(objectPath('Coin'), saved);
       return removeFromProject(...args);
     };
@@ -230,30 +231,29 @@ describe('delete_object refused because a file changed on disk during the call',
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
     expect(text).toContain('project.c3proj was changed on disk after this server read it');
-    expect(text).toContain('left as they are (changed on disk again after this call wrote them, or their backup was replaced): ' +
-      'objectTypes/Coin.json (its state from before the call is in objectTypes/Coin.json.bak)');
-    expect(text).toContain('before you run the tool again. Its image files were renamed back from .bak.');
-    expect(text).not.toContain('The object file was restored');
+    expect(text).toContain('Run the tool again: it reads the file as it is now. project.c3proj still lists "Coin", and objectTypes/Coin.json is on disk. ' +
+      'Its image files were renamed back from .bak.');
+    expect(text).not.toContain('left as they are');
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(saved);
     expect(await images()).toEqual(IMAGES);
+    expect(reader.getProject().objectTypes.items).toContain('Coin');
   });
 });
 
 /**
  * An update of project.c3proj that fails for another reason than a refusal
- * as stale: the writer puts back the object file (undoToolCall), with the
- * same checks as after a refusal, so one saved in the editor during the call
- * is never overwritten with its backup.
+ * as stale: the object file was never deleted, so one saved in the editor
+ * during the call is kept, and the error says what is on disk.
  */
 describe('delete_object whose project.c3proj update fails otherwise', () => {
-  it('leaves an object file the editor saved again after the delete as it is when project.c3proj cannot be read', async () => {
+  it('keeps an object file the editor saved during the call when project.c3proj cannot be read', async () => {
     await createCoin();
     const obj = JSON.parse(await readFile(objectPath('Coin'), 'utf8'));
     obj.instanceVariables = [...(obj.instanceVariables ?? []), { name: 'fromEditor', type: 'number', initialValue: 0, sid: 900000000000123 }];
     const saved = JSON.stringify(obj, null, '\t');
     const removeFromProject = writer.removeFromProject.bind(writer);
     writer.removeFromProject = async (...args) => {
-      // The object file is deleted by now: the editor saves it again and is still writing project.c3proj
+      // The editor saves the object file and is still writing project.c3proj
       await writeFile(objectPath('Coin'), saved);
       const project = await readFile(join(tmpDir, 'project.c3proj'), 'utf8');
       await writeFile(join(tmpDir, 'project.c3proj'), project.slice(0, project.length / 2));
@@ -264,10 +264,9 @@ describe('delete_object whose project.c3proj update fails otherwise', () => {
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
     expect(text).toContain('project.c3proj changed on disk and could not be read again');
-    expect(text).toContain('Left as they are (changed on disk again after this call wrote them, or their backup was replaced): ' +
-      'objectTypes/Coin.json (its state from before the call is in objectTypes/Coin.json.bak). ' +
-      'Check the project (validate_project, git diff) before you run the tool again. Its image files were renamed back from .bak.');
-    expect(text).not.toContain('The object file was restored');
+    expect(text).toContain('project.c3proj could not be read. Check the project (validate_project, git diff) before you run the tool again. ' +
+      'Its image files were renamed back from .bak.');
+    expect(text).not.toContain('Left as they are');
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(saved);
     expect(await images()).toEqual(['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg']);
   });
@@ -276,14 +275,15 @@ describe('delete_object whose project.c3proj update fails otherwise', () => {
 /**
  * project.c3proj replaced, but the check after the write failed: the file
  * counts as changed by the call from the moment it was replaced, so undoing
- * the call puts it back with the object file, and a file another write
- * replaced meanwhile is left as it is and named, never left out.
+ * the call puts it back (the object file was never deleted), and a file
+ * another write replaced meanwhile is left as it is and named, never left
+ * out. The error says what is on disk afterwards, read again.
  */
 describe('delete_object whose project.c3proj update was written but not confirmed', () => {
   const IMAGES = ['coin-animation 1-000.png', 'coin-spin-000.png', 'coin-spin-001.jpg'];
   const projectPath = () => join(tmpDir, 'project.c3proj');
 
-  it('puts project.c3proj back with the object file when the check after its write fails', async () => {
+  it('puts project.c3proj back when the check after its write fails', async () => {
     await createCoin();
     const objectBefore = await readFile(objectPath('Coin'), 'utf8');
     const projectBefore = await readFile(projectPath(), 'utf8');
@@ -300,8 +300,10 @@ describe('delete_object whose project.c3proj update was written but not confirme
 
     const result = await server.callTool('delete_object', { name: 'Coin' });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('The object file was restored from its backup. Put back as it was before the call: project.c3proj. ' +
+    expect(result.content[0].text).toContain('Put back from its backup: project.c3proj. ' +
+      'project.c3proj still lists "Coin", and objectTypes/Coin.json is on disk. ' +
       'Its image files were renamed back from .bak.');
+    expect(result.content[0].text).not.toContain('The object file was restored');
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(objectBefore);
     expect(await readFile(projectPath(), 'utf8')).toBe(projectBefore);
     expect(reader.getProject().objectTypes.items).toContain('Coin');
@@ -327,8 +329,10 @@ describe('delete_object whose project.c3proj update was written but not confirme
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
     expect(text).toContain('the file was changed by another write during this one');
-    expect(text).toContain('The object file was restored from its backup. Left as they are (changed on disk again after this call wrote them, ' +
-      'or their backup was replaced): project.c3proj (its state from before the call is in project.c3proj.bak). Check the project');
+    expect(text).toContain('Not all of it could be undone: left as they are (changed on disk again after this call wrote them, ' +
+      'or their backup was replaced): project.c3proj (its state from before the call is in project.c3proj.bak). ' +
+      'project.c3proj still lists "Coin", and objectTypes/Coin.json is on disk. ' +
+      'Check the project (validate_project, git diff) before you run the tool again.');
     expect(await readFile(projectPath(), 'utf8')).toBe(saved);
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(objectBefore);
     expect(await images()).toEqual(IMAGES);

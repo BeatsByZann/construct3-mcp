@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, Layout, Layer, EventSheet } from '../construct3/types.js';
-import { validateName, toolResult, toolError, notFoundError, boundedRecord, caseClashError } from './shared.js';
+import { validateName, toolResult, toolError, notFoundError, boundedRecord, caseClashError, deleteRegisteredEntity } from './shared.js';
 import { findNameClash } from '../construct3/names.js';
 import { getProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
@@ -614,9 +614,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         }
         warnings.push(...unscannedWarnings(unscanned.filter(r => r.textSearch === 'no-match'), 'Deleted'));
 
-        const subfolder = writer.getSubfolderForEntity('layouts', args.name);
-        const backupPath = await writer.deleteEntityFile('layouts', args.name, subfolder);
-        await writer.removeFromProject('layouts', args.name);
+        const backupPath = await deleteRegisteredEntity(writer, 'layouts', args.name);
 
         const result: WriteResult = {
           success: true,

@@ -5,8 +5,9 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { Construct3ProjectReader } from '../construct3/project-reader.js';
-import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
+import { entityFilePath, type Construct3ProjectReader, type EntityCategory } from '../construct3/project-reader.js';
+import { filesLeftClause, type Construct3ProjectWriter, type EntityOnDisk } from '../construct3/project-writer.js';
+import { StaleFileError } from '../construct3/disk-state.js';
 import type { IdGenerator } from '../construct3/id-generator.js';
 import { RESERVED_NAMES } from '../construct3/templates.js';
 
@@ -106,6 +107,82 @@ export function toolError(message: string) {
     content: [{ type: 'text' as const, text: message }],
     isError: true as const,
   };
+}
+
+/**
+ * Delete a registered object type, family, event sheet or layout (#ISSUE).
+ * The steps run in this order:
+ * - look up its project-bar folder, which cannot be found once the name has
+ *   left project.c3proj;
+ * - refuse when its file changed on disk since the server read it, before
+ *   anything is written;
+ * - take the name out of project.c3proj;
+ * - delete the file, backed up.
+ * A failure never leaves a name registered without its file. When a step
+ * fails, the writer puts back what the call changed (undoToolCall; after a
+ * refusal as stale it has done so already), and one Error is thrown that
+ * says what was put back and what is on disk now, read again
+ * (writer.entityOnDisk), never inferred from the undo alone. After the
+ * delete, the disk is read again too: project.c3proj saved during the delete
+ * (the editor saves the project it holds) may list the name again, and that
+ * is reported as an error, not a success. Returns the file's backup path.
+ * Runs inside the tool call.
+ */
+export async function deleteRegisteredEntity(
+  writer: Construct3ProjectWriter,
+  category: EntityCategory,
+  name: string,
+): Promise<string> {
+  const subfolder = writer.getSubfolderForEntity(category, name);
+  const file = entityFilePath(category, subfolder ?? '', name);
+  await writer.assertEntityFileCurrent(category, name, subfolder);
+  let backupPath: string;
+  try {
+    await writer.removeFromProject(category, name);
+    backupPath = await writer.deleteEntityFile(category, name, subfolder);
+  } catch (error) {
+    const undo = error instanceof StaleFileError ? undefined : await writer.undoToolCall();
+    // A refusal of the writer ends with a full stop already, and says what it put back
+    const cause = error instanceof Error ? error.message : String(error);
+    const sentences = [cause.endsWith('.') ? cause : `${cause}.`];
+    if (undo && undo.restored.length > 0) sentences.push(`Put back from its backup: ${undo.restored.join(', ')}.`);
+    if (undo && undo.left.length > 0) sentences.push(`Not all of it could be undone: ${filesLeftClause(undo.left)}.`);
+    const now = describeOnDisk(await writer.entityOnDisk(category, name, subfolder), name, file);
+    sentences.push(now.sentence);
+    if ((!now.consistent || (undo !== undefined && undo.left.length > 0)) && !cause.includes('Check the project')) {
+      sentences.push('Check the project (validate_project, git diff) before you run the tool again.');
+    }
+    throw new Error(sentences.join(' '));
+  }
+  const onDisk = await writer.entityOnDisk(category, name, subfolder);
+  if (onDisk.project === 'lists' && onDisk.file === 'absent') {
+    throw new Error(`${file} was deleted, but project.c3proj was saved again during the delete (in the Construct 3 editor?) ` +
+      `and lists "${name}" again. Put the file back from ${file}.bak, or remove "${name}" in the editor.`);
+  }
+  if (onDisk.project !== 'omits' || onDisk.file !== 'absent') {
+    throw new Error(`${file} was deleted, but the project is not as the delete left it: ${describeOnDisk(onDisk, name, file).sentence} ` +
+      'Check the project (validate_project, git diff).');
+  }
+  return backupPath;
+}
+
+/**
+ * A sentence on what entityOnDisk found after a delete, and whether the
+ * registration and the file agree (both there, or both gone).
+ */
+function describeOnDisk(onDisk: EntityOnDisk, name: string, file: string): { sentence: string; consistent: boolean } {
+  if (onDisk.project === 'missing') {
+    return { sentence: 'project.c3proj is missing: put it back from project.c3proj.bak (its last backup) before you open the project.', consistent: false };
+  }
+  if (onDisk.project === 'unreadable') return { sentence: 'project.c3proj could not be read.', consistent: false };
+  if (onDisk.file === 'unknown') return { sentence: `Whether ${file} is still on disk could not be checked.`, consistent: false };
+  const listed = onDisk.project === 'lists';
+  if (listed && onDisk.file === 'present') return { sentence: `project.c3proj still lists "${name}", and ${file} is on disk.`, consistent: true };
+  if (!listed && onDisk.file === 'absent') return { sentence: `project.c3proj no longer lists "${name}", and ${file} is gone.`, consistent: true };
+  if (listed) {
+    return { sentence: `project.c3proj lists "${name}", but ${file} is missing: put it back from ${file}.bak, or remove "${name}" in the Construct 3 editor.`, consistent: false };
+  }
+  return { sentence: `project.c3proj no longer lists "${name}", but ${file} is still on disk: check it and delete it by hand.`, consistent: false };
 }
 
 /**
