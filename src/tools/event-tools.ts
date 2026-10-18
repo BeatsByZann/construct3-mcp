@@ -19,6 +19,7 @@ import { findFolderPathClash, findNameClash } from '../construct3/names.js';
 import {
   SYSTEM_EXPRESSIONS_NOT_IN_R449,
   eventVariableNameUses,
+  listEventVariableDeclarations,
   findEnclosingEvents,
   findEventVariableNameProblem,
   findNewEventVariableNameClashes,
@@ -113,6 +114,7 @@ import {
   type UnscannedFileReport,
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
+import { writeEntityOrRollBack } from './call-rollback.js';
 import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-keys.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
@@ -1387,6 +1389,197 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       } catch (error) {
         console.error('[move_events_between_sheets] failed:', error);
         return toolError(`Error moving events: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── move_event_block_items ───────────────────────────────
+
+  /** Event types that hold conditions and actions. */
+  const ITEM_HOLDERS: ReadonlySet<string> = new Set(['block', 'function-block', 'custom-ace-block']);
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
+    'move_event_block_items',
+    {
+      description: 'Move, reorder or copy conditions or actions within a block, function block or custom action block, or into another one of the same event sheet. A move keeps the items\' SIDs; copies (copy=true) get new SIDs and the source keeps its items. Refused, changing nothing: a System "else" condition (it stays first in its block) and an item put before one, indexes that do not fit, a target that would hold more than 100 items, an object class that is no object type, family, System or the Functions object, a new load-time error, and (unless force=true) a move after which an item uses an event variable or function parameter outside its scope. "Set return value" moved out of a function block is written with a warning, as add_event_block gives it.',
+      inputSchema: z.object({
+      sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+      sourceBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items are in'),
+      sourceEventPath: z.string().max(500).optional().describe('Only when sourceBlockSid matches several events: the path of the one you mean'),
+      targetBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items go to (the same SID to reorder)'),
+      targetEventPath: z.string().max(500).optional().describe('Only when targetBlockSid matches several events: the path of the one you mean'),
+      itemType: z.enum(['actions', 'conditions']).describe('Which list the items are in'),
+      indices: z.array(z.number().int().min(0)).min(1).max(100).describe('Indexes of the items in the source, each once; they keep their order'),
+      targetIndex: z.number().int().min(0).describe('Where the items go in the target; within one block, counted after the items are taken out'),
+      copy: z.boolean().optional().default(false).describe('Copy instead of move: the copies get new SIDs, the source keeps its items'),
+      force: z.boolean().optional().default(false).describe('Move even when an item then uses an event variable or function parameter outside its scope (the uses are listed in "references" and a warning)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of move_event_block_items', 'move_event_block_items takes sheetName, sourceBlockSid, sourceEventPath, targetBlockSid, targetEventPath, itemType, indices, targetIndex, copy and force.'),
+      }).strict(),
+    },
+    async (args) => {
+      // Set once the events are read: puts them back as they were read
+      let restoreSheet: (() => void) | undefined;
+      let writeStarted = false;
+      try {
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        restoreSheet = () => { sheet.events = beforeEvents; };
+        const refuse = (message: string) => {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(message));
+        };
+        const source = resolveEventBySid(events, args.sourceBlockSid, { sheetName: args.sheetName, action: 'take items from', eventPath: args.sourceEventPath, argument: 'sourceEventPath' });
+        if ('error' in source) return refuse(`Source: ${source.error}`);
+        const target = resolveEventBySid(events, args.targetBlockSid, { sheetName: args.sheetName, action: 'put items into', eventPath: args.targetEventPath, argument: 'targetEventPath' });
+        if ('error' in target) return refuse(`Target: ${target.error}`);
+        const from = source.match.event;
+        const to = target.match.event;
+        for (const [role, ev, sid] of [['Source', from, args.sourceBlockSid], ['Target', to, args.targetBlockSid]] as const) {
+          if (!ITEM_HOLDERS.has(String(ev.eventType))) {
+            return refuse(`${role} event with SID ${sid} is a "${String(ev.eventType)}", not a block, function block or custom action block.`);
+          }
+        }
+        if (!Array.isArray(from[args.itemType])) from[args.itemType] = [];
+        if (!Array.isArray(to[args.itemType])) to[args.itemType] = [];
+        const sourceItems = from[args.itemType] as Record<string, unknown>[];
+        const targetItems = to[args.itemType] as Record<string, unknown>[];
+        const kind = args.itemType === 'actions' ? 'action' : 'condition';
+
+        if (new Set(args.indices).size !== args.indices.length) return refuse('indices lists an index more than once.');
+        const outOfRange = args.indices.find(i => i >= sourceItems.length);
+        if (outOfRange !== undefined) return refuse(`Index ${outOfRange} is out of range: the source has ${sourceItems.length} ${kind}(s).`);
+        const sameBlock = from === to;
+        const room = sameBlock && !args.copy ? sourceItems.length - args.indices.length : targetItems.length;
+        if (args.targetIndex > room) return refuse(`targetIndex ${args.targetIndex} is out of range: the target has ${room} ${kind}(s) there, so 0-${room}.`);
+        if ((args.copy || !sameBlock) && targetItems.length + args.indices.length > MAX_ITEMS_PER_BLOCK) {
+          return refuse(`The target would hold ${targetItems.length + args.indices.length} ${kind}s (max ${MAX_ITEMS_PER_BLOCK}).`);
+        }
+        if (args.itemType === 'conditions') {
+          if (args.indices.some(i => isElseCondition(sourceItems[i]))) {
+            return refuse(`An else condition cannot be ${args.copy ? 'copied' : 'moved'}: it stays first in its own block. ${args.copy ? 'Copy' : 'Move'} the other conditions instead.`);
+          }
+          if (args.targetIndex === 0 && isElseCondition(targetItems[0])) {
+            return refuse('The else condition of the target block stays first (also when it is disabled); use targetIndex 1 or later.');
+          }
+        }
+        const ordered = [...args.indices].sort((x, y) => x - y);
+        const selected = ordered.map(i => sourceItems[i]);
+
+        // Object classes, against the destination's function context: the target block (upstream warns when
+        // "Set return value" stands outside a function block)
+        const refs: ObjectRef[] = [];
+        collectObjectRefs(args.itemType === 'conditions' ? selected as Array<Record<string, unknown> & { objectClass: string }> : [],
+          args.itemType === 'actions' ? selected : [], [], refs);
+        const classWarnings: string[] = [];
+        if (refs.length > 0) {
+          const { errors, warnings: found } = await validateObjectClasses(reader, refs, { insideFunction: isInFunctionBlock(events, to) });
+          if (errors.length > 0) return refuse(`Object class validation failed:\n${errors.join('\n')}`);
+          classWarnings.push(...found);
+        }
+
+        // The declaration each use of this sheet's variables and parameters finds now
+        const sheetsNow = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        const declared = new Map(listEventVariableDeclarations(sheet.events).map(d => [d.name.toLowerCase(), d.name] as const));
+        const bindingsBefore = recordVariableBindings(sheetsNow, declared);
+
+        let moved: Record<string, unknown>[];
+        const copies = new Map<object, object>();
+        if (args.copy) {
+          moved = [];
+          for (const item of selected) {
+            const copy = JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
+            if (typeof copy.sid === 'number') copy.sid = await idGen.generateSid(reader);
+            copies.set(copy, item);
+            moved.push(copy);
+          }
+          targetItems.splice(args.targetIndex, 0, ...moved);
+        } else if (sameBlock) {
+          const keep = sourceItems.filter((_item, i) => !ordered.includes(i));
+          keep.splice(args.targetIndex, 0, ...selected);
+          sourceItems.splice(0, sourceItems.length, ...keep);
+          moved = selected;
+        } else {
+          for (const i of [...ordered].reverse()) sourceItems.splice(i, 1);
+          targetItems.splice(args.targetIndex, 0, ...selected);
+          moved = selected;
+        }
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({
+            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged',
+            sourceBlockSid: args.sourceBlockSid, targetBlockSid: args.targetBlockSid, itemType: args.itemType, copy: args.copy,
+            sids: moved.map(m => m.sid).filter((s): s is number => typeof s === 'number'), targetIndex: args.targetIndex,
+          }, { projectWritten: false });
+        }
+
+        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+        if (loadCheck.errors.length > 0) return refuse(loadRuleErrorMessage(loadCheck.errors));
+        const warnings = [...classWarnings, ...loadCheck.warnings];
+        // Only a move out of another block empties the source: a reorder puts the items back and a copy leaves them
+        if (args.itemType === 'conditions' && sourceItems.length === 0) {
+          warnings.push(`All conditions of the source (SID ${args.sourceBlockSid}) were moved: it now runs whenever its parent runs (every tick at the top level, every call in a function or custom action).`);
+        }
+
+        // A copy is compared with the item it was copied from
+        const { lost, rebound } = findVariableBindingChanges(bindingsBefore, sheetsNow, ace => copies.get(ace) ?? ace);
+        const lostCount = countDeleteReferences(lost);
+        const reboundCount = countDeleteReferences(rebound);
+        const whereLost = 'where it is no longer in scope after the move';
+        const whereRebound = 'where the name now finds another event variable or function parameter after the move';
+        const checked = 'uses of the event variables and function parameters of this sheet';
+        if ((lostCount > 0 || reboundCount > 0 || !lost.complete) && !args.force) {
+          sheet.events = beforeEvents;
+          const reasons = [
+            ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
+            ...(reboundCount > 0 ? [`${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`] : []),
+            ...(!lost.complete ? [traversalLimitReason(checked, lost.limit)] : []),
+          ];
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'move_blocked',
+            message: nothingChanged(`${reasons.join(' ')} Move them to a place where the same declaration is in scope, or use force=true to move anyway.`),
+            references: danglingReferenceList(lost),
+            ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          }, { projectWritten: false });
+        }
+        if (lostCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
+        }
+        if (reboundCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`);
+        }
+        if (!lost.complete) warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
+
+        writeStarted = true;
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated',
+          sourceBlockSid: args.sourceBlockSid, targetBlockSid: args.targetBlockSid, itemType: args.itemType, copy: args.copy,
+          sids: moved.map(m => m.sid).filter((s): s is number => typeof s === 'number'), targetIndex: args.targetIndex,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
+          ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[move_event_block_items] failed:', error);
+        if (restoreSheet) {
+          restoreSheet();
+          if (!writeStarted) {
+            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          }
+        }
+        return toolError(`Error moving items: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
