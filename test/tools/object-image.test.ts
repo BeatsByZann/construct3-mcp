@@ -280,6 +280,35 @@ describe('replace_object_image when a write fails', () => {
     expect(Buffer.compare(await readFile(imagePath('bg.png')), PNG)).toBe(0);
   });
 
+  it('keeps the image when the object file holds this call\'s image record after the failure, with no other write involved', async () => {
+    const withNewRecord = async () => {
+      const obj = JSON.parse(await readFile(objectPath('Bg'), 'utf8'));
+      obj.image.width = 4;
+      obj.image.height = 2;
+      await writeFile(objectPath('Bg'), JSON.stringify(obj, null, '\t'));
+    };
+    const text = (await replace('Bg', SIZE, failingObjectWrite(withNewRecord))).text;
+    expect(text).toContain('objectTypes/Bg.json holds this call\'s image record, so the new image stays');
+    expect(text).not.toContain('has its image from before the call again');
+    expect(Buffer.compare(await readFile(imagePath('bg.png')), PNG)).toBe(0);
+  });
+
+  it('keeps the image, and says the object file was not restored, when the restore was refused and the file holds this call\'s image record', async () => {
+    const idGen = new IdGenerator();
+    const writer = new Construct3ProjectWriter(reader, idGen);
+    const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<void> };
+    internals.verifyWrittenFile = async (path, _name, written) => {
+      await writeFile(path, withGlobal(written));
+      throw new Error('Post-write verification failed for "Bg"');
+    };
+    const text = (await replace('Bg', SIZE, register(writer, idGen))).text;
+    expect(text).toContain('The object file was not restored: objectTypes/Bg.json (another write changed it after this call\'s write failed; it was left as it is)');
+    expect(text).toContain('objectTypes/Bg.json holds this call\'s image record, so the new image stays');
+    expect(text).not.toContain('has its image from before the call again');
+    expect(Buffer.compare(await readFile(imagePath('bg.png')), PNG)).toBe(0);
+    expect(JSON.parse(await readFile(objectPath('Bg'), 'utf8')).isGlobal).toBe(true);
+  });
+
   it('keeps the image when another write made on top of this one kept the new image record', async () => {
     const before = await readFile(objectPath('Bg'), 'utf8');
     const { data } = await replace('Bg', SIZE, withOtherObjectWrite(written => withGlobal(written), before));
