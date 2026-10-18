@@ -684,6 +684,29 @@ describe('update_function for custom action blocks', () => {
     expect(own).toMatchObject({ success: true, name: 'HURT', rewrittenCalls: 1 });
   });
 
+  it('updates a custom action without a rename while its owner holds a duplicate of its name, and refuses a rename onto it', async () => {
+    const { server, reader, writer } = memberFixture();
+    // A second Alpha action of the name, ignoring case, as a sheet the editor has not saved can hold
+    (await storedEvents(reader, 'Sheet1')).push(customAction('Alpha', 'HURT', 720));
+    const described = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, description: 'Hurts' }));
+    expect(described).toMatchObject({ success: true, action: 'updated', name: 'Hurt', updatedSheets: ['Sheet1'] });
+    expect(writtenSheet(writer, 'Sheet1')![0].functionDescription).toBe('Hurts');
+    const added = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, addParameters: [{ name: 'crit', type: 'boolean' }], updateCallers: true }));
+    expect(added).toMatchObject({ success: true, rewrittenCalls: 1 });
+    // A rename, a case-only one included, is still checked against the other definitions of the owner
+    const before = await allSheets(reader);
+    const renamed = errorText(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: 'hurt', updateCallers: true }));
+    expect(renamed).toBe(`"Alpha" already has a custom action "HURT" (sheet "Sheet1", events[2], SID 720). ${DUPLICATE_RULE} Nothing was changed.`);
+    expect(await allSheets(reader)).toBe(before);
+  });
+
+  it('updates a custom action whose stored name is only spaces without a rename', async () => {
+    const { server, reader } = memberFixture();
+    (await storedEvents(reader, 'Sheet1'))[0].aceName = ' ';
+    const data = parse(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, description: 'Hurts' }));
+    expect(data).toMatchObject({ success: true, action: 'updated', name: ' ' });
+  });
+
   it('refuses an empty name', async () => {
     const { server } = memberFixture();
     expect(errorText(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, functionName: '  ' })))
@@ -725,7 +748,7 @@ describe('update_function for custom action blocks', () => {
   it('refuses returnType for a custom action', async () => {
     const { server, writer } = memberFixture();
     expect(errorText(await server.callTool('update_function', { sheetName: 'Sheet1', sid: 700, returnType: 'none' })))
-      .toBe('returnType applies to function blocks; a custom action has none. Nothing was changed.');
+      .toBe('returnType applies to function blocks only; this tool refuses it for a custom action block. Nothing was changed.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 

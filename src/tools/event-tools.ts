@@ -824,7 +824,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
         const kind = func.eventType === 'function-block' ? 'function' : 'custom-action';
         if (kind === 'custom-action' && args.returnType !== undefined) {
-          return toolError(nothingChanged('returnType applies to function blocks; a custom action has none.'));
+          return toolError(nothingChanged('returnType applies to function blocks only; this tool refuses it for a custom action block.'));
         }
 
         // 3. Every sheet, read once here as the whole object the write needs, with a snapshot, and the uses of the function by name
@@ -905,11 +905,14 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
           calls = references.filter(r => r.kind === 'callFunction');
         } else {
-          if (newName.trim() === '') return refuse('functionName is empty or only spaces.');
           const { definitions, self, sites, familiesOf } = customActions;
-          const clash = customActionDefinitionClashes(definitions.filter(d => d !== self), owner, newName)[0];
-          if (clash !== undefined) {
-            return refuse(`"${owner}" already has a custom action "${clash.name}" (sheet "${clash.sheet}", ${clash.eventPath}${clash.sid !== undefined ? `, SID ${clash.sid}` : ''}). ${DUPLICATE_CUSTOM_ACTION_RULE}`);
+          // Only a new name is checked (a case-only one included), as for functions: a duplicate the project already holds does not stop other changes
+          if (newName !== oldName) {
+            if (newName.trim() === '') return refuse('functionName is empty or only spaces.');
+            const clash = customActionDefinitionClashes(definitions.filter(d => d !== self), owner, newName)[0];
+            if (clash !== undefined) {
+              return refuse(`"${owner}" already has a custom action "${clash.name}" (sheet "${clash.sheet}", ${clash.eventPath}${clash.sid !== undefined ? `, SID ${clash.sid}` : ''}). ${DUPLICATE_CUSTOM_ACTION_RULE}`);
+            }
           }
           const { rewrite, captured } = customActionRenameCaptures(sites, definitions, self, newName, familiesOf);
           if (captured.length > 0) {
