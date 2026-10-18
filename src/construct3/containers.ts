@@ -8,13 +8,12 @@
  *
  *   "containers": [ { "members": ["Player", "PlayerHitbox"] } ]
  *
- * The editor resolves every member when it opens a project and refuses to
- * open one whose container names a missing object type ("cannot find object
- * type name"). So delete_object takes a deleted object type out of its
- * containers in the update that deregisters it, as the editor does, and
- * validate_project reports a member that names no object type. Members are
- * matched ignoring case (nameKey): a member saved in another letter case is
- * taken out too.
+ * Construct 3 r506-2 refuses to open a project whose container has fewer
+ * than two types or names a missing type ("cannot find object type name").
+ * So delete_object takes a deleted object type out of its containers in the
+ * update that deregisters it, and validate_project reports a member that
+ * names no object type. Members are matched ignoring case (nameKey): a
+ * member saved in another letter case is taken out too.
  *
  * Membership is not a use. find_orphaned_objects and get_object_dependencies
  * list an object's containers, and an object nothing else uses is still an
