@@ -881,6 +881,98 @@ export function findGroupByPath(
   return resolveGroupPath(events, groupPath).children ?? null;
 }
 
+/** The event types the tools that place or move events write. */
+export type PlacedEventKind = 'block' | 'comment' | 'script' | 'variable' | 'group' | 'function-block' | 'custom-ace-block' | 'include';
+
+/**
+ * Insert `event` into a resolved destination. An owner that had no
+ * sub-events gets the new list. The sibling's index is read now, so a
+ * caller that took an event out of the same list first still lands beside it.
+ */
+export function insertIntoContainer(container: ResolvedContainer, position: InsertPosition, event: Record<string, unknown>): void {
+  const { owner, targetEvents, siblingEvent } = container;
+  if (siblingEvent !== undefined && (position === 'before' || position === 'after')) {
+    const at = targetEvents.indexOf(siblingEvent);
+    if (at === -1) throw new Error('The event to place the new one beside is no longer in its list; nothing was inserted.');
+    targetEvents.splice(position === 'before' ? at : at + 1, 0, event);
+  } else if (position === 'start') {
+    targetEvents.unshift(event);
+  } else {
+    targetEvents.push(event);
+  }
+  if (owner !== undefined && owner.children !== targetEvents) owner.children = targetEvents;
+}
+
+/**
+ * Where each kind of event may be placed. Each entry is backed by event
+ * shapes the editor saves: the shapes the other event tools already write,
+ * counts in an r495.2 editor-saved project, or a project opened in the
+ * Construct 3 editor (the release is named at the entry). A placement with
+ * none of these is refused (placementError).
+ *
+ * Entries decided by an editor run or a count. Editor runs: Construct 3
+ * r506-2, free edition, opened a project with the event there, saved it and
+ * reopened it. Counts: an r495.2 editor-saved project.
+ * - function-block in group: opened and kept by Construct 3 r506-2
+ * - function-block in block: opened and kept by r506-2 under a block with no
+ *   trigger; r506-2 refuses to open it under a block with a trigger ("cannot
+ *   add another trigger to event branch"), which this table does not tell apart
+ * - variable in block: opened and kept by r506-2 under a block with and
+ *   without a trigger; 1 in an r495.2 editor-saved project
+ * - variable in function-block: opened and kept by r506-2
+ * - group in block: opened and kept by r506-2 under a block with and without a trigger
+ * - script in root, group and function-block: opened and kept by r506-2
+ * - custom-ace-block in root and group: opened and kept by r506-2
+ * - comment in group: 16 in an r495.2 editor-saved project
+ * Block and comment in a custom action block, and comment in a function
+ * block, have neither a count nor an editor run, so they are not listed.
+ */
+export const PLACEMENT: Readonly<Record<PlacedEventKind, ReadonlySet<ContainerKind>>> = {
+  block: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  comment: new Set<ContainerKind>(['root', 'group', 'block']),
+  script: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  variable: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  group: new Set<ContainerKind>(['root', 'group', 'block']),
+  'function-block': new Set<ContainerKind>(['root', 'group', 'block']),
+  'custom-ace-block': new Set<ContainerKind>(['root', 'group']),
+  include: new Set<ContainerKind>(['root']),
+};
+
+/** Why a placement is refused, where it is known; the default reason is that it was not verified. */
+const PLACEMENT_REFUSALS: Readonly<Partial<Record<`${PlacedEventKind} in ${ContainerKind}`, string>>> = {
+  'include in group': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in function-block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in custom-ace-block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+};
+
+const KIND_LABELS: Readonly<Record<PlacedEventKind, string>> = {
+  block: 'A block', comment: 'A comment', script: 'A script event', variable: 'An event variable', group: 'A group',
+  'function-block': 'A function block', 'custom-ace-block': 'A custom action block', include: 'An include',
+};
+
+const CONTAINER_LABELS: Readonly<Record<ContainerKind, string>> = {
+  root: 'at the top level of a sheet',
+  group: 'in a group',
+  block: 'among the sub-events of a block',
+  'function-block': 'among the sub-events of a function block',
+  'custom-ace-block': 'among the sub-events of a custom action block',
+};
+
+/** Why `kind` may not be placed in `container` (see PLACEMENT), or undefined when it may. */
+export function placementError(kind: PlacedEventKind, container: ResolvedContainer): string | undefined {
+  if (PLACEMENT[kind].has(container.kind)) return undefined;
+  const reason = PLACEMENT_REFUSALS[`${kind} in ${container.kind}`]
+    ?? 'no editor-saved project on record has one there, and it was not checked in the Construct 3 editor';
+  const allowed = [...PLACEMENT[kind]].map(k => CONTAINER_LABELS[k]).join(', ');
+  return `${KIND_LABELS[kind]} is not placed ${CONTAINER_LABELS[container.kind]}: ${reason}. It can go ${allowed}.`;
+}
+
+/** The placement kind of a stored event type, or undefined for a type the placing tools do not handle. */
+export function placedKindOf(eventType: unknown): PlacedEventKind | undefined {
+  return typeof eventType === 'string' && Object.hasOwn(KIND_LABELS, eventType) ? eventType as PlacedEventKind : undefined;
+}
+
 /** Error text for a group path that did not resolve, naming the groups there (titles quoted, so outer whitespace shows). */
 export function describeGroupPathProblem(problem: GroupPathProblem, groupPath: string, sheetName: string): string {
   const where = problem.parents.length === 0
