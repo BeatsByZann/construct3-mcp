@@ -90,7 +90,7 @@ function layerList(layout: Layout): string {
  * also be given by its path as messages list it ("Main > HUD"): that picks one
  * of several layers with the same name, e.g. to rename it with update_layer.
  */
-function resolveLayer(layout: Layout, layerName: string, layoutName: string): { entry: LayerEntry } | { error: string } {
+export function resolveLayer(layout: Layout, layerName: string, layoutName: string): { entry: LayerEntry } | { error: string } {
   const matches = findLayersByName(layout.layers, layerName);
   if (matches.length === 1) return { entry: matches[0] };
   if (layerName.includes(' > ')) {
