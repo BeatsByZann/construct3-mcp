@@ -135,6 +135,7 @@ describe('move_animation_to_folder', () => {
     const imagesBefore = (await readdir(join(tmpDir, 'images'))).sort();
     const into = await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'Moves/Ground' });
     expect(into.data).toMatchObject({ fromFolder: null, toFolder: 'Moves/Ground' });
+    expect(into.data?.warnings).toBeUndefined();
     expect(await layout()).toEqual({ '': ['Animation 1'], Moves: [], 'Moves/Ground': ['Walk'] });
     // folderPath left out: the top level, at the end of its list
     const back = await call('move_animation_to_folder', { animationName: 'Walk' });
@@ -143,8 +144,23 @@ describe('move_animation_to_folder', () => {
     expect((await readdir(join(tmpDir, 'images'))).sort()).toEqual(imagesBefore);
   });
 
+  it('names only the part of a path that exists in another case, never a folder below it that does not exist', async () => {
+    const before = await readFile(objectPath());
+    const backupBefore = await readFile(`${objectPath()}.bak`);
+    const text = (await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'moves/Fresh' })).text;
+    expect(text).toBe('Animation folder "moves/Fresh" does not exist on "Sprite"; "Moves" exists, whose name differs only in case from "moves". Nothing was changed.');
+    expect(text).not.toContain('"Moves/Fresh"');
+    // A case variant of the whole path is named as it is
+    expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'moves/ground' })).text)
+      .toBe('Animation folder "moves/ground" does not exist on "Sprite"; "Moves/Ground" exists, whose name differs only in case from "moves/ground". Nothing was changed.');
+    expect(Buffer.compare(await readFile(objectPath()), before)).toBe(0);
+    expect(Buffer.compare(await readFile(`${objectPath()}.bak`), backupBefore)).toBe(0);
+  });
+
   it('warns only when this move leaves no animation outside animation folders', async () => {
-    await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'Moves' });
+    // Walk leaves Animation 1 at the top level: no warning
+    const first = await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'Moves' });
+    expect(first.data?.warnings).toBeUndefined();
     const last = await call('move_animation_to_folder', { animationName: 'Animation 1', folderPath: 'Moves' });
     expect(last.data?.warnings).toEqual(['"Animation 1" was the last animation outside animation folders: the top level of the animations of "Sprite" now has none.']);
     // A move between two folders, with the top level already empty, says nothing about it
@@ -157,7 +173,7 @@ describe('move_animation_to_folder', () => {
     expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'Air' })).text)
       .toBe('Animation folder "Air" does not exist on "Sprite". Create it with create_animation_folder first. Nothing was changed.');
     expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: 'moves' })).text)
-      .toBe('Animation folder "moves" does not exist on "Sprite"; "Moves" does, whose name differs only in case. Nothing was changed.');
+      .toBe('Animation folder "moves" does not exist on "Sprite"; "Moves" exists, whose name differs only in case from "moves". Nothing was changed.');
     expect((await call('move_animation_to_folder', { animationName: 'Run', folderPath: 'Moves' })).text)
       .toContain('Animation "Run" not found on "Sprite". Available: Animation 1, Walk');
     expect((await call('move_animation_to_folder', { animationName: 'Walk', folderPath: '' })).text)

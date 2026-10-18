@@ -390,8 +390,9 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         const target = findAnimationFolder(animations, targetPath);
         if (target === undefined || !Array.isArray(target.items)) {
           const clash = findFolderPathClash(animations, targetPath);
-          return toolError(clash !== undefined
-            ? `Animation folder "${targetPath}" does not exist on "${args.objectName}"; "${clash}" does, whose name differs only in case. Nothing was changed.`
+          const variant = clash === undefined ? undefined : existingCaseVariantFolder(animations, targetPath, clash);
+          return toolError(variant !== undefined
+            ? `Animation folder "${targetPath}" does not exist on "${args.objectName}"; "${variant.existing}" exists, whose name differs only in case from "${variant.requested}". Nothing was changed.`
             : `Animation folder "${targetPath}" does not exist on "${args.objectName}". Create it with create_animation_folder first. Nothing was changed.`);
         }
         const where = (path: string) => (path === '' ? 'the top level of the animations' : `animation folder "${path}"`);
@@ -1088,6 +1089,30 @@ function findAnimationFolder(animations: AnimationsContainer, path: string): Ani
     node = next;
   }
   return node;
+}
+
+/**
+ * The part of the requested folder path `requested` that exists on the
+ * Sprite only in another spelling: `spelled` is the path as
+ * findFolderPathClash gives it (the existing folders' spelling for the
+ * folders that exist, the requested one after the first that does not).
+ * Returns the longest leading part of it that is an existing folder
+ * (`existing`) and the same part as requested (`requested`), or undefined
+ * when no leading part exists. A folder below that part is not claimed.
+ */
+function existingCaseVariantFolder(
+  animations: AnimationsContainer,
+  requested: string,
+  spelled: string,
+): { existing: string; requested: string } | undefined {
+  const spelledParts = spelled.split('/');
+  for (let count = spelledParts.length; count > 0; count--) {
+    const existing = spelledParts.slice(0, count).join('/');
+    if (findAnimationFolder(animations, existing) !== undefined) {
+      return { existing, requested: requested.split('/').slice(0, count).join('/') };
+    }
+  }
+  return undefined;
 }
 
 /**
