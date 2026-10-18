@@ -87,16 +87,14 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
     async (args) => {
       try {
         const addons = reader.getUsedAddons();
-        const already = addons.some(a => a.type === args.type && a.id === args.id);
-        if (already) {
-          return toolResult({
-            success: true,
-            entity: args.id,
-            category: 'addon',
-            action: 'already_registered',
-            warnings: [`Addon "${args.id}" (${args.type}) is already registered in usedAddons.`],
-          }, { projectWritten: false });
-        }
+        const alreadyRegistered = () => toolResult({
+          success: true,
+          entity: args.id,
+          category: 'addon',
+          action: 'already_registered',
+          warnings: [`Addon "${args.id}" (${args.type}) is already registered in usedAddons.`],
+        }, { projectWritten: false });
+        if (addons.some(a => a.type === args.type && a.id === args.id)) return alreadyRegistered();
 
         const newAddon: Addon = {
           type: args.type,
@@ -106,11 +104,13 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
           bundled: args.bundled,
         };
         // Through the writer: backed up once per call, and a change saved on disk meanwhile is merged into
-        await writer.updateProject(project => {
+        const backup = await writer.updateProject(project => {
           // Checked again in the file as it is now: the editor may have registered it meanwhile
           if ((project.usedAddons as Addon[]).some(a => a.type === args.type && a.id === args.id)) return false;
           project.usedAddons.push(newAddon);
         });
+        // Nothing was written: the editor got there first
+        if (backup === undefined) return alreadyRegistered();
 
         const result: WriteResult = {
           success: true,
@@ -139,10 +139,8 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
     async (args) => {
       try {
         const addons = reader.getUsedAddons();
-        const idx = addons.findIndex(a => a.type === args.type && a.id === args.id);
-        if (idx === -1) {
-          return toolError(`Addon "${args.id}" (${args.type}) is not registered in this project.`);
-        }
+        const notRegistered = () => toolError(`Addon "${args.id}" (${args.type}) is not registered in this project.`);
+        if (!addons.some(a => a.type === args.type && a.id === args.id)) return notRegistered();
 
         // Warn if removing a known built-in
         const knownMap = args.type === 'plugin' ? KNOWN_SCIRRA_PLUGINS : (args.type === 'behavior' ? KNOWN_SCIRRA_BEHAVIORS : {});
@@ -151,11 +149,13 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
         }
 
         // Through the writer: backed up once per call, and a change saved on disk meanwhile is merged into
-        await writer.updateProject(project => {
+        const backup = await writer.updateProject(project => {
           const projIdx = (project.usedAddons as Addon[]).findIndex(a => a.type === args.type && a.id === args.id);
           if (projIdx === -1) return false;
           project.usedAddons.splice(projIdx, 1);
         });
+        // Nothing was written: the editor removed it first
+        if (backup === undefined) return notRegistered();
 
         const result: WriteResult = {
           success: true,

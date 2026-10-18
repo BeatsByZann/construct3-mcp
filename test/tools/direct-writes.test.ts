@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, cp, rm, readFile, writeFile } from 'fs/promises';
-import { readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
@@ -294,6 +294,23 @@ describe('delete_object renames the frame images under the animation lock', () =
   });
 });
 
+/**
+ * The editor saves project.c3proj with `change` applied to its addon list,
+ * right before the writer's update of it; `saved()` is what it saved.
+ */
+function editorChangesAddonsBeforeUpdate(change: (addons: Array<{ id: string }>) => Array<{ id: string }>): { saved: () => string } {
+  let saved = '';
+  const original = writer.updateProject.bind(writer);
+  vi.spyOn(writer, 'updateProject').mockImplementation(update => {
+    const project = JSON.parse(readFileSync(rel('project.c3proj'), 'utf-8'));
+    project.usedAddons = change(project.usedAddons);
+    saved = JSON.stringify(project, null, '\t');
+    writeFileSync(rel('project.c3proj'), saved, 'utf-8');
+    return original(update);
+  });
+  return { saved: () => saved };
+}
+
 describe('register_addon', () => {
   it('merges a project.c3proj the editor saved during the call', async () => {
     const original = writer.updateProject.bind(writer);
@@ -305,5 +322,30 @@ describe('register_addon', () => {
     const project = JSON.parse(await text('project.c3proj'));
     expect(project.properties.author).toBe('Editor');
     expect(project.usedAddons.map((a: { id: string }) => a.id)).toContain('Gamepad');
+  });
+
+  it('reports it as already registered, writing nothing, when the editor registered it first', async () => {
+    const editor = editorChangesAddonsBeforeUpdate(addons => [...addons, { type: 'plugin', id: 'Gamepad', name: 'Gamepad', author: 'Scirra', bundled: false } as never]);
+
+    const result = await ok('register_addon', { type: 'plugin', id: 'Gamepad', name: 'Gamepad' });
+
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ action: 'already_registered' });
+    expect(editor.saved()).not.toBe('');
+    expect(await text('project.c3proj')).toBe(editor.saved());
+    expect(existsSync(rel('project.c3proj.bak'))).toBe(false);
+  });
+});
+
+describe('unregister_addon', () => {
+  it('reports it as not registered, writing nothing, when the editor removed it first', async () => {
+    const editor = editorChangesAddonsBeforeUpdate(addons => addons.filter(a => a.id !== 'Sprite'));
+
+    const result = await server.callTool('unregister_addon', { type: 'plugin', id: 'Sprite', force: true });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Addon "Sprite" (plugin) is not registered in this project.');
+    expect(editor.saved()).not.toBe('');
+    expect(await text('project.c3proj')).toBe(editor.saved());
+    expect(existsSync(rel('project.c3proj.bak'))).toBe(false);
   });
 });
