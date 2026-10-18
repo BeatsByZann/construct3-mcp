@@ -425,6 +425,7 @@ describe('unknown arguments of add_event_block, update_event_block and add_event
       const { tools } = await client.listTools();
       for (const name of ['add_event_block', 'update_event_block', 'add_event_to_sheet']) {
         const schema = tools.find(t => t.name === name)!.inputSchema as Record<string, any>;
+        expect(schema.type).toBe('object');
         expect(schema.additionalProperties).toBe(false);
         expect(schema.properties.sheetName).toBeDefined();
       }

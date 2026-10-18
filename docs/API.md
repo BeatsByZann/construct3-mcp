@@ -605,7 +605,7 @@ Add a structural event to an existing event sheet.
 | `commentBackgroundColor` | number[] | No | For comments: the background colour, written as `"background-color"` in the same form |
 | `position` | enum | No | `"start"` \| `"end"` (default: end) |
 
-Runs the same load-time gate as `add_event_block` before writing.
+Runs the same load-time gate as `add_event_block` before writing. Arguments the tool does not take are refused and nothing is written; before, they were dropped (#ISSUE). A top-level `sid` is refused here, unlike `add_event_block`, which ignores it.
 
 Returns `generatedSid` (the SID of a new group, function or variable; includes and comments have none), `functionParameterSids` (for a function with parameters: `[{ name, sid }]` in parameter order), `eventPath` (the new event's path, e.g. `"events[3]"`, which the SID-based tools accept as `eventPath`) and `backupFile`.
 

@@ -2,6 +2,12 @@
 
 All notable changes to the Construct3 MCP Server are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- `add_event_to_sheet` refuses arguments it does not take, as `add_event_block` and `update_event_block` do, and nothing is written; before, a mistyped argument such as `varType` was dropped and the event written without it (#ISSUE).
+
 ## [1.10.0] - 2026-09-30
 
 ### Highlights
