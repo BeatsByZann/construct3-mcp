@@ -923,19 +923,21 @@ Update a group event in place (#ISSUE): its title, description, *Active on start
 
 Give at least one of `title`, `description`, `isActiveOnStart`, `disabled`, `backgroundColor` and `textColor`. A value the group already has changes nothing.
 
-**Titles.** Refused, changing nothing: an empty title, and a title that another group in the same list has, exactly or with outer whitespace ignored, since group paths in that list could not tell the two apart. A title that a group in another list or another sheet has is allowed with a warning, because "set-group-active" and "is-group-active" name a group by its title; letter case is ignored for that warning. Construct 3 r506-2 (Free edition) opened and saved a project with two groups titled "Same", one at the top level and one nested in a group "Outer".
+Refused, changing nothing (each message ends "Nothing was changed."): no update given; a SID that no event has, or that several events share (`eventPath` picks one); an event that is not a group.
 
-**Uses of the old title.** A rename is refused without `force` while a `group-name` parameter of a condition or action names the old title: a quoted string equal to it, equal to it ignoring case, or any other value, which may give it. Event sheets that could not be parsed (for example, not valid JSON) are searched as text for the old title, and a match refuses the rename too. A search that stops at its node limit (100,000 events across all event sheets) or its nesting-depth limit (events nested more than 50 deep) refuses the rename too and names the limit. The refusal lists the uses and ends "Nothing was changed."; with `force` the group is renamed, the uses are listed in `references` and in a warning, and they are never rewritten. A local count of an r495.2 editor-saved project found no `group-name` parameter.
+**Titles.** Refused, changing nothing: an empty or blank title, and a title that another group in the same list has, exactly or with outer whitespace ignored, since group paths in that list could not tell the two apart. Another group that has the title, ignoring letter case and outer whitespace, does not refuse the rename: it is named in a warning, because "set-group-active" and "is-group-active" name a group by its title. That covers a group in another list or another sheet, and a group in the same list whose title differs only in letter case. Construct 3 r506-2 (Free edition) opened and saved a project with two groups titled "Same", one at the top level and one nested in a group "Outer".
 
-**Colours.** The colour keys are written where the editor saves them: after `sid`, with `text-color` before `background-color`, the order a group with both colours had in a Construct 3 r506-2 (Free edition) save. A group with only one of them gets the same placement; that was not checked in the editor. `null` removes the key.
+**Uses of the old title.** A rename is refused without `force` while a `group-name` parameter of a condition or action names the old title: a quoted string equal to it, equal to it ignoring case, or any other value, which may give it. Event sheets that could not be parsed (for example, not valid JSON) are searched as text for the old title, and a match refuses the rename too. A search that stops at its node limit (100,000 events across all event sheets) or its nesting-depth limit (events nested more than 50 deep) refuses the rename too and names the limit. The refusal lists the uses and ends "Nothing was changed."; with `force` the group is renamed, the uses are listed in `references` and counted in a warning, and they are never rewritten. A local count of an r495.2 editor-saved project found no `group-name` parameter.
 
-Returns `{ success, entity, category, action, updatedSid, eventPath, title, warnings?, references?, unscannedFiles? }`; `action` is `"updated"`, or `"unchanged"` when the values already match and nothing is written. A rename that is refused for its uses, a limit or an unparsed sheet returns `{ success: false, action: "rename_blocked", message, references, unscannedFiles? }` and changes nothing.
+**Colours.** The colour keys are written after `sid`, with `text-color` before `background-color`. That order rests on one saved group in Construct 3 r506-2 (Free edition), which carried both colours. A colour key the group already has is updated where it stands. A group with only one colour gets the same placement; that was not checked in the editor. `null` removes the key.
+
+Returns `{ success, entity, category, action, updatedSid, eventPath, title, warnings?, references?, unscannedFiles?, backupFile? }`, with `backupFile` when written. `action` is `"updated"`, or `"unchanged"` when the values already match and nothing is written. A rename that is refused for its uses, a limit or an unparsed sheet returns `{ success: false, action: "rename_blocked", message, entity, category, references, unscannedFiles? }` and changes nothing.
 
 When a change throws before the write, the sheet is put back in memory and the call refuses with "The update stopped before anything was written (...). Nothing was changed." When the write fails, the call is rolled back; if the editor saved the sheet after the failed write, the error names the file and its `.bak` and leaves the sheet as it is.
 
 ### `update_comment`
 
-Update a comment event in place (#ISSUE): its text and colours. A comment has no SID, so it is addressed by its container and its 0-based `index` among all events of that container (`get_eventsheet_details` lists them). A comment row among a block's actions is changed with `update_event_block` instead.
+Update a comment event in place (#ISSUE): its text and colours. A comment has no SID, so it is addressed by its container and its 0-based `index` among all events of that container, counted in the order the events appear there. A comment row among a block's actions is changed with `update_event_block` instead.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -950,9 +952,9 @@ Give at least one of `text`, `textColor` and `backgroundColor`. The tool takes n
 
 Refused, changing nothing (each message ends "Nothing was changed."): no update given; an index past the end of the container; an event at the index that is not a comment.
 
-A comment event keeps its keys in the order `eventType`, `text`, `text-color`, `background-color`, and a colour it lacks is inserted where the editor writes it. `null` removes a colour. An update to the values the comment already has returns `"unchanged"` and writes nothing.
+A comment event keeps its keys in the order `eventType`, `text`, `text-color`, `background-color`. A colour the comment lacks is inserted after the keys that come before it in that order (`text-color` after `text`, `background-color` after `text-color`). The tool uses this order for comment rows among a block's actions too; it was not checked in the editor for a comment event. `null` removes a colour. An update to the values the comment already has returns `"unchanged"` and writes nothing.
 
-Returns `{ success, entity, category, action, eventPath }`, with `action` `"updated"` or `"unchanged"`. A failure is handled as for `update_event_group`: the sheet is put back, and a failed write names the file and its `.bak` when the editor saved the sheet after it.
+Returns `{ success, entity, category, action, eventPath, backupFile? }`, with `action` `"updated"` or `"unchanged"` and `backupFile` when written. A failure is handled as for `update_event_group`: the sheet is put back, and a failed write names the file and its `.bak` when the editor saved the sheet after it.
 
 ### `update_script_event`
 
@@ -972,9 +974,9 @@ Give exactly one of `script`, `disabled` and `remove`. `expectedText` is only us
 
 **Removal.** `remove` needs `expectedText`, and the script event at `index` must start with it: its first line, whether the script is stored as one string or as a list of lines. Otherwise the removal is refused and the message gives the first line found. Removing a script event runs the load-time gate; its warnings are returned, and an else block that then continues another event is reported in a warning.
 
-Refused, changing nothing (each message ends "Nothing was changed."): none, or more than one, of `script`, `disabled` and `remove`; `expectedText` without `remove`; `remove` without `expectedText`; a first line that differs; an index past the end of the container; an event at the index that is not a script event.
+Refused, changing nothing (each message ends "Nothing was changed."): none, or more than one, of `script`, `disabled` and `remove`; `expectedText` without `remove`; `remove` without `expectedText`; a first line that differs; an index past the end of the container; an event at the index that is not a script event; a removal after which the load-time check reports errors for issues the removal introduces in the sheet (the message starts "Construct 3 load-time check failed; nothing was written." and lists the rules broken).
 
-Returns `{ success, entity, category, action, eventPath, warnings? }`; `action` is `"updated"`, `"deleted"` for a removal, or `"unchanged"` when the event already has the values given. Failures are handled as for `update_comment`.
+Returns `{ success, entity, category, action, eventPath, warnings?, backupFile? }`; `action` is `"updated"`, `"deleted"` for a removal, or `"unchanged"` when the event already has the values given. `backupFile` is given when written. Failures are handled as for `update_comment`.
 
 ### `create_layout`
 
