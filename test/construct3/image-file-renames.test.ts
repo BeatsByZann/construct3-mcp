@@ -1,7 +1,7 @@
 /**
  * Construct3ProjectWriter: listing and renaming files in images/ (all or
- * nothing), restoring an entity file from its backup (also after a failed
- * write), and image files written only directly in images/, on a temp copy of
+ * nothing), restoring an entity file from its backup after a failed write
+ * (only while the file holds that write's own text), and image files written only directly in images/, on a temp copy of
  * the minimal fixture. Directory listings are compared exactly, since
  * stat/exists ignore case on Windows and macOS.
  */
@@ -131,32 +131,48 @@ describe('renameImageFiles', () => {
   });
 });
 
-describe('restoreEntityFile', () => {
+describe('restoreFailedWrite', () => {
   it('puts back the exact content the file had before writeEntityFile', async () => {
     const path = join(tmpDir, 'objectTypes', 'Sprite.json');
     const before = await readFile(path);
     const obj = JSON.parse(before.toString('utf8'));
     const backup = await writer.writeEntityFile('objectTypes', 'Sprite', { ...obj, isGlobal: !obj.isGlobal });
-    expect(Buffer.compare(await readFile(path), before)).not.toBe(0);
+    const written = await readFile(path, 'utf8');
+    expect(Buffer.compare(Buffer.from(written, 'utf8'), before)).not.toBe(0);
 
-    await writer.restoreEntityFile(backup);
+    const result = await writer.restoreFailedWrite(new EntityWriteError(new Error('failed'), backup, written));
+    expect(result).toEqual({ restored: true, label: 'objectTypes/Sprite.json' });
     expect(Buffer.compare(await readFile(path), before)).toBe(0);
   });
 
   it('refuses paths that are not entity backups in the project', async () => {
-    await expect(writer.restoreEntityFile(join(tmpDir, 'objectTypes', 'Sprite.json'))).rejects.toThrow('Not a backup');
-    await expect(writer.restoreEntityFile(join(tmpDir, '..', 'elsewhere.json.bak'))).rejects.toThrow('Path traversal');
+    await expect(writer.restoreFailedWrite(new EntityWriteError(new Error('failed'), join(tmpDir, 'objectTypes', 'Sprite.json')))).rejects.toThrow('Not a backup');
+    await expect(writer.restoreFailedWrite(new EntityWriteError(new Error('failed'), join(tmpDir, '..', 'elsewhere.json.bak')))).rejects.toThrow('Path traversal');
   });
 
   it('leaves a file that already holds the backup\'s content as it is', async () => {
     const path = join(tmpDir, 'objectTypes', 'Sprite.json');
     const obj = JSON.parse(await readFile(path, 'utf8'));
     const backup = await writer.writeEntityFile('objectTypes', 'Sprite', { ...obj, isGlobal: !obj.isGlobal });
-    await writer.restoreEntityFile(backup);
+    const error = new EntityWriteError(new Error('failed'), backup, await readFile(path, 'utf8'));
+    await writer.restoreFailedWrite(error);
 
     const atomicWrite = vi.spyOn(writer as unknown as { atomicWrite: () => Promise<void> }, 'atomicWrite');
-    await writer.restoreEntityFile(backup);
+    expect(await writer.restoreFailedWrite(error)).toEqual({ restored: true, label: 'objectTypes/Sprite.json' });
     expect(atomicWrite).not.toHaveBeenCalled();
+  });
+
+  it('leaves content that is neither the failed write\'s nor the backup\'s, and says so', async () => {
+    const path = join(tmpDir, 'objectTypes', 'Sprite.json');
+    const obj = JSON.parse(await readFile(path, 'utf8'));
+    const backup = await writer.writeEntityFile('objectTypes', 'Sprite', { ...obj, isGlobal: !obj.isGlobal });
+    const written = await readFile(path, 'utf8');
+    const saved = JSON.stringify({ ...obj, savedInEditor: true }, null, '\t');
+    await writeFile(path, saved);
+
+    const result = await writer.restoreFailedWrite(new EntityWriteError(new Error('failed'), backup, written));
+    expect(result).toEqual({ restored: false, label: 'objectTypes/Sprite.json' });
+    expect(await readFile(path, 'utf8')).toBe(saved);
   });
 });
 
@@ -174,7 +190,7 @@ describe('writeEntityFile failures', () => {
     expect(error.backupPath).toBe(`${path}.bak`);
     // The file holds the new content until it is restored
     expect(Buffer.compare(await readFile(path), before)).not.toBe(0);
-    await writer.restoreEntityFile(error.backupPath);
+    expect(await writer.restoreFailedWrite(error)).toEqual({ restored: true, label: 'objectTypes/Sprite.json' });
     expect(Buffer.compare(await readFile(path), before)).toBe(0);
   });
 

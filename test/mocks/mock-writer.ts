@@ -141,8 +141,9 @@ export class MockWriter {
     this.calls.push({ method: 'renameImageFiles', args: [renames.map(r => ({ ...r }))] });
   }
 
-  async restoreEntityFile(backupPath: string): Promise<void> {
-    this.calls.push({ method: 'restoreEntityFile', args: [backupPath] });
+  async restoreFailedWrite(error: { backupPath: string }): Promise<{ restored: boolean; label: string }> {
+    this.calls.push({ method: 'restoreFailedWrite', args: [error.backupPath] });
+    return { restored: true, label: error.backupPath.replace(/\.bak$/, '') };
   }
 
   /** The mock changes no files, so undoing a tool call puts nothing back */

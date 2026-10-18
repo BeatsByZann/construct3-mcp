@@ -82,12 +82,16 @@ export function newProjectFolder(name: string): Subfolder {
  * writeEntityFile failed after it backed the file up, while or after
  * replacing it: the file may hold the new content (e.g. the post-write check
  * failed), none, or its old content. `backupPath` is the path writeEntityFile
- * returns on success; restoreEntityFile(backupPath) puts the content from
+ * returns on success; restoreFailedWrite(error) puts the content from
  * before the call back when the file existed (for a new file there is no
  * backup). The message is the cause's.
  */
 export class EntityWriteError extends Error {
-  constructor(cause: unknown, readonly backupPath: string) {
+  /**
+   * @param written The text the failed write wrote (undefined when it did
+   *   not get that far), for restoreFailedWrite's ownership check
+   */
+  constructor(cause: unknown, readonly backupPath: string, readonly written?: string) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = 'EntityWriteError';
   }
@@ -582,7 +586,7 @@ export class Construct3ProjectWriter {
    * first, and a file the call created is removed; a file that changed on
    * disk after the call wrote it (saved again in the editor), or whose backup
    * was replaced meanwhile, is left as it is. An entity file whose own write
-   * failed is not among them (restoreEntityFile); project.c3proj is, from the
+   * failed is not among them (restoreFailedWrite); project.c3proj is, from the
    * moment an update replaced it, also when the check after that write
    * failed. Returns what was put back and what was left; nothing outside a
    * tool call. Called outside the writer's locks.
@@ -884,7 +888,7 @@ export class Construct3ProjectWriter {
           state = await this.verifyWrittenFile(filePath, name, text);
         } catch (error) {
           // The file may have been replaced already: tell the caller where the backup is
-          throw new EntityWriteError(error, backupPath);
+          throw new EntityWriteError(error, backupPath, text);
         }
 
         this.afterOwnWrite(filePath, state, text);
@@ -1261,28 +1265,37 @@ export class Construct3ProjectWriter {
   }
 
   /**
-   * Put an entity file back to its content before a writeEntityFile call,
-   * copied from the backup path that call returned (or that its
-   * EntityWriteError carries). Rolls back one file of a change that spans
-   * several files. A file that already holds that content is left as it is.
+   * Roll back a writeEntityFile that failed after it may have replaced the
+   * file (EntityWriteError): put the content from before the call back from
+   * the backup, under the file's lock, only while the file holds the failed
+   * write's own text, the backup's content already, or nothing (a write that
+   * removed it). Any other content is someone else's (a save in the editor,
+   * another call) made after this write: it is left as it is, and
+   * `restored: false` tells the caller to name the file and its .bak.
+   * `label` is the file, project-relative.
    */
-  async restoreEntityFile(backupPath: string): Promise<void> {
+  async restoreFailedWrite(error: EntityWriteError): Promise<{ restored: boolean; label: string }> {
+    const { backupPath, written } = error;
     if (!backupPath.endsWith('.json.bak')) {
-      throw new Error(`Not a backup of an entity file: ${backupPath}`);
+      throw new Error(`Not a backup of an entity file: ${this.projectRelative(backupPath)}.`);
     }
     const filePath = resolveProjectPath(this.reader.getProjectDir(), backupPath.slice(0, -'.bak'.length));
-    await this.withFileLock(filePath, async () => {
+    const label = this.projectRelative(filePath);
+    return this.withFileLock(filePath, async () => {
       const content = await readFile(backupPath);
       let current: Buffer | undefined;
       try {
         current = await readFile(filePath);
-      } catch {
-        // Missing or unreadable: write it
+      } catch (e: unknown) {
+        // Missing: nothing of anyone else's to keep. Unreadable: not known to be ours
+        if (!isNotFound(e)) return { restored: false, label };
       }
-      if (current === undefined || !current.equals(content)) {
-        await this.atomicWrite(filePath, content);
-      }
+      const ours = current === undefined || current.equals(content)
+        || (written !== undefined && current.equals(Buffer.from(written, 'utf-8')));
+      if (!ours) return { restored: false, label };
+      if (current === undefined || !current.equals(content)) await this.atomicWrite(filePath, content);
       this.afterOwnWrite(filePath, await statFileState(filePath), content.toString('utf-8'));
+      return { restored: true, label };
     });
   }
 

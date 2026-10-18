@@ -576,7 +576,7 @@ describe('rename_animation', () => {
     expect(result.content[0].text).toContain('disk full. The rename was rolled back');
     // The object written before is the writer's to put back (undoToolCall), with its check for a save of the editor
     expect(writer.callsFor('undoToolCall')).toHaveLength(1);
-    expect(writer.callsFor('restoreEntityFile')).toHaveLength(0);
+    expect(writer.callsFor('restoreFailedWrite')).toHaveLength(0);
     const [forward, back] = writer.callsFor('renameImageFiles').map(c => c.args[0]);
     expect(back).toEqual((forward as Array<{ from: string; to: string }>).map(r => ({ from: r.to, to: r.from })).reverse());
     expect(back).toHaveLength(3);
@@ -590,7 +590,7 @@ describe('rename_animation', () => {
     const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('verification failed. The rename was rolled back');
-    expect(writer.callsFor('restoreEntityFile')).toHaveLength(0);
+    expect(writer.callsFor('restoreFailedWrite')).toHaveLength(0);
     expect(writer.callsFor('renameImageFiles').map(c => c.args[0])).toEqual([
       [{ from: 'hero-walk-000.png', to: 'hero-run-000.png' }],
       [{ from: 'hero-run-000.png', to: 'hero-walk-000.png' }],
@@ -607,7 +607,7 @@ describe('rename_animation', () => {
     const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Post-write verification failed for "Hero". The rename was rolled back');
-    expect(writer.callsFor('restoreEntityFile').map(c => c.args[0])).toEqual(['/mock/backup/objectTypes/Hero.json.bak']);
+    expect(writer.callsFor('restoreFailedWrite').map(c => c.args[0])).toEqual(['/mock/backup/objectTypes/Hero.json.bak']);
     expect(writer.callsFor('renameImageFiles').map(c => c.args[0])).toEqual([
       [{ from: 'hero-walk-000.png', to: 'hero-run-000.png' }],
       [{ from: 'hero-run-000.png', to: 'hero-walk-000.png' }],
@@ -629,7 +629,7 @@ describe('rename_animation', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Renaming image files failed: EBUSY. The files renamed before were renamed back.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-    expect(writer.callsFor('restoreEntityFile')).toHaveLength(0);
+    expect(writer.callsFor('restoreFailedWrite')).toHaveLength(0);
   });
 
   it('names what could not be rolled back when the rollback fails', async () => {
@@ -645,7 +645,7 @@ describe('rename_animation', () => {
       if (category === 'layouts') throw new EntityWriteError(new Error('disk full'), '/mock/backup/layouts/Level.json.bak');
       return write(category, name, data, subfolder);
     };
-    writer.restoreEntityFile = async () => { throw new Error('EPERM'); };
+    writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
     let renameCalls = 0;
     writer.renameImageFiles = async () => {
       if (++renameCalls === 2) throw new Error('EBUSY');
@@ -740,7 +740,7 @@ describe('add_frame_to_animation', () => {
     writer.writeEntityFile = async () => {
       throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
     };
-    writer.restoreEntityFile = async () => { throw new Error('EPERM'); };
+    writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
     let renameCalls = 0;
     writer.renameImageFiles = async () => {
       if (++renameCalls === 2) throw new Error('EBUSY');

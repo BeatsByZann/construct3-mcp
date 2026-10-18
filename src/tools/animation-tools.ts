@@ -995,7 +995,8 @@ function otherWriteKeptWarning(change: string): string {
 /**
  * Undo an add_frame_to_animation or delete_frame_from_animation whose writes
  * after the image renames failed: put back the object file from its backup
- * when its write failed after replacing it, remove the new frame's
+ * when its write failed after replacing it and the file still holds that
+ * write's own content (restoreFailedWrite), remove the new frame's
  * placeholder image (`newFrameFile`), then rename the image files back, last
  * first. The placeholder's name was free before the call (see
  * planFrameImageShift), so a file there, also one a failed write left part
@@ -1015,9 +1016,12 @@ async function rollBackFrameChange(
   const failed: string[] = [];
   const otherWrite = error instanceof EntityWriteError && error.changedByOtherWrite;
   const restore = error instanceof EntityWriteError && !otherWrite;
+  let restoredFile = false;
   if (restore) {
     try {
-      await writer.restoreEntityFile(error.backupPath);
+      const { restored, label } = await writer.restoreFailedWrite(error);
+      if (restored) restoredFile = true;
+      else failed.push(`${label} (another write changed it after this call's write failed; it was left as it is)`);
     } catch {
       failed.push(error.backupPath.replace(/\.bak$/, ''));
     }
@@ -1049,7 +1053,7 @@ async function rollBackFrameChange(
   const undone = [
     ...(renames.length > 0 ? ['the image files have their old names again'] : []),
     ...(placeholderRemoved ? ['the placeholder image was removed'] : []),
-    ...(restore ? ['the object file was restored from its backup'] : []),
+    ...(restoredFile ? ['the object file was restored from its backup'] : []),
   ];
   const nothing = unchecked ? 'The rest was rolled back' : 'Nothing was changed';
   return otherWriteNote + (undone.length === 0
@@ -1066,8 +1070,9 @@ async function rollBackFrameChange(
  * saved in the editor after the call wrote it as it is. The file whose write
  * failed is not among them: it is restored from its backup when the write
  * may have replaced it (EntityWriteError), unless another write replaced it
- * during this one (changedByOtherWrite), such as a save in the editor, which
- * is kept. Last, the frame image files, which the writer does not track, are
+ * during this one (changedByOtherWrite) or after it failed
+ * (restoreFailedWrite finds other content), such as a save in the editor,
+ * which is kept. Last, the frame image files, which the writer does not track, are
  * renamed back.
  */
 async function rollBackAnimationRename(
@@ -1101,8 +1106,9 @@ async function rollBackAnimationRename(
       otherWrite = `${failedFile} was left as that write left it. `;
     } else {
       try {
-        await writer.restoreEntityFile(error.backupPath);
-        done.push(`${failedFile} was restored from its backup`);
+        const { restored } = await writer.restoreFailedWrite(error);
+        if (restored) done.push(`${failedFile} was restored from its backup`);
+        else problems.push(`${failedFile} was left as it is, since another write changed it after this call's write failed (${failedFile}.bak holds the previous JSON)`);
       } catch {
         problems.push(`restoring ${failedFile} from its backup failed (${failedFile}.bak holds the previous JSON)`);
       }
