@@ -85,6 +85,12 @@ Known gap: tools that edit the large file itself, such as `add_instance_to_layou
 **Solutions**:
 - Check that file in the Construct 3 editor, or split a very large layout
 
+### Construct 3 does not open the project: "cannot find object type name '...'"
+
+**Cause**: a container in `project.c3proj` (`"containers": [ { "members": [...] } ]`) lists an object type that no longer exists, for example one deleted by hand or by `delete_object` of version 1.10.0 or older, which left the name in its container. `validate_project` reports it as a `container-member` error.
+
+**Fix**: remove the name from that container's `members` in `project.c3proj` (the error names the container's index and members), or restore the object type from its `.bak` (`objectTypes/<name>.json.bak`: rename it back to `<name>.json`, and add the name back to `objectTypes` in `project.c3proj`). From this version on, `delete_object` takes a deleted object type out of its containers.
+
 ### Changes made in the C3 editor or with git
 
 Since 1.10.0 the server picks up changes made outside it by itself: each tool call checks `project.c3proj`, and the files its caches hold, against the disk (modification time, size, file id) and reads again what changed. Reconnecting is no longer needed after a save in the editor or `git restore`. Older versions kept the project list from their start and needed a reconnect (Claude Code: `/mcp` > `construct3` > **Reconnect**).

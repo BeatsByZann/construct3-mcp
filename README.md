@@ -502,6 +502,7 @@ construct3-mcp/
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
 │   │   ├── instance-variables.ts   # Instance variable values and effect entries on layout instances
 │   │   ├── hierarchy.ts            # Hierarchy (scene graph) links between layout instances
+│   │   ├── containers.ts           # Containers in project.c3proj: members, a deleted object type taken out, a container under two members removed
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
 │   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert/delete

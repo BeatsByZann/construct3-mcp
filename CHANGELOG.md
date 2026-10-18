@@ -9,10 +9,13 @@ All notable changes to the Construct3 MCP Server are documented here.
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
 - `register_addon`, `unregister_addon`, `replace_sprite_image`, the timeline tools and the runtime bridge tools write project files through the project writer: each file is backed up once per tool call (`<file>.bak`), written through a temp file and read back. `register_addon` and `unregister_addon` merge a `project.c3proj` saved in the editor during the call instead of refusing it; the runtime bridge tools refuse to write over one (#ISSUE).
 - Images are backed up under the first free `.bak` name (`<file>.bak`, `<file>.1.bak`, ...), so placeholder writes and `replace_sprite_image` never replace an image the frame tools kept as `.bak`; a failed batch of placeholder images puts back an image it wrote over. Image backups accumulate, one more for each call that writes the image, and nothing removes them (#ISSUE).
+- `get_object_dependencies` and `find_orphaned_objects` list the containers of an object type (`containers`: `index`, `members`, `others`), read from `project.c3proj` at the call. `get_asset_usage` finds container members by name instead of by a text search of the containers (#ISSUE).
 
 ### Fixed
 
 - When an object type, event sheet, layout or family write fails after replacing the file, the rollback of `update_layer`, `add_frame_to_animation`, `delete_frame_from_animation` and `rename_animation` puts the backup back only while the file holds that write's own content; a save made in the editor after the failure is kept, and the error names the file and its `.bak` (#ISSUE).
+- `delete_object` takes the object type out of the containers in `project.c3proj` that list it (ignoring case), in the same update that removes its registration, and lists them in `containersUpdated`. Before, it left the name in the container, and Construct 3 then refused to open the project ("cannot find object type name"). A container left with fewer than two members is removed (`containersRemoved`), and `validate_project` reports one as an error (#ISSUE).
+- `validate_project` reports a container member that is not an object type of the project as an error (`container-member`), and one that differs from an object type only in letter case as a warning. Before, such a project was reported valid (#ISSUE).
 
 ## [1.10.0] - 2026-09-30
 
