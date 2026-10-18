@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
@@ -179,6 +179,36 @@ describe('update_instance_variable: rename', () => {
     await call('update_family', { name: 'Enemies', addVariables: [{ name: 'speed', type: 'number' }] });
     const data = await call('update_instance_variable', { familyName: 'Enemies', variableName: 'speed', newName: 'Hp' });
     expect(data.text).toContain('"Sprite" already has an instance variable "hp"');
+  });
+
+  it('refuses a family variable rename that events use through a member, lists the use, and writes nothing', async () => {
+    await call('create_family', { name: 'Enemies', pluginId: 'Sprite', members: ['Sprite'] });
+    await call('update_family', { name: 'Enemies', addVariables: [{ name: 'speed', type: 'number' }] });
+    await call('update_instance', { layoutName: 'Layout 1', uid: 0, instanceVariables: { speed: 3 } });
+    // A condition on Sprite, a member of the family, that compares the family's variable
+    const sheet = await readJson<{ events: Array<{ conditions: unknown[] }> }>(path('eventSheets', 'MainSheet.json'));
+    sheet.events[0].conditions.push({ id: 'compare-instance-variable', objectClass: 'Sprite', sid: 400000000000011, parameters: { 'instance-variable': 'speed', comparison: 0, value: '0' } });
+    await writeFile(path('eventSheets', 'MainSheet.json'), JSON.stringify(sheet, null, '\t'));
+    await reader.loadProject();
+    resetProjectIndex();
+    const snapshot = async () => {
+      const out: Record<string, string> = {};
+      for (const file of (await readdir(tmpDir, { recursive: true })).map(String).sort()) {
+        out[file] = await readFile(path(file), 'utf8').catch(() => '(directory)');
+      }
+      return out;
+    };
+    const before = await snapshot();
+    const data = await call('update_instance_variable', { familyName: 'Enemies', variableName: 'speed', newName: 'velocity' });
+    expect(data.success).toBe(false);
+    expect(data.action).toBe('update_blocked');
+    expect(data.message).toContain('Events use the instance variable this update renames:');
+    expect(data.message).toContain('"speed"');
+    expect(data.message).toContain('MainSheet');
+    expect(data.references).toMatchObject({ eventSheets: ['MainSheet'] });
+    const after = await snapshot();
+    expect(after).toEqual(before);
+    expect(Object.keys(after).filter(f => f.endsWith('.bak'))).toEqual(Object.keys(before).filter(f => f.endsWith('.bak')));
   });
 });
 
