@@ -76,7 +76,7 @@ export interface CallBackup {
   readonly state: FileState;
 }
 
-/** A file the tool call changed (wrote or deleted) through the writer: what undoing the call puts back. */
+/** A file the tool call changed (wrote or deleted): what undoing the call, or the change journal, puts back. */
 export interface CallChange {
   /** The file's path, as spelled on disk. */
   readonly path: string;
@@ -84,9 +84,30 @@ export interface CallChange {
   readonly label: string;
   /** Its backup from before the call. */
   readonly backup: CallBackup;
+  /** The backup as shown in messages ("images/hero-animation 1-001.png.1.bak"). */
+  readonly backupLabel: string;
   /** project.c3proj (put back under the project lock, then loaded again). */
   readonly isProjectFile: boolean;
+  /**
+   * Recorded for the change journal only: a file a tool wrote through the
+   * writer's file primitives, or an entity write whose post-write check
+   * failed (the tool restores it, restoreFailedWrite). Undoing the call on
+   * failure (undoCallChanges) leaves it alone.
+   */
+  readonly journalOnly: boolean;
 }
+
+/** A file the tool call renamed (the frame image tools), recorded for the change journal, which renames it back. */
+export interface CallMove {
+  readonly from: string;
+  readonly to: string;
+  /** The paths shown in messages ("images/hero-animation 1-001.png"). */
+  readonly fromLabel: string;
+  readonly toLabel: string;
+}
+
+/** One step of a tool call, in order: a file's first change (by fileKey; ToolCallScope.changes holds it) or a rename. */
+export type CallStep = { readonly file: string } | { readonly move: CallMove };
 
 /** What one tool call has done so far. */
 export interface ToolCallScope {
@@ -96,6 +117,17 @@ export interface ToolCallScope {
   readonly backups: Map<string, CallBackup>;
   /** Files the call changed through the writer, by fileKey, in the order of their first change. */
   readonly changes: Map<string, CallChange>;
+  /** The state of each file the call changed or renamed, by fileKey, from before the call first touched it. */
+  readonly before: Map<string, FileState>;
+  /** The call's changes and renames, in order (a file at its first change). */
+  readonly steps: CallStep[];
+  /**
+   * Files the call wrote whose state afterwards is not known to be the
+   * call's (another write landed right after it, or its post-write check
+   * failed and the file holds something else): the change journal never
+   * reverts them.
+   */
+  readonly unowned: Set<string>;
   /** Readers that already checked their cached files against the disk in this call. */
   readonly checked: Set<object>;
 }
@@ -113,7 +145,13 @@ export function currentToolCall(): ToolCallScope | undefined {
  */
 export function runInToolCall<T>(fn: () => Promise<T>): Promise<T> {
   if (scopes.getStore()) return fn();
-  return scopes.run({ reads: new Map(), backups: new Map(), changes: new Map(), checked: new Set() }, fn);
+  return scopes.run({ reads: new Map(), backups: new Map(), changes: new Map(), before: new Map(), steps: [], unowned: new Set(), checked: new Set() }, fn);
+}
+
+/** Remember a file's state before the running tool call first touched it (the first note wins). */
+export function noteFirstTouch(key: string, state: FileState): void {
+  const scope = scopes.getStore();
+  if (scope && !scope.before.has(key)) scope.before.set(key, state);
 }
 
 /** Remember the state a file was read in, for the running tool call (the first read of a file counts). */

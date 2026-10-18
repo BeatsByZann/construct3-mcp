@@ -26,6 +26,7 @@ import {
   fileKey,
   noteFileRead,
   noteFileWritten,
+  noteFirstTouch,
   runInToolCall,
   sameFileState,
   statFileState,
@@ -307,6 +308,7 @@ export class Construct3ProjectWriter {
     const filePath = await existingSpelling(path);
     const scope = currentToolCall();
     const key = fileKey(filePath);
+    if (scope && !scope.before.has(key)) noteFirstTouch(key, await statFileState(filePath));
     const earlier = scope?.backups.get(key);
     if (earlier !== undefined) return earlier.path;
     let backupPath = options.freeName ? await this.freeBackupPath(filePath) : filePath + '.bak';
@@ -342,16 +344,62 @@ export class Construct3ProjectWriter {
 
   /**
    * Record in the running tool call that it changed (wrote or deleted) a
-   * file it backed up before, so a refused write later in the call can put
-   * it back (undoCallChanges).
+   * file it backed up before: a refused write later in the call puts it back
+   * (undoCallChanges), unless `journalOnly` (recorded for the change journal
+   * only). A file the writer writes after it was recorded journalOnly is no
+   * longer journalOnly.
    */
-  private noteCallChange(filePath: string, isProjectFile = false): void {
+  private noteCallChange(filePath: string, isProjectFile = false, journalOnly = false): void {
     const scope = currentToolCall();
     if (!scope) return;
     const key = fileKey(filePath);
     const backup = scope.backups.get(key);
-    if (backup === undefined || scope.changes.has(key)) return;
-    scope.changes.set(key, { path: filePath, label: this.projectRelative(filePath), backup, isProjectFile });
+    if (backup === undefined) return;
+    const known = scope.changes.get(key);
+    if (known) {
+      if (known.journalOnly && !journalOnly) scope.changes.set(key, { ...known, journalOnly: false });
+      return;
+    }
+    scope.changes.set(key, {
+      path: filePath, label: this.projectRelative(filePath), backup, backupLabel: this.projectRelative(backup.path), isProjectFile, journalOnly,
+    });
+    scope.steps.push({ file: key });
+  }
+
+  /**
+   * A file recorded journalOnly holds its content from before the call again
+   * (restoreForCall, putBackImage, restoreFailedWrite): the record, its step
+   * and its unowned mark are cancelled. A change the writer owns stays.
+   */
+  private cancelJournalRecord(key: string): void {
+    const scope = currentToolCall();
+    if (!scope?.changes.get(key)?.journalOnly) return;
+    scope.changes.delete(key);
+    scope.unowned.delete(key);
+    const at = scope.steps.findIndex(step => 'file' in step && step.file === key);
+    if (at >= 0) scope.steps.splice(at, 1);
+  }
+
+  /**
+   * Record a rename the running call made (renameImageFiles): `from` is
+   * gone, `to` holds the file. A rename that takes back the last move
+   * between the same two files (a tool rolling back) removes that move.
+   */
+  private async noteFileMoved(fromPath: string, toPath: string): Promise<void> {
+    const scope = currentToolCall();
+    if (!scope) return;
+    const fromKey = fileKey(fromPath);
+    const toKey = fileKey(toPath);
+    noteFileWritten(fromKey, null);
+    noteFileWritten(toKey, await statFileState(toPath));
+    for (let i = scope.steps.length - 1; i >= 0; i--) {
+      const step = scope.steps[i];
+      if ('move' in step && fileKey(step.move.from) === toKey && fileKey(step.move.to) === fromKey) {
+        scope.steps.splice(i, 1);
+        return;
+      }
+    }
+    scope.steps.push({ move: { from: fromPath, to: toPath, fromLabel: this.projectRelative(fromPath), toLabel: this.projectRelative(toPath) } });
   }
 
   /**
@@ -402,12 +450,16 @@ export class Construct3ProjectWriter {
    */
   private async afterToolWrite(filePath: string, content: string | Buffer | null): Promise<void> {
     const key = fileKey(filePath);
+    const isProject = key === fileKey(this.reader.getProjectPath());
     const state = content === null ? null : await this.stateIfHolding(filePath, content);
+    // On record for the change journal; a file another write landed on is never the call's to revert
+    this.noteCallChange(filePath, isProject, true);
     if (state === undefined) {
+      currentToolCall()?.unowned.add(key);
       throw new UnconfirmedWriteError(`${this.projectRelative(filePath)} was changed by another write right after this one (the Construct 3 editor, `
         + 'or a tool call running in parallel?): it does not hold what this call wrote. Re-read it and retry.');
     }
-    if (key === fileKey(this.reader.getProjectPath())) noteFileWritten(key, state);
+    if (isProject) noteFileWritten(key, state);
     else this.afterOwnWrite(filePath, state);
   }
 
@@ -497,6 +549,8 @@ export class Construct3ProjectWriter {
         await this.atomicWrite(filePath, content);
       }
       await this.afterToolWrite(filePath, content);
+      // The file holds its content from before the call again
+      this.cancelJournalRecord(key);
     });
   }
 
@@ -527,17 +581,20 @@ export class Construct3ProjectWriter {
       const key = fileKey(filePath);
       const scope = currentToolCall();
       const ours = scope?.reads.get(key);
-      if (ours === undefined || !sameFileState(await statFileState(filePath), ours)) return false;
+      // A write of the call has a backup record (replaceFile); a rename records the state of a name without writing it
       const backup = scope?.backups.get(key);
-      if (backup?.existed) {
+      if (ours === undefined || backup === undefined || !sameFileState(await statFileState(filePath), ours)) return false;
+      if (backup.existed) {
         if (!sameFileState(await statFileState(backup.path), backup.state)) return false;
         const bytes = await readFile(backup.path);
         await this.atomicWrite(filePath, bytes);
         await this.afterToolWrite(filePath, bytes);
+        this.cancelJournalRecord(key);
         return 'restored';
       }
       await unlink(filePath);
       await this.afterToolWrite(filePath, null);
+      this.cancelJournalRecord(key);
       return 'removed';
     });
   }
@@ -554,19 +611,18 @@ export class Construct3ProjectWriter {
    */
   private async undoCallChanges(scope: ToolCallScope): Promise<UndoReport> {
     const report: UndoReport = { restored: [], left: [] };
-    const changes = [...scope.changes].reverse();
-    scope.changes.clear();
+    // The writer's own changes; a change is dropped from the scope only once it was put back
+    const changes = [...scope.changes].filter(([, change]) => !change.journalOnly).reverse();
     let projectPutBack = false;
     for (const [key, change] of changes) {
       let putBack = false;
       try {
-        putBack = change.isProjectFile
-          ? await this.withProjectLock(() => this.putBack(key, change, scope))
-          : await this.withFileLock(change.path, () => this.putBack(key, change, scope));
+        putBack = await this.putBackLocked(change, () => scope.reads.get(key));
       } catch {
         putBack = false;
       }
       if (putBack) {
+        scope.changes.delete(key);
         report.restored.push(change.backup.existed ? change.label : `${change.label} (deleted: the call had created it)`);
         if (change.isProjectFile) projectPutBack = true;
       } else {
@@ -584,13 +640,18 @@ export class Construct3ProjectWriter {
     return report;
   }
 
+  /** putBack under the file's one lock (underLockOf); `asLeft` is read inside the lock. */
+  private putBackLocked(change: CallChange, asLeft: () => FileState | undefined): Promise<boolean> {
+    return this.underLockOf(change.path, () => this.putBack(change, asLeft()));
+  }
+
   /**
    * Put one file the tool call changed back as it was before the call.
-   * False when it changed on disk since the call wrote it, or its backup no
-   * longer holds the state from before the call.
+   * False when it is no longer in the state the call left it in (`asLeft`),
+   * or its backup no longer holds the state from before the call.
    */
-  private async putBack(key: string, change: CallChange, scope: ToolCallScope): Promise<boolean> {
-    const asLeft = scope.reads.get(key);
+  private async putBack(change: CallChange, asLeft: FileState | undefined): Promise<boolean> {
+    const key = fileKey(change.path);
     if (asLeft === undefined || !sameFileState(await statFileState(change.path), asLeft)) return false;
     if (!change.backup.existed) {
       try {
@@ -605,9 +666,11 @@ export class Construct3ProjectWriter {
     if (!sameFileState(await statFileState(change.backup.path), change.backup.state)) return false;
     const content = await readFile(change.backup.path);
     await this.atomicWrite(change.path, content);
-    const state = await statFileState(change.path);
+    const state = await this.stateIfHolding(change.path, content);
+    if (state === undefined) return false;
     if (change.isProjectFile) noteFileWritten(key, state);
-    else this.afterOwnWrite(change.path, state, content.toString('utf-8'));
+    // Only JSON files hold IDs for the ID generator (not images or scripts)
+    else this.afterOwnWrite(change.path, state, change.path.toLowerCase().endsWith('.json') ? content.toString('utf-8') : undefined);
     return true;
   }
 
@@ -998,6 +1061,7 @@ export class Construct3ProjectWriter {
           state = await this.verifyWrittenFile(filePath, name, text);
         } catch (error) {
           // The file may have been replaced already: tell the caller where the backup is
+          await this.noteFailedWrite(filePath, text);
           throw new EntityWriteError(error, backupPath, text);
         }
 
@@ -1009,6 +1073,30 @@ export class Construct3ProjectWriter {
       // Refused as stale: first put back what the call changed before
       throw await this.refusalAfterUndo(error);
     }
+  }
+
+  /**
+   * A writeEntityFile whose write or post-write check failed: record the
+   * file for the change journal (journalOnly: the tool restores it,
+   * restoreFailedWrite) unless it is as before the call, with this write's
+   * state only when it still holds exactly this write's text (unowned
+   * otherwise).
+   */
+  private async noteFailedWrite(filePath: string, text: string): Promise<void> {
+    const scope = currentToolCall();
+    if (!scope) return;
+    const key = fileKey(filePath);
+    const ours = await this.stateIfHolding(filePath, text);
+    if (ours === undefined) {
+      const now = await statFileState(filePath).catch(() => undefined);
+      const before = scope.before.get(key);
+      // The write never replaced the file
+      if (now !== undefined && before !== undefined && sameFileState(now, before)) return;
+      scope.unowned.add(key);
+    } else {
+      noteFileWritten(key, ours);
+    }
+    this.noteCallChange(filePath, false, true);
   }
 
   /** Run `fn` after every earlier withFileLock call for the same file has finished. */
@@ -1457,6 +1545,12 @@ export class Construct3ProjectWriter {
         : `Cannot rename images/${clash.from} to images/${clash.to}: images/${clash.occupant} already exists. No image file was renamed.`);
     }
 
+    // Each file's state before the call touched it, also the source of a rename (change journal)
+    for (const move of moves) {
+      noteFirstTouch(fileKey(move.fromPath), await statFileState(move.fromPath));
+      noteFirstTouch(fileKey(move.toPath), await statFileState(move.toPath));
+    }
+
     const done: typeof moves = [];
     let current: (typeof moves)[number] | undefined;
     try {
@@ -1464,12 +1558,14 @@ export class Construct3ProjectWriter {
         current = move;
         await this.renameImageUnderLock(move.from, move.to, move.fromPath, move.toPath);
         done.push(move);
+        await this.noteFileMoved(move.fromPath, move.toPath);
       }
     } catch (error) {
       const notRestored: string[] = [];
       for (const move of [...done].reverse()) {
         try {
           await this.renameImageUnderLock(move.to, move.from, move.toPath, move.fromPath);
+          await this.noteFileMoved(move.toPath, move.fromPath);
         } catch {
           notRestored.push(`images/${move.to} (was images/${move.from})`);
         }
@@ -1547,6 +1643,8 @@ export class Construct3ProjectWriter {
       if (!ours) return { restored: false, label, reason: 'changed' };
       if (current === undefined || !current.equals(content)) await this.atomicWrite(filePath, content);
       this.afterOwnWrite(filePath, await statFileState(filePath), content.toString('utf-8'));
+      // The failed write it undoes is no longer the call's change
+      this.cancelJournalRecord(fileKey(filePath));
       return { restored: true, label };
     });
   }
