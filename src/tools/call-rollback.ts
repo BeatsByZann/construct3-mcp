@@ -3,7 +3,7 @@
  * failed is put back by restoreFailedWrite, which does so only while the
  * file holds that write's own text, the backup's content, or nothing, and
  * only when its .bak is the one this call made (checked here before and
- * after, Revision 3); the files the call wrote before are put back by
+ * after the restore); the files the call wrote before are put back by
  * undoToolCall, which leaves a file changed on disk since the call wrote
  * it. A file left as it is is named with its .bak. The message says what is
  * on disk, and says "Nothing was changed." only when that was checked.
