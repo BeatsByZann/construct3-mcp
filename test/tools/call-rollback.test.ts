@@ -144,7 +144,7 @@ describe('rollBackFailedCall', () => {
     expect(message).not.toContain('Layout 9.json.bak');
   });
 
-  // Revision 3: the .bak must be the one this call made
+  // The .bak must be the one this call made
   it('never restores a new file from a .bak an earlier call left beside it', async () => {
     const stale = JSON.stringify({ name: 'Layout 9', layers: [], stale: true }, null, '\t');
     await writeFile(join(tmpDir, 'layouts', 'Layout 9.json.bak'), stale);
