@@ -516,7 +516,7 @@ export interface EventSheetFlowNode {
 export interface UnanalysedObjectFile {
   /** "objectTypes/<name>", as validate_project lists unscanned files */
   file: string;
-  /** Why it was not parsed, e.g. "over the 10MB read limit" */
+  /** Why it was not parsed, e.g. "over the 10MB size limit" */
   reason: string;
   /** What could not be checked because of it */
   unchecked: string;

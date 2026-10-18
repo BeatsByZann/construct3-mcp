@@ -30,7 +30,7 @@ import { registerQueryTools } from '../../src/tools/query.js';
 import { registerAnalysisTools } from '../../src/tools/analysis.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
-/** Must match MAX_FILE_SIZE in src/construct3/project-reader.ts */
+/** The default size limit: DEFAULT_MAX_FILE_MB in src/construct3/file-size-limit.ts (the suite clears C3MCP_MAX_FILE_MB) */
 const READER_SIZE_CAP = 10 * 1024 * 1024;
 
 type Category = 'objectTypes' | 'eventSheets' | 'layouts' | 'families';
@@ -177,9 +177,9 @@ describe('delete_object with registered files that could not be parsed', () => {
     expect(result.success).toBe(false);
     expect(result.action).toBe('delete_blocked');
     expect(result.message).toContain('possible uses in files that could not be parsed');
-    expect(result.message).toContain('layouts/Big (over the 10MB read limit)');
+    expect(result.message).toContain('layouts/Big (over the 10MB size limit)');
     expect(result.unscannedFiles).toEqual([
-      { file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use', names: ['Enemy'] },
+      { file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use', names: ['Enemy'] },
     ]);
     expect(await exists('objectTypes', 'Enemy')).toBe(true);
   });
@@ -192,7 +192,7 @@ describe('delete_object with registered files that could not be parsed', () => {
     const result = await call('delete_object', { name: 'Enemy', force: true });
     expect(result.success).toBe(true);
     expect(result.action).toBe('deleted');
-    expect(result.warnings.join(' ')).toMatch(/possible uses.*layouts\/Big \(over the 10MB read limit\)/);
+    expect(result.warnings.join(' ')).toMatch(/possible uses.*layouts\/Big \(over the 10MB size limit\)/);
     expect(await exists('objectTypes', 'Enemy')).toBe(false);
   });
 
@@ -204,7 +204,7 @@ describe('delete_object with registered files that could not be parsed', () => {
 
     const result = await call('delete_object', { name: 'Enemy' });
     expect(result.success).toBe(true);
-    expect(result.warnings.join(' ')).toContain('layouts/Big (over the 10MB read limit) could not be parsed and was only searched as text');
+    expect(result.warnings.join(' ')).toContain('layouts/Big (over the 10MB size limit) could not be parsed and was only searched as text');
     expect(await exists('objectTypes', 'Enemy')).toBe(false);
   });
 
@@ -345,7 +345,7 @@ describe('delete_layout of a layout that could not be parsed', () => {
     expect(result.success).toBe(false);
     expect(result.action).toBe('delete_blocked');
     expect(result.unscannedFiles).toEqual([
-      { file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use', names: ['instances'] },
+      { file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use', names: ['instances'] },
     ]);
     expect(await exists('layouts', 'Big')).toBe(true);
 
@@ -370,7 +370,7 @@ describe('delete_layout of a layout that could not be parsed', () => {
 
     const result = await call('delete_layout', { name: 'Big' });
     expect(result.success).toBe(true);
-    expect(result.warnings.join(' ')).toContain('layouts/Big (over the 10MB read limit) could not be parsed and was only searched as text');
+    expect(result.warnings.join(' ')).toContain('layouts/Big (over the 10MB size limit) could not be parsed and was only searched as text');
   });
 
   it('refuses when the layout cannot be read, even as text', async () => {
@@ -407,7 +407,7 @@ describe('delete_event_sheet with registered files that could not be parsed', ()
     const result = await call('delete_event_sheet', { name: 'Extra' });
     expect(result.action).toBe('delete_blocked');
     expect(result.unscannedFiles).toEqual([
-      { file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use', names: ['Extra'] },
+      { file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use', names: ['Extra'] },
     ]);
     expect(await exists('eventSheets', 'Extra')).toBe(true);
 
@@ -432,7 +432,7 @@ describe('delete_event_sheet with registered files that could not be parsed', ()
 
     const result = await call('delete_event_sheet', { name: 'Extra' });
     expect(result.success).toBe(true);
-    expect(result.warnings.join(' ')).toContain('layouts/Big (over the 10MB read limit) could not be parsed and was only searched as text');
+    expect(result.warnings.join(' ')).toContain('layouts/Big (over the 10MB size limit) could not be parsed and was only searched as text');
   });
 
   it('refuses when a registered layout cannot be read, even as text', async () => {
@@ -646,15 +646,15 @@ describe('rename_animation with layouts that could not be parsed', () => {
     const result = await call('rename_animation', { objectName: 'Enemy', animationName: 'Walk', newName: 'Run' });
     expect(result.success).toBe(false);
     expect(result.action).toBe('update_blocked');
-    expect(result.message).toMatch(/possibly have instances of "Enemy" that start with "Walk".*layouts\/Big \(over the 10MB read limit\)/);
+    expect(result.message).toMatch(/possibly have instances of "Enemy" that start with "Walk".*layouts\/Big \(over the 10MB size limit\)/);
     expect(result.unscannedFiles).toEqual([
-      { file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use', names: ['Enemy', 'Walk'] },
+      { file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use', names: ['Enemy', 'Walk'] },
     ]);
     expect(await enemyAnimationNames()).toEqual(['Walk', 'Idle']);
 
     const forced = await call('rename_animation', { objectName: 'Enemy', animationName: 'Walk', newName: 'Run', force: true });
     expect(forced.success).toBe(true);
-    expect(forced.warnings.join(' ')).toMatch(/force=true: layouts\/Big \(over the 10MB read limit\).*"Walk".*NOT updated/);
+    expect(forced.warnings.join(' ')).toMatch(/force=true: layouts\/Big \(over the 10MB size limit\).*"Walk".*NOT updated/);
     expect(await enemyAnimationNames()).toEqual(['Run', 'Idle']);
   });
 
@@ -681,7 +681,7 @@ describe('rename_animation with layouts that could not be parsed', () => {
     const result = await call('rename_animation', { objectName: 'Enemy', animationName: 'Walk', newName: 'Run' });
     expect(result.success).toBe(true);
     const warnings = result.warnings.join(' ');
-    expect(warnings).toContain('layouts/Big (over the 10MB read limit) could not be parsed and was only searched as text (for: Enemy, Walk)');
+    expect(warnings).toContain('layouts/Big (over the 10MB size limit) could not be parsed and was only searched as text (for: Enemy, Walk)');
     expect(warnings).not.toContain('NOT updated');
   });
 
@@ -846,9 +846,9 @@ describe('instance updates in layouts that could not be parsed', () => {
     const result = await call('update_object_properties', { name: 'Enemy', removeBehaviors: ['Fade'] });
     expect(result.success).toBe(true);
     expect(result.warnings.join(' ')).toContain(
-      'Instances in layouts that could not be parsed were NOT updated: layouts/Big (over the 10MB read limit), whose text names "Enemy"');
+      'Instances in layouts that could not be parsed were NOT updated: layouts/Big (over the 10MB size limit), whose text names "Enemy"');
     expect(result.unscannedFiles).toEqual([
-      { file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use', names: ['Enemy'] },
+      { file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use', names: ['Enemy'] },
     ]);
   });
 
@@ -866,7 +866,7 @@ describe('instance updates in layouts that could not be parsed', () => {
     expect(added.success).toBe(true);
     expect(JSON.stringify(added.warnings ?? [])).not.toContain('NOT updated');
     expect(added.unscannedFiles).toEqual([
-      { file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'no-match', searchedFor: ['Enemy'] },
+      { file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'no-match', searchedFor: ['Enemy'] },
     ]);
   });
 
@@ -885,10 +885,10 @@ describe('instance updates in layouts that could not be parsed', () => {
     expect(deleted.success).toBe(true);
     const warnings = deleted.warnings.join(' ');
     // The family's own name and SID are not in the layout; the member's instances are
-    expect(warnings).toContain(`layouts/Big (over the 10MB read limit) could not be parsed and was only searched as text (for: Foes, SID ${FOES_SID} of "Foes")`);
+    expect(warnings).toContain(`layouts/Big (over the 10MB size limit) could not be parsed and was only searched as text (for: Foes, SID ${FOES_SID} of "Foes")`);
     expect(warnings).toContain('Instances in layouts that could not be parsed were NOT updated: layouts/Big');
     expect(deleted.unscannedFiles).toEqual([
-      { file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use', names: ['Enemy'] },
+      { file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use', names: ['Enemy'] },
     ]);
   });
 });
@@ -960,7 +960,7 @@ describe('get_object_dependencies, find_orphaned_objects and get_asset_usage wit
     const result = await call('get_object_dependencies', { object: 'Enemy' });
     expect(result.object.referenceCount).toBe(0);
     expect(result.object.possiblyReferencedIn).toEqual(['layouts/Big']);
-    expect(result.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use' }]);
+    expect(result.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use' }]);
 
     const sprite = await call('get_object_dependencies', { object: 'Sprite' });
     expect(sprite.object.possiblyReferencedIn).toBeUndefined();
@@ -980,13 +980,13 @@ describe('get_object_dependencies, find_orphaned_objects and get_asset_usage wit
     expect(result.projectWide.possiblyUsedObjects).toEqual([{ name: 'Enemy', files: ['layouts/Big'] }]);
     expect(result.projectWide.totalReferenced + result.projectWide.orphanedObjects.length +
       result.projectWide.possiblyUsedObjects.length).toBe(result.projectWide.totalObjects);
-    expect(result.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use' }]);
+    expect(result.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use' }]);
 
     const orphans = await call('find_orphaned_objects', {});
     expect(orphans.orphanedObjects.map((o: { name: string }) => o.name)).toEqual(['Unused']);
     expect(orphans.count).toBe(1);
     expect(orphans.possiblyUsed).toEqual([{ name: 'Enemy', pluginId: 'Sprite', isGlobal: false, files: ['layouts/Big'] }]);
-    expect(orphans.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use' }]);
+    expect(orphans.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use' }]);
   });
 
   it('a file that cannot be read even as text makes every otherwise unused object possibly used', async () => {
@@ -1021,9 +1021,9 @@ describe('get_object_dependencies, find_orphaned_objects and get_asset_usage wit
 
     const orphans = await call('find_orphaned_objects', {});
     expect(orphans.orphanedObjects).toEqual([]);
-    expect(orphans.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'not-searched' }]);
+    expect(orphans.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'not-searched' }]);
     const deps = await call('get_object_dependencies', {});
-    expect(deps.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'not-searched' }]);
+    expect(deps.unscannedFiles).toEqual([{ file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'not-searched' }]);
   });
 
   it('analyze_performance does not count possibly used objects as unused', async () => {

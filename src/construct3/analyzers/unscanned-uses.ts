@@ -7,7 +7,7 @@
  * analyses built on the cross-reference index (get_object_dependencies,
  * find_orphaned_objects) only see the files the bulk reads could parse. A
  * registered layout, event sheet, object type or family over the reader's
- * 10MB cap, not valid JSON or not readable is left out, so its uses were
+ * size limit (10MB by default), not valid JSON or not readable is left out, so its uses were
  * invisible: an object used only there counted as unreferenced.
  *
  * Such files are now searched as text (raw-text-search.ts, streamed, no size
@@ -38,6 +38,7 @@ import {
   type ReadFailureCode,
 } from '../project-reader.js';
 import type { RawTextTerm } from '../raw-text-search.js';
+import { fileSizeLimit } from '../file-size-limit.js';
 
 /** A registered entity file that a bulk read skipped although it exists (or may exist). */
 export interface UnscannedFile {
@@ -45,7 +46,7 @@ export interface UnscannedFile {
   name: string;
   /** "<category>/<name>", as validate_project lists unscanned files */
   file: string;
-  /** Why it was not parsed, e.g. "over the 10MB read limit" */
+  /** Why it was not parsed, e.g. "over the 10MB size limit" */
   reason: string;
 }
 
@@ -75,15 +76,16 @@ export interface UseRule {
   allOf: ReadonlyArray<readonly RawTextTerm[]>;
 }
 
-const REASONS: Record<Exclude<ReadFailureCode, 'E_FILE_NOT_FOUND'>, string> = {
-  E_FILE_TOO_LARGE: 'over the 10MB read limit',
+const REASONS: Record<'E_INVALID_JSON' | 'E_READ_ERROR', string> = {
   E_INVALID_JSON: 'not valid JSON',
   E_READ_ERROR: 'could not be read',
 };
 
-/** Why a bulk read skipped a file, for messages: "over the 10MB read limit", "not valid JSON", ... */
+/** Why a bulk read skipped a file, for messages: "over the 10MB size limit", "not valid JSON", ... */
 export function describeReadFailure(code: ReadFailureCode): string {
-  return code === 'E_FILE_NOT_FOUND' ? 'not found' : REASONS[code];
+  if (code === 'E_FILE_NOT_FOUND') return 'not found';
+  if (code === 'E_FILE_TOO_LARGE') return `over the ${fileSizeLimit().megabytes}MB size limit`;
+  return REASONS[code];
 }
 
 /**
@@ -103,7 +105,7 @@ export function unscannedFilesOf(
     if (loaded.has(name)) continue;
     const failure = failures.get(name);
     if (failure?.code === 'E_FILE_NOT_FOUND') continue;
-    files.push({ category, name, file: `${category}/${name}`, reason: failure ? REASONS[failure.code] : 'not read' });
+    files.push({ category, name, file: `${category}/${name}`, reason: failure ? describeReadFailure(failure.code) : 'not read' });
   }
   return files;
 }
@@ -212,7 +214,7 @@ function quoted(names: readonly string[] = []): string {
   return names.map(n => `"${n}"`).join(', ');
 }
 
-/** "layouts/Big (over the 10MB read limit)", or "(could not be read, not even as text)" */
+/** "layouts/Big (over the 10MB size limit)", or "(could not be read, not even as text)" */
 export function describeUnscannedFile(report: UnscannedFileReport): string {
   return report.textSearch === 'unreadable'
     ? `${report.file} (${report.reason}, not even as text)`

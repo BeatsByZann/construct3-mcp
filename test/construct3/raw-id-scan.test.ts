@@ -46,7 +46,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 });
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
-/** Must match MAX_FILE_SIZE in src/construct3/project-reader.ts */
+/** The default size limit: DEFAULT_MAX_FILE_MB in src/construct3/file-size-limit.ts (the suite clears C3MCP_MAX_FILE_MB) */
 const READER_SIZE_CAP = 10 * 1024 * 1024;
 /** Stands in for the ~512MB a JavaScript string can hold */
 const LOWERED_STRING_LIMIT = READER_SIZE_CAP + 64 * 1024;

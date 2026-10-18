@@ -1,0 +1,68 @@
+/**
+ * The size limit for the project files the server reads and writes (#ISSUE).
+ *
+ * The reader refuses an object type, family, event sheet, layout or script
+ * file larger than the limit (ProjectReadError E_FILE_TOO_LARGE). The writer
+ * refuses to write an entity file or project.c3proj whose new text, as
+ * written (tab-indented, in the file's line endings, with its BOM, UTF-8),
+ * is larger; writes through replaceFile (images, timelines, scripts, the
+ * runtime bridge) are not checked. A file saved compact grows when the
+ * server rewrites it, so one under the limit on disk can be over it once
+ * written.
+ *
+ * Memory grows with the project, not only with the file: the cross-reference
+ * index parses and keeps every layout under the limit. So the limit is a
+ * setting of whoever starts the server, C3MCP_MAX_FILE_MB, not a tool
+ * parameter, and its ceiling comes from whole-project measurements (see
+ * TROUBLESHOOTING.md, "File too large"). The UID and SID scan and the
+ * reference text search stream skipped files and have no limit.
+ */
+
+/** The limit without C3MCP_MAX_FILE_MB, in megabytes. */
+export const DEFAULT_MAX_FILE_MB = 10;
+
+/**
+ * The largest C3MCP_MAX_FILE_MB accepted: the largest per-file size whose
+ * whole-project measurements (an index build, reference planning and seven
+ * update_layer rewrites of layouts of up to that size, with three event
+ * sheets of a tenth of it) completed within half the default V8 heap, three
+ * runs in three. Sizes of 16, 32, 64 and 128MB completed; 256MB ran out of
+ * memory in every run.
+ */
+export const MAX_FILE_MB_CEILING = 128;
+
+const MB = 1024 * 1024;
+
+/** The size limit in effect. */
+export interface FileSizeLimit {
+  megabytes: number;
+  bytes: number;
+  /** C3MCP_MAX_FILE_MB as set, when it is not a whole number from 1 to MAX_FILE_MB_CEILING (the default applies) */
+  ignored?: string;
+}
+
+/** The size limit from the server environment (read at each use, so a test can set it). */
+export function fileSizeLimit(env: NodeJS.ProcessEnv = process.env): FileSizeLimit {
+  const raw = env.C3MCP_MAX_FILE_MB;
+  const fallback = { megabytes: DEFAULT_MAX_FILE_MB, bytes: DEFAULT_MAX_FILE_MB * MB };
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  if (!(value >= 1 && value <= MAX_FILE_MB_CEILING)) return { ...fallback, ignored: raw };
+  return { megabytes: value, bytes: value * MB };
+}
+
+/** "10MB limit (...)" for refusals: the limit, and how to raise it, that it is at its maximum, or why the setting was ignored. */
+export function describeFileSizeLimit(limit: FileSizeLimit = fileSizeLimit()): string {
+  if (limit.ignored !== undefined) {
+    return `${limit.megabytes}MB limit (C3MCP_MAX_FILE_MB="${limit.ignored.slice(0, 40)}" was ignored: it must be a whole number `
+      + `of megabytes from 1 to ${MAX_FILE_MB_CEILING})`;
+  }
+  if (limit.megabytes >= MAX_FILE_MB_CEILING) return `${limit.megabytes}MB limit (the largest C3MCP_MAX_FILE_MB allows)`;
+  return `${limit.megabytes}MB limit (the server setting C3MCP_MAX_FILE_MB raises it)`;
+}
+
+/** A size for a refusal: in MB with one decimal, or in bytes when that would round to the limit or below it. */
+export function describeSize(bytes: number, limit: FileSizeLimit): string {
+  const megabytes = (bytes / MB).toFixed(1);
+  return Number(megabytes) > limit.megabytes ? `${megabytes}MB` : `${bytes} bytes`;
+}

@@ -314,7 +314,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
 
   server.tool(
     'rename_animation',
-    'Rename an animation on a Sprite object, together with its frame image files and the "initial-animation" of layout instances that start with it. Layouts that could not be parsed (over the 10MB read limit, not valid JSON) cannot be updated: one whose text names the object and the animation (possibly instances that start with it), or that cannot be read at all, refuses the rename without force (update_blocked); with force the rename goes ahead and a warning names them. Event sheets that could not be parsed and possibly name the animation only get a warning. Such files are listed in unscannedFiles',
+    'Rename an animation on a Sprite object, together with its frame image files and the "initial-animation" of layout instances that start with it. Layouts that could not be parsed (over the size limit (10MB by default), not valid JSON) cannot be updated: one whose text names the object and the animation (possibly instances that start with it), or that cannot be read at all, refuses the rename without force (update_blocked); with force the rename goes ahead and a warning names them. Event sheets that could not be parsed and possibly name the animation only get a warning. Such files are listed in unscannedFiles',
     {
       objectName: z.string().max(200).describe('Sprite object name'),
       animationName: z.string().min(1).max(200).describe('Current animation name'),

@@ -162,8 +162,8 @@ describe('Construct3ProjectWriter (integration)', () => {
   });
 
   it('writeEntityFile rejects oversized data', async () => {
-    // Create a string that produces >5MB JSON
-    const huge = { name: 'Big', data: 'x'.repeat(6 * 1024 * 1024) };
+    // Create a string that produces JSON over the default 10MB limit
+    const huge = { name: 'Big', data: 'x'.repeat(11 * 1024 * 1024) };
     await expect(
       writer.writeEntityFile('objectTypes', 'Big', huge),
     ).rejects.toThrow('too large');
