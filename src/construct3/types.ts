@@ -474,7 +474,12 @@ export interface Instance {
     originY?: number;
     color?: number[];
     angle?: number;
-    zElevation?: number;
+    /**
+     * Z elevation. Construct 3 r495.2 saves it as world.z on instances, after
+     * color; layers keep theirs as zElevation. construct3-mcp 1.10.0 and
+     * older wrote world.zElevation.
+     */
+    z?: number;
     blendMode?: string;
     [key: string]: unknown;
   };
