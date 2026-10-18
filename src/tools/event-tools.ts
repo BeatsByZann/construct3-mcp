@@ -1842,7 +1842,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if ('error' in resolution) return refuse(resolution.error);
         const container = resolution.container;
         if (container.siblingEvent === moving) return refuse('An event cannot be placed beside itself.');
-        if (container.owner !== undefined && (container.owner === moving || isWithin(moving, container.owner))) {
+        let intoItself: boolean;
+        try {
+          intoItself = container.owner !== undefined && (container.owner === moving || isWithin(moving, container.owner));
+        } catch (error) {
+          return refuse(error instanceof Error ? error.message : String(error));
+        }
+        if (intoItself) {
           return refuse(`The event with SID ${args.sid} cannot go into its own sub-events: the destination is inside the event being moved.`);
         }
         const placement = placementError(kind, container);
@@ -1881,7 +1887,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const original = eventAtEventPath(beforeEvents as unknown as Record<string, unknown>[], from);
         const clashes = findNewEventVariableNameClashes(
           sheetsBefore, args.sheetName, [original as unknown as C3Event], sheetsNow, args.sheetName, [moving as unknown as C3Event]);
-        if (clashes.length > 0) return refuse(sameSheetNameClashMessage(clashes));
+        if (clashes.length > 0) return refuse(sameSheetNameClashMessage(args.sheetName, clashes));
 
         const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
         if (loadCheck.errors.length > 0) return refuse(loadRuleErrorMessage(loadCheck.errors));
@@ -1913,7 +1919,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           ];
           return toolResult({
             success: false, entity: args.sheetName, category: 'eventsheet', action: 'move_blocked',
-            message: nothingChanged(`${reasons.join(' ')} Move the events that use it along, pick another place, or use force=true to move anyway.`),
+            message: nothingChanged(`${reasons.join(' ')} ${lostCount > 0
+              ? 'Move the events that use it along, pick another place, or use force=true to move anyway.'
+              : 'Pick another place, or use force=true to move anyway.'}`),
             references: danglingReferenceList(lost),
             ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
             ...unscannedFields(unscanned),
@@ -2371,9 +2379,10 @@ function isWithin(event: Record<string, unknown>, target: Record<string, unknown
 /**
  * Why `moving`, once it stands below `parents` (the events enclosing its new
  * place, outermost first), puts a function block where one is not placed
- * (functionBlockTriggerRefusal), or undefined. Every function block in it counts,
- * `moving` itself and those at any depth; what stands between one and `moving`
- * does not change with the move, so only `parents` is checked.
+ * (functionBlockTriggerRefusal), or undefined. The function block is `moving`
+ * itself or one inside it at any depth; what stands between it and `moving`
+ * does not change with the move, so only `parents` decides, and the first
+ * function block found is the one the message names.
  */
 function movedFunctionBlockRefusal(moving: Record<string, unknown>, parents: readonly C3Event[]): string | undefined {
   const stack: Array<Record<string, unknown>> = [moving];
@@ -2381,25 +2390,25 @@ function movedFunctionBlockRefusal(moving: Record<string, unknown>, parents: rea
     const event = stack.pop()!;
     if (event.eventType === 'function-block') {
       const refusal = functionBlockTriggerRefusal(parents);
-      if (refusal) return refusal;
+      if (refusal === undefined || event === moving) return refusal;
+      const sid = typeof event.sid === 'number' ? ` with SID ${event.sid}` : '';
+      return `The event with SID ${String(moving.sid)} holds the function block${sid}. ${refusal}`;
     }
     if (!Array.isArray(event.children)) continue;
-    for (const child of event.children as unknown[]) {
-      if (typeof child === 'object' && child !== null) {
-        stack.push(child as Record<string, unknown>);
-      }
+    for (const child of [...event.children as unknown[]].reverse()) {
+      if (typeof child === 'object' && child !== null) stack.push(child as Record<string, unknown>);
     }
   }
   return undefined;
 }
 
-/** Error text for a move within one sheet that would put names Construct 3 treats as the same into one scope. */
-function sameSheetNameClashMessage(clashes: readonly NewEventVariableNameClash[]): string {
+/** Error text for a move within one sheet that would put names Construct 3 treats as the same into one scope; a name in another sheet is placed by its sheet. */
+function sameSheetNameClashMessage(sheetName: string, clashes: readonly NewEventVariableNameClash[]): string {
   const lines = clashes.slice(0, 10).map(({ declaration, use }) => {
     const what = declaration.kind === 'function parameter' ? 'function parameter' : declaration.parents.length === 0 ? 'global variable' : 'local variable';
     const other = use.kind === 'variable' ? 'event variable' : 'function parameter';
     const relation = use.name === declaration.name ? 'has the same name as' : 'differs only in case from';
-    return `- the ${what} "${declaration.name}" ${relation} the ${other} "${use.name}" in sheet "${use.sheet}"`;
+    return `- the ${what} "${declaration.name}" ${relation} the ${other} "${use.name}"${use.sheet === sheetName ? '' : ` in sheet "${use.sheet}"`}`;
   });
   if (clashes.length > 10) lines.push(`- and ${clashes.length - 10} more`);
   return 'Moving the event would put names that Construct 3 treats as the same (ignoring case) into one event variable scope:\n' +

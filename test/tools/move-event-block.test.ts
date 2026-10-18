@@ -17,7 +17,10 @@ import { MockWriter } from '../mocks/mock-writer.js';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
 import { registerEventTools } from '../../src/tools/event-tools.js';
 import { withProjectSync } from '../../src/tools/project-sync.js';
-import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
+import { Construct3ProjectReader, type ReadFailure } from '../../src/construct3/project-reader.js';
+import { searchText, type RawTextTerm } from '../../src/construct3/raw-text-search.js';
+import { REFERENCE_CHECK_MAX_EVENTS } from '../../src/construct3/analyzers/delete-references.js';
+import { MAX_SEARCH_NODES } from '../../src/tools/event-helpers.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import type { MutationToolDeps } from '../../src/tools/shared.js';
@@ -51,11 +54,29 @@ function sheetEvents(): Ev[] {
   ];
 }
 
-function setup(other: Ev[] = []) {
+/** A reader that also registers event sheets it cannot parse (name to text), as the real reader reports them: absent from the bulk read, searchable as text. */
+class UnparsableSheetsReader extends MockReader {
+  constructor(data: ConstructorParameters<typeof MockReader>[0], private readonly unparsable: Record<string, string>) {
+    super(data);
+  }
+  override async listEventSheets(): Promise<string[]> {
+    return [...await super.listEventSheets(), ...Object.keys(this.unparsable)];
+  }
+  override getReadFailures(category: string): Map<string, ReadFailure> {
+    if (category !== 'eventSheets') return super.getReadFailures(category);
+    return new Map(Object.keys(this.unparsable).map(name => [name, { code: 'E_INVALID_JSON', message: 'not valid JSON' } as ReadFailure]));
+  }
+  override async searchEntityTextRaw(category: Parameters<MockReader['searchEntityTextRaw']>[0], name: string, terms: readonly RawTextTerm[]): Promise<Set<string>> {
+    const text = this.unparsable[name];
+    return category === 'eventSheets' && text !== undefined ? searchText(text, terms) : super.searchEntityTextRaw(category, name, terms);
+  }
+}
+
+function setup(other: Ev[] = [], unparsable: Record<string, string> = {}) {
   const server = new MockServer();
-  const reader = new MockReader({
+  const reader = new UnparsableSheetsReader({
     eventSheets: new Map([['Sheet1', { name: 'Sheet1', sid: 1, events: sheetEvents() }], ['Other', { name: 'Other', sid: 2, events: other }]]),
-  });
+  }, unparsable);
   const writer = new MockWriter();
   registerEventTools({ server, reader, writer, idGen: new MockIdGenerator() } as unknown as MutationToolDeps);
   return { server, reader, writer };
@@ -69,9 +90,26 @@ const sheetOf = async (reader: MockReader) => (await reader.readEventSheet('Shee
 /** Adds function block "F2" (95), and block 90 with sub-event 91 that holds function block "F3" (92), at the top level; gives the custom action a sub-event block 71. */
 async function addNested(reader: MockReader): Promise<void> {
   const events = await sheetOf(reader);
-  events.push(functionBlock('F2', 95), block(90, { children: [block(91, { children: [functionBlock('F3', 92)] })] }));
+  events.push(functionBlock('F2', 95), block(90, { children: [block(91, { children: [functionBlock('F3', 92)] })] }), { eventType: 'mystery', sid: 96 });
   events[6].children = [block(71)];
 }
+
+/** Block 97 holds blocks nested deeper than a SID search looks, with more blocks at the bottom than a scan visits. */
+function overlongBlock(): Ev {
+  let inner: Ev = block(98, { children: Array.from({ length: MAX_SEARCH_NODES + 1 }, () => ({ eventType: 'block', conditions: [], actions: [] })) });
+  for (let depth = 0; depth < 52; depth++) inner = block(99000 + depth, { children: [inner] });
+  return block(97, { children: [inner] });
+}
+
+/** A block nested deeper than the reference checks look. */
+function deepBlock(): Ev {
+  let inner: Ev = block(98);
+  for (let depth = 0; depth < 52; depth++) inner = block(99000 + depth, { children: [inner] });
+  return inner;
+}
+
+/** More events than the reference checks visit. */
+const manyBlocks = (): Ev[] => Array.from({ length: REFERENCE_CHECK_MAX_EVENTS + 1 }, (_, i) => block(500000 + i));
 
 describe('move_event_block', () => {
   it('moves a block into a group, keeping its SID and sub-events', async () => {
@@ -109,6 +147,32 @@ describe('move_event_block', () => {
       .toBe('The event with SID 20 cannot go into its own sub-events: the destination is inside the event being moved. Nothing was changed.');
     expect(errorText(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, siblingSid: 20, position: 'after' })))
       .toBe('An event cannot be placed beside itself. Nothing was changed.');
+    // Beside a sub-event, and into a group nested in a moved group
+    expect(errorText(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, siblingSid: 21, position: 'after' })))
+      .toBe('The event with SID 20 cannot go into its own sub-events: the destination is inside the event being moved. Nothing was changed.');
+    const nested = setup();
+    (await sheetOf(nested.reader)).push({ eventType: 'group', disabled: false, title: 'Outer', description: '', isActiveOnStart: true, sid: 85,
+      children: [{ eventType: 'group', disabled: false, title: 'Inner', description: '', isActiveOnStart: true, sid: 86, children: [] }] });
+    expect(errorText(await nested.server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 85, groupPath: 'Outer > Inner' })))
+      .toBe('The event with SID 85 cannot go into its own sub-events: the destination is inside the event being moved. Nothing was changed.');
+  });
+
+  it('refuses an event of a type it does not move', async () => {
+    const { server, reader, writer } = setup();
+    await addNested(reader);
+    expect(errorText(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 96, groupPath: 'H' })))
+      .toBe('The event with SID 96 is a "mystery", which this tool does not move. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('refuses a move when scanning the moved event for the destination exceeds the node limit', async () => {
+    const { server, reader, writer } = setup();
+    (await sheetOf(reader)).push(overlongBlock());
+    const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
+    expect(errorText(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 97, parentSid: 20 })))
+      .toBe(`Sub-event scan exceeded ${MAX_SEARCH_NODES} nodes. Nothing was changed.`);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
   });
 
   it('refuses a place the placement rules do not allow', async () => {
@@ -148,6 +212,7 @@ describe('move_event_block', () => {
     const blocked = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 12, groupPath: 'H' }));
     expect(blocked).toMatchObject({ success: false, action: 'move_blocked' });
     expect(String(blocked.message)).toContain('Event variable "loc" is still used 1 time(s)');
+    expect(String(blocked.message)).toContain('Move the events that use it along, pick another place, or use force=true to move anyway.');
     expect(String(blocked.message)).toMatch(/Nothing was changed\.$/);
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
     const forced = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 12, groupPath: 'H', force: true }));
@@ -170,6 +235,8 @@ describe('move_event_block', () => {
     const blocked = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 11, groupPath: 'H' }));
     expect(blocked).toMatchObject({ success: false, action: 'move_blocked' });
     expect(String(blocked.message)).toContain('where the name now finds another event variable or function parameter after the move');
+    expect(String(blocked.message)).toContain(' Pick another place, or use force=true to move anyway. Nothing was changed.');
+    expect(String(blocked.message)).not.toContain('Move the events that use it along');
     expect(String(blocked.message)).toMatch(/Nothing was changed\.$/);
     expect(JSON.stringify(blocked.reboundReferences)).toContain('"sheet":"Sheet1"');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
@@ -210,8 +277,19 @@ describe('move_event_block', () => {
     const sheet = await reader.readEventSheet('Sheet1');
     ((sheet.events as unknown as Ev[])[4].children as Ev[]).push(variable('LOC', 51));
     const result = await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 12, groupPath: 'H', force: true });
-    expect(errorText(result)).toContain('"loc"');
-    expect(errorText(result)).toMatch(/Nothing was changed\.$/);
+    expect(errorText(result)).toBe(
+      'Moving the event would put names that Construct 3 treats as the same (ignoring case) into one event variable scope:\n' +
+      '- the local variable "loc" differs only in case from the event variable "LOC"\n\n' +
+      'Rename one of them first (update_event_variable). Nothing was changed.');
+  });
+
+  it('names the sheet of a clashing variable that stands in another sheet', async () => {
+    const { server } = setup([{ eventType: 'group', disabled: false, title: 'OG', description: '', isActiveOnStart: true, sid: 76, children: [variable('LOC', 77)] }]);
+    // Out of group G to the top level, "loc" becomes a global variable, and a group of the other sheet has the local variable "LOC"
+    expect(errorText(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 12, force: true }))).toBe(
+      'Moving the event would put names that Construct 3 treats as the same (ignoring case) into one event variable scope:\n' +
+      '- the global variable "loc" differs only in case from the event variable "LOC" in sheet "Other"\n\n' +
+      'Rename one of them first (update_event_variable). Nothing was changed.');
   });
 
   it('refuses a trigger moved into a function block (load-time error)', async () => {
@@ -219,7 +297,9 @@ describe('move_event_block', () => {
     // A function block acts as a trigger for its sub-events, so "On start of layout" under it is an error of the gate
     const result = await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 30, parentSid: 40 });
     expect(result.isError).toBe(true);
-    expect(errorText(result)).toMatch(/Nothing was changed\.$/);
+    expect(errorText(result)).toBe(
+      'Construct 3 load-time check failed; nothing was written. The editor enforces these rules when it opens the project, and breaking them can make the whole project fail to open:\n' +
+      '- eventSheets/Sheet1 > function "F" (sid 40) > block (sid 30) > condition 0 "on-start-of-layout": Trigger "on-start-of-layout" is inside the event branch of function "F" (sid 40), which already acts as a trigger. An event branch may contain only one trigger; Construct 3 fails to open the project with "cannot add another trigger to event branch". Move this event out of the triggered branch (e.g. to the top level or into a group), or replace the trigger with a non-trigger condition. Nothing was changed.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
@@ -233,6 +313,9 @@ describe('move_event_block', () => {
       await addNested(reader);
       const text = errorText(await server.callTool('move_event_block', { sheetName: 'Sheet1', ...args }));
       expect(text, JSON.stringify(args)).toContain('cannot add another trigger to event branch');
+      // A block that holds the function block says which one
+      if (args.sid === 90) expect(text).toMatch(/^The event with SID 90 holds the function block with SID 92\. A function block is not placed under the block with SID 30/);
+      else expect(text).toMatch(/^A function block is not placed under the block with SID 30/);
       expect(text).toMatch(/Nothing was changed\.$/);
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
     }
@@ -250,6 +333,8 @@ describe('move_event_block', () => {
       await addNested(reader);
       const text = errorText(await server.callTool('move_event_block', { sheetName: 'Sheet1', ...args }));
       expect(text, JSON.stringify(args)).toContain(`A function block is not placed under or below the ${kind} with SID`);
+      if (args.sid === 90) expect(text).toMatch(/^The event with SID 90 holds the function block with SID 92\. /);
+      else expect(text).not.toContain('holds the function block');
       expect(text).toMatch(/Nothing was changed\.$/);
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
     }
@@ -265,28 +350,32 @@ describe('move_event_block', () => {
   });
 
   it('every refusal ends with Nothing was changed. and leaves the sheet as it was', async () => {
-    const calls: Array<Record<string, unknown>> = [
-      { sheetName: 'Sheet1', sid: 999, groupPath: 'H' },
-      { sheetName: 'Sheet1', sid: 20, groupPath: 'Nope' },
-      { sheetName: 'Sheet1', sid: 20, groupPath: 'H', parentSid: 10 },
-      { sheetName: 'Sheet1', sid: 20, parentSid: 60 },
-      { sheetName: 'Sheet1', sid: 20, parentSid: 21 },
-      { sheetName: 'Sheet1', sid: 20, siblingSid: 20, position: 'before' },
-      { sheetName: 'Sheet1', sid: 60, parentSid: 70 },
+    const calls: Array<{ args: Record<string, unknown>; prepare?: (events: Ev[]) => void }> = [
+      { args: { sheetName: 'Sheet1', sid: 999, groupPath: 'H' } },
+      { args: { sheetName: 'Sheet1', sid: 20, groupPath: 'Nope' } },
+      { args: { sheetName: 'Sheet1', sid: 20, groupPath: 'H', parentSid: 10 } },
+      { args: { sheetName: 'Sheet1', sid: 20, parentSid: 60 } },
+      { args: { sheetName: 'Sheet1', sid: 20, parentSid: 21 } },
+      { args: { sheetName: 'Sheet1', sid: 20, siblingSid: 20, position: 'before' } },
+      { args: { sheetName: 'Sheet1', sid: 60, parentSid: 70 } },
+      // An event of a type the tool does not move
+      { args: { sheetName: 'Sheet1', sid: 96, groupPath: 'H' } },
+      // A scan of the moved event that exceeds the node limit
+      { args: { sheetName: 'Sheet1', sid: 97, parentSid: 20 }, prepare: events => events.push(overlongBlock()) },
       // Refused after the event was moved in memory: a name clash and a load-time error
-      { sheetName: 'Sheet1', sid: 12, groupPath: 'H', force: true, clash: true },
-      { sheetName: 'Sheet1', sid: 30, parentSid: 40 },
+      { args: { sheetName: 'Sheet1', sid: 12, groupPath: 'H', force: true }, prepare: events => (events[4].children as Ev[]).push(variable('LOC', 51)) },
+      { args: { sheetName: 'Sheet1', sid: 30, parentSid: 40 } },
       // A function block under a trigger, under a function block and under a custom action block
-      { sheetName: 'Sheet1', sid: 95, parentSid: 30 },
-      { sheetName: 'Sheet1', sid: 90, parentSid: 30 },
-      { sheetName: 'Sheet1', sid: 95, parentSid: 41 },
-      { sheetName: 'Sheet1', sid: 90, parentSid: 41 },
-      { sheetName: 'Sheet1', sid: 95, parentSid: 71 },
+      { args: { sheetName: 'Sheet1', sid: 95, parentSid: 30 } },
+      { args: { sheetName: 'Sheet1', sid: 90, parentSid: 30 } },
+      { args: { sheetName: 'Sheet1', sid: 95, parentSid: 41 } },
+      { args: { sheetName: 'Sheet1', sid: 90, parentSid: 41 } },
+      { args: { sheetName: 'Sheet1', sid: 95, parentSid: 71 } },
     ];
-    for (const { clash, ...args } of calls) {
+    for (const { args, prepare } of calls) {
       const { server, reader, writer } = setup();
       await addNested(reader);
-      if (clash) ((await sheetOf(reader))[4].children as Ev[]).push(variable('LOC', 51));
+      prepare?.(await sheetOf(reader));
       const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
       const result = await server.callTool('move_event_block', args);
       expect(result.isError, JSON.stringify(args)).toBe(true);
@@ -296,9 +385,17 @@ describe('move_event_block', () => {
     }
   });
 
-  it('a move refused for the scope of a variable leaves the sheet as it was', async () => {
-    for (const args of [{ sid: 12, groupPath: 'H' }, { sid: 41, groupPath: 'H' }]) {
-      const { server, reader, writer } = setup();
+  it('every move refused for a scope, a limit or an unparsed sheet says Nothing was changed. and leaves the sheet as it was', async () => {
+    const calls: Array<{ args: Record<string, unknown>; other?: Ev[]; unparsable?: Record<string, string>; prepare?: (events: Ev[]) => void }> = [
+      { args: { sid: 12, groupPath: 'H' } },
+      { args: { sid: 41, groupPath: 'H' } },
+      { args: { sid: 20, groupPath: 'H' }, other: manyBlocks() },
+      { args: { sid: 20, groupPath: 'H' }, prepare: events => events.push(deepBlock()) },
+      { args: { sid: 60, groupPath: 'H' }, unparsable: { Bad: '{"events":[{"name":"glob"' } },
+    ];
+    for (const { args, other, unparsable, prepare } of calls) {
+      const { server, reader, writer } = setup(other, unparsable);
+      prepare?.(await sheetOf(reader));
       const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
       const blocked = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', ...args }));
       expect(blocked.action, JSON.stringify(args)).toBe('move_blocked');
@@ -306,6 +403,56 @@ describe('move_event_block', () => {
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
       expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
     }
+  });
+
+  it('refuses a move when the check of the uses stops at its event limit, and moves with force', async () => {
+    const { server, writer } = setup(manyBlocks());
+    const blocked = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, groupPath: 'H' }));
+    expect(blocked.action).toBe('move_blocked');
+    expect(String(blocked.message)).toContain(
+      'The check for uses of the event variables and function parameters of this sheet stopped at its traversal limit (100,000 events across all event sheets), so uses further on are unknown. Pick another place, or use force=true to move anyway. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    const forced = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, groupPath: 'H', force: true }));
+    expect(forced.success).toBe(true);
+    expect(forced.warnings).toContain('Moved with force=true: The check for uses of the event variables and function parameters of this sheet stopped at its traversal limit (100,000 events across all event sheets), so uses further on are unknown.');
+  });
+
+  it('names the nesting-depth limit when the check of the uses stops there', async () => {
+    const { server, reader } = setup();
+    (await sheetOf(reader)).push(deepBlock());
+    const blocked = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, groupPath: 'H' }));
+    expect(blocked.action).toBe('move_blocked');
+    expect(String(blocked.message)).toContain('stopped at its nesting-depth limit (events nested more than 50 deep), so uses further on are unknown.');
+  });
+
+  it('refuses a global variable made local while a sheet that cannot be parsed may use it, and moves with force', async () => {
+    const { server, writer } = setup([], { Bad: '{"events":[{"name":"glob"' });
+    const blocked = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 60, groupPath: 'H' }));
+    expect(blocked.action).toBe('move_blocked');
+    expect(String(blocked.message)).toContain('There are possible uses in files that could not be parsed: eventSheets/Bad');
+    expect(String(blocked.message)).toMatch(/Pick another place, or use force=true to move anyway\. Nothing was changed\.$/);
+    expect(blocked.unscannedFiles).toMatchObject([{ file: 'eventSheets/Bad', textSearch: 'possible-use', names: ['glob'] }]);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    const forced = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 60, groupPath: 'H', force: true }));
+    expect(forced.success).toBe(true);
+    expect(String(forced.warnings)).toContain('Moved with force=true: There are possible uses in files that could not be parsed: eventSheets/Bad');
+    expect(String(forced.warnings)).toContain('Uses in these files were NOT checked beyond this text search and were NOT changed.');
+    expect(forced.unscannedFiles).toMatchObject([{ file: 'eventSheets/Bad', textSearch: 'possible-use' }]);
+  });
+
+  it('moves a global variable made local with a warning when a sheet that cannot be parsed does not name it', async () => {
+    const { server } = setup([], { Bad: '{"events":[{"name":"other"' });
+    const data = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 60, groupPath: 'H' }));
+    expect(data.success).toBe(true);
+    expect(String(data.warnings)).toContain('could not be parsed and was only searched as text (for: glob); none of these was found.');
+  });
+
+  it('does not look in a sheet that cannot be parsed when no global variable becomes local', async () => {
+    const { server } = setup([], { Bad: '{"events":[{"name":"glob"' });
+    const data = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 20, groupPath: 'H' }));
+    expect(data.success).toBe(true);
+    expect(data.warnings).toBeUndefined();
+    expect(data.unscannedFiles).toBeUndefined();
   });
 });
 
