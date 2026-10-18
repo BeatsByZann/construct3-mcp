@@ -31,6 +31,7 @@ import {
   conditionSchema,
   actionSchema,
   childEventSchema,
+  nothingChanged,
   resolveGroupPath,
   describeGroupPathProblem,
   isInFunctionBlock,
