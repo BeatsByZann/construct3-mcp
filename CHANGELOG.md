@@ -6,8 +6,9 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Changed
 
+- `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#TBD).
 - `register_addon`, `unregister_addon`, `replace_sprite_image`, the timeline tools and the runtime bridge tools write project files through the project writer: each file is backed up once per tool call (`<file>.bak`), written through a temp file and read back. `register_addon` and `unregister_addon` merge a `project.c3proj` saved in the editor during the call instead of refusing it; the runtime bridge tools refuse to write over one (#TBD).
-- Images are backed up under the first free `.bak` name (`<file>.bak`, `<file>.1.bak`, ...), so placeholder writes and `replace_sprite_image` never replace an image the frame tools kept as `.bak`; a failed batch of placeholder images puts back an image it wrote over (#TBD).
+- Images are backed up under the first free `.bak` name (`<file>.bak`, `<file>.1.bak`, ...), so placeholder writes and `replace_sprite_image` never replace an image the frame tools kept as `.bak`; a failed batch of placeholder images puts back an image it wrote over. Image backups accumulate, one more for each call that writes the image, and nothing removes them (#TBD).
 
 ## [1.10.0] - 2026-09-30
 
