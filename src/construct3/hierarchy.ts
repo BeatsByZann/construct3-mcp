@@ -208,12 +208,13 @@ export function findHierarchyLinkProblems(layout: unknown): HierarchyLinkProblem
 export type LinkFlags = Record<string, boolean | string>;
 
 /**
- * The flags of a new link, and of a new record, when the caller gives none:
- * those Construct 3 r495.2 saved for a record (one editor-saved project
- * checked), the newest evidence there is; older example projects save other
- * values (three-cups: z and a false). Construct 3 r506-2 adds `de: true` to
- * the flags it saves for a link; this server does not write that key. An
- * existing link keeps its own flags (linkInstances).
+ * The flags of a child without a hierarchy record (or whose record has no
+ * flags), and of a new record, when the caller gives none: those Construct 3
+ * r495.2 saved for a record (one editor-saved project checked); older example
+ * projects save other values (three-cups: z and a false). A save by
+ * Construct 3 r506-2 gave these values back with `de: true` added to the
+ * flags of links written outside the editor; this server does not write that
+ * key. An existing link keeps its own flags (linkInstances).
  */
 export const DEFAULT_LINK_FLAGS: Readonly<LinkFlags> = Object.freeze({
   x: true, y: true, z: true, w: true, h: true, d: true, a: true, o: false, v: false, sm: 'normal',
@@ -226,7 +227,7 @@ export const DEFAULT_LINK_FLAGS: Readonly<LinkFlags> = Object.freeze({
  */
 export const PREVIEW_FOR_NEW_RECORD: Readonly<Record<string, unknown>> | undefined = undefined;
 
-/** The instance keys an r495.2 save writes after sceneGraphData, in order (fork 1718271 places instanceFolderItem first). */
+/** The instance keys that follow sceneGraphData, in order: a new sceneGraphData key goes before the first of these an instance has. */
 const KEYS_AFTER_SCENE_GRAPH = ['instanceFolderItem', 'showing', 'locked', 'world'] as const;
 /** The record keys after children in upstream's three-cups record (parent-uid, uid, children, flags, preview). */
 const KEYS_AFTER_CHILDREN = ['flags', 'preview'] as const;

@@ -65,7 +65,7 @@ export function registerHierarchyTools({ server: mcpServer, reader, writer }: Mu
     'Make a placed instance the hierarchy child of another one in the same layout, or with parentUid null take it off its '
       + 'parent. Both sides of the link are written: the child\'s sceneGraphData names the parent, the parent lists the '
       + 'child. A child with another parent leaves that one. An existing link keeps its flags; given flags go over them, and '
-      + 'a new link gets the flags Construct 3 r495.2 saves for a record (one editor-saved project checked). Refuses a link '
+      + 'a child without a hierarchy record (or a record without flags) gets the flags Construct 3 r495.2 saves for a record (one editor-saved project checked). Refuses a link '
       + 'that would close a loop, an instance that is not on a layer, and a UID that several instances of the layout have.',
     {
       layoutName: z.string().max(200).describe('Layout name'),
@@ -77,7 +77,7 @@ export function registerHierarchyTools({ server: mcpServer, reader, writer }: Mu
         o: z.boolean().optional(), v: z.boolean().optional(), d: z.boolean().optional(),
         sm: z.string().max(50).optional(),
       }).strict().optional()
-        .describe('Flags of the link as the layout file saves them (booleans x, y, z, w, h, a, o, v, d and the mode sm), written over the link\'s saved flags, or over the defaults for a new link; other keys a saved link has are kept, unknown keys given here are refused'),
+        .describe('Flags of the link as the layout file saves them (booleans x, y, z, w, h, a, o, v, d and the mode sm), written over the link\'s saved flags, or over the defaults for a child without a hierarchy record (or a record without flags); other keys a saved link has are kept, unknown keys given here are refused'),
     },
     async (args) => {
       try {

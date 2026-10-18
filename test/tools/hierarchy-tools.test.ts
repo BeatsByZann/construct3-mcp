@@ -240,6 +240,51 @@ describe('set_instance_parent', () => {
     expect(await readFile(layoutPath(), 'utf8')).toBe(shared);
   });
 
+  it('refuses to re-parent a child whose current parent\'s UID several instances share, and changes nothing', async () => {
+    await setup();
+    const layout = await readLayout();
+    layout.layers[1].instances.push(instance(0));
+    await writeFile(layoutPath(), JSON.stringify(layout, null, '\t'));
+    await reader.loadProject();
+    const before = await readFile(layoutPath(), 'utf8');
+    const data = await call('set_instance_parent', { childUid: 1, parentUid: 3 });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('The parent of UID 1, UID 0, is used by several instances of the layout (duplicate-uid in validate_project), '
+      + 'so its link cannot be removed safely. Nothing was changed.');
+    expect(await readFile(layoutPath(), 'utf8')).toBe(before);
+  });
+
+  it('refuses to take a child off a parent whose UID several instances share, and changes nothing', async () => {
+    await setup();
+    const layout = await readLayout();
+    layout.layers[1].instances.push(instance(0));
+    await writeFile(layoutPath(), JSON.stringify(layout, null, '\t'));
+    await reader.loadProject();
+    const before = await readFile(layoutPath(), 'utf8');
+    const data = await call('set_instance_parent', { childUid: 1, parentUid: null });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('The parent of UID 1, UID 0, is used by several instances of the layout (duplicate-uid in validate_project), '
+      + 'so its link cannot be removed safely. Nothing was changed.');
+    expect(await readFile(layoutPath(), 'utf8')).toBe(before);
+  });
+
+  it('refuses to link or unlink a child that an instance with a shared UID lists, and changes nothing', async () => {
+    await setup();
+    // UID 4 has no record, but two instances with UID 7 both list it as a child
+    const layout = await readLayout();
+    layout.layers[1].instances.push(instance(7, parentRecord(7, [4])), instance(7, parentRecord(7, [4])));
+    await writeFile(layoutPath(), JSON.stringify(layout, null, '\t'));
+    await reader.loadProject();
+    const before = await readFile(layoutPath(), 'utf8');
+    for (const parentUid of [null, 3]) {
+      const data = await call('set_instance_parent', { childUid: 4, parentUid });
+      expect(data.isError).toBe(true);
+      expect(data.text).toContain('UID 4 is listed as a child by UID 7, which several instances of the layout have (duplicate-uid in validate_project), '
+        + 'so its link cannot be changed safely. Nothing was changed.');
+    }
+    expect(await readFile(layoutPath(), 'utf8')).toBe(before);
+  });
+
   it('refuses flags without a parent', async () => {
     await setup();
     expect((await call('set_instance_parent', { childUid: 1, parentUid: null, flags: { o: true } })).text)
@@ -303,6 +348,15 @@ async function acyclic(): Promise<boolean> {
 }
 
 describe('remove_instance_children', () => {
+  it('refuses a parentUid that names no instance, and changes nothing', async () => {
+    await setup();
+    const before = await readFile(layoutPath(), 'utf8');
+    const data = await call('remove_instance_children', { parentUid: 42 });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('No instance with UID 42 in the layout. Use get_layout_details to see the instance UIDs. Nothing was changed.');
+    expect(await readFile(layoutPath(), 'utf8')).toBe(before);
+  });
+
   it('detaches every child of a parent, on every layer', async () => {
     await setup();
     const data = await call('remove_instance_children', { parentUid: 0 });

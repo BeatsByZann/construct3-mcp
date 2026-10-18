@@ -6,7 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
-- `set_instance_parent` and `remove_instance_children`: make an instance the hierarchy child of another one in its layout, take it off its parent, or detach every child of an instance, always on both sides of the link. A link that would close a loop, a non-world instance and a UID several instances share are refused; an existing link keeps its flags, and a child with no hierarchy record gets the flags Construct 3 r495.2 saves; `remove_instance_children` also detaches one-sided links; a failed write puts the layout back (#ISSUE).
+- `set_instance_parent` and `remove_instance_children`: make an instance the hierarchy child of another one in its layout, take it off its parent, or detach every child of an instance, always on both sides of the link. A link that would close a loop, a non-world instance and a UID several instances share are refused; an existing link keeps its flags, and a child with no hierarchy record (or a record without flags) gets the flags Construct 3 r495.2 saves; `remove_instance_children` also detaches one-sided links; a failed write puts the layout back (#ISSUE).
 
 ### Changed
 
