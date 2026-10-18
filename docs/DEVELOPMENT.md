@@ -54,7 +54,6 @@ construct3-mcp/
 │   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify), project.c3proj updates, undo of a tool call's writes
 │   │   ├── id-generator.ts         # SID/UID/imageSpriteId generation with collision avoidance
 │   │   ├── disk-state.ts           # File states on disk, tool call scope, stale-write error
-│   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── templates.ts            # Entity templates and known addon maps
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
@@ -68,6 +67,7 @@ construct3-mcp/
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
+│   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
