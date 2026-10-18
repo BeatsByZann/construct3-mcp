@@ -2144,12 +2144,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'))
             .filter(f => f.name !== args.sheetName);
           unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [[nameTerm(oldTitle)]] }]);
-          if ((uses.length > 0 || blocksWithoutForce(unscanned) || !scan.complete) && !args.force) {
+          const limitReasons = groupNameSearchLimitReasons(usesChecked, scan.stopped);
+          if ((uses.length > 0 || blocksWithoutForce(unscanned) || limitReasons.length > 0) && !args.force) {
             const listed = uses.slice(0, 10).map(u => `${u.sheet} ${u.path}${u.sid !== undefined ? ` (SID ${u.sid})` : ''}: ${u.value}`);
             const reasons = [
               ...(uses.length > 0 ? [`${uses.length} "group-name" parameter(s) name the group "${oldTitle}" or may name it: ${listed.join('; ')}${uses.length > 10 ? `; and ${uses.length - 10} more` : ''}. They are not rewritten.`] : []),
               ...(blocksWithoutForce(unscanned) ? [unscannedRefusal(unscanned)] : []),
-              ...(!scan.complete ? [traversalLimitReason(usesChecked)] : []),
+              ...limitReasons,
             ];
             return toolResult({
               success: false, entity: args.sheetName, category: 'eventsheet', action: 'rename_blocked',
@@ -2161,7 +2162,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           if (uses.length > 0) {
             warnings.push(`Renamed with force=true: ${uses.length} "group-name" parameter(s) still name "${oldTitle}" and were left as they are; set them to "${newTitle}".`);
           }
-          if (!scan.complete) warnings.push(`Renamed with force=true: ${traversalLimitReason(usesChecked)}`);
+          warnings.push(...limitReasons.map(reason => `Renamed with force=true: ${reason}`));
           warnings.push(...unscannedWarnings(unscanned, 'Renamed'));
         }
 
@@ -2238,7 +2239,7 @@ function editCommentRowInPlace(
 }
 
 /**
- * The key order the Construct 3 editor (r506-2) saved a group in: eventType
+ * The key order Construct 3 r506-2 (Free edition) saved a group in: eventType
  * first, sid after children, and the colour keys last, text-color before
  * background-color.
  */
@@ -2274,26 +2275,27 @@ interface GroupNameUse {
  * The "group-name" parameters in `sheets` (sheet name to events) that name
  * `title`: a quoted string equal to it (definite), equal to it ignoring case,
  * or any value that is not a plain quoted string (possible, since an
- * expression may give the title). `complete` is false when the walk stopped
- * at its depth or node limit, so a use past it is unknown.
+ * expression may give the title). `stopped` says which limit the walk hit,
+ * the node limit (`events`) or the depth limit (`depth`): a use past it is
+ * unknown.
  */
-function groupNameUses(sheets: ReadonlyMap<string, readonly unknown[]>, title: string): { uses: GroupNameUse[]; complete: boolean } {
+function groupNameUses(sheets: ReadonlyMap<string, readonly unknown[]>, title: string): { uses: GroupNameUse[]; stopped: GroupNameSearchStops } {
   const uses: GroupNameUse[] = [];
   const quoted = /^"((?:[^"]|"")*)"$/;
-  let complete = true;
+  const stopped: GroupNameSearchStops = { events: false, depth: false };
   let nodes = 0;
   for (const [sheet, events] of sheets) {
     const stack: Array<{ list: readonly unknown[]; path: string; depth: number }> = [{ list: events, path: 'events', depth: 0 }];
     while (stack.length > 0) {
       const { list, path, depth } = stack.pop()!;
       if (depth > MAX_SEARCH_DEPTH) {
-        complete = false;
+        stopped.depth = true;
         continue;
       }
       list.forEach((ev, i) => {
         if (typeof ev !== 'object' || ev === null) return;
         if (++nodes > MAX_SEARCH_NODES) {
-          complete = false;
+          stopped.events = true;
           return;
         }
         const event = ev as Record<string, unknown>;
@@ -2313,7 +2315,28 @@ function groupNameUses(sheets: ReadonlyMap<string, readonly unknown[]>, title: s
       });
     }
   }
-  return { uses, complete };
+  return { uses, stopped };
+}
+
+/** Which limit a groupNameUses walk hit. */
+interface GroupNameSearchStops {
+  events: boolean;
+  depth: boolean;
+}
+
+/**
+ * Why a groupNameUses walk that hit a limit refuses a rename without force:
+ * one sentence per limit it hit, naming the search's own limits.
+ */
+function groupNameSearchLimitReasons(checked: string, stopped: GroupNameSearchStops): string[] {
+  return [
+    ...(stopped.events
+      ? [`The check for ${checked} stopped at its traversal limit (${MAX_SEARCH_NODES.toLocaleString('en-US')} events across all event sheets), so uses further on are unknown.`]
+      : []),
+    ...(stopped.depth
+      ? [`The check for ${checked} stopped at its nesting-depth limit (events nested more than ${MAX_SEARCH_DEPTH} deep), so uses further on are unknown.`]
+      : []),
+  ];
 }
 
 /**
@@ -2329,9 +2352,8 @@ function groupTitledElsewhere(
   const wanted = title.trim().toLowerCase();
   for (const [sheet, events] of sheets) {
     const lists: Array<readonly unknown[]> = [events];
-    while (lists.length > 0) {
-      const list = lists.shift()!;
-      for (const ev of list) {
+    for (let next = 0; next < lists.length; next++) {
+      for (const ev of lists[next]) {
         if (typeof ev !== 'object' || ev === null) continue;
         const event = ev as Record<string, unknown>;
         if (event !== except && event.eventType === 'group' && typeof event.title === 'string' && event.title.trim().toLowerCase() === wanted) {

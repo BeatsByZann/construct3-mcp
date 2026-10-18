@@ -92,7 +92,7 @@ function deepUse(): Ev[] {
 }
 
 describe('update_event_group', () => {
-  it('updates description, isActiveOnStart and disabled in place, keeping the key order', async () => {
+  it('updates description, isActiveOnStart and disabled on the keys the group has, without moving them', async () => {
     const { server, writer } = setup();
     const data = parse(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, description: 'Walking', isActiveOnStart: false, disabled: true }));
     expect(data).toMatchObject({ success: true, action: 'updated', updatedSid: 100, eventPath: 'events[0]', title: 'Movement' });
@@ -198,20 +198,56 @@ describe('update_event_group', () => {
     expect(forced.unscannedFiles).toMatchObject([{ file: 'eventSheets/Bad', textSearch: 'possible-use' }]);
   });
 
-  it('refuses a rename while the search for group-name parameters stopped at its limit, and renames with force', async () => {
-    const sentence = 'The check for "group-name" parameters that name "Movement" stopped at its traversal limit (100,000 events across all event sheets), so uses further on are unknown.';
-    for (const other of [afterManyComments(), deepUse()]) {
-      const { server, writer } = setup(other);
-      const blocked = parse(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, title: 'Walk' }));
-      expect(blocked.action).toBe('rename_blocked');
-      expect(blocked.references).toEqual([]);
-      expect(String(blocked.message)).toBe(`${sentence} Change them first, or use force=true to rename anyway. Nothing was changed.`);
-      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-      const forced = parse(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, title: 'Walk', force: true }));
-      expect(forced.success).toBe(true);
-      expect(forced.warnings).toEqual([`Renamed with force=true: ${sentence}`]);
-      expect(written(writer)[0].title).toBe('Walk');
+  /** A rename of "Movement" while the search stops at a limit is refused with `sentence`, and goes through with force. */
+  async function expectRenameStoppedBy(other: Ev[], sentence: string): Promise<void> {
+    const { server, writer } = setup(other);
+    const blocked = parse(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, title: 'Walk' }));
+    expect(blocked.action).toBe('rename_blocked');
+    expect(blocked.references).toEqual([]);
+    expect(String(blocked.message)).toBe(`${sentence} Change them first, or use force=true to rename anyway. Nothing was changed.`);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    const forced = parse(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, title: 'Walk', force: true }));
+    expect(forced.success).toBe(true);
+    expect(forced.warnings).toEqual([`Renamed with force=true: ${sentence}`]);
+    expect(written(writer)[0].title).toBe('Walk');
+  }
+
+  it('refuses a rename while the search for group-name parameters stopped at its event limit, and renames with force', async () => {
+    await expectRenameStoppedBy(afterManyComments(),
+      'The check for "group-name" parameters that name "Movement" stopped at its traversal limit (100,000 events across all event sheets), so uses further on are unknown.');
+  });
+
+  it('refuses a rename while the search for group-name parameters stopped at its depth limit, and renames with force', async () => {
+    await expectRenameStoppedBy(deepUse(),
+      'The check for "group-name" parameters that name "Movement" stopped at its nesting-depth limit (events nested more than 50 deep), so uses further on are unknown.');
+  });
+
+  it('lists ten uses and counts the rest', async () => {
+    const uses = Array.from({ length: 12 }, (_, i) => block(900 + i, { actions: [groupAction(950 + i, '"Movement"')] }));
+    const { server } = setup(uses);
+    const blocked = parse(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, title: 'Walk' }));
+    expect(blocked.references).toHaveLength(12);
+    const message = String(blocked.message);
+    expect(message).toContain('12 "group-name" parameter(s) name the group "Movement" or may name it: ');
+    expect(message).toContain('Other events[9] > action:0 (SID 909): "Movement"; and 2 more. They are not rewritten.');
+    expect(message).not.toContain('events[10]');
+  });
+
+  it('does not count the group itself as a clash, or as another group with its title', async () => {
+    for (const title of ['Movement ', 'movement']) {
+      const { server, writer } = setup();
+      const data = parse(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, title }));
+      expect(data, title).toMatchObject({ success: true, action: 'updated', title });
+      expect(data.warnings, title).toBeUndefined();
+      expect(written(writer)[0].title).toBe(title);
     }
+  });
+
+  it('allows a title that an event of another type in the same list carries', async () => {
+    const { server, reader } = setup();
+    (await sheetOf(reader))[2].title = 'Walk';
+    const data = parse(await server.callTool('update_event_group', { sheetName: 'Sheet1', sid: 100, title: 'Walk' }));
+    expect(data).toMatchObject({ success: true, title: 'Walk' });
   });
 
   it('searches past a list entry that is not an event', async () => {
