@@ -45,6 +45,7 @@ import {
   ambiguousSidMessage,
   eventPathSchema,
   collectEventSids,
+  MAX_ITEMS_PER_BLOCK,
   eventSidsMatchingSeveral,
   countDescendants,
   summarizeEvents,
@@ -1396,7 +1397,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'update_event_block',
     {
-      description: 'Update an existing block event in an event sheet — modify action parameters, add/remove actions or conditions, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
+      description: 'Update an existing block event in an event sheet — modify action parameters, add/remove actions or conditions, insert them at an index, replace conditions in place, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
         sid: z.number().int().positive().describe('SID of the block event to update'),
@@ -1423,15 +1424,36 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }, {
           errorMap: unknownKeysErrorMap('an updateConditions entry', 'An entry has index, parameters, isInverted and disabled; to change anything else, remove the condition (removeConditionIndices) and add a new one (addConditions).'),
         }).strict()).optional().describe('Conditions to update by index'),
+        insertActions: z.array(z.object({
+          index: z.number().int().min(0).describe('Where the action goes: its index in the actions after removeActionIndices, before this call\'s other inserts and addActions'),
+          action: actionSchema.describe('The action, in the shapes of add_event_block'),
+        }, {
+          errorMap: unknownKeysErrorMap('an insertActions entry', 'An entry has index and action.'),
+        }).strict()).max(100).optional().describe('Insert actions at indexes; two inserts at one index are refused'),
+        insertConditions: z.array(z.object({
+          index: z.number().int().min(0).describe('Where the condition goes: its index in the conditions after removeConditionIndices, before this call\'s other inserts and addConditions'),
+          condition: conditionSchema.describe('The condition'),
+        }, {
+          errorMap: unknownKeysErrorMap('an insertConditions entry', 'An entry has index and condition.'),
+        }).strict()).max(100).optional().describe('Insert conditions at indexes; a System "else" condition in first place stays first'),
+        replaceConditions: z.array(z.object({
+          index: z.number().int().min(0).describe('Index of the condition to replace (before this call\'s removals)'),
+          condition: conditionSchema.describe('The new condition; it gets a new SID'),
+        }, {
+          errorMap: unknownKeysErrorMap('a replaceConditions entry', 'An entry has index and condition.'),
+        }).strict()).max(100).optional().describe('Replace conditions in place'),
         addActions: z.array(actionSchema).optional().describe('Append new actions to the block (same shapes as add_event_block)'),
         addConditions: z.array(conditionSchema).optional().describe('Append new conditions to the block'),
         removeActionIndices: z.array(z.number().int().min(0)).optional().describe('Remove actions by index (0-based, applied before adds)'),
         removeConditionIndices: z.array(z.number().int().min(0)).optional().describe('Remove conditions by index (0-based, applied before adds)'),
       }, {
-        errorMap: unknownKeysErrorMap('the arguments of update_event_block', 'update_event_block takes sheetName, sid, eventPath, disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, removeActionIndices and removeConditionIndices. It does not add sub-events.'),
+        errorMap: unknownKeysErrorMap('the arguments of update_event_block', 'update_event_block takes sheetName, sid, eventPath, disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices and removeConditionIndices. It does not add sub-events.'),
       }).strict(),
     },
     async (args) => {
+      // Set once the sheet is changed in memory: puts the events back as they were read
+      let restoreSheet: (() => void) | undefined;
+      let writeStarted = false;
       try {
         // Validate at least one update is provided
         const hasUpdate = args.disabled !== undefined
@@ -1441,11 +1463,14 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           || (args.updateConditions && args.updateConditions.length > 0)
           || (args.addActions && args.addActions.length > 0)
           || (args.addConditions && args.addConditions.length > 0)
+          || (args.insertActions && args.insertActions.length > 0)
+          || (args.insertConditions && args.insertConditions.length > 0)
+          || (args.replaceConditions && args.replaceConditions.length > 0)
           || (args.removeActionIndices && args.removeActionIndices.length > 0)
           || (args.removeConditionIndices && args.removeConditionIndices.length > 0);
 
         if (!hasUpdate) {
-          return toolError('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, removeActionIndices, removeConditionIndices.');
+          return toolError('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices, removeConditionIndices.');
         }
 
         // Read the event sheet
@@ -1490,8 +1515,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // (normalizes the deprecated behavior-type alias; throws on conflicting keys before anything changes)
         const addRefs: ObjectRef[] = [];
         collectObjectRefs(
-          args.addConditions ?? [],
-          (args.addActions ?? []) as Array<Record<string, unknown>>,
+          [...(args.addConditions ?? []), ...(args.insertConditions ?? []).map(i => i.condition), ...(args.replaceConditions ?? []).map(r => r.condition)],
+          [...(args.addActions ?? []), ...(args.insertActions ?? []).map(i => i.action)] as Array<Record<string, unknown>>,
           [],
           addRefs,
         );
@@ -1507,7 +1532,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
         // The deprecated per-condition isOr flag is never written: it only
         // passes when the block ends up an OR block anyway.
-        if ((args.addConditions ?? []).some(c => c.isOr === true)) {
+        if ([...(args.addConditions ?? []), ...(args.insertConditions ?? []).map(i => i.condition), ...(args.replaceConditions ?? []).map(r => r.condition)].some(c => c.isOr === true)) {
           const willBeOrBlock = args.isOrBlock ?? event.isOrBlock === true;
           if (!willBeOrBlock) {
             return toolError('isOr on a condition is not written: Construct 3 ORs a whole event. Set isOrBlock: true to make this block an OR block.');
@@ -1521,6 +1546,52 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           functions ??= await loadFunctionSignatures(reader);
           return functions.get(name.toLowerCase());
         };
+
+        // Check inserts and replacements before anything changes
+        const removedConditionCount = new Set(args.removeConditionIndices ?? []).size;
+        const removedActionCount = new Set(args.removeActionIndices ?? []).size;
+        const conditionsAfterRemoval = conditions.length - removedConditionCount;
+        const actionsAfterRemoval = actions.length - removedActionCount;
+        const insertProblem = (kind: 'Action' | 'Condition', items: ReadonlyArray<{ index: number }>, length: number): string | undefined => {
+          const seen = new Set<number>();
+          for (const item of items) {
+            if (item.index > length) {
+              return `${kind} insert index ${item.index} is out of range: after the removals the block has ${length} ${kind.toLowerCase()}(s), so indexes 0-${length}.`;
+            }
+            if (seen.has(item.index)) return `Two ${kind.toLowerCase()} inserts at index ${item.index}; give each insert its own index.`;
+            seen.add(item.index);
+          }
+          return undefined;
+        };
+        const insertError = insertProblem('Condition', args.insertConditions ?? [], conditionsAfterRemoval)
+          ?? insertProblem('Action', args.insertActions ?? [], actionsAfterRemoval);
+        if (insertError) return toolError(nothingChanged(insertError));
+        const replaced = new Set<number>();
+        for (const r of args.replaceConditions ?? []) {
+          if (r.index >= conditions.length) {
+            return toolError(nothingChanged(`Condition index ${r.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`));
+          }
+          if (replaced.has(r.index)) return toolError(nothingChanged(`replaceConditions names condition ${r.index} twice.`));
+          if ((args.removeConditionIndices ?? []).includes(r.index)) return toolError(nothingChanged(`Condition ${r.index} is both replaced and removed.`));
+          if ((args.updateConditions ?? []).some(u => u.index === r.index)) return toolError(nothingChanged(`Condition ${r.index} is both updated and replaced; replace it with the condition you want.`));
+          replaced.add(r.index);
+        }
+        // The list the inserts go into: the conditions after this call's replacements and removals
+        const replacementAt = new Map((args.replaceConditions ?? []).map(r => [r.index, r.condition as unknown] as const));
+        const removedConditionIndices = new Set(args.removeConditionIndices ?? []);
+        const keptConditions = conditions.map((c, i) => replacementAt.get(i) ?? c).filter((_c, i) => !removedConditionIndices.has(i));
+        if (isElseCondition(keptConditions[0]) && (args.insertConditions ?? []).some(i => i.index === 0)) {
+          return toolError(nothingChanged('Condition 0 of this block is a System "else" condition, which stays first (also when it is disabled); insert at index 1 or later.'));
+        }
+        // The cap applies to a call that adds items; a block already over it can still be edited otherwise
+        const tooMany = (kind: string, after: number, added: number) => (added > 0 && after + added > MAX_ITEMS_PER_BLOCK
+          ? `${where} would hold ${after + added} ${kind} (max ${MAX_ITEMS_PER_BLOCK}).` : undefined);
+        const sizeError = tooMany('conditions', conditionsAfterRemoval, (args.insertConditions?.length ?? 0) + (args.addConditions?.length ?? 0))
+          ?? tooMany('actions', actionsAfterRemoval, (args.insertActions?.length ?? 0) + (args.addActions?.length ?? 0));
+        if (sizeError) return toolError(nothingChanged(sizeError));
+
+        // From here the sheet changes in memory: a failure before the write puts the events back
+        restoreSheet = () => { sheet.events = beforeEvents; };
 
         // ── Apply block-level toggles (in the editor's key order: disabled right after sid) ──
         if (args.disabled !== undefined) {
@@ -1628,6 +1699,17 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         }
 
+        // Replace conditions in place (a new SID each)
+        for (const r of args.replaceConditions ?? []) {
+          if (r.index === 0 && isElseCondition(conditions[0]) && !isElseCondition(r.condition)) {
+            warnings.push(`${where}: condition 0 was the System "else" condition; replacing it makes the block an ordinary block.`);
+          }
+          if (isElseCondition(r.condition) && r.index !== 0) {
+            warnings.push(`${where}: a replacing System "else" condition is condition ${r.index}, but Construct 3 saves Else as the first condition. Use isElse: true instead.`);
+          }
+          conditions[r.index] = buildCondition(r.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>;
+        }
+
         // ── Remove conditions by index (descending order to avoid index shifting) ──
         let removedConditions = false;
         if (args.removeConditionIndices && args.removeConditionIndices.length > 0) {
@@ -1650,6 +1732,21 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             }
             actions.splice(idx, 1);
           }
+        }
+
+        // Insert at indexes counted after the removals (highest first, so each index counts in that list)
+        for (const insert of [...(args.insertConditions ?? [])].sort((x, y) => y.index - x.index)) {
+          if (isElseCondition(insert.condition) && insert.index !== 0) {
+            warnings.push(`${where}: an inserted System "else" condition is condition ${insert.index}, but Construct 3 saves Else as the first condition. Use isElse: true instead.`);
+          }
+          conditions.splice(insert.index, 0, buildCondition(insert.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>);
+        }
+        if ((args.insertActions ?? []).length > 0) {
+          const insertCtx = { warnings, functions };
+          for (const insert of [...(args.insertActions ?? [])].sort((x, y) => y.index - x.index)) {
+            actions.splice(insert.index, 0, await buildAction(reader, idGen, insert.action, insertCtx, where) as unknown as Record<string, unknown>);
+          }
+          functions = insertCtx.functions;
         }
 
         // ── Add new conditions (validated up front) ──
@@ -1719,6 +1816,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         warnings.push(...loadCheck.warnings);
 
         // Write back
+        writeStarted = true;
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
         resetProjectIndex(reader);
@@ -1734,6 +1832,12 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         return toolResult({ ...result, eventPath: path });
       } catch (error) {
         console.error('[update_event_block] failed:', error);
+        if (restoreSheet) {
+          restoreSheet();
+          if (!writeStarted) {
+            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          }
+        }
         return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
