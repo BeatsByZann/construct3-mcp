@@ -1053,7 +1053,7 @@ Delete a layer or sub-layer from a layout, together with its sub-layers.
 
 Update a placed instance, found by UID on any layer or sub-layer or among the non-world instances (which ignore position, size, angle, Z elevation and color).
 
-The Z elevation is written as `world.z`, the key Construct 3 r495.2 saves for instances, after `color` (one editor-saved project, 47 of 47 instances) and keeps when it saves a project (r506-2); layers keep `zElevation`. An instance keeps one Z key: one written by version 1.10.0 or older holds `world.zElevation`, which is moved to `world.z` in its place, and one with both keys loses `world.zElevation`; each with a warning that names the old value (#ISSUE). Construct 3 r506-2 reads `world.zElevation` and saves it as `world.z`; this was seen on one project that used the Normalized Z axis scale.
+The Z elevation is written as `world.z`. Construct 3 r495.2 saves that key for instances (one editor-saved project, 47 of 47 instances), and r506-2 keeps it when it saves a project; layers keep `zElevation`. On a new instance `world.z` goes after `color`; a key renamed in place from `world.zElevation` keeps the old key's position. An instance keeps one Z key: one written by version 1.10.0 or older holds `world.zElevation`, which is moved to `world.z` in its place, and one with both keys loses `world.zElevation`; each with a warning that names the old value (#ISSUE). Construct 3 r506-2 reads `world.zElevation` and saves it as `world.z`; this was seen on one project that used the Normalized Z axis scale.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

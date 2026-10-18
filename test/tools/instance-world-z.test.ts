@@ -74,7 +74,10 @@ describe('the Z elevation of a placed instance', () => {
     expect(world).not.toHaveProperty('zElevation');
   });
 
-  /** UID 0 as version 1.10.0 or older wrote it: world.zElevation, no z; with `both`, z too. */
+  /**
+   * UID 0 as version 1.10.0 or older wrote it: world.zElevation, no z; with `both`, z too.
+   * world.angle is added after zElevation so a key renamed in place can be told from one deleted and appended at the end.
+   */
   async function oldZ(both = false): Promise<void> {
     const layout = await readLayout();
     const world = layout.layers[0].instances[0].world;
