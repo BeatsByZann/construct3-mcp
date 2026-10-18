@@ -50,7 +50,7 @@ import {
   expectedInstanceVariables,
   type InstanceVariableDef,
 } from '../construct3/instance-variables.js';
-import { classifyReadError } from '../construct3/project-reader.js';
+import { classifyReadError, type Construct3ProjectReader } from '../construct3/project-reader.js';
 import {
   findLayerNameUses,
   layerNameUseLocation,
@@ -90,7 +90,7 @@ function layerList(layout: Layout): string {
  * also be given by its path as messages list it ("Main > HUD"): that picks one
  * of several layers with the same name, e.g. to rename it with update_layer.
  */
-function resolveLayer(layout: Layout, layerName: string, layoutName: string): { entry: LayerEntry } | { error: string } {
+export function resolveLayer(layout: Layout, layerName: string, layoutName: string): { entry: LayerEntry } | { error: string } {
   const matches = findLayersByName(layout.layers, layerName);
   if (matches.length === 1) return { entry: matches[0] };
   if (layerName.includes(' > ')) {
@@ -116,7 +116,7 @@ function resolveLayer(layout: Layout, layerName: string, layoutName: string): { 
  * Error text for a layer name that another layer of the layout (`clash`, from
  * findLayerNameClash) already uses, exactly or ignoring case.
  */
-function layerNameClashError(name: string, clash: LayerEntry, layoutName: string): string {
+export function layerNameClashError(name: string, clash: LayerEntry, layoutName: string): string {
   const where = clash.depth > 0 ? ` (sub-layer "${layerPathLabel(clash)}")` : '';
   if (clash.layer.name === name) {
     return `Layer "${name}" already exists in layout "${layoutName}"${where}. ` +
@@ -131,6 +131,81 @@ function layerNameClashError(name: string, clash: LayerEntry, layoutName: string
 function describeInstancePlace(entry: LayerEntry | undefined): string {
   if (!entry) return 'the non-world instances';
   return `${entry.depth > 0 ? 'sub-layer' : 'layer'} "${layerPathLabel(entry)}"`;
+}
+
+/**
+ * What renaming the layer `oldName` of the layouts `layoutNames` to
+ * `newName` changes in the event sheets (see layer-references.ts): the
+ * sheets to rewrite (the definite uses, unless `update` is false or a layout
+ * not in `layoutNames` has a layer of the old name, ignoring case, in which
+ * case a layer parameter may name that one), and the warnings, worded for a
+ * preview with `dryRun`. Layouts the reader could not parse are searched as
+ * text for the old name (a match counts as such a layer), event sheets it
+ * could not parse for the old name (possibly uses, not updated).
+ */
+export async function planLayerReferences(
+  reader: Construct3ProjectReader,
+  layoutNames: readonly string[], oldName: string, newName: string, update: boolean, dryRun = false,
+): Promise<{ rewrites: Map<string, EventSheet>; warnings: string[]; unscanned: UnscannedFileReport[] }> {
+  const sheets = await reader.readAllEventSheets();
+  const sheetFailures = reader.getReadFailures('eventSheets');
+  const uses = findLayerNameUses(sheets, oldName);
+  const definite = uses.filter(u => u.definite);
+  const possible = uses.filter(u => !u.definite);
+
+  // Other layouts with a layer of the old name: a layer parameter may name that one.
+  // The renamed layouts by their registered names (a layout name in layoutNames may differ in case,
+  // which the file system accepts), or the cached copy with the old layer name counts as another
+  const layouts = await reader.readAllLayouts();
+  const layoutFailures = reader.getReadFailures('layouts');
+  const registered = await reader.listLayouts();
+  const own = new Set(layoutNames.map(name => findNameClash(name, registered) ?? name));
+  const key = layerNameKey(oldName);
+  const sameName = [...layouts]
+    .filter(([name, other]) => !own.has(name) && layerEntries(other.layers).some(e => typeof e.layer.name === 'string' && layerNameKey(e.layer.name) === key))
+    .map(([name]) => name);
+  const unscannedLayouts = await checkUnscannedFiles(reader,
+    unscannedFilesOf('layouts', registered, layouts, layoutFailures).filter(f => !own.has(f.name)),
+    [{ categories: ['layouts'], allOf: [[nameTerm(oldName)]] }]);
+  const unscannedSheets = await checkUnscannedFiles(reader,
+    unscannedFilesOf('eventSheets', await reader.listEventSheets(), sheets, sheetFailures),
+    [{ categories: ['eventSheets'], allOf: [[nameTerm(oldName)]] }]);
+  const maybeSameName = unscannedLayouts.filter(r => r.textSearch === 'possible-use' || r.textSearch === 'unreadable');
+
+  const warnings: string[] = [];
+  const rewrites = new Map<string, EventSheet>();
+  const where = (list: LayerNameUse[]) => listUses(list.map(layerNameUseLocation));
+  if (definite.length > 0) {
+    if (!update) {
+      warnings.push(`${definite.length} "layer" parameter(s) still name "${oldName}" (updateReferences is false): ${where(definite)}. ` +
+        `Update them to "${newName}" if they mean this layer.`);
+    } else if (sameName.length > 0 || maybeSameName.length > 0) {
+      const others = [
+        ...sameName.map(n => `"${n}"`),
+        ...maybeSameName.map(r => `${r.file} (could not be parsed; ${r.textSearch === 'unreadable' ? 'not searched' : 'its text names it'})`),
+      ];
+      warnings.push(`${definite.length} "layer" parameter(s) name "${oldName}" and were NOT changed: layout(s) ${listUses(others)} ` +
+        `${sameName.length + maybeSameName.length === 1 ? 'has' : 'possibly have'} a layer of that name too, and a layer parameter names a layer of ` +
+        `whatever layout runs the event sheet. Update those meant for this layer to "${newName}": ${where(definite)}.`);
+    } else {
+      for (const sheetName of new Set(definite.map(u => u.eventSheet))) {
+        const sheet = await reader.readEventSheet(sheetName);
+        if (renameLayerParameters(sheet, oldName, newName) > 0) rewrites.set(sheetName, sheet);
+      }
+      warnings.push(`${dryRun ? 'Would point' : 'Pointed'} ${definite.length} "layer" parameter(s) that named "${oldName}" at "${newName}", in event sheet(s) ` +
+        `${listUses([...rewrites.keys()].map(n => `"${n}"`))}: ${where(definite)}.`);
+    }
+  }
+  if (possible.length > 0) {
+    warnings.push(`${possible.length} other expression(s) or script line(s) contain the string "${oldName}", which may name this layer ` +
+      `(e.g. LayerScale("${oldName}")) or something else of that name; they were NOT changed: ${where(possible)}.`);
+  }
+  for (const report of unscannedSheets.filter(r => r.textSearch !== 'no-match')) {
+    warnings.push(`${report.file} could not be parsed (${report.reason}) and ` +
+      (report.textSearch === 'unreadable' ? 'could not be searched either' : `its text names "${oldName}"`) +
+      ': strings there that name the layer were NOT updated; check it in the Construct 3 editor.');
+  }
+  return { rewrites, warnings, unscanned: [...unscannedLayouts, ...unscannedSheets] };
 }
 
 export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
@@ -223,79 +298,6 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         'Check the instance in the Construct 3 editor once the file is repaired.');
     }
     return { unlisted, warnings, unscanned: concerned };
-  }
-
-  /**
-   * What renaming the layer `oldName` of `layoutName` to `newName` changes in
-   * the event sheets (see layer-references.ts): the sheets to rewrite (the
-   * definite uses, unless `update` is false or another layout has a layer of
-   * the old name, ignoring case, in which case a layer parameter may name
-   * that one), and the warnings. Layouts the reader could not parse are
-   * searched as text for the old name (a match counts as such a layer), event
-   * sheets it could not parse for the old name (possibly uses, not updated).
-   */
-  async function planLayerReferences(
-    layoutName: string, oldName: string, newName: string, update: boolean,
-  ): Promise<{ rewrites: Map<string, EventSheet>; warnings: string[]; unscanned: UnscannedFileReport[] }> {
-    const sheets = await reader.readAllEventSheets();
-    const sheetFailures = reader.getReadFailures('eventSheets');
-    const uses = findLayerNameUses(sheets, oldName);
-    const definite = uses.filter(u => u.definite);
-    const possible = uses.filter(u => !u.definite);
-
-    // Other layouts with a layer of the old name: a layer parameter may name that one.
-    // The renamed layout by its registered name (layoutName may differ in case, which
-    // the file system accepts), or the cached copy with the old layer name counts as another
-    const layouts = await reader.readAllLayouts();
-    const layoutFailures = reader.getReadFailures('layouts');
-    const registered = await reader.listLayouts();
-    const own = findNameClash(layoutName, registered) ?? layoutName;
-    const key = layerNameKey(oldName);
-    const sameName = [...layouts]
-      .filter(([name, other]) => name !== own && layerEntries(other.layers).some(e => typeof e.layer.name === 'string' && layerNameKey(e.layer.name) === key))
-      .map(([name]) => name);
-    const unscannedLayouts = await checkUnscannedFiles(reader,
-      unscannedFilesOf('layouts', registered, layouts, layoutFailures).filter(f => f.name !== own),
-      [{ categories: ['layouts'], allOf: [[nameTerm(oldName)]] }]);
-    const unscannedSheets = await checkUnscannedFiles(reader,
-      unscannedFilesOf('eventSheets', await reader.listEventSheets(), sheets, sheetFailures),
-      [{ categories: ['eventSheets'], allOf: [[nameTerm(oldName)]] }]);
-    const maybeSameName = unscannedLayouts.filter(r => r.textSearch === 'possible-use' || r.textSearch === 'unreadable');
-
-    const warnings: string[] = [];
-    const rewrites = new Map<string, EventSheet>();
-    const where = (list: LayerNameUse[]) => listUses(list.map(layerNameUseLocation));
-    if (definite.length > 0) {
-      if (!update) {
-        warnings.push(`${definite.length} "layer" parameter(s) still name "${oldName}" (updateReferences is false): ${where(definite)}. ` +
-          `Update them to "${newName}" if they mean this layer.`);
-      } else if (sameName.length > 0 || maybeSameName.length > 0) {
-        const others = [
-          ...sameName.map(n => `"${n}"`),
-          ...maybeSameName.map(r => `${r.file} (could not be parsed; ${r.textSearch === 'unreadable' ? 'not searched' : 'its text names it'})`),
-        ];
-        warnings.push(`${definite.length} "layer" parameter(s) name "${oldName}" and were NOT changed: layout(s) ${listUses(others)} ` +
-          `${sameName.length + maybeSameName.length === 1 ? 'has' : 'possibly have'} a layer of that name too, and a layer parameter names a layer of ` +
-          `whatever layout runs the event sheet. Update those meant for this layer to "${newName}": ${where(definite)}.`);
-      } else {
-        for (const sheetName of new Set(definite.map(u => u.eventSheet))) {
-          const sheet = await reader.readEventSheet(sheetName);
-          if (renameLayerParameters(sheet, oldName, newName) > 0) rewrites.set(sheetName, sheet);
-        }
-        warnings.push(`Pointed ${definite.length} "layer" parameter(s) that named "${oldName}" at "${newName}", in event sheet(s) ` +
-          `${listUses([...rewrites.keys()].map(n => `"${n}"`))}: ${where(definite)}.`);
-      }
-    }
-    if (possible.length > 0) {
-      warnings.push(`${possible.length} other expression(s) or script line(s) contain the string "${oldName}", which may name this layer ` +
-        `(e.g. LayerScale("${oldName}")) or something else of that name; they were NOT changed: ${where(possible)}.`);
-    }
-    for (const report of unscannedSheets.filter(r => r.textSearch !== 'no-match')) {
-      warnings.push(`${report.file} could not be parsed (${report.reason}) and ` +
-        (report.textSearch === 'unreadable' ? 'could not be searched either' : `its text names "${oldName}"`) +
-        ': strings there that name the layer were NOT updated; check it in the Construct 3 editor.');
-    }
-    return { rewrites, warnings, unscanned: [...unscannedLayouts, ...unscannedSheets] };
   }
 
   // ─── create_layout ────────────────────────────────────────
@@ -895,7 +897,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         // Event sheet strings that name the old name (read before any write). A rename that
         // only changes the letter case breaks none: the editor looks layer names up ignoring case
         const references = renamed && oldName !== undefined && layerNameKey(oldName) !== layerNameKey(args.newName!)
-          ? await planLayerReferences(args.layoutName, oldName, args.newName!, args.updateReferences)
+          ? await planLayerReferences(reader, [args.layoutName], oldName, args.newName!, args.updateReferences)
           : undefined;
 
         if (args.isInitiallyVisible !== undefined) layer.isInitiallyVisible = args.isInitiallyVisible;
@@ -1119,11 +1121,12 @@ function undeclaredVariablesError(
 }
 
 /**
- * Undo an update_layer rename whose event sheet write failed for a reason
- * other than a refusal as stale, and return the error message. The layout
+ * Undo an update_layer or rename_layer rename whose write failed for a reason
+ * other than a refusal as stale, and return the error message (`written`
+ * names what the call wrote first: the layout, or the layouts). The layout(s)
  * and the event sheets written before are put back by the writer
  * (undoToolCall), which leaves a file saved again in the editor after the
- * call wrote it as it is. The event sheet whose write failed is restored from
+ * call wrote it as it is. The file whose write failed is restored from
  * its backup, unless another write replaced it during this one
  * (EntityWriteError.changedByOtherWrite): only a write from outside the
  * server can land there, such as a save in the editor, so it is left as that
@@ -1131,7 +1134,9 @@ function undeclaredVariablesError(
  * a file that cannot be read (restoreFailedWrite leaves it, and the error
  * names the file, why, and its .bak).
  */
-async function rollBackLayerRename(writer: MutationToolDeps['writer'], error: unknown): Promise<string> {
+export async function rollBackLayerRename(
+  writer: MutationToolDeps['writer'], error: unknown, written: 'the layout' | 'the layouts' = 'the layout',
+): Promise<string> {
   // A refusal of the writer ends with a full stop already
   const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
   const failed: string[] = [];
@@ -1139,7 +1144,7 @@ async function rollBackLayerRename(writer: MutationToolDeps['writer'], error: un
   let otherWrite = '';
   if (error instanceof EntityWriteError) {
     if (error.changedByOtherWrite) {
-      otherWrite = ' The event sheet was left as that write left it.';
+      otherWrite = ` ${written === 'the layout' ? 'The event sheet' : 'The file'} was left as that write left it.`;
     } else {
       try {
         const { restored, label, reason } = await writer.restoreFailedWrite(error);
@@ -1151,7 +1156,7 @@ async function rollBackLayerRename(writer: MutationToolDeps['writer'], error: un
   }
   const undo = await writer.undoToolCall();
   if (undo.left.length === 0 && failed.length === 0 && kept.length === 0) {
-    return `${cause}.${otherWrite} The rename was rolled back: the layout and the event sheets written before were restored from their backups.`;
+    return `${cause}.${otherWrite} The rename was rolled back: ${written} and the event sheets written before were restored from their backups.`;
   }
   const parts = [
     ...(undo.restored.length > 0 ? [`put back as they were before the call: ${undo.restored.join(', ')}`] : []),
@@ -1164,7 +1169,7 @@ async function rollBackLayerRename(writer: MutationToolDeps['writer'], error: un
 }
 
 /** The first few locations and how many more there are. */
-function listUses(items: string[], max = 5): string {
+export function listUses(items: string[], max = 5): string {
   const shown = items.slice(0, max).join(', ');
   return items.length > max ? `${shown} and ${items.length - max} more` : shown;
 }
