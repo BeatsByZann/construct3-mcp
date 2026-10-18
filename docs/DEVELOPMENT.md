@@ -111,7 +111,7 @@ construct3-mcp/
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
-│   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── animation-tools.ts      # Sprite animation and frame tools (9)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)

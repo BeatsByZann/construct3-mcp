@@ -200,6 +200,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_frame` | Update a frame's duration, size or origin |
 | `delete_frame_from_animation` | Delete a frame by index (never the last one); its image is kept as `.bak`, later frame images move down |
 | `replace_sprite_image` | Replace a frame's image with base64 PNG data |
+| `replace_object_image` | Replace the single image of an object type without animations (such as a Tiled Background) with base64 PNG data |
 
 **Timelines**
 
@@ -284,7 +285,7 @@ Every project file a tool writes through the project writer is backed up once pe
 - `register_addon` and `unregister_addon` update `project.c3proj` through the writer: it is backed up once per call, the result is read back, and a change saved in the editor during the call is merged in, not refused.
 - The timeline tools back up their files once per call, write them through a temp file and read them back.
 - The runtime tools (`inject_runtime_bridge`, `remove_runtime_bridge`, and `export_for_preview` / `pack_project` when they inject the bridge) write `project.c3proj` (only when the registration changes), the bridge script and the one import line in the main script through the writer. Each write step backs its file up once per call, reads it back, and is refused when the file changed since the tool read it. The delete of the bridge script by `remove_runtime_bridge` takes no such check: the file is backed up and deleted under its lock, a change made to it after the tool read it is not refused, and its `.bak` keeps the state just before the delete. `remove_runtime_bridge` also takes out bridge import lines typed by hand, and refuses before writing anything while a script uses the bridge in a way it cannot take out, or a script it has to check cannot be read. When a step fails, the tools still undo their own steps, putting back the files they wrote before. A write step whose read-back does not find the bytes it wrote (another write landed right after it, or the file could not be read) is not put back, since the file may hold that other write; the error names it as a file to check. `clone_project`, when it adds the bridge, is the exception: it writes the copy directly, not through the writer. The copy is a new folder outside the open project, so that install takes no lock and makes no backup; a failed write puts back the files it wrote before.
-- PNG images are backed up once per call under the first free `.bak` name (`<file>.bak`, then `<file>.1.bak`, ...), so a backup the frame tools kept is never replaced (see *Frame images move with their frames* below). Image backups therefore accumulate, one more for each call that writes the image, and nothing removes them. `delete_object` keeps the image files of the object it deletes the same way.
+- PNG images are backed up once per call under the first free `.bak` name (`<file>.bak`, then `<file>.1.bak`, ...), so a backup the frame tools kept is never replaced; `replace_object_image` keeps the image it replaces the same way (see *Frame images move with their frames* below). Image backups therefore accumulate, one more for each call that writes the image, and nothing removes them. `delete_object` keeps the image files of the object it deletes the same way.
 
 The runtime connection tools write nothing to the project and keep to this machine:
 - `serve_preview` listens on 127.0.0.1 only, refuses a port another program answers on, answers only requests addressed to 127.0.0.1, localhost or [::1] (DNS rebinding), and serves only files whose real path lies in the exported folder. The interface, the browser (`CHROME_PATH` or the usual install locations) and its debugging port are not tool parameters. The browser gets a fresh profile and picks its own debugging port, and stopping ends only that browser and removes its profile.
@@ -440,7 +441,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 84.
 
 ### Standalone Testing
 
@@ -554,7 +555,7 @@ construct3-mcp/
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
-│   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── animation-tools.ts      # Sprite animation and frame tools (9)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
