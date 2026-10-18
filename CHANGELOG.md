@@ -13,6 +13,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 ### Fixed
 
 - When an object type, event sheet, layout or family write fails after replacing the file, the rollback of `update_layer`, `add_frame_to_animation`, `delete_frame_from_animation` and `rename_animation` puts the backup back only while the file holds that write's own content; a save made in the editor after the failure is kept, and the error names the file and its `.bak` (#ISSUE).
+- `add_instance_to_layout` and `update_instance` write a placed instance's Z elevation as `world.z`, the key Construct 3 r495.2 saves for instances (after `color`), instead of `world.zElevation`; layers keep `zElevation`. `update_instance` leaves one Z key on an instance that holds `world.zElevation` (moved to `world.z`; removed when the instance already holds `world.z`), with a warning (#ISSUE).
 
 ## [1.10.0] - 2026-09-30
 
