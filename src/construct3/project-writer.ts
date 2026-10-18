@@ -115,6 +115,14 @@ export class ConcurrentWriteError extends Error {
 }
 
 /**
+ * A write through replaceFile or deleteFile replaced the file, but reading
+ * it back did not find the bytes written: another write landed after it, or
+ * the file could not be read. The file may hold this call's text or someone
+ * else's, so a caller undoing the call must not take it for unchanged.
+ */
+export class UnconfirmedWriteError extends ConcurrentWriteError {}
+
+/**
  * How often an update of project.c3proj reads the file again when it changed
  * between the read and the write, before the update is refused.
  */
@@ -352,7 +360,7 @@ export class Construct3ProjectWriter {
     const key = fileKey(filePath);
     const state = content === null ? null : await this.stateIfHolding(filePath, content);
     if (state === undefined) {
-      throw new ConcurrentWriteError(`${this.projectRelative(filePath)} was changed by another write right after this one (the Construct 3 editor, `
+      throw new UnconfirmedWriteError(`${this.projectRelative(filePath)} was changed by another write right after this one (the Construct 3 editor, `
         + 'or a tool call running in parallel?): it does not hold what this call wrote. Re-read it and retry.');
     }
     if (key === fileKey(this.reader.getProjectPath())) noteFileWritten(key, state);

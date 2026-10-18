@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
-import type { Construct3ProjectWriter, DirectWrite } from '../construct3/project-writer.js';
+import { UnconfirmedWriteError, type Construct3ProjectWriter, type DirectWrite } from '../construct3/project-writer.js';
 import { fileKey, statFileState, type FileState } from '../construct3/disk-state.js';
 import { generateBridgeScript, getBridgeScriptPath } from '../runtime/bridge.js';
 import { writeFile, mkdir, readFile, readdir, realpath, rmdir, stat, unlink } from 'node:fs/promises';
@@ -513,13 +513,29 @@ const RAW_BRIDGE_FILES: BridgeFiles = {
  * A step that writes `text` over a file. Its undo puts `before` back (null:
  * removes the file) only when the write landed, or when the files are not
  * written atomically (a failed direct write can leave a file half written).
+ * A write whose read-back found other bytes (UnconfirmedWriteError) did
+ * replace the file, so it may have landed: the file may hold this call's
+ * text or someone else's, and the undo does not write over it. It throws,
+ * so the file is named among those to check.
  */
 function writeStep(files: BridgeFiles, path: string, text: string, expected: FileState, before: string | null): BridgeStep {
   let landed = false;
+  let unconfirmed = false;
   return {
     path,
-    apply: async () => { await files.write(path, text, expected); landed = true; },
-    undo: async () => { if (landed || !files.atomic) await files.restore(path, before); },
+    apply: async () => {
+      try {
+        await files.write(path, text, expected);
+        landed = true;
+      } catch (error) {
+        if (error instanceof UnconfirmedWriteError) unconfirmed = true;
+        throw error;
+      }
+    },
+    undo: async () => {
+      if (unconfirmed) throw new Error('The file was replaced, but what it holds now could not be confirmed.');
+      if (landed || !files.atomic) await files.restore(path, before);
+    },
   };
 }
 

@@ -550,6 +550,33 @@ describe('project.c3proj saved in the editor while a bridge tool runs', () => {
   });
 });
 
+/**
+ * A bridge write that replaced a file but could not be confirmed by reading
+ * it back did land: the rollback must not report the file as back as it was.
+ */
+describe('a bridge write whose read-back fails', () => {
+  it('does not claim the files are back as they were, and names the file to check', async () => {
+    const dir = await copyFixture('minimal-project');
+    const mainPath = await addMainScript(dir, 'game', 'runOnStartup(async (runtime) => {});\n');
+    const { server, writer } = await runtimeSetup(dir);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const internals = writer as unknown as { stateIfHolding: (path: string, content: string | Buffer) => Promise<unknown> };
+    const real = internals.stateIfHolding.bind(writer);
+    // The main script is replaced, then reading it back finds nothing it can confirm
+    vi.spyOn(internals, 'stateIfHolding').mockImplementation(async (path, content) => (path.endsWith('main.js') ? undefined : real(path, content)));
+
+    const result = await server.callTool('inject_runtime_bridge', {});
+
+    expect(result.isError).toBe(true);
+    const message = result.content[0].text;
+    expect(message).not.toContain('back as they were');
+    expect(message).toContain('scripts/game/main.js could not be put back as it was: check it before going on.');
+    // The write landed: the main script imports the bridge, which the earlier steps' undo removed
+    expect(await readFile(mainPath, 'utf8')).toContain('c3-runtime-bridge.js');
+    expect(existsSync(join(dir, 'scripts', 'c3-runtime-bridge.js'))).toBe(false);
+  });
+});
+
 describe('pack_project', () => {
   it('says, like export_for_preview, that the packed project carries an active bridge and that the main script got an import line', async () => {
     const dir = await copyFixture('minimal-project');
