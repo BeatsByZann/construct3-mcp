@@ -51,6 +51,10 @@ import { withProjectSync } from './project-sync.js';
 const WRITE_NOTE = 'The layouts the instance entries change are written first and the holder\'s file last, and a failed write is rolled back; '
   + 'a process stopped in the middle of a call rolls nothing back, and running the call again finishes it.';
 
+/** The sentence update_effect's description ends with: it writes one layout and never the holder's file of an object type or family. */
+const ONE_FILE_NOTE = 'The change is written to one layout file (the layout of the instance, or the layout that holds the layer or layout), '
+  + 'and a failed write is rolled back.';
+
 /** What the check of remove_effect covers. */
 const CHECK_NOTE = 'The check covers event sheets only, not scripts, timelines or flowcharts.';
 
@@ -113,6 +117,24 @@ function findLayer(layout: Layout, layerName: string, layoutName: string) {
 /** The entries of a holder's effectTypes (records only). */
 function effectEntries(holder: Record<string, unknown>): Array<Record<string, unknown>> {
   return Array.isArray(holder.effectTypes) ? holder.effectTypes.filter(isRecord) : [];
+}
+
+/**
+ * The refusal for a holder whose effectTypes this server cannot edit without
+ * dropping an entry or writing the wrong ones: effectTypes that is not a list,
+ * or an entry that is not a record with a string name. A hand edit, since the
+ * editor does not save such a file. Undefined when the stack is sound.
+ */
+function unsoundStack(target: Target): ReturnType<typeof toolError> | undefined {
+  const stack = target.holder.effectTypes;
+  if (stack === undefined) return undefined;
+  if (!Array.isArray(stack)) {
+    return refusal(`The effectTypes of the ${target.label} is not a list, so this tool does not edit its effects: fix or remove it in the Construct 3 editor first`);
+  }
+  const at = stack.findIndex(e => !isRecord(e) || typeof e.name !== 'string');
+  if (at === -1) return undefined;
+  return refusal(`Entry ${at} of the effects of the ${target.label} is not a record with a name, so this tool does not edit its effects `
+    + '(it would drop an entry or write the wrong ones): rename or remove it in the Construct 3 editor first');
 }
 
 /** A holder's effect names, in order. */
@@ -348,6 +370,8 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         const resolved = await resolveTarget(args);
         if ('refusal' in resolved) return resolved.refusal;
         const { target } = resolved;
+        const unsound = unsoundStack(target);
+        if (unsound) return unsound;
 
         if (!reader.getUsedAddons().some(a => a.type === 'effect' && a.id === args.effectId)) {
           return refusal(`Effect "${args.effectId}" is not a usedAddons entry of type effect. Register the addon with register_addon (type "effect") first; `
@@ -410,7 +434,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
     'Change the state of an effect: isEnabled and parameters (merged key by key into the existing ones). A layout\'s or layer\'s effect '
       + 'keeps its state in its entry. An object type\'s or family\'s effect keeps it on each placed instance, so instanceLayoutName and '
       + 'instanceUid name the instance to change (an instance of the object type or of a member that holds an entry for the effect). '
-      + 'A call that changes nothing is reported as unchanged and writes nothing. ' + WRITE_NOTE,
+      + 'A call that changes nothing is reported as unchanged and writes nothing. ' + ONE_FILE_NOTE,
     {
       ...targetShape,
       name: z.string().max(200).describe('The effect\'s name, letter case included'),
@@ -447,7 +471,12 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         if (!(await reader.listLayouts()).includes(args.instanceLayoutName)) {
           return notFoundError('Layout', args.instanceLayoutName, reader.findNearestName(args.instanceLayoutName, 'layouts'), 'list_layouts');
         }
-        const layout = await reader.readLayout(args.instanceLayoutName);
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.instanceLayoutName);
+        } catch (error) {
+          return refusal(`Layout "${args.instanceLayoutName}" could not be read: ${error instanceof Error ? error.message : String(error)}`);
+        }
         const location = findInstanceByUid(layout, args.instanceUid);
         if (!location) return refusal(`Layout "${args.instanceLayoutName}" has no instance with UID ${args.instanceUid}`);
         const instance = location.instance as unknown as Record<string, unknown>;
@@ -484,7 +513,8 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
       + 'actions and conditions on the object type, or on the family and its members that keep no effect of that name, and, for a layer '
       + 'or layout, System actions and conditions that name an effect of that name (which layer or layout they mean is not checked, so '
       + 'they count as possible uses). Event sheets that could not be parsed are searched as text and refuse the same way; unscannedFiles '
-      + 'lists them. Uses are never changed. An object type\'s or family\'s effect loses its entries on the placed instances, except '
+      + 'lists them. Uses are never changed. An object type\'s effect that one of its families also has is not checked (actions on the '
+      + 'object type still reach the family\'s effect, and the instance entries are kept). An object type\'s or family\'s effect loses its entries on the placed instances, except '
       + 'where an object type or family still has an effect of that name; the removed entries are listed, and only the layouts\' .bak '
       + 'files hold them afterwards. ' + CHECK_NOTE + ' ' + WRITE_NOTE,
     {
@@ -497,6 +527,8 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         const resolved = await resolveTarget(args);
         if ('refusal' in resolved) return resolved.refusal;
         const { target } = resolved;
+        const unsound = unsoundStack(target);
+        if (unsound) return unsound;
         const found = findEntry(target, args.name);
         if ('refusal' in found) return found.refusal;
 
@@ -601,8 +633,10 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         const resolved = await resolveTarget(args);
         if ('refusal' in resolved) return resolved.refusal;
         const { target } = resolved;
+        const unsound = unsoundStack(target);
+        if (unsound) return unsound;
         const entries = effectEntries(target.holder);
-        const current = effectNames(target.holder);
+        const current = entries.map(e => String(e.name));
         const repeated = [...new Set(current.filter((n, i) => current.indexOf(n) !== i))];
         if (repeated.length > 0) {
           return refusal(`Effects of the ${target.label} share a name (${quoted(repeated)}): rename one in the Construct 3 editor first`);

@@ -221,7 +221,7 @@ describe('add_effect', () => {
     const layout = await call('add_effect', { layoutName: 'Layout 1', effectId: 'glowhorizontal', name: 'Dim', parameters: { a: 1 } });
     expect(layout).toMatchObject({ success: true, entity: 'Layout 1', category: 'layout', effects: ['Dim'] });
     expect((await layoutOf()).effectTypes).toEqual([layerEntry('Dim', { a: 1 })]);
-    // The layout's other keys and the instances are as they were
+    // A layout's effect writes no entries on the instances
     expect((await instanceOf(0)).effects).toBeUndefined();
   });
 
@@ -489,9 +489,110 @@ describe('reorder_effects', () => {
       expect(data.text).toContain('Current order: "A", "B".');
       expect(data.text).toContain('Nothing was changed.');
     }
+    expect(await snapshot()).toEqual(before);
     await editHolder('objectTypes/Sprite.json', o => { o.effectTypes = [glow('A'), glow('A')]; });
+    const duplicated = await snapshot();
     expect((await call('reorder_effects', { objectName: 'Sprite', names: ['A', 'A'] })).text).toContain('share a name ("A")');
-    expect(Object.keys(await snapshot()).filter(f => f.endsWith('.bak'))).toEqual(Object.keys(before).filter(f => f.endsWith('.bak')));
+    expect(await snapshot()).toEqual(duplicated);
+  });
+});
+
+describe('a holder whose effectTypes holds an entry that is no record with a name', () => {
+  // Hand-edited files: add_effect, remove_effect and reorder_effects would drop an entry or write the wrong ones
+  const malformed: Array<[string, unknown[]]> = [
+    ['an entry without a name', [{ effectId: 'glowhorizontal' }, glow('A'), glow('B')]],
+    ['an entry that is not a record', [glow('A'), 'stray', glow('B')]],
+  ];
+  for (const [title, stack] of malformed) {
+    it(`refuses add_effect, remove_effect and reorder_effects for ${title}, changing nothing`, async () => {
+      await editHolder('objectTypes/Sprite.json', o => { o.effectTypes = stack as unknown as EffectEntry[]; });
+      await giveInstance(0, { A: state({ n: 1 }), B: state({ n: 2 }) });
+      const before = await snapshot();
+      const calls: Array<[string, Record<string, unknown>]> = [
+        ['add_effect', { objectName: 'Sprite', effectId: 'fogexponential', name: 'Fog' }],
+        ['remove_effect', { objectName: 'Sprite', name: 'A' }],
+        ['reorder_effects', { objectName: 'Sprite', names: ['B', 'A'] }],
+      ];
+      for (const [tool, args] of calls) {
+        const data = await call(tool, args);
+        expect(data.isError, tool).toBe(true);
+        expect(data.text, tool).toContain('is not a record with a name');
+        expect(data.text, tool).toContain('rename or remove it in the Construct 3 editor first. Nothing was changed.');
+      }
+      expect(await snapshot()).toEqual(before);
+    });
+  }
+
+  it('refuses the same for a layer, and for an effectTypes that is not a list', async () => {
+    await editLayout(l => { l.layers[1].effectTypes = ['stray', layerEntry('Blur')] as unknown as EffectEntry[]; });
+    await editHolder('objectTypes/Sprite.json', o => { o.effectTypes = 'oops' as unknown as EffectEntry[]; });
+    const before = await snapshot();
+    const layer = await call('reorder_effects', { layoutName: 'Layout 1', layerName: 'HUD', names: ['Blur'] });
+    expect(layer.text).toContain('is not a record with a name');
+    expect(layer.text).toContain('Nothing was changed.');
+    const object = await call('add_effect', { objectName: 'Sprite', effectId: 'fogexponential', name: 'Fog' });
+    expect(object.text).toContain('is not a list');
+    expect(object.text).toContain('Nothing was changed.');
+    expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe('update_effect guards', () => {
+  it('refuses an instance of another object type, even one that holds an entry of that name, and changes nothing', async () => {
+    expect((await call('create_object', { name: 'Sprite2', pluginId: 'Sprite' })).success).toBe(true);
+    const placed = await call('add_instance_to_layout', { layoutName: 'Layout 1', layerName: 'Main', objectType: 'Sprite2', x: 0, y: 0 });
+    await editHolder('objectTypes/Sprite.json', o => { o.effectTypes = [glow('Glow')]; });
+    await editLayout(l => { l.layers[0].instances.find(i => i.uid === placed.generatedUid)!.effects = { Glow: state({ a: 1 }) }; });
+    const before = await snapshot();
+    const data = await call('update_effect', {
+      objectName: 'Sprite', name: 'Glow', instanceLayoutName: 'Layout 1', instanceUid: placed.generatedUid, parameters: { a: 9 },
+    });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('is a "Sprite2", not an instance of "Sprite"');
+    expect(data.text).toContain('Nothing was changed.');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('refuses a layout that is listed but cannot be read, saying nothing was changed', async () => {
+    await addLayout2();
+    await editHolder('objectTypes/Sprite.json', o => { o.effectTypes = [glow('Glow')]; });
+    await writeFile(path('layouts', 'Layout 2.json'), '{ "name": "Layout 2", "layers": [ <<<<');
+    const before = await snapshot();
+    const data = await call('update_effect', {
+      objectName: 'Sprite', name: 'Glow', instanceLayoutName: 'Layout 2', instanceUid: 7, parameters: { a: 9 },
+    });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('Layout "Layout 2" could not be read');
+    expect(data.text).toContain('Nothing was changed.');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('describes its single-file write, not the layouts-then-holder order of the other tools', () => {
+    const description = server.getTool('update_effect')!.description;
+    expect(description).toContain('written to one layout file');
+    expect(description).not.toContain('holder\'s file last');
+  });
+});
+
+describe('remove_effect of an object type whose family keeps an effect of that name', () => {
+  it('goes through without a use check or an unparsed-sheet search, and keeps the instance entry', async () => {
+    await addFamily('Glowers', ['Sprite'], [glow('Glow')]);
+    // A hand edit: add_effect would refuse the same name on the object type
+    await editHolder('objectTypes/Sprite.json', o => { o.effectTypes = [glow('Glow')]; });
+    await giveInstance(0, { Glow: state({ a: 1 }) });
+    await setActions({ objectClass: 'Sprite', effect: '"Glow"' });
+    await addBrokenSheet('{ "name": "Broken", "events": [ Sprite Glow');
+    const data = await call('remove_effect', { objectName: 'Sprite', name: 'Glow' });
+    expect(data).toMatchObject({ success: true, action: 'updated', category: 'object', effects: [] });
+    expect(data.unscannedFiles).toBeUndefined();
+    expect(await effectsOf('objectTypes/Sprite.json')).toEqual([]);
+    expect(await effectsOf('families/Glowers.json')).toEqual([glow('Glow')]);
+    expect((await instanceOf(0)).effects).toEqual({ Glow: state({ a: 1 }) });
+  });
+
+  it('says so in its description', () => {
+    expect(server.getTool('remove_effect')!.description)
+      .toContain('object type\'s effect that one of its families also has is not checked');
   });
 });
 
