@@ -1,6 +1,6 @@
 /**
  * Object type tools: create_object, update_object_properties, delete_object,
- * create_family, update_family, delete_family.
+ * create_family, update_family, update_instance_variable, delete_family.
  */
 
 import { z } from 'zod';
@@ -10,7 +10,7 @@ import type { Construct3ProjectReader } from '../construct3/project-reader.js';
 import type { Construct3ProjectWriter, UndoReport } from '../construct3/project-writer.js';
 import { filesLeftClause } from '../construct3/project-writer.js';
 import { validateName, validateSubfolder, toolResult, toolError, notFoundError, folderCaseClashError } from './shared.js';
-import { findFolderPathClash } from '../construct3/names.js';
+import { findFolderPathClash, nameKey } from '../construct3/names.js';
 import {
   getProjectIndex,
   toFamilyMemberUse,
@@ -78,6 +78,7 @@ import {
 import { StaleFileError } from '../construct3/disk-state.js';
 import { withProjectSync } from './project-sync.js';
 import { syncLayoutInstances, type InstanceSyncPlan } from './instance-sync.js';
+import { rollBackFailedCall } from './call-rollback.js';
 
 export function registerObjectTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
   const server = withProjectSync(mcpServer, reader);
@@ -809,6 +810,188 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
     }
   );
 
+  // ─── update_instance_variable ─────────────────────────────
+
+  server.tool(
+    'update_instance_variable',
+    'Rename an instance variable of an object type or family, or change its type or description, and keep the values placed '
+      + 'instances hold for it in step: a rename moves each value to the new name, a type change gives every value that does not '
+      + 'fit the new type its default (0, "" or false) and lists the values it replaced. A rename that events use is refused '
+      + 'without force, listing the uses, as removing the variable is (update_object_properties, update_family); uses are never '
+      + 'rewritten. A rename that only changes the letter case breaks no use. Event sheets that could not be parsed are searched '
+      + 'as text: one that possibly uses the variable, or that cannot be read, refuses the rename without force.',
+    {
+      objectName: z.string().max(200).optional().describe('Object type that has the variable, as registered (give this or familyName)'),
+      familyName: z.string().max(200).optional().describe('Family that has the variable, as registered (give this or objectName)'),
+      variableName: z.string().max(200).describe('Current name, letter case included'),
+      newName: z.string().max(200).optional()
+        .describe('New name: letters, digits, underscores and spaces; not the name of another instance variable the instances hold a value for, ignoring case'),
+      newType: z.enum(['number', 'string', 'boolean']).optional().describe('New type; placed instances whose value does not fit it get its default'),
+      description: z.string().max(1000).optional().describe('New description (saved as "desc")'),
+      force: z.boolean().optional().default(false).describe('Rename even if events use the variable (the uses are NOT changed)'),
+    },
+    async (args) => {
+      try {
+        if ((args.objectName === undefined) === (args.familyName === undefined)) {
+          return toolError('Give exactly one of objectName and familyName. Nothing was changed.');
+        }
+        if (args.newName === undefined && args.newType === undefined && args.description === undefined) {
+          return toolError('No updates provided. Specify at least one of: newName, newType, description. Nothing was changed.');
+        }
+        const isFamily = args.familyName !== undefined;
+        const ownerName = (isFamily ? args.familyName : args.objectName)!;
+        const category = isFamily ? 'families' : 'objectTypes';
+        const kind = isFamily ? 'family' : 'object';
+
+        // The registered name only, as for update_object_properties
+        const registered = isFamily ? await reader.listFamilies() : await reader.listObjectTypes();
+        if (!registered.includes(ownerName)) {
+          return isFamily
+            ? entityNotFound('Family', ownerName, registered, [], 'list_families')
+            : entityNotFound('Object', ownerName, registered, reader.findNearestName(ownerName, 'objects'), 'list_objects');
+        }
+        let owner: Record<string, unknown>;
+        try {
+          owner = isFamily ? await reader.readFamily(ownerName) : await reader.readObjectType(ownerName) as unknown as Record<string, unknown>;
+        } catch (error) {
+          return toolError(`${isFamily ? 'Family' : 'Object type'} "${ownerName}" could not be read: `
+            + `${error instanceof Error ? error.message : String(error)}. Nothing was changed.`);
+        }
+        const definitions = Array.isArray(owner.instanceVariables) ? owner.instanceVariables as Array<Record<string, unknown>> : [];
+        const target = definitions.find(v => v.name === args.variableName);
+        if (!target) {
+          const known = instanceVariablesOf(owner).map(v => `"${v.name}"`).join(', ') || '(none)';
+          return toolError(`"${ownerName}" has no instance variable "${args.variableName}" (names are matched with their letter case). `
+            + `Its instance variables: ${known}. Nothing was changed.`);
+        }
+        const oldName = args.variableName;
+        const oldType = typeof target.type === 'string' ? target.type : 'number';
+        const newName = args.newName ?? oldName;
+        const renaming = newName !== oldName;
+        const retyping = args.newType !== undefined && args.newType !== oldType;
+        const describing = args.description !== undefined && args.description !== target.desc;
+        if (!renaming && !retyping && !describing) {
+          return toolResult({ success: true, entity: ownerName, category: kind, action: 'unchanged', variable: oldName, type: oldType },
+            { projectWritten: false });
+        }
+
+        // The object types whose instances hold a value for it: the object type, or the family's members
+        const objectTypes = await reader.listObjectTypes();
+        const holders = isFamily
+          ? [...new Set((Array.isArray(owner.members) ? owner.members : [])
+            .filter((m): m is string => typeof m === 'string' && objectTypes.includes(m)))]
+          : [ownerName];
+        const families = await readFamiliesForInstances(reader);
+        const holderObjects = isFamily ? await readMemberObjects(reader, holders) : new Map([[ownerName, owner]]);
+
+        const warnings: string[] = [];
+        let unscanned: UnscannedFileReport[] = [];
+        let index: ProjectIndex | undefined;
+        const removal: MemberRemoval = { variables: new Map([[ownerName, [oldName]]]) };
+
+        if (renaming) {
+          try {
+            validateName(newName);
+          } catch (error) {
+            return toolError(`Invalid new name: ${error instanceof Error ? error.message : String(error)}. Nothing was changed.`);
+          }
+          // Another variable the instances hold a value for, ignoring case: events match the names ignoring case
+          const key = nameKey(newName);
+          const others = [
+            ...definitions.filter(v => v !== target && typeof v.name === 'string').map(v => ({ holder: ownerName, name: String(v.name) })),
+            ...holders.flatMap(holder => expectedInstanceVariables(holder, holderObjects.get(holder), families)
+              .filter(v => v.name !== oldName).map(v => ({ holder, name: v.name }))),
+          ];
+          const clash = others.find(o => nameKey(o.name) === key);
+          if (clash) {
+            return toolError(`"${clash.holder}" already has an instance variable "${clash.name}" (its own or a family's), and events match `
+              + 'instance variable names ignoring case. Choose another name. Nothing was changed.');
+          }
+          // A rename that changes more than the letter case breaks every use of the old name
+          if (nameKey(newName) !== nameKey(oldName)) {
+            index = await getProjectIndex(reader);
+            const broken = index.findReferencesBrokenBy(removal);
+            unscanned = await checkUnscannedFiles(reader, index.unscannedFiles, [{
+              categories: ['eventSheets'],
+              allOf: [[nameTerm(oldName)], [ownerName, ...holders].map(n => nameTerm(n))],
+            }]);
+            if ((broken.length > 0 || blocksWithoutForce(unscanned)) && !args.force) {
+              return toolResult(renameBlocked(ownerName, kind, oldName, newName, broken, unscanned));
+            }
+            warnings.push(...removalForcedWarnings(ownerName, broken, 'Renamed'));
+            warnings.push(...unscannedWarnings(unscanned, 'Renamed'));
+            warnings.push(...await scriptReadWarnings(reader, index, removal,
+              [ownerName, ...holders].map(objectClass => ({ objectClass, kind: 'instance variable' as const, name: oldName }))));
+          } else {
+            // Events match the names ignoring case, scripts do not: instVars.hp no longer finds "HP"
+            index = await getProjectIndex(reader);
+            warnings.push(...await caseOnlyRenameScriptWarnings(reader, index, oldName, newName));
+          }
+        }
+        if (retyping) {
+          index ??= await getProjectIndex(reader);
+          const uses = index.findReferencesBrokenBy(removal);
+          if (uses.length > 0) {
+            warnings.push(`Events use it: ${describeMemberReferences(ownerName, uses)}; they were written for a ${oldType} value, `
+              + `and whether they work with a ${args.newType} value is not checked: review them.`);
+          }
+        }
+
+        target.name = newName;
+        if (args.newType !== undefined) target.type = args.newType;
+        if (args.description !== undefined) target.desc = args.description;
+
+        // The layouts first, the owner file last: a call stopped between them leaves the definition
+        // under its old name, so running it again finds the variable and finishes the values.
+        // A failure rolls back what the call wrote
+        let backupPath: string;
+        try {
+          if (renaming || retyping) {
+            const familiesAfter = new Map(families);
+            if (isFamily) familiesAfter.set(ownerName, owner);
+            const plans = new Map<string, InstanceSyncPlan>();
+            for (const holder of holders) {
+              const object = holderObjects.get(holder);
+              if (object === undefined) {
+                warnings.push(`Instances of "${holder}" were NOT updated: its object type file could not be read, `
+                  + `so their values for "${oldName}" were left as they were.`);
+                continue;
+              }
+              plans.set(holder, {
+                expected: expectedInstanceBehaviors(holder, object, familiesAfter),
+                variables: expectedInstanceVariables(holder, object, familiesAfter),
+                ...(renaming ? { renameVariables: [{ from: oldName, to: newName }] } : {}),
+                ...(retyping ? { retypeVariables: [{ name: newName, type: args.newType! }] } : {}),
+              });
+            }
+            const sync = await syncLayoutInstances(reader, writer, plans);
+            warnings.push(...sync.warnings);
+            unscanned = mergeUnscannedReports(unscanned, sync.unscanned);
+          }
+          backupPath = await writer.writeEntityFile(category, ownerName, owner, writer.getSubfolderForEntity(category, ownerName));
+        } catch (error) {
+          throw new Error(await rollBackFailedCall(writer, error));
+        }
+
+        return toolResult({
+          success: true,
+          entity: ownerName,
+          category: kind,
+          action: 'updated',
+          variable: newName,
+          ...(renaming ? { previousName: oldName } : {}),
+          type: args.newType ?? oldType,
+          warnings: warnings.length > 0 ? warnings : undefined,
+          backupFile: backupPath,
+          ...unscannedFields(unscanned),
+        });
+      } catch (error) {
+        console.error('[update_instance_variable] failed:', error);
+        return toolError(`Error updating instance variable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
   // ─── delete_family ────────────────────────────────────────
 
   server.tool(
@@ -1299,6 +1482,52 @@ function removalBlocked(
 }
 
 /**
+ * The refusal of update_instance_variable while events use the instance
+ * variable it renames, or event sheets that could not be parsed possibly do.
+ */
+function renameBlocked(
+  entity: string, category: 'object' | 'family', oldName: string, newName: string,
+  uses: MemberReference[], unscanned: UnscannedFileReport[],
+): Record<string, unknown> {
+  const reasons = [
+    ...(uses.length > 0 ? [`Events use the instance variable this update renames: ${describeMemberReferences(entity, uses)}.`] : []),
+    ...(blocksWithoutForce(unscanned) ? [unscannedRefusal(unscanned)] : []),
+  ];
+  return {
+    success: false,
+    entity,
+    category,
+    action: 'update_blocked',
+    message: `${reasons.join(' ')} Renaming "${oldName}" to "${newName}" would leave such uses naming a variable that no longer exists. `
+      + 'Nothing was changed. Use force=true to rename anyway (the uses will NOT be changed).',
+    references: {
+      eventSheets: [...new Set(uses.map(u => u.eventSheet))],
+      ...boundedLists({ uses: memberUseList(uses) }),
+    },
+    ...unscannedFields(unscanned),
+  };
+}
+
+/**
+ * For a rename that changes only the letter case: events match instance
+ * variable names ignoring case, but scripts read them by name with their
+ * case (instVars.hp, scriptReadWarnings' note), so reads of the old
+ * spelling no longer find the variable. One warning naming them.
+ */
+async function caseOnlyRenameScriptWarnings(
+  reader: Construct3ProjectReader, index: ProjectIndex, oldName: string, newName: string,
+): Promise<string[]> {
+  const { reads, unreadable } = await index.getScriptMemberReads(reader);
+  const where = [...new Set(reads.filter(r => r.kind === 'instance variable' && r.name === oldName).map(useLocation))];
+  if (where.length === 0) return [];
+  return [
+    `Scripts read instance variable "${oldName}" by name (instVars.${oldName}) in ${listSome(where)}; script names are case-sensitive, `
+      + `so they will not find "${newName}". They were NOT changed: review them.`,
+    ...(unreadable.length > 0 ? [`${unreadable.length} script file(s) could not be read and were not searched: ${listSome(unreadable)}.`] : []),
+  ];
+}
+
+/**
  * What delete_object and delete_family look for in files the index could not
  * parse: the name in files of `categories`, and in layouts the SID (object
  * properties of instances store an object type's or family's SID).
@@ -1320,9 +1549,9 @@ function nameOrSidRules(name: string, sid: number | undefined, categories: Entit
  * except a behavior named under the legacy "behavior-type" key, which it reports
  * as legacy-behavior-key. Empty when nothing is left behind.
  */
-function removalForcedWarnings(entity: string, uses: MemberReference[]): string[] {
+function removalForcedWarnings(entity: string, uses: MemberReference[], verb: 'Removed' | 'Renamed' = 'Removed'): string[] {
   if (uses.length === 0) return [];
-  const warnings = [`Removed although events still use it: ${describeMemberReferences(entity, uses)}. The uses were NOT changed.`];
+  const warnings = [`${verb} although events still use it: ${describeMemberReferences(entity, uses)}. The uses were NOT changed.`];
   const unreported = uses.filter(u => u.form === 'member-expression');
   if (unreported.length > 0) {
     const where = [...new Set(unreported.map(useLocation))];

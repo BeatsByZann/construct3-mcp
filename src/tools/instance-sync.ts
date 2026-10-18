@@ -23,6 +23,8 @@ import type { InstanceBehavior } from '../construct3/instance-behaviors.js';
 import {
   dropInstanceEffects,
   isDefaultInstanceVariableValue,
+  renameInstanceVariableValue,
+  retypeInstanceVariableValue,
   syncInstanceVariables,
   type InstanceVariableDef,
 } from '../construct3/instance-variables.js';
@@ -59,6 +61,10 @@ export interface InstanceSyncPlan {
   dropEffects?: string[];
   /** The effects the object's instances carry entries for, after the change (with dropEffects) */
   effects?: string[];
+  /** Instance variable values moved to a new name before the other changes, each in its place (update_instance_variable) */
+  renameVariables?: ReadonlyArray<{ from: string; to: string }>;
+  /** Instance variables whose type changed: a value that does not fit gets the type's default (update_instance_variable) */
+  retypeVariables?: ReadonlyArray<{ name: string; type: string }>;
 }
 
 /**
@@ -72,6 +78,10 @@ export interface InstanceSyncPlan {
  * entries missing before the change are added too: older versions of these
  * tools wrote instances without them, and a hand edit can leave one out.
  * Existing entries keep their values and their saved order.
+ * A plan can also move values to a new name (`renameVariables`) and give
+ * values that do not fit a new type the default (`retypeVariables`); values
+ * other than the default that these replace are listed in the warnings (a
+ * value a rename drops with the removed ones, a retyped one as replaced).
  *
  * Returns warnings naming the modified layouts, the entries that were missing
  * before the change, and any behavior that got an empty entry because its
@@ -106,6 +116,8 @@ export async function syncLayoutInstances(
    * from instances: only the layout's .bak holds them, until the layout is written again
    */
   const removedData: string[] = [];
+  /** Instance variable values other than the default that a type change replaced with the default */
+  const replacedData: string[] = [];
   let removedValues = 0;
   let removedEffects = 0;
 
@@ -123,6 +135,20 @@ export async function syncLayoutInstances(
       unknownDefaults.push(...synced.unknownDefaults);
       noteBackfill(backfilled, instance.type, synced.added.filter(name => !(plan.add ?? []).includes(name)));
       const where = `"${layoutName}" UID ${String(instance.uid)}`;
+      for (const { from, to } of plan.renameVariables ?? []) {
+        const renamed = renameInstanceVariableValue(instance, from, to);
+        modified = renamed.modified || modified;
+        if (renamed.dropped !== undefined && !isDefaultInstanceVariableValue(renamed.dropped)) {
+          removedData.push(`${where} instance variable "${to}" = ${shortJson(renamed.dropped)}`);
+          removedValues++;
+        }
+      }
+      for (const { name, type } of plan.retypeVariables ?? []) {
+        const retyped = retypeInstanceVariableValue(instance, name, type);
+        if (!retyped) continue;
+        modified = true;
+        if (!isDefaultInstanceVariableValue(retyped.replaced)) replacedData.push(`${where} instance variable "${name}" = ${shortJson(retyped.replaced)}`);
+      }
       if (plan.variables) {
         const values = syncInstanceVariables(instance, plan.variables, { drop: plan.dropVariables });
         modified = values.modified || modified;
@@ -175,15 +201,24 @@ export async function syncLayoutInstances(
     warnings.push(`Removed ${what.join(' and ')} from instances: ` +
       `${listSome(removedData, 10)}. Only the layouts' .bak files hold them now, until those layouts are written again; note them if they are still needed.`);
   }
+  if (replacedData.length > 0) {
+    warnings.push(`Replaced ${replacedData.length} instance variable value(s) that do not fit the new type with the default: `
+      + `${listSome(replacedData, 10)}. Only the layouts' .bak files hold them now, until those layouts are written again; note them if they are still needed.`);
+  }
 
-  const changing = [...plans].filter(([, plan]) => [plan.add, plan.drop, plan.addVariables, plan.dropVariables, plan.dropEffects]
-    .some(list => (list?.length ?? 0) > 0));
+  const changing = [...plans].filter(([, plan]) => planChanges(plan));
   const skipped = unscannedFilesOf('layouts', await reader.listLayouts(), layouts, layoutFailures);
   const unscanned = changing.length > 0 && skipped.length > 0
     ? await checkUnscannedFiles(reader, skipped, [{ categories: ['layouts'], allOf: [changing.map(([name]) => nameTerm(name))] }])
     : [];
   warnings.push(...unsyncedLayoutWarnings(unscanned));
   return { warnings, unscanned };
+}
+
+/** Whether a plan adds, drops, moves, retypes or reorders anything (else it only fills in missing entries). */
+function planChanges(plan: InstanceSyncPlan): boolean {
+  return [plan.add, plan.drop, plan.addVariables, plan.dropVariables, plan.dropEffects, plan.renameVariables, plan.retypeVariables]
+    .some(list => (list?.length ?? 0) > 0);
 }
 
 /** A value as JSON for a message, cut to 120 characters. */
