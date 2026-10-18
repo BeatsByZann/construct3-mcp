@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `list_containers`, `create_container`, `update_container` and `delete_container`: list the containers of `project.c3proj` with their indexes and members, create a container of two or more object types, add or take out object types, and delete a container while its object types stay. A change is refused, and says "Nothing was changed.", when Construct 3 r506-2 would refuse to open the project: a member that is no object type, a name that differs in letter case, a family, a name listed twice, fewer than two object types, or an object type that another container lists. A save of `project.c3proj` in the editor during a call is merged, not replaced (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).

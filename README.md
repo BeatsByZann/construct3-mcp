@@ -154,6 +154,10 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `create_family` | Create a family; refuses name clashes and members of mixed plugins (load-time checked) |
 | `update_family` | Add/remove members and shared instance variables; refuses member changes that mix plugins (load-time checked), and removing an instance variable or member through which events still use the family's instance variables, behaviors or effects, unless forced |
 | `delete_family` | Delete a family; refused while events or object properties name it or events use its instance variables, behaviors or effects through a member, listing where, unless forced |
+| `list_containers` | List the containers of `project.c3proj` (each with its index and members) and any member that is no object type; read-only |
+| `create_container` | Create a container of two or more object types, so they are created, picked and destroyed together; refuses a family, a missing or mis-cased name, fewer than two object types, or an object type another container lists |
+| `update_container` | Add or remove object types of a container, found by one of its members (with `index` when a member is in several containers); refuses to leave fewer than two object types |
+| `delete_container` | Delete a container; its object types stay |
 
 **Event sheets**
 
@@ -440,7 +444,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 87.
 
 ### Standalone Testing
 
@@ -549,12 +553,14 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (6)
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── container-tools.ts      # Container tools (4)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
