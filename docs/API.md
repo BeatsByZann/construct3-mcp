@@ -628,7 +628,7 @@ Delete the container that lists a member (found ignoring letter case). Give `ind
 | `index` | integer | No | Index of the container (from [`list_containers`](#list_containers)); needed when `member` is in several containers |
 
 **Behavior:**
-- A `member` that no container lists is refused ("Use list_containers to see the containers"); several containers listing it are refused unless `index` picks one, as for `update_container`. Nothing is written in either case.
+- A `member` that no container lists is refused ("Use list_containers to see the containers"); several containers listing it are refused unless `index` picks one, as for `update_container`. Nothing is written in either case. A refusal found in a later round of the update, after a save of `project.c3proj` during the call, leaves a `project.c3proj.bak` from the earlier round, and `project.c3proj` is unchanged.
 - Backs up `project.c3proj` to `project.c3proj.bak`. When the write fails, the error says what is on disk, as for `create_container`.
 
 **Returns:** `{ success, entity: "containers/<index>", category: "container", action: "deleted", index, members, backupFile }`, where `members` are the container's members before the deletion.
