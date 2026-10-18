@@ -55,6 +55,7 @@ construct3-mcp/
 │   │   ├── id-generator.ts         # SID/UID/imageSpriteId generation with collision avoidance
 │   │   ├── disk-state.ts           # File states on disk, tool call scope, stale-write error
 │   │   ├── templates.ts            # Entity templates and known addon maps
+│   │   ├── custom-actions.ts       # Custom action definitions and the definition a call runs
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
 │   │   ├── instance-variables.ts   # Instance variable values and effect entries on layout instances
@@ -105,9 +106,10 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── call-rollback.ts        # Rolls back a failed tool-call write: the file as before, or named with its .bak
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (6)
-│   │   ├── event-tools.ts          # Event sheet tools (12)
+│   │   ├── event-tools.ts          # Event sheet tools (13)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
