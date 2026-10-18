@@ -364,3 +364,186 @@ describe('reorder_frames undoes everything when a step fails', () => {
     expect(await readFile(objectPath(), 'utf8')).toBe(withSpeed42(before));
   });
 });
+
+/** A server whose writer fails the `nth` image write through replaceFile with `error` (the writes before go through). */
+function failingImageWrite(nth: number, error: (path: string) => Error): MockServer {
+  class FailingImageWriter extends Construct3ProjectWriter {
+    private images = 0;
+    override async replaceFile(...args: Parameters<Construct3ProjectWriter['replaceFile']>): Promise<string | undefined> {
+      if (args[0].startsWith(imagesDir()) && ++this.images === nth) throw error(args[0]);
+      return super.replaceFile(...args);
+    }
+  }
+  const idGen = new IdGenerator();
+  return register(new FailingImageWriter(reader, idGen), idGen);
+}
+
+describe('duplicate_frame copies a frame with its image', () => {
+  it('inserts the copy right after the frame by default, with its image and a new imageSpriteId', async () => {
+    await setupFrames(ABC);
+    const data = await ok('duplicate_frame', { frameIndex: 0 });
+    expect(await snapshot()).toEqual(images({ '000.png': 'A', '001.png': 'A', '002.png': 'B', '003.png': 'C' }));
+    const ids = await frameIds();
+    expect([ids[0], ids[2], ids[3]]).toEqual([1000, 1001, 1002]);
+    expect(typeof ids[1]).toBe('number');
+    expect([1000, 1001, 1002]).not.toContain(ids[1]);
+    expect(data.index).toBe(1);
+    expect(data.imageSpriteId).toBe(ids[1]);
+    const all = await frames();
+    expect(all[1]).toEqual({ ...all[0], imageSpriteId: ids[1] });
+  });
+
+  it('copies a frame that moved up from its new name', async () => {
+    await setupFrames(ABC);
+    await ok('duplicate_frame', { frameIndex: 2, index: 0 });
+    expect(await snapshot()).toEqual(images({ '000.png': 'C', '001.png': 'A', '002.png': 'B', '003.png': 'C' }));
+    expect((await frameIds()).slice(1)).toEqual([1000, 1001, 1002]);
+  });
+
+  it('a JPEG frame\'s copy keeps the extension and the fileType', async () => {
+    await setupFrames([{ label: 'A' }, { label: 'J', fileType: 'image/jpeg' }]);
+    await ok('duplicate_frame', { frameIndex: 1 });
+    expect(await snapshot()).toEqual(images({ '000.png': 'A', '001.jpg': 'J', '002.jpg': 'J' }));
+    expect((await frames())[2].fileType).toBe('image/jpeg');
+  });
+
+  it('copies a frame without an image file, and says the copy has none', async () => {
+    await setupFrames([{ label: 'A' }, { label: 'B', file: null }]);
+    const data = await ok('duplicate_frame', { frameIndex: 1 });
+    expect(await snapshot()).toEqual(images({ '000.png': 'A' }));
+    expect(data.warnings).toContain(`Frame 1 has no image file in images/ (expected images/${PREFIX}001.png), so the copy has none either.`);
+  });
+
+  it('keeps an unused file at the copy\'s name as .bak, so a copy without an image does not take it', async () => {
+    await setupFrames([{ label: 'A', file: null }], images({ '001.png': 'orphan' }));
+    await ok('duplicate_frame', { frameIndex: 0 });
+    expect(await snapshot()).toEqual(images({ '001.png.bak': 'orphan' }));
+  });
+
+  it('refuses while another animation shares the image files, and changes nothing', async () => {
+    await setupFrames(ABC);
+    const obj = JSON.parse(await readFile(objectPath(), 'utf8'));
+    obj.animations.items.push({ ...obj.animations.items[0], name: 'ANIMATION 1', sid: 300000000000009 });
+    await writeFile(objectPath(), JSON.stringify(obj, null, '\t'));
+    const objectBefore = await readFile(objectPath());
+    const imagesBefore = await snapshot();
+    expect(await refused('duplicate_frame', { frameIndex: 0 })).toContain('animation "ANIMATION 1" differs from it only in case');
+    expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
+    expect(await snapshot()).toEqual(imagesBefore);
+    expect(await readdir(join(tmpDir, 'objectTypes'))).not.toContain('Sprite.json.bak');
+  });
+
+  it('refuses a frame or an index out of range before writing anything', async () => {
+    await setupFrames(ABC);
+    const before = await snapshot();
+    expect(await refused('duplicate_frame', { frameIndex: 3 }))
+      .toBe('Frame index 3 is out of range. Animation "Animation 1" has 3 frame(s). Nothing was changed.');
+    expect(await refused('duplicate_frame', { frameIndex: 0, index: 4 }))
+      .toBe('Index 4 is out of range: insert the copy at an index from 0 to 3, or leave index out to insert it right after frame 0. Nothing was changed.');
+    expect(await snapshot()).toEqual(before);
+    expect(await readdir(join(tmpDir, 'objectTypes'))).not.toContain('Sprite.json.bak');
+  });
+});
+
+describe('duplicate_frame undoes everything when a step fails', () => {
+  let objectBefore: Buffer;
+  let imagesBefore: Record<string, string>;
+
+  beforeEach(async () => {
+    await setupFrames(ABC);
+    objectBefore = await readFile(objectPath());
+    imagesBefore = await snapshot();
+  });
+
+  async function expectUnchanged(): Promise<void> {
+    expect(await snapshot()).toEqual(imagesBefore);
+    expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
+  }
+
+  it('a failed object write removes the copy and renames the image files back', async () => {
+    expect(await refused('duplicate_frame', { frameIndex: 0, index: 0 }, failingObjectWrite()))
+      .toBe('Error duplicating frame: disk full. Nothing was changed: the image files have their old names again and the copied frame image was removed.');
+    await expectUnchanged();
+  });
+
+  it('an object write that failed after replacing the file restores it too, and says its .bak stays', async () => {
+    expect(await refused('duplicate_frame', { frameIndex: 0, index: 0 }, failingObjectVerify()))
+      .toContain('The change was rolled back: the image files have their old names again, the copied frame image was removed and '
+        + 'objectTypes/Sprite.json was restored from its backup (its .bak stays).');
+    await expectUnchanged();
+    expect(await readdir(join(tmpDir, 'objectTypes'))).toContain('Sprite.json.bak');
+  });
+
+  it('keeps the images, and says recovery is unresolved, when another write left neither frame list (frames without imageSpriteId)', async () => {
+    // Compared by content: the other write restored the old frames and added an unrelated one, so the frame count matches the copy's
+    await dropImageSpriteIds();
+    const before = await readFile(objectPath(), 'utf8');
+    const withUnrelatedFrame = (_written: string, old: string) => {
+      const obj = JSON.parse(old);
+      obj.animations.items[0].frames.push({ width: 8, height: 8, originX: 0, originY: 0, duration: 1 });
+      return JSON.stringify(obj, null, '\t');
+    };
+    const text = await refused('duplicate_frame', { frameIndex: 0 }, withOtherWrite(withUnrelatedFrame, before));
+    expect(text).toContain('holds neither the frames from before the call nor this call\'s');
+    expect(text).toContain('Recovery is unresolved');
+    expect(await snapshot()).toEqual(images({ '000.png': 'A', '001.png': 'A', '002.png': 'B', '003.png': 'C' }));
+  });
+
+  it('a failed rename renames the files back and writes nothing', async () => {
+    expect(await refused('duplicate_frame', { frameIndex: 0, index: 0 }, failingRenames())).toContain('The files renamed before were renamed back.');
+    await expectUnchanged();
+  });
+
+  it('a copy write that fails with an fs error is named by its code and project-relative path', async () => {
+    const text = await refused('duplicate_frame', { frameIndex: 0 },
+      failingImageWrite(1, path => Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES', path })));
+    expect(text).toBe(`Error duplicating frame: EACCES on images/${PREFIX}001.png. Nothing was changed: the image files have their old names again.`);
+    expect(text).not.toContain(tmpDir);
+    await expectUnchanged();
+  });
+
+  it('a copy whose write was not confirmed is left as it is and named, never removed', async () => {
+    // Another write lands on the copy's name right after the copy was written, so the write is not confirmed
+    const idGen = new IdGenerator();
+    const writer = new Construct3ProjectWriter(reader, idGen);
+    const internals = writer as unknown as { atomicWrite: (path: string, content: string | Buffer) => Promise<void> };
+    const atomicWrite = internals.atomicWrite.bind(writer);
+    const other = Buffer.from('image OTHER');
+    labels.set(sha(other), 'OTHER');
+    internals.atomicWrite = async (path, content) => {
+      await atomicWrite(path, content);
+      if (path.endsWith(`${PREFIX}001.png`)) await writeFile(path, other);
+    };
+    const text = await refused('duplicate_frame', { frameIndex: 0 }, register(writer, idGen));
+    expect(text).toContain(`images/${PREFIX}001.png (it is not known to hold what this call wrote, or it changed on disk after this call wrote it, `
+      + 'so it was left as it is)');
+    expect((await snapshot())[`${PREFIX}001.png`]).toBe('OTHER');
+    expect(Buffer.compare(await readFile(objectPath()), objectBefore)).toBe(0);
+  });
+
+  it('a write made on top of the copy is kept, with its image', async () => {
+    const data = await ok('duplicate_frame', { frameIndex: 0 }, withOtherWrite(written => withSpeed42(written), objectBefore.toString('utf8')));
+    expect((data.warnings ?? []).join('\n')).toContain('The file still has the copied frame');
+    expect(await snapshot()).toEqual(images({ '000.png': 'A', '001.png': 'A', '002.png': 'B', '003.png': 'C' }));
+  });
+
+  it('a write made on the old content is kept, and the copy and the renames are undone to match it', async () => {
+    const before = objectBefore.toString('utf8');
+    expect(await refused('duplicate_frame', { frameIndex: 0 }, withOtherWrite((_written, old) => withSpeed42(old), before)))
+      .toContain('the object file was left as that write left it. Nothing was changed: the image files have their old names again and the copied frame image was removed.');
+    expect(await snapshot()).toEqual(imagesBefore);
+    expect(await readFile(objectPath(), 'utf8')).toBe(withSpeed42(before));
+  });
+});
+
+describe('duplicate_frame with a frame that has two image files', () => {
+  it('removes the first copy when the second one fails', async () => {
+    // A frame of another fileType: every file with its name and a single extension is its image
+    await setupFrames([{ label: 'A' }, { label: 'W', fileType: 'image/webp', file: `${PREFIX}001.webp` }], images({ '001.gif': 'W2' }));
+    const before = await snapshot();
+    const text = await refused('duplicate_frame', { frameIndex: 1 },
+      failingImageWrite(2, () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })));
+    expect(text).toBe('Error duplicating frame: ENOSPC: no space left on device, write. Nothing was changed: the copied frame image was removed.');
+    expect(await snapshot()).toEqual(before);
+  });
+});

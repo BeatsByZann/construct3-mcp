@@ -402,3 +402,53 @@ describe('animationsSharingImageFiles', () => {
     expect(animationsSharingImageFiles(animations, animations.items[1])).toEqual([]);
   });
 });
+
+describe('planFrameImageShift with copyOf', () => {
+  it('copies the frame\'s file under the new frame\'s name after the later files moved up', () => {
+    const plan = planFrameImageShift(['hero-walk-000.png', 'hero-walk-001.png'], 'Hero', 'Walk', [png, png], { insertAt: 1, copyOf: 0 });
+    expect(plan.renames).toEqual([{ from: 'hero-walk-001.png', to: 'hero-walk-002.png' }]);
+    expect(plan.copies).toEqual([{ from: 'hero-walk-000.png', to: 'hero-walk-001.png' }]);
+    expect(plan.newFrameFile).toBeUndefined();
+    expect(plan).toMatchObject({ inserted: true, clashes: [] });
+  });
+
+  it('reads a frame that moved up from its new name, and keeps its extension', () => {
+    const plan = planFrameImageShift(['hero-walk-000.png', 'hero-walk-001.jpg'], 'Hero', 'Walk', [png, jpeg], { insertAt: 0, copyOf: 1 });
+    expect(plan.renames).toEqual([
+      { from: 'hero-walk-001.jpg', to: 'hero-walk-002.jpg' },
+      { from: 'hero-walk-000.png', to: 'hero-walk-001.png' },
+    ]);
+    expect(plan.copies).toEqual([{ from: 'hero-walk-002.jpg', to: 'hero-walk-000.jpg' }]);
+  });
+
+  it('keeps a file no frame uses under the copy\'s name as .bak first', () => {
+    const plan = planFrameImageShift(['hero-walk-000.jpg', 'hero-walk-001.jpg'], 'Hero', 'Walk', [jpeg], { insertAt: 1, copyOf: 0 });
+    expect(plan.backedUp).toEqual([{ from: 'hero-walk-001.jpg', to: 'hero-walk-001.jpg.bak' }]);
+    expect(plan.copies).toEqual([{ from: 'hero-walk-000.jpg', to: 'hero-walk-001.jpg' }]);
+    expect(plan.clashes).toEqual([]);
+  });
+
+  it('names the copied frame\'s expected file when it has none, and copies nothing', () => {
+    const plan = planFrameImageShift([], 'Hero', 'Walk', [jpeg], { insertAt: 1, copyOf: 0 });
+    expect(plan.copies).toEqual([]);
+    expect(plan.uncopied).toBe('hero-walk-000.jpg');
+  });
+
+  it('keeps an unused file at the copy\'s name as .bak when the copied frame has no image file, so the copy does not take it', () => {
+    const plan = planFrameImageShift(['hero-walk-001.png'], 'Hero', 'Walk', [png], { insertAt: 1, copyOf: 0 });
+    expect(plan.uncopied).toBe('hero-walk-000.png');
+    expect(plan.backedUp).toEqual([{ from: 'hero-walk-001.png', to: 'hero-walk-001.png.bak' }]);
+  });
+
+  it('keeps an unused file at the new index of a moved frame without an image file as .bak', () => {
+    // Frame 1 has no file and moves to index 2, where an unused 002.png sits
+    const plan = planFrameImageShift(['hero-walk-000.png', 'hero-walk-002.png'], 'Hero', 'Walk', [png, png], { insertAt: 0, copyOf: 0 });
+    expect(plan.backedUp).toEqual([{ from: 'hero-walk-002.png', to: 'hero-walk-002.png.bak' }]);
+    expect(plan.copies).toEqual([{ from: 'hero-walk-001.png', to: 'hero-walk-000.png' }]);
+  });
+
+  it('leaves the planning of an insert without copyOf as it was (add_frame_to_animation)', () => {
+    const plan = planFrameImageShift(['hero-walk-000.png', 'hero-walk-002.png'], 'Hero', 'Walk', [png, png], { insertAt: 0 });
+    expect(plan.backedUp).toEqual([]);
+  });
+});

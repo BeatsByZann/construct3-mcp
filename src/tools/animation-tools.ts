@@ -1,10 +1,11 @@
 /**
  * Animation tools: add_animation_to_sprite, update_animation_properties,
  * delete_animation, rename_animation, add_frame_to_animation,
- * delete_frame_from_animation, reorder_frames, reverse_frames, update_frame,
- * replace_sprite_image.
+ * delete_frame_from_animation, reorder_frames, reverse_frames, duplicate_frame,
+ * update_frame, replace_sprite_image.
  */
 
+import { readFile } from 'fs/promises';
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, ObjectType, Animation, AnimationFrame } from '../construct3/types.js';
@@ -796,6 +797,101 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
     }),
   );
 
+  // ─── duplicate_frame ──────────────────────────────────────
+
+  server.tool(
+    'duplicate_frame',
+    'Insert a copy of a Sprite animation frame (its properties, a new imageSpriteId, and a copy of its image file) at an index, by default '
+      + 'right after the frame. The image files of the frames from that index on move one index up with their frames; an unused file in the way is kept as .bak',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation name'),
+      frameIndex: z.number().int().min(0).describe('0-based index of the frame to copy'),
+      index: z.number().int().min(0).optional().describe('Insert the copy at this index, 0 to the frame count (default: right after the frame)'),
+    },
+    oneAtATime(async (args) => {
+      const relative = (path: string) => writer.projectRelative(path);
+      try {
+        const loaded = await loadSpriteAnimation(reader, args.objectName, args.animationName);
+        if ('error' in loaded) return loaded.error;
+        const { obj, anim } = loaded;
+
+        const frameCount = anim.frames.length;
+        if (args.frameIndex >= frameCount) {
+          return toolError(`Frame index ${args.frameIndex} is out of range. Animation "${anim.name}" has ${frameCount} frame(s). Nothing was changed.`);
+        }
+        const insertAt = args.index ?? args.frameIndex + 1;
+        if (insertAt > frameCount) {
+          return toolError(`Index ${insertAt} is out of range: insert the copy at an index from 0 to ${frameCount}, or leave index out `
+            + `to insert it right after frame ${args.frameIndex}. Nothing was changed.`);
+        }
+
+        // Animations whose names differ only in case use the same image files: moving them would give the other one other images
+        const sharing = animationsSharingImageFiles(obj.animations, anim);
+        if (sharing.length > 0) return toolError(sharedImageFilesError('copy a frame of', args.objectName, anim, sharing));
+
+        const imageObjectName = storedObjectName(obj, args.objectName);
+        const images = planFrameImageShift(await writer.listImageFiles(), imageObjectName, anim.name, anim.frames,
+          { insertAt, copyOf: args.frameIndex });
+        if (images.clashes.length > 0) {
+          return toolError(`Cannot insert a copy of frame ${args.frameIndex} at index ${insertAt} in "${anim.name}" on "${args.objectName}": `
+            + `the frame image files cannot be renamed or copied without replacing a file (${someOf(images.clashes, 3)}). Nothing was changed. `
+            + 'Check these files in images/.');
+        }
+
+        const before = JSON.parse(JSON.stringify(anim.frames)) as AnimationFrame[];
+        const source = anim.frames[args.frameIndex];
+        const copy = JSON.parse(JSON.stringify(source)) as AnimationFrame;
+        if (source.imageSpriteId !== undefined) copy.imageSpriteId = await idGen.generateImageSpriteId(reader);
+        anim.frames.splice(insertAt, 0, copy);
+        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+        const imagesPath = (name: string) => resolveProjectPath(reader.getProjectDir(), 'images', name);
+        const copies = new Map(images.copies.map(c => [c.to, c.from]));
+        const newImages: NewFrameImage[] = images.copies.map(c => ({ name: c.to, path: imagesPath(c.to) }));
+        const written: NewFrameImage[] = [];
+
+        // Image files first (renamed back by the writer if one fails), then the
+        // copies in the freed names, written create-only, then the object; a
+        // failure there undoes everything before it
+        if (images.renames.length > 0) await writer.renameImageFiles(images.renames);
+        let backupPath: string;
+        let otherWrite = false;
+        try {
+          await writeNewFrameImages(writer, newImages, written, image => readFile(imagesPath(copies.get(image.name) ?? image.name)));
+          backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+        } catch (error) {
+          // The whole expected frame list is compared, the frames before the copy as well as the copy (hasFrameBinding)
+          ({ backupPath, otherWrite } = await recoverFrameChangeOrThrow(writer, reader, error, {
+            objectName: args.objectName, animationName: anim.name, before, after: anim.frames,
+            renames: images.renames, newImages: written, imageNoun: 'copied frame image',
+          }));
+        }
+
+        const warnings = frameImageWarnings(images, anim.name);
+        if (images.copies.length > 0) {
+          warnings.push(`Copied the image of frame ${args.frameIndex}: ${someOf(images.copies.map(c => `images/${c.from} to images/${c.to}`), 3)}.`);
+        }
+        if (images.uncopied !== undefined) {
+          warnings.push(`Frame ${args.frameIndex} has no image file in images/ (expected images/${images.uncopied}), so the copy has none either.`);
+        }
+        if (otherWrite) warnings.push(otherWriteKeptWarning('the copied frame'));
+        return toolResult({
+          success: true,
+          entity: args.objectName,
+          category: 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          index: insertAt,
+          imageSpriteId: copy.imageSpriteId,
+          warnings: warnings.length > 0 ? warnings : undefined,
+        });
+      } catch (error) {
+        console.error('[duplicate_frame] failed:', error);
+        return toolError(`Error duplicating frame: ${fileErrorText(error, relative)}`);
+      }
+    }),
+  );
+
   // ─── update_frame ─────────────────────────────────────────
 
   server.tool(
@@ -1019,7 +1115,7 @@ function frameImageWarnings(images: FrameImageShiftPlan, animationName: string):
   };
   if (images.shifted.length > 0) {
     const [first] = images.shifted;
-    const direction = images.newFrameFile !== undefined ? 'up' : 'down';
+    const direction = images.inserted ? 'up' : 'down';
     warnings.push(`Renamed ${images.shifted.length} frame image file(s) in images/ one index ${direction}, with their frames `
       + `("${first.from}" → "${first.to}"${images.shifted.length > 1 ? ', …' : ''}).`);
   }
@@ -1413,7 +1509,7 @@ async function loadSpriteAnimation(
 function sharedImageFilesError(action: string, objectName: string, anim: { name: string }, sharing: readonly string[]): string {
   return `Cannot ${action} "${anim.name}" on "${objectName}": animation ${sharing.map(n => `"${n}"`).join(', ')} `
     + 'differs from it only in case, so both use the same frame image files, and changing them would give '
-    + `${sharing.length > 1 ? 'those animations' : 'that animation'} other images. Nothing was changed. Delete the duplicate first.`;
+    + `${sharing.length > 1 ? 'those animations' : 'that animation'} other images. Nothing was changed. Delete the other animation first.`;
 }
 
 /** Why `order` is not a full permutation of the animation's frame indexes, or undefined when it is. */
