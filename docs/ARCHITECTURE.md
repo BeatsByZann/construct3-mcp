@@ -250,6 +250,7 @@ Supporting modules next to the templates:
 | `construct3/atomic-write.ts` | Temp-file-and-rename writes that keep an existing file's name on disk; case-insensitive file lookup |
 | `construct3/names.ts` | Name comparison the way the editor does it (ignoring case) for names and project-bar folders |
 | `construct3/event-variable-names.ts` | The editor's rules for event variable and function parameter names (scope, System expression names, characters it refuses) and for function names (unique in the project ignoring case, characters only with a return type) |
+| `construct3/fs-errors.ts` | fs errors in messages: the code and the path in the project |
 | `construct3/instance-behaviors.ts` | The behavior entries every layout instance carries (object and family behaviors, with default property values) |
 | `construct3/instance-variables.ts` | The instance variable values and effect entries every layout instance carries (object and family variables, family first), kept in step when variables, members or families change |
 | `construct3/hierarchy.ts` | Hierarchy (scene graph) links between the instances of a layout: removing links to deleted instances, the UIDs links name, links that do not hold up |
