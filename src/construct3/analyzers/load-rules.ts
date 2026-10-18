@@ -273,6 +273,22 @@ function checkTriggers(
     : undefined;
   const branchRoot = root ?? ownRoot;
 
+  // A function block or custom action block inside the branch of a trigger (or of another function or
+  // custom action block) is a second trigger in that branch. The conditions above are checked on
+  // their own events; this is the root standing below a trigger, which that check cannot see.
+  if (ownRoot && root) {
+    const confirmed = root.confirmed;
+    const kind = isFunction ? 'function block' : 'custom action block';
+    out.push({
+      rule: 'trigger-placement',
+      severity: confirmed ? 'error' : 'warning',
+      location,
+      message: `The ${kind} ${describeEvent(ev)} is inside the event branch of ${root.label}, which already acts as a trigger. A function block and a custom action block are trigger roots of their own, and an event branch may contain only one trigger; ${loadFailure(confirmed)}.`,
+      suggestion: `Move the ${kind} out of the triggered branch (e.g. to the top level or into a group), or remove the trigger from the event above it.`,
+      key: `trigger-nested|${keyBase}|root`,
+    });
+  }
+
   if (branchRoot) {
     for (const t of triggers) {
       const confirmed = t.kind === 'trigger' && branchRoot.confirmed;

@@ -100,6 +100,23 @@ const withTwoScopes = (events: Ev[]) => {
   );
 };
 
+/**
+ * Block 800 holds function block 801; block 810 holds block 811 that holds custom action block 812;
+ * block 820 holds a group that holds function block 821; block 830 holds only a block.
+ */
+const withHeldBlocks = (events: Ev[]) => {
+  const fn = (name: string, sid: number): Ev => ({
+    functionName: name, functionDescription: '', functionCategory: '', functionReturnType: 'none', functionCopyPicked: false, functionIsAsync: false,
+    functionParameters: [], eventType: 'function-block', conditions: [], actions: [], sid,
+  });
+  events.push(
+    block(800, { children: [fn('Held', 801)] }),
+    block(810, { children: [block(811, { children: [{ aceType: 'action', aceName: 'Hit', objectClass: 'Sprite1', functionParameters: [], eventType: 'custom-ace-block', conditions: [], actions: [], sid: 812 }] })] }),
+    block(820, { children: [group('HG', 822, [fn('Held2', 821)])] }),
+    block(830, { children: [block(831)] }),
+  );
+};
+
 const call = (server: MockServer, args: Ev) => server.callTool('move_event_block_items', { sheetName: 'Sheet1', ...args });
 
 describe('move_event_block_items', () => {
@@ -415,6 +432,27 @@ describe('move_event_block_items', () => {
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
     });
 
+    it('refuses a trigger moved or copied into a block that holds a function block or a custom action block, at any depth', async () => {
+      for (const target of [800, 810, 820]) {
+        for (const copy of [false, true]) {
+          const { server, reader, writer } = setup(withHeldBlocks);
+          const before = await sheetJson(reader);
+          const text = errorText(await call(server, { sourceBlockSid: 400, targetBlockSid: target, itemType: 'conditions', indices: [0], targetIndex: 0, copy }));
+          expect(text, `target ${target} copy ${copy}`).toContain('cannot add another trigger to event branch');
+          expect(text).toMatch(/Nothing was changed\.$/);
+          expect(await sheetJson(reader)).toBe(before);
+          expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+        }
+      }
+    });
+
+    it('still moves a trigger into a block that holds no function block or custom action block, and an ordinary condition into one that does', async () => {
+      const trigger = setup(withHeldBlocks);
+      expect(parse(await call(trigger.server, { sourceBlockSid: 400, targetBlockSid: 830, itemType: 'conditions', indices: [0], targetIndex: 0 })).success).toBe(true);
+      const ordinary = setup(withHeldBlocks);
+      expect(parse(await call(ordinary.server, { sourceBlockSid: 100, targetBlockSid: 800, itemType: 'conditions', indices: [0], targetIndex: 0 })).success).toBe(true);
+    });
+
     it('writes a trigger moved behind another condition with the gate\'s warning, and warns that the source lost all its conditions', async () => {
       const { server, writer } = setup();
       const data = parse(await call(server, { sourceBlockSid: 400, targetBlockSid: 100, itemType: 'conditions', indices: [0], targetIndex: 1 }));
@@ -422,6 +460,27 @@ describe('move_event_block_items', () => {
       expect(data.warnings?.some(w => w.includes('is condition 1, but a trigger must be the first condition'))).toBe(true);
       expect(data.warnings).toContain('All conditions of the source (SID 400) were moved: it now runs whenever its parent runs (every tick at the top level, every call in a function or custom action).');
       expect(blockOf(written(writer), 400).conditions).toEqual([]);
+    });
+
+    it('says what a function block or a custom action block does once all its conditions are moved out', async () => {
+      const custom = {
+        aceType: 'action', aceName: 'Hit', objectClass: 'Sprite1', functionParameters: [],
+        eventType: 'custom-ace-block', conditions: [cond(802, 'is-visible')], actions: [], sid: 800,
+      };
+      const { server } = setup(events => { events.push(custom); (events[4].conditions as Ev[]).splice(0, 1, cond(502, 'is-visible')); });
+      const fromFunction = parse(await call(server, { sourceBlockSid: 500, targetBlockSid: 100, itemType: 'conditions', indices: [0], targetIndex: 0 }));
+      expect(fromFunction.warnings).toContain('All conditions of the source (SID 500) were moved: it now runs on every call of the function.');
+      expect(fromFunction.warnings?.some(w => w.includes('whenever its parent runs'))).toBe(false);
+      const fromCustom = parse(await call(server, { sourceBlockSid: 800, targetBlockSid: 100, itemType: 'conditions', indices: [0], targetIndex: 0 }));
+      expect(fromCustom.warnings).toContain('All conditions of the source (SID 800) were moved: it now runs on every call of the custom action.');
+    });
+
+    it('does not say a block lost its conditions when the conditions were copied or only reordered', async () => {
+      const { server } = setup();
+      const copied = parse(await call(server, { sourceBlockSid: 200, targetBlockSid: 100, itemType: 'conditions', indices: [1], targetIndex: 0, copy: true }));
+      expect(copied.warnings).toBeUndefined();
+      const reordered = parse(await call(server, { sourceBlockSid: 100, targetBlockSid: 100, itemType: 'conditions', indices: [1], targetIndex: 0 }));
+      expect(reordered.warnings).toBeUndefined();
     });
 
     it('does not warn about an empty source when actions are moved out of it', async () => {
@@ -512,7 +571,7 @@ describe('move_event_block_items', () => {
       const args = { sourceBlockSid: 100, targetBlockSid: 100, itemType: 'actions', indices: [0], targetIndex: 1 };
       const blocked = parse(await call(server, args));
       expect(blocked.action).toBe('move_blocked');
-      expect(String(blocked.message)).toContain('stopped at its traversal limit (100,000 events across all event sheets), so uses further on are unknown. Move them to a place where the same declaration is in scope, or use force=true to move anyway. Nothing was changed.');
+      expect(String(blocked.message)).toContain('stopped at its traversal limit (100,000 events across all event sheets), so uses further on are unknown. Use force=true to move anyway. Nothing was changed.');
       expect(await sheetJson(reader)).toBe(before);
       const forced = parse(await call(server, { ...args, force: true }));
       expect(forced.success).toBe(true);
@@ -525,6 +584,9 @@ describe('move_event_block_items', () => {
       const blocked = parse(await call(server, args));
       expect(blocked.action).toBe('move_blocked');
       expect(String(blocked.message)).toContain('stopped at its nesting-depth limit (events nested more than 50 deep), so uses further on are unknown.');
+      // Only the limit blocks the move, so there is no place to move the items to instead
+      expect(String(blocked.message)).not.toContain('Move them');
+      expect(String(blocked.message)).toContain('Use force=true to move anyway.');
       const forced = parse(await call(server, { ...args, force: true }));
       expect(forced.warnings?.some(w => w.includes('nesting-depth limit'))).toBe(true);
     });
@@ -554,8 +616,25 @@ describe('move_event_block_items', () => {
       { args: { sourceBlockSid: 999, targetBlockSid: 100, itemType: 'actions', indices: [0], targetIndex: 0 } },
       { args: { sourceBlockSid: 100, targetBlockSid: 600, itemType: 'actions', indices: [0], targetIndex: 0 } },
       { args: { sourceBlockSid: 100, targetBlockSid: 200, itemType: 'actions', indices: [2], targetIndex: 0 }, prepare: events => { (events[0].actions as Ev[]).push({ id: 'set-visible', objectClass: 'Nope', sid: 105 }); } },
+      // Ambiguous SIDs, a group as source, a move past the cap, an else condition copied, an enabled else in front, an unknown sheet
+      { args: { sourceBlockSid: 100, targetBlockSid: 200, itemType: 'actions', indices: [0], targetIndex: 0 }, prepare: events => { events.push(block(100, { actions: [act(900)] })); } },
+      { args: { sourceBlockSid: 200, targetBlockSid: 100, itemType: 'actions', indices: [0], targetIndex: 0 }, prepare: events => { events.push(block(100, { actions: [act(900)] })); } },
+      { args: { sourceBlockSid: 600, targetBlockSid: 100, itemType: 'actions', indices: [0], targetIndex: 0 } },
+      { args: { sourceBlockSid: 200, targetBlockSid: 100, itemType: 'actions', indices: [0], targetIndex: 0 }, prepare: events => { fillActions(events); (events[1].actions as Ev[]).push(act(2000)); } },
+      { args: { sourceBlockSid: 200, targetBlockSid: 100, itemType: 'conditions', indices: [0], targetIndex: 1, copy: true } },
+      { args: { sourceBlockSid: 100, targetBlockSid: 200, itemType: 'conditions', indices: [0], targetIndex: 0 } },
+      { args: { sheetName: 'Nope', sourceBlockSid: 100, targetBlockSid: 100, itemType: 'actions', indices: [0], targetIndex: 1 } },
       // Refused after the items were moved in memory: the load-time gate and the scope checks
       { args: trigger },
+      { args: { sourceBlockSid: 400, targetBlockSid: 800, itemType: 'conditions', indices: [0], targetIndex: 0 }, prepare: withHeldBlocks },
+      { args: { sourceBlockSid: 400, targetBlockSid: 810, itemType: 'conditions', indices: [0], targetIndex: 0, copy: true }, prepare: withHeldBlocks },
+      { args: { sourceBlockSid: 800, targetBlockSid: 100, itemType: 'conditions', indices: [0], targetIndex: 0 }, prepare: events => {
+        events.push({
+          aceType: 'action', aceName: 'Hit', objectClass: 'Sprite1',
+          functionParameters: [{ name: 'amt', type: 'number', initialValue: '0', comment: '', sid: 801 }],
+          eventType: 'custom-ace-block', conditions: [useOf(802, 'amt')], actions: [], sid: 800,
+        });
+      } },
       { args: { sourceBlockSid: 500, targetBlockSid: 100, itemType: 'conditions', indices: [0], targetIndex: 0 } },
       { args: { sourceBlockSid: 700, targetBlockSid: 710, itemType: 'actions', indices: [0], targetIndex: 0 }, prepare: withTwoScopes },
       { args: { sourceBlockSid: 700, targetBlockSid: 710, itemType: 'actions', indices: [0], targetIndex: 0, copy: true }, prepare: withTwoScopes },

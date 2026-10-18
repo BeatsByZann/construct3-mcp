@@ -1404,16 +1404,16 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
     {
       description: 'Move, reorder or copy conditions or actions within a block, function block or custom action block, or into another one of the same event sheet. A move keeps the items\' SIDs; copies (copy=true) get new SIDs and the source keeps its items. Refused, changing nothing: a System "else" condition (it stays first in its block) and an item put before one, indexes that do not fit, a target that would hold more than 100 items, an object class that is no object type, family, System or the Functions object, a new load-time error, and (unless force=true) a move after which an item uses an event variable or function parameter outside its scope. "Set return value" moved out of a function block is written with a warning, as add_event_block gives it.',
       inputSchema: z.object({
-      sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
-      sourceBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items are in'),
-      sourceEventPath: z.string().max(500).optional().describe('Only when sourceBlockSid matches several events: the path of the one you mean'),
-      targetBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items go to (the same SID to reorder)'),
-      targetEventPath: z.string().max(500).optional().describe('Only when targetBlockSid matches several events: the path of the one you mean'),
-      itemType: z.enum(['actions', 'conditions']).describe('Which list the items are in'),
-      indices: z.array(z.number().int().min(0)).min(1).max(100).describe('Indexes of the items in the source, each once; they keep their order'),
-      targetIndex: z.number().int().min(0).describe('Where the items go in the target; within one block, counted after the items are taken out'),
-      copy: z.boolean().optional().default(false).describe('Copy instead of move: the copies get new SIDs, the source keeps its items'),
-      force: z.boolean().optional().default(false).describe('Move even when an item then uses an event variable or function parameter outside its scope (the uses are listed in "references" and a warning)'),
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        sourceBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items are in'),
+        sourceEventPath: z.string().max(500).optional().describe('Only when sourceBlockSid matches several events: the path of the one you mean'),
+        targetBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items go to (the same SID to reorder)'),
+        targetEventPath: z.string().max(500).optional().describe('Only when targetBlockSid matches several events: the path of the one you mean'),
+        itemType: z.enum(['actions', 'conditions']).describe('Which list the items are in'),
+        indices: z.array(z.number().int().min(0)).min(1).max(100).describe('Indexes of the items in the source, each once; they keep their order'),
+        targetIndex: z.number().int().min(0).describe('Where the items go in the target; within one block, counted after the items are taken out'),
+        copy: z.boolean().optional().default(false).describe('Copy instead of move: the copies get new SIDs, the source keeps its items'),
+        force: z.boolean().optional().default(false).describe('Move even when an item then uses an event variable or function parameter outside its scope (the uses are listed in "references" and a warning)'),
       }, {
         errorMap: unknownKeysErrorMap('the arguments of move_event_block_items', 'move_event_block_items takes sheetName, sourceBlockSid, sourceEventPath, targetBlockSid, targetEventPath, itemType, indices, targetIndex, copy and force.'),
       }).strict(),
@@ -1527,7 +1527,11 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const warnings = [...classWarnings, ...loadCheck.warnings];
         // Only a move out of another block empties the source: a reorder puts the items back and a copy leaves them
         if (args.itemType === 'conditions' && sourceItems.length === 0) {
-          warnings.push(`All conditions of the source (SID ${args.sourceBlockSid}) were moved: it now runs whenever its parent runs (every tick at the top level, every call in a function or custom action).`);
+          // A function block or custom action block has no parent to run it: it runs when it is called
+          const runsWhen = from.eventType === 'function-block' ? 'it now runs on every call of the function.'
+            : from.eventType === 'custom-ace-block' ? 'it now runs on every call of the custom action.'
+              : 'it now runs whenever its parent runs (every tick at the top level, every call in a function or custom action).';
+          warnings.push(`All conditions of the source (SID ${args.sourceBlockSid}) were moved: ${runsWhen}`);
         }
 
         // A copy is compared with the item it was copied from
@@ -1546,7 +1550,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           ];
           return toolResult({
             success: false, entity: args.sheetName, category: 'eventsheet', action: 'move_blocked',
-            message: nothingChanged(`${reasons.join(' ')} Move them to a place where the same declaration is in scope, or use force=true to move anyway.`),
+            message: nothingChanged(`${reasons.join(' ')} ${lostCount > 0 || reboundCount > 0 ? 'Move them to a place where the same declaration is in scope, or use force=true to move anyway.' : 'Use force=true to move anyway.'}`),
             references: danglingReferenceList(lost),
             ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
           }, { projectWritten: false });
@@ -1590,7 +1594,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'update_event_block',
     {
-      description: 'Update an existing block event in an event sheet — modify action parameters, add/remove actions or conditions, insert them at an index, replace conditions in place, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
+      description: 'Update an existing block event in an event sheet — modify action parameters, add/remove actions or conditions, insert them at an index, replace conditions in place, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. A trigger condition added to a block that holds a function block or a custom action block, at any depth below it, is refused by the load-time check. Unknown arguments and keys are refused, never dropped.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
         sid: z.number().int().positive().describe('SID of the block event to update'),
@@ -1741,6 +1745,15 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         };
 
         // Check inserts and replacements before anything changes
+        // A removal index past the end is named before the inserts are counted, which count the list after the removals
+        const badConditionRemoval = (args.removeConditionIndices ?? []).find(i => i < 0 || i >= conditions.length);
+        if (badConditionRemoval !== undefined) {
+          return toolError(nothingChanged(`Condition index ${badConditionRemoval} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`));
+        }
+        const badActionRemoval = (args.removeActionIndices ?? []).find(i => i < 0 || i >= actions.length);
+        if (badActionRemoval !== undefined) {
+          return toolError(nothingChanged(`Action index ${badActionRemoval} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`));
+        }
         const removedConditionCount = new Set(args.removeConditionIndices ?? []).size;
         const removedActionCount = new Set(args.removeActionIndices ?? []).size;
         const conditionsAfterRemoval = conditions.length - removedConditionCount;
@@ -1773,13 +1786,19 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const replacementAt = new Map((args.replaceConditions ?? []).map(r => [r.index, r.condition as unknown] as const));
         const removedConditionIndices = new Set(args.removeConditionIndices ?? []);
         const keptConditions = conditions.map((c, i) => replacementAt.get(i) ?? c).filter((_c, i) => !removedConditionIndices.has(i));
-        if (isElseCondition(keptConditions[0]) && (args.insertConditions ?? []).some(i => i.index === 0)) {
+        // With isElse: false the else condition is taken out at the end, so an insert in front of it is a valid way to put a condition first
+        if (isElseCondition(keptConditions[0]) && args.isElse !== false && (args.insertConditions ?? []).some(i => i.index === 0)) {
           return toolError(nothingChanged('Condition 0 of this block is a System "else" condition, which stays first (also when it is disabled); insert at index 1 or later.'));
         }
-        // The cap applies to a call that adds items; a block already over it can still be edited otherwise
+        // A block that starts with an else condition (or gets one through isElse: true) holds Else once, first
+        const startsWithElse = args.isElse !== false && (args.isElse === true || isElseCondition(keptConditions[0]));
+        // The cap applies to a call that adds items; a block already over it can still be edited otherwise.
+        // isElse: true adds the else condition unless the block's first condition is one then.
+        const firstCondition = (args.insertConditions ?? []).find(i => i.index === 0)?.condition ?? keptConditions[0] ?? args.addConditions?.[0];
+        const elseAdded = args.isElse === true && !isElseCondition(firstCondition) ? 1 : 0;
         const tooMany = (kind: string, after: number, added: number) => (added > 0 && after + added > MAX_ITEMS_PER_BLOCK
           ? `${where} would hold ${after + added} ${kind} (max ${MAX_ITEMS_PER_BLOCK}).` : undefined);
-        const sizeError = tooMany('conditions', conditionsAfterRemoval, (args.insertConditions?.length ?? 0) + (args.addConditions?.length ?? 0))
+        const sizeError = tooMany('conditions', conditionsAfterRemoval, (args.insertConditions?.length ?? 0) + (args.addConditions?.length ?? 0) + elseAdded)
           ?? tooMany('actions', actionsAfterRemoval, (args.insertActions?.length ?? 0) + (args.addActions?.length ?? 0));
         if (sizeError) return toolError(nothingChanged(sizeError));
 
@@ -1894,11 +1913,12 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
         // Replace conditions in place (a new SID each)
         for (const r of args.replaceConditions ?? []) {
-          if (r.index === 0 && isElseCondition(conditions[0]) && !isElseCondition(r.condition)) {
+          // isElse: true puts an else condition back in front, so the block stays an else block
+          if (r.index === 0 && isElseCondition(conditions[0]) && !isElseCondition(r.condition) && args.isElse !== true) {
             warnings.push(`${where}: condition 0 was the System "else" condition; replacing it makes the block an ordinary block.`);
           }
           if (isElseCondition(r.condition) && r.index !== 0) {
-            warnings.push(`${where}: a replacing System "else" condition is condition ${r.index}, but Construct 3 saves Else as the first condition. Use isElse: true instead.`);
+            warnings.push(misplacedElseWarning(where, 'a replacing', r.index, args.isElse, startsWithElse));
           }
           conditions[r.index] = buildCondition(r.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>;
         }
@@ -1927,10 +1947,12 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         }
 
+        // The else condition the block starts with, which isElse: false takes out even when an insert at 0 put another condition in front of it
+        const leadingElse = isElseCondition(conditions[0]) ? conditions[0] : undefined;
         // Insert at indexes counted after the removals (highest first, so each index counts in that list)
         for (const insert of [...(args.insertConditions ?? [])].sort((x, y) => y.index - x.index)) {
           if (isElseCondition(insert.condition) && insert.index !== 0) {
-            warnings.push(`${where}: an inserted System "else" condition is condition ${insert.index}, but Construct 3 saves Else as the first condition. Use isElse: true instead.`);
+            warnings.push(misplacedElseWarning(where, 'an inserted', insert.index, args.isElse, startsWithElse));
           }
           conditions.splice(insert.index, 0, buildCondition(insert.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>);
         }
@@ -1975,9 +1997,12 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           delete event.isElse;
           if (args.isElse && !isElseCondition(conditions[0])) {
             conditions.unshift(createElseCondition(await idGen.generateSid(reader)));
-          } else if (!args.isElse && isElseCondition(conditions[0])) {
-            conditions.shift();
-            removedConditions = true;
+          } else if (!args.isElse) {
+            const at = leadingElse !== undefined && conditions.includes(leadingElse) ? conditions.indexOf(leadingElse) : isElseCondition(conditions[0]) ? 0 : -1;
+            if (at >= 0) {
+              conditions.splice(at, 1);
+              removedConditions = true;
+            }
           }
           if (hadLegacyFlag) {
             warnings.push(`${where}: dropped the block-level "isElse" key written by older versions (Construct 3 marks an else block with a System "else" first condition instead).`);
@@ -2440,6 +2465,21 @@ function copiedSidsWarning(
     `update_event_block, update_event_block_action, update_event_variable and delete_event_from_sheet refuse ${one ? 'this SID' : 'these SIDs'} ` +
     `in "${sheetName}" unless eventPath names one of the events.`
   );
+}
+
+/**
+ * The warning for a System "else" condition that update_event_block inserts or
+ * puts in place of a condition anywhere but first. `startsWithElse` is true
+ * when the block starts with an else condition or gets one through isElse:
+ * true; the advice to use isElse: true then does not apply, because Else is
+ * saved once, as the first condition.
+ */
+function misplacedElseWarning(where: string, what: 'an inserted' | 'a replacing', index: number, isElse: boolean | undefined, startsWithElse: boolean): string {
+  const start = `${where}: ${what} System "else" condition is condition ${index}, but `;
+  if (startsWithElse) {
+    return `${start}this block ${isElse === true ? 'gets an else condition first through isElse: true' : 'already starts with one'}, and Construct 3 saves Else once, as the first condition.`;
+  }
+  return `${start}Construct 3 saves Else as the first condition. Use isElse: true instead.`;
 }
 
 /**

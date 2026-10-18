@@ -39,6 +39,20 @@ function sheetEvents(): Ev[] {
   ];
 }
 
+/** Block 800 holds function block 801; block 810 holds block 811 that holds custom action block 812; block 820 holds a group that holds function block 821; block 830 holds only a block. */
+const withHeldBlocks = (events: Ev[]) => {
+  const fn = (name: string, sid: number): Ev => ({
+    functionName: name, functionDescription: '', functionCategory: '', functionReturnType: 'none', functionCopyPicked: false, functionIsAsync: false,
+    functionParameters: [], eventType: 'function-block', conditions: [], actions: [], sid,
+  });
+  events.push(
+    block(800, { conditions: [cond(805, 'is-visible')], children: [fn('Held', 801)] }),
+    block(810, { conditions: [cond(815, 'is-visible')], children: [block(811, { children: [{ aceType: 'action', aceName: 'Hit', objectClass: 'Sprite1', functionParameters: [], eventType: 'custom-ace-block', conditions: [], actions: [], sid: 812 }] })] }),
+    block(820, { conditions: [cond(825, 'is-visible')], children: [{ eventType: 'group', disabled: false, title: 'HG', description: '', isActiveOnStart: true, sid: 822, children: [fn('Held2', 821)] }] }),
+    block(830, { children: [block(831)] }),
+  );
+};
+
 function setup(prepare?: (events: Ev[]) => void) {
   const events = sheetEvents();
   prepare?.(events);
@@ -208,6 +222,128 @@ describe('update_event_block insertActions, insertConditions and replaceConditio
     const conditions = blockOf(written(writer), 200).conditions as Ev[];
     expect(conditions.map(c => c.id)).toEqual(['is-moving', 'is-visible']);
     expect(conditions[1].sid).toBe(202);
+  });
+
+  it('names an out-of-range removal, not the insert, when a removal index is past the end', async () => {
+    const { server, reader, writer } = setup();
+    const before = await sheetJson(reader);
+    const text = errorText(await server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 100, removeConditionIndices: [9], insertConditions: [{ index: 2, condition: isMoving }],
+    }));
+    expect(text).toBe('Condition index 9 is out of range (block has 2 condition(s), indices 0-1). Nothing was changed.');
+    const actions = errorText(await server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 100, removeActionIndices: [9], insertActions: [{ index: 2, action: setVisible }],
+    }));
+    expect(actions).toBe('Action index 9 is out of range (block has 2 action(s), indices 0-1). Nothing was changed.');
+    expect(await sheetJson(reader)).toBe(before);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
+  it('allows an insert at 0 in front of the else condition when the same call makes the block an ordinary block with isElse false', async () => {
+    const { server, writer } = setup();
+    const data = parse(await server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 200, isElse: false, insertConditions: [{ index: 0, condition: isMoving }],
+    }));
+    expect(data.success).toBe(true);
+    expect((blockOf(written(writer), 200).conditions as Ev[]).map(c => c.id)).toEqual(['is-moving', 'is-visible']);
+    // Without isElse: false the same insert is refused
+    const refused = setup();
+    expect(errorText(await refused.server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 200, insertConditions: [{ index: 0, condition: isMoving }],
+    }))).toContain('stays first');
+  });
+
+  it('does not advise isElse: true for an else condition put into a block that is, or becomes, an else block', async () => {
+    const elseCondition = { id: 'else', objectClass: 'System' };
+    const alreadyElse = setup();
+    const inserted = parse(await alreadyElse.server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 200, insertConditions: [{ index: 1, condition: elseCondition }],
+    }));
+    expect(inserted.warnings).toEqual(['Block (SID 200): an inserted System "else" condition is condition 1, but this block already starts with one, and Construct 3 saves Else once, as the first condition.']);
+    const replaced = setup();
+    const replacedData = parse(await replaced.server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 200, replaceConditions: [{ index: 1, condition: elseCondition }],
+    }));
+    expect(replacedData.warnings).toEqual(['Block (SID 200): a replacing System "else" condition is condition 1, but this block already starts with one, and Construct 3 saves Else once, as the first condition.']);
+    const becomesElse = setup();
+    const becomes = parse(await becomesElse.server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 100, isElse: true, insertConditions: [{ index: 1, condition: elseCondition }],
+    }));
+    expect(becomes.warnings).toContain('Block (SID 100): an inserted System "else" condition is condition 1, but this block gets an else condition first through isElse: true, and Construct 3 saves Else once, as the first condition.');
+  });
+
+  it('does not warn that a block became ordinary when isElse: true puts an else condition back in front', async () => {
+    const { server, writer } = setup();
+    const data = parse(await server.callTool('update_event_block', {
+      sheetName: 'Sheet1', sid: 200, isElse: true, replaceConditions: [{ index: 0, condition: isMoving }],
+    }));
+    expect(data.success).toBe(true);
+    expect(data.warnings).toBeUndefined();
+    expect((blockOf(written(writer), 200).conditions as Ev[]).map(c => c.id)).toEqual(['else', 'is-moving', 'is-visible']);
+  });
+
+  it('counts the else condition isElse: true adds against the 100-condition cap', async () => {
+    const fillConditions = (events: Ev[]) => { (events[0].conditions as Ev[]).splice(0, 2, ...Array.from({ length: 99 }, (_, i) => cond(1000 + i, 'is-visible'))); };
+    const { server, reader, writer } = setup(fillConditions);
+    const before = await sheetJson(reader);
+    const text = errorText(await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 100, isElse: true, addConditions: [isMoving] }));
+    expect(text).toBe('Block (SID 100) would hold 101 conditions (max 100). Nothing was changed.');
+    expect(await sheetJson(reader)).toBe(before);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    // Without isElse the 100th condition fits, and so does isElse: true when the block already starts with an else condition
+    const fits = setup(fillConditions);
+    expect(parse(await fits.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 100, addConditions: [isMoving] })).success).toBe(true);
+    const already = setup(events => { fillConditions(events); (events[0].conditions as Ev[])[0] = elseCond(1000); });
+    expect(parse(await already.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 100, isElse: true, addConditions: [isMoving] })).success).toBe(true);
+  });
+
+  it('edits a block that already holds more than 100 conditions when the call adds none', async () => {
+    const fillConditions = (events: Ev[]) => { (events[0].conditions as Ev[]).splice(0, 2, ...Array.from({ length: 101 }, (_, i) => cond(1000 + i, 'is-visible'))); };
+    const { server } = setup(fillConditions);
+    const data = parse(await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 100, disabled: true, updateConditions: [{ index: 0, isInverted: true }] }));
+    expect(data.success).toBe(true);
+  });
+
+  it('writes an else condition replaced by another else condition, or put first, without the warning about where Else goes', async () => {
+    const elseCondition = { id: 'else', objectClass: 'System' };
+    const sameFirst = setup();
+    const replaced = parse(await sameFirst.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 200, replaceConditions: [{ index: 0, condition: elseCondition }] }));
+    expect(replaced.success).toBe(true);
+    expect(replaced.warnings).toBeUndefined();
+    const toFirst = setup();
+    const firstReplaced = parse(await toFirst.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 100, replaceConditions: [{ index: 0, condition: elseCondition }] }));
+    expect(firstReplaced.warnings?.some(w => w.includes('saves Else as the first condition')) ?? false).toBe(false);
+    const insertedFirst = setup();
+    const inserted = parse(await insertedFirst.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 100, insertConditions: [{ index: 0, condition: elseCondition }] }));
+    expect(inserted.success).toBe(true);
+    expect(inserted.warnings?.some(w => w.includes('saves Else as the first condition')) ?? false).toBe(false);
+  });
+
+  it('refuses a trigger put into a block that holds a function block or a custom action block, by insert, replacement or addConditions', async () => {
+    const onStart = { id: 'on-start-of-layout', objectClass: 'System' };
+    const holders = [800, 810, 820];
+    const shapes: Array<[string, (sid: number) => Record<string, unknown>]> = [
+      ['insertConditions', sid => ({ sid, insertConditions: [{ index: 0, condition: onStart }] })],
+      ['replaceConditions', sid => ({ sid, replaceConditions: [{ index: 0, condition: onStart }] })],
+      ['addConditions', sid => ({ sid, addConditions: [onStart] })],
+    ];
+    for (const sid of holders) {
+      for (const [name, args] of shapes) {
+        const { server, reader, writer } = setup(withHeldBlocks);
+        const before = await sheetJson(reader);
+        const text = errorText(await server.callTool('update_event_block', { sheetName: 'Sheet1', ...args(sid) }));
+        expect(text, `${name} ${sid}`).toContain('cannot add another trigger to event branch');
+        expect(await sheetJson(reader), `${name} ${sid}`).toBe(before);
+        expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+      }
+    }
+  });
+
+  it('still writes an ordinary condition into a block that holds a function block, and a trigger into one that holds none', async () => {
+    const ordinary = setup(withHeldBlocks);
+    expect(parse(await ordinary.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 800, insertConditions: [{ index: 0, condition: isMoving }] })).success).toBe(true);
+    const trigger = setup(withHeldBlocks);
+    expect(parse(await trigger.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 830, insertConditions: [{ index: 0, condition: { id: 'on-start-of-layout', objectClass: 'System' } }] })).success).toBe(true);
   });
 
   it('refuses an insert index that fits only before the removals', async () => {
