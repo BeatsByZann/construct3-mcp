@@ -13,7 +13,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │  MCP Protocol Layer                                      │  │
 │  │  Resources (9) · Query Tools (9) · Analysis (11)         │  │
-│  │  Mutations (44) · Runtime (19) · Prompts (7)             │  │
+│  │  Mutations (46) · Runtime (19) · Prompts (7)             │  │
 │  └──────────┬───────────────────────────────────────────────┘  │
 │             │                                                  │
 │  ┌──────────▼───────────────────────────────────────────────┐  │
@@ -43,7 +43,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 └────────────────────────────────┘
 ```
 
-The server registers 83 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_addons`, `list_timelines` and `get_timeline_details` count as mutations: they live in the project and timeline modules.
+The server registers 85 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_addons`, `list_timelines` and `get_timeline_details` count as mutations: they live in the project and timeline modules.
 
 ## Core Components
 
@@ -302,7 +302,7 @@ The cross-reference index (`ProjectIndex`) is cached per reader, so projects ope
 | Resources | `resources/project.ts` (6), `resources/docs.ts` (3; the pitfalls text lives in `resources/pitfalls.ts`) | 9 | Read-only data access, Construct 3 docs, curated pitfalls |
 | Query Tools | `tools/query.ts` | 9 | List, search, get details |
 | Analysis Tools | `tools/analysis.ts` | 11 | Deep analysis, validation, event locating, runtime traps |
-| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (12), `layout-tools.ts` (9), `animation-tools.ts` (8), `timeline-tools.ts` (5), `project-tools.ts` (4) | 44 | Safe create, update, delete |
+| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (12), `layout-tools.ts` (9), `animation-tools.ts` (8), `timeline-tools.ts` (5), `project-tools.ts` (4), `hierarchy-tools.ts` (2) | 46 | Safe create, update, delete |
 | Runtime Tools | `tools/runtime-tools.ts` | 19 | Runtime bridge (inject, remove, commands), game connection, bridge calls, conditions, event buffers, input, canvas, screenshots, preview server, preview checks, project clone, `.c3p` packing |
 | Prompts | `prompts/workflows.ts` | 7 | Workflow templates |
 

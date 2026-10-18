@@ -187,6 +187,8 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `add_instance_to_layout` | Place an object instance on a layout layer or sub-layer with full property control; writes a value for every instance variable of the object and its families and refuses names they do not have |
 | `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, visibility, tags, instance variables of its object and families) |
 | `delete_instance_from_layout` | Remove a placed instance by UID (layers, sub-layers and non-world instances); its hierarchy children stay without a parent, and its parent no longer lists it |
+| `set_instance_parent` | Make an instance the hierarchy child of another (both sides written, across layers), or take it off its parent; refuses loops and shared UIDs |
+| `remove_instance_children` | Take every hierarchy child off an instance |
 
 **Sprite animations**
 
@@ -301,7 +303,7 @@ Additional safeguards:
 - **Image generation** — Sprite and TiledBg creation automatically generates valid placeholder PNGs, named like the editor names them: `images/<object>-<animation>-000.png`, all lowercase. Batch writes roll back on failure.
 - **Frame images move with their frames** — The editor names a frame's image file after the frame's index, so `add_frame_to_animation` with an `index` and `delete_frame_from_animation` rename the image files of the later frames one index up or down (JPEG and other formats keep their extension). The deleted frame's image, and any unused file whose name a moved image or new placeholder needs, are kept as `<file>.bak` instead of being deleted or replaced. If a write fails, the placeholder is removed, the object file restored and the image files renamed back; when another write replaced the object file in the meantime, its content is kept and the image files are made to match it. The animation tools run one at a time, so parallel calls on one Sprite cannot move each other's images or write its object without each other's frames. `validate_project` reports frames without an image file (`frame-image`) and lists the `.bak` files in `images/` (`backup-file`).
 - **Layout instance sync** — Like the editor, every layout instance carries an entry for each behavior of its object type and of the families it belongs to, with the built-in behaviors' default property values, and a value for each of their instance variables. `add_instance_to_layout` writes these entries and values; adding or removing a behavior or instance variable (`update_object_properties`, `update_family`) or changing family membership (`update_family`, `delete_family`) updates the existing instances, and a family's effect entries go with the family. `add_instance_to_layout` and `update_instance` refuse values for instance variables the object and its families do not have.
-- **Hierarchy links follow deletions** — Hierarchy (scene graph) links name UIDs, and a new instance can get the UID of a deleted one. `delete_instance_from_layout` and `delete_layer` therefore remove the links to the instances they delete (children stay in the layout without a parent), new UIDs are above every UID a link names, and `validate_project` reports links that point at no instance or only one way (`hierarchy-link`).
+- **Hierarchy links follow deletions** — Hierarchy (scene graph) links name UIDs, and a new instance can get the UID of a deleted one. `delete_instance_from_layout` and `delete_layer` therefore remove the links to the instances they delete (children stay in the layout without a parent), new UIDs are above every UID a link names, and `validate_project` reports links that point at no instance or only one way (`hierarchy-link`). `set_instance_parent` and `remove_instance_children` write both sides of a link and refuse a link that would close a loop.
 - **Names compared like the editor** — Create and rename tools refuse a name that differs from an existing one only in case where Construct 3 compares names ignoring case: event sheets and layouts (project-wide), object types and families, the layers of one layout (sub-layers included; the editor cannot load a layout with two such layers), the animations of one sprite (in any animation folder), and sibling project-bar folders. Timeline names are compared exactly, as the editor does, but a case variant of a timeline in the same folder is refused because both would share one file on Windows and macOS. Tools that check an entity together with the rest of the project take its name only as registered, letter case included: `update_object_properties`, `update_family`, and the event sheet tools whose checks compare a sheet with the other sheets (`add_event_to_sheet`, `delete_event_sheet`, `delete_event_from_sheet`, `update_event_variable`, `move_events_between_sheets`).
 - **Event variable names checked like the editor** — `add_event_to_sheet` and `update_event_variable` refuse the event variable and function parameter names the editor's variable and parameter dialogs refuse: a name that matches, ignoring case, an event variable or function parameter in its scope (for a global variable, any in the project; for a local one or a parameter, the globals, the variables and parameters of its enclosing events and those below its parent event or function), the name of a System expression (e.g. `time`, `random`), and names with whitespace, punctuation such as `-` `.` `:`, a leading underscore or only digits. Names of object types and families are allowed, as in the editor. `move_events_between_sheets` refuses a copy or move that would create such a clash, e.g. a copy of a global variable (the editor renames a pasted variable instead). Function names must differ, ignoring case, from every other function in the project and from System expression names; a function with a return type also follows the character rules above. `move_events_between_sheets` refuses to copy a function block, and `validate_project` reports names that several function blocks share (`duplicate-function-name`).
 - **No overwrite on create**: Create tools refuse to write an entity JSON file (object type, family, event sheet, layout) or a timeline file where one already exists, also one whose name differs only in case (an unregistered file, or one registered under another spelling). Nothing is backed up or replaced. Placeholder PNGs are not refused: `create_object` and `add_animation_to_sprite` write them over an image file of the same name in `images/`, e.g. one left behind by a deleted animation, but first keep that image as `<file>.bak` (`<file>.1.bak`, ... when taken), so nothing is replaced without a backup (`delete_object` keeps the images of the object it deletes the same way; `add_frame_to_animation` renames such a file first).
@@ -440,7 +442,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 85.
 
 ### Standalone Testing
 
@@ -548,6 +550,7 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (6)
 │   │   ├── event-tools.ts          # Event sheet tools (12)
@@ -556,6 +559,7 @@ construct3-mcp/
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
+│   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/
 │       └── workflows.ts            # Workflow prompts (7)
