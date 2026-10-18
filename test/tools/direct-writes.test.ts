@@ -241,6 +241,59 @@ describe('the bridge script is stamped by the bytes the writer confirmed', () =>
   });
 });
 
+describe('delete_object renames the frame images under the animation lock', () => {
+  it('an animation tool called meanwhile waits until the rename and the delete are done', async () => {
+    await ok('create_object', HERO);
+    await ok('create_object', { name: 'Other', pluginId: 'Sprite' });
+    // Hold delete_object at its first image rename, which must be inside the lock
+    const reached = gate();
+    const release = gate();
+    const renameImageFiles = writer.renameImageFiles.bind(writer);
+    let held = false;
+    vi.spyOn(writer, 'renameImageFiles').mockImplementation(async renames => {
+      if (!held) {
+        held = true;
+        reached.open();
+        await release.opened;
+      }
+      return renameImageFiles(renames);
+    });
+    // Once delete_object is held, the next request of the animation lock is the animation tool's:
+    // `arrived` opens when it asks, `ranInLock` when its work starts
+    const arrived = gate();
+    let held2 = false;
+    let ranInLock = false;
+    const withAnimationLock = writer.withAnimationLock.bind(writer);
+    vi.spyOn(writer, 'withAnimationLock').mockImplementation(<T>(fn: () => Promise<T>) => {
+      if (!held2) return withAnimationLock(fn);
+      arrived.open();
+      return withAnimationLock(() => {
+        ranInLock = true;
+        return fn();
+      });
+    });
+
+    const deleting = track(server.callTool('delete_object', { name: 'Hero', force: true }));
+    await reached.opened;
+    held2 = true;
+    const adding = track(server.callTool('add_animation_to_sprite', { objectName: 'Other', animationName: 'Run' }));
+    await arrived.opened;
+    await letOthersRun();
+    expect(ranInLock, 'the animation tool ran while delete_object was renaming images').toBe(false);
+    expect(adding.settled()).toBe(false);
+
+    release.open();
+    const deleted = await deleting.promise;
+    expect(deleted.isError, deleted.content[0].text).toBeFalsy();
+    const added = await adding.promise;
+    expect(added.isError, added.content[0].text).toBeFalsy();
+    expect(ranInLock).toBe(true);
+    const objects = await reader.listObjectTypes();
+    expect(objects).toContain('Other');
+    expect(objects).not.toContain('Hero');
+  });
+});
+
 describe('register_addon', () => {
   it('merges a project.c3proj the editor saved during the call', async () => {
     const original = writer.updateProject.bind(writer);

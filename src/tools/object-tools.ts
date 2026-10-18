@@ -478,23 +478,28 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         // and the images are renamed back. A write refused because a file changed
         // on disk during the call (StaleFileError) has had the writer put back the
         // files already, so only the image renames, which the writer does not
-        // track, are undone here.
-        const images = await planDeletedObjectImages(reader, writer, args.name);
-        const renames = images.parking?.renames ?? [];
-        if (renames.length > 0) await writer.renameImageFiles(renames);
-        const subfolder = writer.getSubfolderForEntity('objectTypes', args.name);
-        let backupPath: string | undefined;
-        try {
-          backupPath = await writer.deleteEntityFile('objectTypes', args.name, subfolder);
-          await writer.removeFromProject('objectTypes', args.name);
-        } catch (error) {
-          const undo = error instanceof StaleFileError ? undefined : await writer.undoToolCall();
-          const rollback = await rollBackObjectDelete(writer, undo, renames);
-          if (rollback === '') throw error;
-          // A refusal of the writer ends with a full stop already
-          const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
-          throw new Error(`${cause}. ${rollback}`);
-        }
+        // track, are undone here. All of it runs under the animation lock, as the
+        // animation tools do, which rename the same frame images: the plan is read
+        // inside it, and no other tool moves those files meanwhile or between a
+        // rename and its rollback.
+        const { images, backupPath } = await writer.withAnimationLock(async () => {
+          const planned = await planDeletedObjectImages(reader, writer, args.name);
+          const renames = planned.parking?.renames ?? [];
+          if (renames.length > 0) await writer.renameImageFiles(renames);
+          const subfolder = writer.getSubfolderForEntity('objectTypes', args.name);
+          try {
+            const backup = await writer.deleteEntityFile('objectTypes', args.name, subfolder);
+            await writer.removeFromProject('objectTypes', args.name);
+            return { images: planned, backupPath: backup };
+          } catch (error) {
+            const undo = error instanceof StaleFileError ? undefined : await writer.undoToolCall();
+            const rollback = await rollBackObjectDelete(writer, undo, renames);
+            if (rollback === '') throw error;
+            // A refusal of the writer ends with a full stop already
+            const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
+            throw new Error(`${cause}. ${rollback}`);
+          }
+        });
         warnings.push(...images.warnings);
 
         const result: WriteResult = {
