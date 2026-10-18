@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { cp, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -104,6 +104,12 @@ function countProjectWrites(): () => number {
   return () => writes;
 }
 
+/** Push a file's mtime 2 seconds past its current value, leaving atime and content as they are. */
+async function moveMtimeForward(path: string): Promise<void> {
+  const info = await stat(path);
+  await utimes(path, info.atime, new Date(info.mtimeMs + 2000));
+}
+
 /** Run `save` once, right before the tool's writer update starts (after the tool's own first check). */
 function saveBeforeUpdate(save: () => Promise<void>): void {
   const update = writer.updateProject.bind(writer);
@@ -112,6 +118,7 @@ function saveBeforeUpdate(save: () => Promise<void>): void {
     if (!saved) {
       saved = true;
       await save();
+      await moveMtimeForward(projectPath()); // timestamp resolution: a same-size save could otherwise keep the old mtime
     }
     return update(change);
   };
@@ -127,6 +134,7 @@ function saveDuringUpdate(save: () => Promise<void>): void {
     if (!saved && path.endsWith('project.c3proj')) {
       saved = true;
       await save();
+      await moveMtimeForward(path); // timestamp resolution: a same-size save could otherwise keep the old mtime
     }
     return backup;
   };
