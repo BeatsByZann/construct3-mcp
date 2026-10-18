@@ -424,6 +424,46 @@ export function findReferencesLeftByDelete(
   return report;
 }
 
+/** A use of a function by name, with the stored condition or action, so a tool can rewrite a call or a function map in place. */
+export interface FunctionReference extends DeleteReference {
+  ace: Record<string, unknown>;
+}
+
+/**
+ * Every use of the function `name` in `sheets` (sheet name to events),
+ * matched ignoring case as the editor looks functions up: Call function
+ * actions ("callFunction"), function map registrations of the Functions
+ * object (`functionsName`), and Functions.Name(...) calls in expressions.
+ * The walk and its limits are those of findReferencesLeftByDelete; `limit`
+ * names the limit that stopped it, when one did.
+ */
+export function findFunctionReferences(
+  sheets: ReadonlyMap<string, unknown>,
+  name: string,
+  functionsName: string,
+): { references: FunctionReference[]; complete: boolean; limit?: ReferenceCheckLimit } {
+  const key = name.toLowerCase();
+  const references: FunctionReference[] = [];
+  const stopped = walkAces(sheets, new Set(), site => {
+    const { ace } = site;
+    // A script or comment row is no call (index-builder's rule for call sites)
+    if (ace.type === 'script' || ace.type === 'comment') return;
+    if (typeof ace.callFunction === 'string' && ace.callFunction.toLowerCase() === key) {
+      references.push({ ...referenceAt(site, 'callFunction'), ace });
+    }
+    const mapped = mappedFunctionName(ace, functionsName);
+    if (mapped !== undefined && mapped.toLowerCase() === key) references.push({ ...referenceAt(site, 'function-map'), ace });
+    for (const value of parameterValues(ace)) {
+      if (typeof value !== 'string') continue;
+      if (findExpressionCalls(value, functionsName).some(call => call.name.toLowerCase() === key)) {
+        references.push({ ...referenceAt(site, 'expression'), ace });
+        break;
+      }
+    }
+  });
+  return { references, complete: stopped === undefined, ...(stopped !== undefined ? { limit: stopped } : {}) };
+}
+
 // ─── Moves ───────────────────────────────────────────────────
 
 /**
