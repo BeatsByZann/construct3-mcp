@@ -476,6 +476,10 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         // the writer does not track them.
         const images = await planDeletedObjectImages(reader, writer, args.name);
         const renames = images.parking?.renames ?? [];
+        // An object file saved in the editor since the server read it refuses
+        // the delete before the images are touched (deleteRegisteredEntity checks
+        // again)
+        await writer.assertEntityFileCurrent('objectTypes', args.name, writer.getSubfolderForEntity('objectTypes', args.name));
         if (renames.length > 0) await writer.renameImageFiles(renames);
         let backupPath: string;
         try {
@@ -960,7 +964,7 @@ async function renameObjectImagesBack(
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return `Renaming its image files back from .bak failed too (${message}); rename them back by hand: ` +
-      `${renames.map(r => `"images/${r.to}" → "images/${r.from}"`).join(', ')}.`;
+      `${renames.map(r => `"images/${r.to}" \u2192 "images/${r.from}"`).join(', ')}.`;
   }
 }
 

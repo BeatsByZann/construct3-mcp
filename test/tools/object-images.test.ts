@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'fs/promises';
+import { writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
@@ -202,6 +203,35 @@ describe('delete_object refused because a file changed on disk during the call',
     expect(await readFile(objectPath('Coin'), 'utf8')).toBe(saved);
     expect(await images()).toEqual(IMAGES);
     expect(reader.getProject().objectTypes.items).toContain('Coin');
+  });
+
+  it('refuses before it renames any image when the object file was saved in the editor after the server read it', async () => {
+    await createCoin();
+    const saved = await editorText();
+    const projectBefore = await readFile(join(tmpDir, 'project.c3proj'), 'utf8');
+    const getSubfolderForEntity = writer.getSubfolderForEntity.bind(writer);
+    writer.getSubfolderForEntity = (category, name) => {
+      // The editor saves right after the tool read the object file, before it renames anything
+      if (category === 'objectTypes' && name === 'Coin') writeFileSync(objectPath('Coin'), saved);
+      return getSubfolderForEntity(category, name);
+    };
+    const renameImageFiles = writer.renameImageFiles.bind(writer);
+    const renameCalls: unknown[] = [];
+    writer.renameImageFiles = async renames => {
+      renameCalls.push(renames);
+      return renameImageFiles(renames);
+    };
+
+    const result = await server.callTool('delete_object', { name: 'Coin' });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('objectTypes/Coin.json was changed on disk after this server read it');
+    expect(text).not.toContain('renamed back');
+    expect(renameCalls).toEqual([]);
+    expect(await images()).toEqual(IMAGES);
+    expect(await readFile(objectPath('Coin'), 'utf8')).toBe(saved);
+    expect(await readFile(join(tmpDir, 'project.c3proj'), 'utf8')).toBe(projectBefore);
   });
 
   it('keeps an object file the editor saved during the call when project.c3proj keeps changing', async () => {

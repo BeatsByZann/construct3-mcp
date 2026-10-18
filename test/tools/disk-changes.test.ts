@@ -149,6 +149,30 @@ describe('project.c3proj.bak holds the state from before the tool call (#51)', (
     expect(now.objectTypes.items).toContain('Keyboard');
   });
 
+  it('create_object keeps the state from before the call in the backup when the editor saves project.c3proj between its two updates', async () => {
+    const original = await readFile(join(dir, 'project.c3proj'), 'utf-8');
+    // The call has written project.c3proj once (the addon); the editor saves it
+    // right after the second update backed it up. The retake of the backup must
+    // not apply: the file holds this call's own write
+    const internals = writer as unknown as { createBackup: (path: string) => Promise<string> };
+    const createBackup = internals.createBackup.bind(writer);
+    let projectBackups = 0;
+    vi.spyOn(internals, 'createBackup').mockImplementation(async (path: string) => {
+      const backup = await createBackup(path);
+      if (path.endsWith('project.c3proj') && ++projectBackups === 2) saveProjectInEditor();
+      return backup;
+    });
+
+    await expectSuccess('create_object', { name: 'Keyboard', pluginId: 'Keyboard' });
+
+    expect(projectBackups).toBeGreaterThanOrEqual(2);
+    expect(await readFile(join(dir, 'project.c3proj.bak'), 'utf-8')).toBe(original);
+    const now = await readJson('project.c3proj');
+    expect(now.properties.author).toBe('Editor');
+    expect(now.usedAddons.map((a: { id: string }) => a.id)).toContain('Keyboard');
+    expect(now.objectTypes.items).toContain('Keyboard');
+  });
+
   it('update_object_properties adding two behaviors it registers first', async () => {
     const original = await readFile(join(dir, 'project.c3proj'), 'utf-8');
 

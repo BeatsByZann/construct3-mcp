@@ -588,7 +588,11 @@ export class Construct3ProjectWriter {
             // The backup may be from before that change. While this call has not
             // written project.c3proj, back the changed file up again, so undoing
             // the call (a delete tool whose file delete then fails) keeps the
-            // change instead of putting back the older file (#ISSUE)
+            // change instead of putting back the older file (#ISSUE). A file the
+            // call wrote already (scope.changes) keeps its backup, the state from
+            // before the call. When the update is finally refused as stale, the
+            // .bak holds the state of the last round: harmless, because the call
+            // never wrote project.c3proj, so there is nothing to put back.
             const scope = currentToolCall();
             const key = fileKey(projectPath);
             if (scope && !scope.changes.has(key)) scope.backups.delete(key);
@@ -783,10 +787,10 @@ export class Construct3ProjectWriter {
     try {
       if ((await statFileState(this.reader.getProjectPath())) === null) return { project: 'missing', file };
       await this.reader.checkProjectFile();
+      return { project: entityFolderPaths(this.reader.getProject()[category]).has(name) ? 'lists' : 'omits', file };
     } catch {
       return { project: 'unreadable', file };
     }
-    return { project: entityFolderPaths(this.reader.getProject()[category]).has(name) ? 'lists' : 'omits', file };
   }
 
   /**
