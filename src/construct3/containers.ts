@@ -49,6 +49,11 @@ export const SMALL_CONTAINER_RULE: 'kept' | 'removed' | 'kept-unverified' = 'rem
 
 /** A container of project.c3proj: its index in "containers" and its member names as saved. */
 export interface ContainerEntry {
+  /**
+   * The container's position in "containers" before the call. A report of
+   * delete_object counts positions in the file as it was before that call,
+   * even when the same call removed an earlier container.
+   */
   index: number;
   /** The members that are strings, in saved order */
   members: string[];
@@ -99,8 +104,9 @@ export function containerMemberships(project: { containers?: unknown }): Map<str
 /**
  * Take `objectName` (matched ignoring case) out of every container of a
  * parsed project.c3proj, in place, inside a writer update. With
- * `dropUnderTwo`, a container left with fewer than two members is removed
- * from "containers"; otherwise it stays in its place.
+ * `dropUnderTwo`, a container left with fewer than two members (members that
+ * are names; an entry of another type does not count) is removed from
+ * "containers"; otherwise it stays in its place.
  */
 export function removeContainerMember(
   project: { containers?: unknown },
@@ -122,12 +128,14 @@ export function removeContainerMember(
       kept.push(entry);
       return;
     }
-    if (options.dropUnderTwo && after.length < 2) {
+    // Only members that are names count toward the two a container needs
+    const namesAfter = after.filter((member): member is string => typeof member === 'string');
+    if (options.dropUnderTwo && namesAfter.length < 2) {
       removal.removed.push({ index, members: before });
       return;
     }
     entry.members = after;
-    removal.updated.push({ index, members: after.filter((member): member is string => typeof member === 'string') });
+    removal.updated.push({ index, members: namesAfter });
     kept.push(entry);
   });
   if (removal.removed.length > 0) project.containers = kept;

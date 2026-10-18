@@ -157,8 +157,9 @@ describe('delete_object and containers', () => {
     expect(Buffer.compare(await readFile(objectPath('Gem')), objectBefore)).toBe(0);
   });
 
-  it('keeps an editor save of the project from before the call, and still removes the member', async () => {
-    // The editor opened the project before the call and saves it (with a change of its own) after the file delete
+  it('builds the update on project.c3proj as found on disk, not on the reader\'s copy', async () => {
+    // The editor opened the project before the call and saves it (with a change of its own) after the file delete,
+    // before the update starts: the update reads that save, so it never needs a retry round (the next test does)
     const snapshot = await readProject();
     const saved = JSON.stringify({ ...snapshot, name: 'Saved in the editor' }, null, '\t');
     const deleteEntityFile = writer.deleteEntityFile.bind(writer);
@@ -173,6 +174,63 @@ describe('delete_object and containers', () => {
     expect(project.name).toBe('Saved in the editor');
     expect(project.objectTypes.items).not.toContain('Gem');
     expect(project.containers![1].members).toEqual(['Coin', 'Key']);
+  });
+
+  it('keeps an editor save that lands during the update, which runs again on it, in one write', async () => {
+    // The editor saves its older copy (with a change of its own) after the update has read the file and
+    // made its backup but before the write: the update sees the file changed, reads it again and runs the
+    // container change on it again
+    const snapshot = await readProject();
+    const saved = JSON.stringify({ ...snapshot, name: 'Saved in the editor' }, null, '\t');
+    const internals = writer as unknown as { createBackup: (path: string, options?: unknown) => Promise<string> };
+    const createBackup = internals.createBackup.bind(writer);
+    let saves = 0;
+    internals.createBackup = async (path, options) => {
+      const backup = await createBackup(path, options);
+      if (path.endsWith('project.c3proj') && saves++ === 0) await writeFile(projectPath(), saved);
+      return backup;
+    };
+    const writes = countProjectWrites();
+    const data = await call('delete_object', { name: 'Gem' });
+    expect(data.success).toBe(true);
+    expect(saves).toBe(2);
+    const project = await readProject();
+    expect(project.name).toBe('Saved in the editor');
+    expect(project.objectTypes.items).not.toContain('Gem');
+    expect(project.containers![1].members).toEqual(['Coin', 'Key']);
+    expect(writes()).toBe(1);
+  });
+
+  it('counts only members that are names toward the two a container needs', async () => {
+    await setProject(project => { project.containers = [{ members: ['Gem', 'Coin', null as never] }, { members: ['Hitbox', 'Shield'] }]; });
+    const data = await call('delete_object', { name: 'Gem' });
+    expect(data.success).toBe(true);
+    expect(data.containersRemoved).toEqual([{ index: 0, members: ['Gem', 'Coin'] }]);
+    expect((await readProject()).containers).toEqual([{ members: ['Hitbox', 'Shield'] }]);
+  });
+
+  it('puts everything back when the write of project.c3proj fails after the container change was made', async () => {
+    const projectBefore = await readFile(projectPath());
+    const objectBefore = await readFile(objectPath('Gem'));
+    let changed = false;
+    const removeFromProject = writer.removeFromProject.bind(writer);
+    writer.removeFromProject = async (category, name, options) => {
+      await removeFromProject(category, name, {
+        alsoChange: project => { options?.alsoChange?.(project); changed = true; },
+      });
+    };
+    const internals = writer as unknown as { atomicWrite: (path: string, content: string | Buffer) => Promise<void> };
+    const atomicWrite = internals.atomicWrite.bind(writer);
+    internals.atomicWrite = async (path, content) => {
+      if (path.endsWith('project.c3proj')) throw new Error('disk full');
+      return atomicWrite(path, content);
+    };
+    const data = await call('delete_object', { name: 'Gem' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('disk full');
+    expect(changed).toBe(true);
+    expect(Buffer.compare(await readFile(projectPath()), projectBefore)).toBe(0);
+    expect(Buffer.compare(await readFile(objectPath('Gem')), objectBefore)).toBe(0);
   });
 
   it('removes a container left with fewer than two members, in the same update', async () => {
