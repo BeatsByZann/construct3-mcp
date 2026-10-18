@@ -340,6 +340,17 @@ describe('the failure paths', () => {
     expect(await readFile(file, 'utf-8')).toBe(original);
   });
 
+  it('a file put back by an undo and written again in the call has one step', async () => {
+    const file = join(dir, 'layouts', 'Layout 1.json');
+    const scope = await inCall(async () => {
+      await addLayer('HUD');
+      await writer.undoToolCall();
+      await addLayer('Overlay');
+    });
+    expect(scope.steps).toEqual([{ file: fileKey(file) }]);
+    expect(scope.changes.get(fileKey(file))?.journalOnly).toBe(false);
+  });
+
   it('undoing the call puts back the writer\'s writes and keeps the tool\'s writes on record', async () => {
     const timeline = join(dir, 'timelines', 'T.json');
     const scope = await inCall(async () => {

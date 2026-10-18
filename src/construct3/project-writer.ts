@@ -308,19 +308,21 @@ export class Construct3ProjectWriter {
     const filePath = await existingSpelling(path);
     const scope = currentToolCall();
     const key = fileKey(filePath);
-    if (scope && !scope.before.has(key)) noteFirstTouch(key, await statFileState(filePath));
     const earlier = scope?.backups.get(key);
     if (earlier !== undefined) return earlier.path;
     let backupPath = options.freeName ? await this.freeBackupPath(filePath) : filePath + '.bak';
+    let existing: FileState;
     try {
-      await stat(filePath);
+      existing = await statFileState(filePath);
     } catch (e: unknown) {
-      // File doesn't exist yet (new entity) — no backup needed
-      if (isNotFound(e)) {
-        scope?.backups.set(key, { path: backupPath, existed: false, state: null });
-        return backupPath;
-      }
       throw new Error(`Cannot access file for backup: ${fileErrorText(e, p => this.projectRelative(p))}`, { cause: e });
+    }
+    // The file's state before the call first touched it (change journal)
+    noteFirstTouch(key, existing);
+    // File doesn't exist yet (new entity) — no backup needed
+    if (existing === null) {
+      scope?.backups.set(key, { path: backupPath, existed: false, state: null });
+      return backupPath;
     }
     // File exists — backup must succeed or we abort
     if (options.freeName) {
@@ -373,7 +375,11 @@ export class Construct3ProjectWriter {
    */
   private cancelJournalRecord(key: string): void {
     const scope = currentToolCall();
-    if (!scope?.changes.get(key)?.journalOnly) return;
+    if (scope?.changes.get(key)?.journalOnly) this.dropCallRecord(scope, key);
+  }
+
+  /** Remove a file's change, its step and its unowned mark from the scope. */
+  private dropCallRecord(scope: ToolCallScope, key: string): void {
     scope.changes.delete(key);
     scope.unowned.delete(key);
     const at = scope.steps.findIndex(step => 'file' in step && step.file === key);
@@ -384,6 +390,8 @@ export class Construct3ProjectWriter {
    * Record a rename the running call made (renameImageFiles): `from` is
    * gone, `to` holds the file. A rename that takes back the last move
    * between the same two files (a tool rolling back) removes that move.
+   * The step is recorded before the one read that can fail (the new state
+   * of `to`), so a failed read never leaves a rename unrecorded.
    */
   private async noteFileMoved(fromPath: string, toPath: string): Promise<void> {
     const scope = currentToolCall();
@@ -391,15 +399,15 @@ export class Construct3ProjectWriter {
     const fromKey = fileKey(fromPath);
     const toKey = fileKey(toPath);
     noteFileWritten(fromKey, null);
-    noteFileWritten(toKey, await statFileState(toPath));
-    for (let i = scope.steps.length - 1; i >= 0; i--) {
-      const step = scope.steps[i];
-      if ('move' in step && fileKey(step.move.from) === toKey && fileKey(step.move.to) === fromKey) {
-        scope.steps.splice(i, 1);
-        return;
-      }
+    let taken = scope.steps.length - 1;
+    while (taken >= 0) {
+      const step = scope.steps[taken];
+      if ('move' in step && fileKey(step.move.from) === toKey && fileKey(step.move.to) === fromKey) break;
+      taken--;
     }
-    scope.steps.push({ move: { from: fromPath, to: toPath, fromLabel: this.projectRelative(fromPath), toLabel: this.projectRelative(toPath) } });
+    if (taken >= 0) scope.steps.splice(taken, 1);
+    else scope.steps.push({ move: { from: fromPath, to: toPath, fromLabel: this.projectRelative(fromPath), toLabel: this.projectRelative(toPath) } });
+    noteFileWritten(toKey, await statFileState(toPath));
   }
 
   /**
@@ -622,7 +630,7 @@ export class Construct3ProjectWriter {
         putBack = false;
       }
       if (putBack) {
-        scope.changes.delete(key);
+        this.dropCallRecord(scope, key);
         report.restored.push(change.backup.existed ? change.label : `${change.label} (deleted: the call had created it)`);
         if (change.isProjectFile) projectPutBack = true;
       } else {
@@ -1565,9 +1573,14 @@ export class Construct3ProjectWriter {
       for (const move of [...done].reverse()) {
         try {
           await this.renameImageUnderLock(move.to, move.from, move.toPath, move.fromPath);
-          await this.noteFileMoved(move.toPath, move.fromPath);
         } catch {
           notRestored.push(`images/${move.to} (was images/${move.from})`);
+          continue;
+        }
+        try {
+          await this.noteFileMoved(move.toPath, move.fromPath);
+        } catch {
+          // The file is renamed back; its move was cancelled before the read that failed
         }
       }
       // An fs error's message holds absolute paths: name the files by their path in the project instead. The
