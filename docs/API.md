@@ -908,6 +908,74 @@ The tool also converts scripts stored as one string or without `language`. Older
 
 Only sheets with conversions are written, each backed up first. Returns `totalConverted`, `totalManual`, `totalBehaviorChanges` and per-sheet `changes` (kind, JSON path, SID, what changes, `changesBehavior`; capped at 100 per sheet), `manual` and `backupFile` when written. `validate_project` reports affected sheets as warnings with check `legacy-event-shape`.
 
+### `update_event_group`
+
+Update a group event in place (#ISSUE): its title, description, *Active on start*, disabled state and colours. The group keeps its SID and its sub-events. A group is found by SID; `eventPath` picks one of several events that share it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `sid` / `eventPath` | number / string | Yes / No | The group; the path picks one of several events that share the SID |
+| `title`, `description` | string | No | New title and description |
+| `isActiveOnStart`, `disabled` | boolean | No | The editor's *Active on start*; disables or enables the group |
+| `backgroundColor`, `textColor` | `[red, green, blue, alpha]` or `null` | No | Each 0-1, written as `background-color` and `text-color`; `null` removes the key |
+| `force` | boolean | No | Rename even while a `group-name` parameter or an unparsed event sheet may name the old title; they are listed and left as they are |
+
+Give at least one of `title`, `description`, `isActiveOnStart`, `disabled`, `backgroundColor` and `textColor`. A value the group already has changes nothing.
+
+**Titles.** Refused, changing nothing: an empty title, and a title that another group in the same list has, exactly or with outer whitespace ignored, since group paths in that list could not tell the two apart. A title that a group in another list or another sheet has is allowed with a warning, because "set-group-active" and "is-group-active" name a group by its title; letter case is ignored for that warning. Construct 3 r506-2 (Free edition) opened and saved a project with two groups titled "Same", one at the top level and one nested in a group "Outer".
+
+**Uses of the old title.** A rename is refused without `force` while a `group-name` parameter of a condition or action names the old title: a quoted string equal to it, equal to it ignoring case, or any other value, which may give it. Event sheets that could not be parsed (for example, not valid JSON) are searched as text for the old title, and a match refuses the rename too. A search that stops at its node limit (100,000 events across all event sheets) or its nesting-depth limit (events nested more than 50 deep) refuses the rename too and names the limit. The refusal lists the uses and ends "Nothing was changed."; with `force` the group is renamed, the uses are listed in `references` and in a warning, and they are never rewritten. A local count of an r495.2 editor-saved project found no `group-name` parameter.
+
+**Colours.** The colour keys are written where the editor saves them: after `sid`, with `text-color` before `background-color`, the order a group with both colours had in a Construct 3 r506-2 (Free edition) save. A group with only one of them gets the same placement; that was not checked in the editor. `null` removes the key.
+
+Returns `{ success, entity, category, action, updatedSid, eventPath, title, warnings?, references?, unscannedFiles? }`; `action` is `"updated"`, or `"unchanged"` when the values already match and nothing is written. A rename that is refused for its uses, a limit or an unparsed sheet returns `{ success: false, action: "rename_blocked", message, references, unscannedFiles? }` and changes nothing.
+
+When a change throws before the write, the sheet is put back in memory and the call refuses with "The update stopped before anything was written (...). Nothing was changed." When the write fails, the call is rolled back; if the editor saved the sheet after the failed write, the error names the file and its `.bak` and leaves the sheet as it is.
+
+### `update_comment`
+
+Update a comment event in place (#ISSUE): its text and colours. A comment has no SID, so it is addressed by its container and its 0-based `index` among all events of that container (`get_eventsheet_details` lists them). A comment row among a block's actions is changed with `update_event_block` instead.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `groupPath` | string | No | The group that holds the comment; none: the top level |
+| `parentSid` / `parentEventPath` | number / string | No | The event whose sub-events hold the comment |
+| `index` | integer | Yes | Index of the comment among all events of its container |
+| `text` | string | No | New text |
+| `textColor`, `backgroundColor` | `[red, green, blue, alpha]` or `null` | No | Each 0-1, written as `text-color` and `background-color`; `null` removes the key |
+
+Give at least one of `text`, `textColor` and `backgroundColor`. The tool takes no `siblingSid` and no `position`; they are refused as unknown arguments.
+
+Refused, changing nothing (each message ends "Nothing was changed."): no update given; an index past the end of the container; an event at the index that is not a comment.
+
+A comment event keeps its keys in the order `eventType`, `text`, `text-color`, `background-color`, and a colour it lacks is inserted where the editor writes it. `null` removes a colour. An update to the values the comment already has returns `"unchanged"` and writes nothing.
+
+Returns `{ success, entity, category, action, eventPath }`, with `action` `"updated"` or `"unchanged"`. A failure is handled as for `update_event_group`: the sheet is put back, and a failed write names the file and its `.bak` when the editor saved the sheet after it.
+
+### `update_script_event`
+
+Replace the JavaScript of a script event, enable or disable it, or remove it (#ISSUE). A script event has no SID, so it is addressed like a comment, by its container and `index`. A script action among a block's actions is changed with `update_event_block` instead.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `groupPath` / `parentSid` / `parentEventPath` | string / number / string | No | The container, as for `update_comment` |
+| `index` | integer | Yes | Index of the script event among all events of its container |
+| `script` | string or string[] | No | New JavaScript: one string, split into lines, or an array of lines |
+| `disabled` | boolean | No | `true` disables the event; `false` removes its `disabled` key |
+| `remove` | boolean | No | Removes the script event; needs `expectedText` |
+| `expectedText` | string | With `remove` | The first line of the script event to remove |
+
+Give exactly one of `script`, `disabled` and `remove`. `expectedText` is only used with `remove`.
+
+**Removal.** `remove` needs `expectedText`, and the script event at `index` must start with it: its first line, whether the script is stored as one string or as a list of lines. Otherwise the removal is refused and the message gives the first line found. Removing a script event runs the load-time gate; its warnings are returned, and an else block that then continues another event is reported in a warning.
+
+Refused, changing nothing (each message ends "Nothing was changed."): none, or more than one, of `script`, `disabled` and `remove`; `expectedText` without `remove`; `remove` without `expectedText`; a first line that differs; an index past the end of the container; an event at the index that is not a script event.
+
+Returns `{ success, entity, category, action, eventPath, warnings? }`; `action` is `"updated"`, `"deleted"` for a removal, or `"unchanged"` when the event already has the values given. Failures are handled as for `update_comment`.
+
 ### `create_layout`
 
 Create a new layout.

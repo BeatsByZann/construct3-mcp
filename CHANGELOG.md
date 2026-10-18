@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `update_event_group`, `update_comment` and `update_script_event` change a group's title, description, *Active on start*, disabled state and colours, a comment's text and colours, and a script event's lines, disabled state or removal, in place: a group by SID, a comment or script event by container and index. A title another group in the same list has is refused; a rename that a `group-name` parameter or an unparsed event sheet may need is refused without `force`, and its uses are listed, never rewritten; a removal needs the script's first line as `expectedText`; an update to the values an event already has writes nothing (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).

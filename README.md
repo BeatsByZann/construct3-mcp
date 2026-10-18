@@ -169,6 +169,9 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `delete_event_from_sheet` | Delete an event from a sheet by SID or include name (dry-run, force); refuses while functions or event variables it removes are still referenced elsewhere (by calls, function maps, System variable ACEs or by name in expressions); warns about an else block the delete leaves behind |
 | `remove_event_from_sheet` | Remove an include from a sheet by included sheet name |
 | `delete_event_sheet` | Delete an event sheet (with reference checking and optional force): includes, layout bindings, and uses in other sheets of the functions and global variables it defines |
+| `update_event_group` | Change a group's title, description, *Active on start*, disabled state and colours in place, keeping its SID and sub-events; refuses a title another group in the same list has, and (without `force`) a rename while a `group-name` parameter or an unparsed sheet may name the old title |
+| `update_comment` | Change a comment event's text and colours in place, by container and index (comments have no SID); a comment row among a block's actions is changed with `update_event_block` |
+| `update_script_event` | Replace a script event's lines, enable or disable it, or remove it, by container and index; a removal needs the script's first line as `expectedText` |
 | `fix_legacy_behavior_keys` | Rename legacy `"behavior-type"` keys (written by older versions) to `"behaviorType"` in all event sheets, checking each name against the object's behaviors (dry-run by default) |
 | `fix_legacy_event_shapes` | Convert event shapes written by older versions into the editor's own (block `isElse` to a System else condition, condition `isOr` to `isOrBlock`, old-shape function calls to positional arguments, one-string scripts, as older Construct 3 releases also saved them, to lines) where the result is unambiguous; reports the rest and which conversions can change how an event runs (dry-run by default) |
 
@@ -440,7 +443,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 86.
 
 ### Standalone Testing
 
@@ -548,9 +551,10 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (6)
-│   │   ├── event-tools.ts          # Event sheet tools (12)
+│   │   ├── event-tools.ts          # Event sheet tools (15)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
