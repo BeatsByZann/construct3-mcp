@@ -44,6 +44,11 @@ import { findExpressionCalls, findExpressionIdentifiers, mappedFunctionName, par
 export const REFERENCE_CHECK_MAX_EVENTS = 100_000;
 const MAX_NODES = REFERENCE_CHECK_MAX_EVENTS;
 const MAX_DEPTH = 50;
+/** Nesting depth (lists inside lists) beyond which a check stops, reporting complete: false */
+export const REFERENCE_CHECK_MAX_DEPTH = MAX_DEPTH;
+
+/** Which traversal limit stopped a check: more events than the event limit, or events nested deeper than the depth limit. */
+export type ReferenceCheckLimit = 'events' | 'depth';
 
 /**
  * System ACEs whose "variable" parameter names an event variable (parameter
@@ -102,6 +107,8 @@ export interface DeleteReferenceReport {
   variables: Array<{ name: string; references: DeleteReference[] }>;
   /** False when a traversal limit stopped the scan early */
   complete: boolean;
+  /** The limit that stopped the scan, when it did */
+  limit?: ReferenceCheckLimit;
 }
 
 type EventRecord = Record<string, unknown>;
@@ -114,10 +121,15 @@ function childList(ev: EventRecord): unknown[] {
   return Array.isArray(ev.children) ? ev.children : [];
 }
 
+/** The parameter records of a function block or custom action block (empty for any other event). */
+function functionParameterRecords(ev: EventRecord): EventRecord[] {
+  if ((ev.eventType !== 'function-block' && ev.eventType !== 'custom-ace-block') || !Array.isArray(ev.functionParameters)) return [];
+  return ev.functionParameters.filter(isRecord);
+}
+
+/** Lower-cased parameter names of a function block or custom action block. */
 function functionParameterNames(ev: EventRecord): string[] {
-  if (ev.eventType !== 'function-block' || !Array.isArray(ev.functionParameters)) return [];
-  return ev.functionParameters
-    .filter(isRecord)
+  return functionParameterRecords(ev)
     .map(p => p.name)
     .filter((n): n is string => typeof n === 'string')
     .map(n => n.toLowerCase());
@@ -149,42 +161,53 @@ interface AceSite {
   kind: 'condition' | 'action';
   /** Lower-cased parameters of the function blocks enclosing it */
   params: string[];
+  /** The parameter records of the function and custom action blocks enclosing it, outermost first */
+  paramDecls: EventRecord[];
   /** Lists of the events enclosing it, below the top level: their variables are local variables in scope */
   localScopes: unknown[][];
 }
 
 /**
  * Visit every condition and action of `sheets`, except those of the events in
- * `skip` (and below them). False when a traversal limit stopped the walk.
+ * `skip` (and below them). Returns the limit that stopped the walk, or
+ * undefined when it reached everything (the event limit when both stopped it).
  */
-function walkAces(sheets: ReadonlyMap<string, unknown>, skip: ReadonlySet<object>, visit: (site: AceSite) => void): boolean {
+function walkAces(sheets: ReadonlyMap<string, unknown>, skip: ReadonlySet<object>, visit: (site: AceSite) => void): ReferenceCheckLimit | undefined {
   interface Frame {
     list: unknown[];
     scopes: unknown[][];
     params: string[];
+    paramDecls: EventRecord[];
     path: string;
     depth: number;
   }
-  let complete = true;
+  let stopped: ReferenceCheckLimit | undefined;
   let nodes = 0;
   for (const [sheet, events] of sheets) {
     if (!Array.isArray(events)) continue;
-    const stack: Frame[] = [{ list: events, scopes: [], params: [], path: '', depth: 0 }];
+    const stack: Frame[] = [{ list: events, scopes: [], params: [], paramDecls: [], path: '', depth: 0 }];
     while (stack.length > 0) {
       const frame = stack.pop()!;
-      if (frame.depth > MAX_DEPTH) continue;
+      if (frame.depth > MAX_DEPTH) {
+        stopped ??= 'depth';
+        continue;
+      }
       // Variables beside an event are local unless the list is a sheet's top level (globals)
       const localScopes = frame.depth === 0 ? frame.scopes : [...frame.scopes, frame.list];
       for (const ev of frame.list) {
         if (++nodes > MAX_NODES) {
-          complete = false;
+          stopped = 'events';
           break;
         }
         if (!isRecord(ev) || skip.has(ev)) continue;
-        const params = ev.eventType === 'function-block' ? [...frame.params, ...functionParameterNames(ev)] : frame.params;
+        const declaresParameters = ev.eventType === 'function-block' || ev.eventType === 'custom-ace-block';
+        const params = declaresParameters ? [...frame.params, ...functionParameterNames(ev)] : frame.params;
+        const paramDecls = declaresParameters ? [...frame.paramDecls, ...functionParameterRecords(ev)] : frame.paramDecls;
         const segment = ev.eventType === 'function-block'
           ? `function:${String(ev.functionName ?? 'unknown')}`
-          : ev.eventType === 'group' ? `group:${String(ev.title ?? '')}` : 'block';
+          : ev.eventType === 'custom-ace-block'
+            ? `custom-action:${String(ev.objectClass ?? 'unknown')}.${String(ev.aceName ?? 'unknown')}`
+            : ev.eventType === 'group' ? `group:${String(ev.title ?? '')}` : 'block';
         const path = frame.path ? `${frame.path} > ${segment}` : segment;
         const sid = typeof ev.sid === 'number' ? ev.sid : undefined;
         for (const kind of ['condition', 'action'] as const) {
@@ -192,17 +215,17 @@ function walkAces(sheets: ReadonlyMap<string, unknown>, skip: ReadonlySet<object
           if (!Array.isArray(aces)) continue;
           aces.forEach((ace, i) => {
             if (!isRecord(ace)) return;
-            visit({ sheet, path: `${path} > ${kind}:${i}`, ...(sid !== undefined ? { sid } : {}), ace, kind, params, localScopes });
+            visit({ sheet, path: `${path} > ${kind}:${i}`, ...(sid !== undefined ? { sid } : {}), ace, kind, params, paramDecls, localScopes });
           });
         }
         const children = childList(ev);
         if (children.length > 0) {
-          stack.push({ list: children, scopes: localScopes, params, path, depth: frame.depth + 1 });
+          stack.push({ list: children, scopes: localScopes, params, paramDecls, path, depth: frame.depth + 1 });
         }
       }
     }
   }
-  return complete;
+  return stopped;
 }
 
 /**
@@ -315,6 +338,7 @@ export function findReferencesLeftByDelete(
     removed.add(ev);
     if (removed.size > MAX_NODES) {
       report.complete = false;
+      report.limit = 'events';
       break;
     }
     if (ev.eventType === 'function-block' && typeof ev.functionName === 'string') {
@@ -341,6 +365,7 @@ export function findReferencesLeftByDelete(
       for (const ev of list) {
         if (++nodes > MAX_NODES) {
           report.complete = false;
+          report.limit = 'events';
           break;
         }
         if (!isRecord(ev)) continue;
@@ -363,7 +388,7 @@ export function findReferencesLeftByDelete(
   const mentionsDeletedVariable = mentionsAny([...deletedVariables.keys()]);
   const gone = (v: EventRecord) => removed.has(v);
 
-  const complete = walkAces(sheets, removed, site => {
+  const stopped = walkAces(sheets, removed, site => {
     const { ace } = site;
     if (deletedFunctions.size > 0) {
       const called = typeof ace.callFunction === 'string' ? functionLost(ace.callFunction) : undefined;
@@ -389,7 +414,10 @@ export function findReferencesLeftByDelete(
       }
     }
   });
-  if (!complete) report.complete = false;
+  if (stopped) {
+    report.complete = false;
+    report.limit ??= stopped;
+  }
 
   for (const [key, references] of functionRefs) report.functions.push({ name: deletedFunctions.get(key)!, references });
   for (const [key, references] of variableRefs) report.variables.push({ name: deletedVariables.get(key)!, references });
@@ -409,6 +437,8 @@ export interface VariableScopeRecord {
   /** Condition/action → the lower-cased names it uses that resolved there */
   resolved: Map<object, Set<string>>;
   complete: boolean;
+  /** The limit that stopped the recording, when it did */
+  limit?: ReferenceCheckLimit;
 }
 
 /** Lower-cased name → name of the event variables declared in `events` or below them. */
@@ -440,7 +470,7 @@ export function recordVariableScopes(
   if (variables.size === 0) return record;
   const globals = globalVariableNames(sheets);
   const mentions = mentionsAny([...variables.keys()]);
-  record.complete = walkAces(sheets, new Set(), site => {
+  const stopped = walkAces(sheets, new Set(), site => {
     for (const use of variableNamesUsedBy(site.ace, site.kind, mentions)) {
       const key = use.name.toLowerCase();
       if (!variables.has(key) || !variableInScope(key, site, globals)) continue;
@@ -449,6 +479,10 @@ export function recordVariableScopes(
       record.resolved.set(site.ace, names);
     }
   });
+  if (stopped) {
+    record.complete = false;
+    record.limit = stopped;
+  }
   return record;
 }
 
@@ -466,12 +500,12 @@ export function findVariableReferencesLostByChange(
   sheets: ReadonlyMap<string, unknown>,
   originalOf: (ace: object) => object = ace => ace,
 ): DeleteReferenceReport {
-  const report: DeleteReferenceReport = { functions: [], variables: [], complete: before.complete };
+  const report: DeleteReferenceReport = { functions: [], variables: [], complete: before.complete, ...(before.limit ? { limit: before.limit } : {}) };
   if (before.resolved.size === 0) return report;
   const globals = globalVariableNames(sheets);
   const mentions = mentionsAny([...before.variables.keys()]);
   const refs = new Map<string, DeleteReference[]>();
-  const complete = walkAces(sheets, new Set(), site => {
+  const stopped = walkAces(sheets, new Set(), site => {
     const resolvedBefore = before.resolved.get(originalOf(site.ace));
     if (!resolvedBefore) return;
     for (const use of variableNamesUsedBy(site.ace, site.kind, mentions)) {
@@ -480,9 +514,143 @@ export function findVariableReferencesLostByChange(
       addReference(refs, key, referenceAt(site, use.kind));
     }
   });
-  if (!complete) report.complete = false;
+  if (stopped) {
+    report.complete = false;
+    report.limit ??= stopped;
+  }
   for (const [key, references] of refs) report.variables.push({ name: before.variables.get(key)!, references });
   return report;
+}
+
+/** What a use that now finds another declaration of its name does, for the tools' messages. */
+export const REBOUND_USE_CONSEQUENCE =
+  'A use that now finds another event variable or function parameter of that name reads or sets that one instead: ' +
+  'the use still resolves, and the events do something else.';
+
+/**
+ * The declaration each use of some event variables and function parameters
+ * finds before a change (a variable event or a parameter record, compared
+ * by identity), per condition/action: recorded by recordVariableBindings()
+ * before the change and compared by findVariableBindingChanges() after it.
+ */
+export interface VariableBindingRecord {
+  /** Lower-cased name -> the name as declared */
+  variables: ReadonlyMap<string, string>;
+  /** Condition/action -> lower-cased name -> the declaration it found */
+  bindings: Map<object, Map<string, object>>;
+  complete: boolean;
+  /** The limit that stopped the recording, when it did */
+  limit?: ReferenceCheckLimit;
+}
+
+/** The uses whose declaration is gone (`lost`) and those that now find another one (`rebound`). */
+export interface VariableBindingChanges {
+  lost: DeleteReferenceReport;
+  rebound: DeleteReferenceReport;
+}
+
+/** Lower-cased name -> the global variable of that name, the first in sheet order. */
+function globalVariableDeclarations(sheets: ReadonlyMap<string, unknown>): Map<string, EventRecord> {
+  const found = new Map<string, EventRecord>();
+  for (const events of sheets.values()) {
+    if (!Array.isArray(events)) continue;
+    for (const ev of events) {
+      if (isRecord(ev) && ev.eventType === 'variable' && typeof ev.name === 'string' && !found.has(ev.name.toLowerCase())) {
+        found.set(ev.name.toLowerCase(), ev);
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The declaration a use of `key` at `site` finds: a variable of the
+ * innermost local scope that has one, else a parameter of the innermost
+ * enclosing function or custom action that has one, else a global
+ * variable. Where a project has a local variable and a parameter of one name
+ * in scope, the local variable is taken.
+ */
+function declarationOf(key: string, site: AceSite, globals: ReadonlyMap<string, EventRecord>): object | undefined {
+  for (let i = site.localScopes.length - 1; i >= 0; i--) {
+    const local = site.localScopes[i].find(v =>
+      isRecord(v) && v.eventType === 'variable' && typeof v.name === 'string' && v.name.toLowerCase() === key);
+    if (local !== undefined) return local as object;
+  }
+  for (let i = site.paramDecls.length - 1; i >= 0; i--) {
+    const name = site.paramDecls[i].name;
+    if (typeof name === 'string' && name.toLowerCase() === key) return site.paramDecls[i];
+  }
+  return globals.get(key);
+}
+
+/** Record, before a change, the declaration each use of `variables` (lower-cased name -> name) in `sheets` finds. */
+export function recordVariableBindings(
+  sheets: ReadonlyMap<string, unknown>,
+  variables: ReadonlyMap<string, string>,
+): VariableBindingRecord {
+  const record: VariableBindingRecord = { variables, bindings: new Map(), complete: true };
+  if (variables.size === 0) return record;
+  const globals = globalVariableDeclarations(sheets);
+  const mentions = mentionsAny([...variables.keys()]);
+  const stopped = walkAces(sheets, new Set(), site => {
+    for (const use of variableNamesUsedBy(site.ace, site.kind, mentions)) {
+      const key = use.name.toLowerCase();
+      if (!variables.has(key)) continue;
+      const declaration = declarationOf(key, site, globals);
+      if (declaration === undefined) continue;
+      const found = record.bindings.get(site.ace) ?? new Map<string, object>();
+      found.set(key, declaration);
+      record.bindings.set(site.ace, found);
+    }
+  });
+  if (stopped) {
+    record.complete = false;
+    record.limit = stopped;
+  }
+  return record;
+}
+
+/**
+ * The recorded uses that, after a change, find no declaration (`lost`) or
+ * another one (`rebound`). Conditions and actions are compared by
+ * identity; `originalOf` maps a copied condition or action to the one it
+ * was copied from. A declaration that moved keeps its identity, so a use
+ * that moved with it stays bound.
+ */
+export function findVariableBindingChanges(
+  before: VariableBindingRecord,
+  sheets: ReadonlyMap<string, unknown>,
+  originalOf: (ace: object) => object = ace => ace,
+): VariableBindingChanges {
+  const limit = before.limit ? { limit: before.limit } : {};
+  const lost: DeleteReferenceReport = { functions: [], variables: [], complete: before.complete, ...limit };
+  const rebound: DeleteReferenceReport = { functions: [], variables: [], complete: before.complete, ...limit };
+  if (before.bindings.size === 0) return { lost, rebound };
+  const globals = globalVariableDeclarations(sheets);
+  const mentions = mentionsAny([...before.variables.keys()]);
+  const lostRefs = new Map<string, DeleteReference[]>();
+  const reboundRefs = new Map<string, DeleteReference[]>();
+  const stopped = walkAces(sheets, new Set(), site => {
+    const found = before.bindings.get(originalOf(site.ace));
+    if (!found) return;
+    for (const use of variableNamesUsedBy(site.ace, site.kind, mentions)) {
+      const key = use.name.toLowerCase();
+      const declaration = found.get(key);
+      if (declaration === undefined) continue;
+      const now = declarationOf(key, site, globals);
+      if (now === undefined) addReference(lostRefs, key, referenceAt(site, use.kind));
+      else if (now !== declaration) addReference(reboundRefs, key, referenceAt(site, use.kind));
+    }
+  });
+  if (stopped) {
+    lost.complete = false;
+    rebound.complete = false;
+    lost.limit ??= stopped;
+    rebound.limit ??= stopped;
+  }
+  for (const [key, references] of lostRefs) lost.variables.push({ name: before.variables.get(key)!, references });
+  for (const [key, references] of reboundRefs) rebound.variables.push({ name: before.variables.get(key)!, references });
+  return { lost, rebound };
 }
 
 /**
