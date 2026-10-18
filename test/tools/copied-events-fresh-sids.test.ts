@@ -99,12 +99,14 @@ describe('move_events_between_sheets copies get fresh SIDs', () => {
     expect(data.success).toBe(true);
 
     const copy = written(writer, 'TargetSheet').events[0];
-    const original = allSids(sourceSheet());
+    // Every SID of the project: both sheets (their own SIDs included) and everything in them
+    const project = allSids([sourceSheet(), { name: 'TargetSheet', sid: 2, events: [] }]);
     const copied = allSids(copy);
+    expect(project).toEqual(expect.arrayContaining([1, 2, 500, 521]));
     // 500, 501, 502, 503, 510, 511, 512, 513
     expect(copied).toHaveLength(8);
     expect(new Set(copied).size).toBe(8);
-    for (const sid of copied) expect(original).not.toContain(sid);
+    for (const sid of copied) expect(project).not.toContain(sid);
     // The event, a sub-event, a condition of the event, and an action of the sub-event
     expect(copy.sid).not.toBe(500);
     expect(copy.children[0].sid).not.toBe(510);

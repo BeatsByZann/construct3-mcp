@@ -852,7 +852,7 @@ Runs the load-time gate (see [`add_event_block`](#add_event_block)) over the sou
 
 Only top-level events count: a SID shared by two top-level events of the source is refused unless `eventPaths` picks one, while a nested event with the same SID does not make it ambiguous. `deleteSource` removes exactly the copied events. A SID listed twice in `sids` is refused; top-level events that share a SID are moved one per call.
 
-Moved events keep their SIDs; when a moved event, or one of its sub-events, has a SID that another event of the target sheet already has, the move is still written, since the editor opens such sheets, and `warnings` names each such SID with the paths of its events there. Copied events get new SIDs, the copied conditions, actions and parameters too (`reassignedSids` counts them), so a copy never shares a SID with its original.
+Moved events keep their SIDs; when a moved event, or one of its sub-events, has a SID that another event of the target sheet already has, the move is still written, since the editor opens such sheets, and `warnings` names each such SID with the paths of its events there: the SID-based event tools then refuse it in the target sheet unless `eventPath` picks one. Copied events get new SIDs, the copied conditions, actions and parameters too (`reassignedSids` counts them), so a copy never shares a SID with its original.
 
 Returns `movedSids`, `movedCount`, `backupFiles` (target first, then source when modified) and `warnings`, if any: new load-time warnings, the shared-SID warning and, with `force`, the uses left out of scope (also in `references`). A copy (`deleteSource: false`) also returns `reassignedSids`, the number of SIDs it gave new values.
 

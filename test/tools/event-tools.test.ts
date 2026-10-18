@@ -1632,7 +1632,8 @@ describe('move_events_between_sheets', () => {
     const writtenTarget = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
     const targetEvents = writtenTarget.events as Array<Record<string, unknown>>;
     expect(targetEvents).toHaveLength(1);
-    expect(targetEvents[0].sid).not.toBe(100);
+    // Not an SID the project has: the two sheets and their events
+    expect([1, 2, 100, 200]).not.toContain(targetEvents[0].sid);
     expect(typeof targetEvents[0].sid).toBe('number');
   });
 
@@ -1739,8 +1740,7 @@ describe('move_events_between_sheets', () => {
     });
     const writtenTarget = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
     const targetEvents = writtenTarget.events as Array<Record<string, unknown>>;
-    expect(targetEvents[0].sid).not.toBe(100);
-    expect(targetEvents[0].sid).not.toBe(999);
+    expect([1, 2, 100, 999]).not.toContain(targetEvents[0].sid);
     expect(targetEvents[1].sid).toBe(999);
   });
 });
@@ -3803,7 +3803,7 @@ describe('group paths with outer whitespace in titles (#32)', () => {
     expect(data.success).toBe(true);
     const target = writer.callsFor('writeEntityFile')[0].args[2] as any;
     expect(target.events[0].children).toHaveLength(1);
-    expect(target.events[0].children[0].sid).not.toBe(100);
+    expect([10, 20, 100, 200]).not.toContain(target.events[0].children[0].sid);
   });
 });
 

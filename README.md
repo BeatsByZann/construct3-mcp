@@ -172,7 +172,7 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `fix_legacy_behavior_keys` | Rename legacy `"behavior-type"` keys (written by older versions) to `"behaviorType"` in all event sheets, checking each name against the object's behaviors (dry-run by default) |
 | `fix_legacy_event_shapes` | Convert event shapes written by older versions into the editor's own (block `isElse` to a System else condition, condition `isOr` to `isOrBlock`, old-shape function calls to positional arguments, one-string scripts, as older Construct 3 releases also saved them, to lines) where the result is unambiguous; reports the rest and which conversions can change how an event runs (dry-run by default) |
 
-Event SIDs are not always unique in editor-saved sheets. The tools that find an event by SID refuse a SID shared by several events in the sheet and list the candidates; pass `eventPath` (the JSON path that `locate_event` returns, e.g. `events[3].children[1]`) to pick one. `move_events_between_sheets` keeps SIDs when it moves events and warns when that leaves a shared SID in the target sheet; copies get new SIDs. See [API.md](docs/API.md#mutation-tools).
+Event SIDs are not always unique in editor-saved sheets. The tools that find an event by SID refuse a SID shared by several events in the sheet and list the candidates; pass `eventPath` (the JSON path that `locate_event` returns, e.g. `events[3].children[1]`) to pick one. `move_events_between_sheets` keeps SIDs when it moves events and warns when that leaves a shared SID in the target sheet, where the tools then refuse it unless `eventPath` picks one; copies get new SIDs. See [API.md](docs/API.md#mutation-tools).
 
 **Layouts, layers and instances**
 
