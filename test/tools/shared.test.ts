@@ -124,14 +124,18 @@ describe('validateFileName', () => {
     expect(() => validateFileName('host.js')).not.toThrow();
     expect(() => validateFileName('console.js')).not.toThrow();
     expect(() => validateFileName('a.b.json')).not.toThrow();
-    expect(() => validateFileName('a'.repeat(255))).not.toThrow();
+    expect(() => validateFileName('a'.repeat(251))).not.toThrow();
+    for (const name of ['com10', 'nullable', 'auxiliary.js', 'comment.js', 'conin.txt', 'coma']) {
+      expect(() => validateFileName(name), name).not.toThrow();
+    }
   });
 
   it('rejects the empty string', () => {
     expect(() => validateFileName('')).toThrow('File name cannot be empty');
   });
 
-  it('rejects names over 255 characters', () => {
+  it('rejects names whose .tmp or .bak name would pass 255 characters', () => {
+    expect(() => validateFileName('a'.repeat(252))).toThrow('too long');
     expect(() => validateFileName('a'.repeat(256))).toThrow('too long');
   });
 
@@ -142,7 +146,7 @@ describe('validateFileName', () => {
   });
 
   it('rejects characters Windows cannot store', () => {
-    for (const name of ['data.json:x', 'D:x.json', 'a*b', 'x?', 'a<b', 'a>b', 'a"b', 'a|b', 'a\tb']) {
+    for (const name of ['data.json:x', 'D:x.json', 'a*b', 'x?', 'a<b', 'a>b', 'a"b', 'a|b', 'a\tb', 'a\u0000b', 'a\u001fb']) {
       expect(() => validateFileName(name), JSON.stringify(name)).toThrow('must not contain');
     }
   });
@@ -153,7 +157,8 @@ describe('validateFileName', () => {
   });
 
   it('rejects Windows device names, with or without an extension', () => {
-    for (const name of ['CON', 'aux.js', 'COM1.txt', 'lpt9']) {
+    const names = ['CON', 'aux.js', 'COM1.txt', 'lpt9', 'prn', 'NUL.txt', 'com9', 'LPT1', 'CONIN$', 'conout$.txt'];
+    for (const name of [...names, 'COM\xb9', 'com\xb2.txt', 'LPT\xb3', 'lpt\xb9.log']) {
       expect(() => validateFileName(name), name).toThrow('reserved for a device');
     }
   });

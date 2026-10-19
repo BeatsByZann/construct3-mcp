@@ -226,6 +226,7 @@ export function listFileEntries(
   const root = rootOf(project, folderName);
   if (!root) return [];
   const collected: Array<{ entry: FileItem; subfolder?: string }> = [];
+  /** Collect the folder's entries, then those of its subfolders, with their slash paths. */
   const walk = (folder: FileFolder | FileFolderSubfolder, path: string | undefined): void => {
     for (const entry of itemsOf(folder)) collected.push({ entry, subfolder: path });
     for (const child of subfoldersOf(folder)) walk(child, path ? `${path}/${child.name}` : child.name);

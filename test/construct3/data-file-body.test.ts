@@ -69,6 +69,20 @@ describe('buildDataFileBody array', () => {
     expect(calls).toBe(0);
   });
 
+  it('bounds each dimension, so a zero dimension cannot build a billion arrays', () => {
+    for (const size of [[1e9, 0, 1], [0, 1e9, 1], [1, 0, 1e9], [10001, 0, 1]]) {
+      const { error, calls } = buildWithSpy(() => buildDataFileBody('array', undefined, size));
+      expect(String(error), size.join(',')).toContain('has a dimension that is not a whole number from 0 to 10000');
+      expect(calls).toBe(0);
+    }
+  });
+
+  it('refuses a negative, fractional or NaN dimension', () => {
+    for (const size of [[-1, 1, 1], [1.5, 1, 1], [1, Number.NaN, 1]]) {
+      expect(() => buildDataFileBody('array', undefined, size), size.join(',')).toThrow('has a dimension that is not a whole number');
+    }
+  });
+
   it('builds a zero depth within the limit and the shapes with no cells', () => {
     const flat = JSON.parse(buildDataFileBody('array', undefined, [1000, 1000, 0]).body) as { size: number[]; data: unknown[][] };
     expect(flat.size).toEqual([1000, 1000, 0]);
@@ -131,6 +145,8 @@ describe('projectFileMimeType', () => {
       'a.js': 'application/javascript',
       'a.css': 'text/css',
       'a.html': 'text/html',
+      'a.htm': 'text/html',
+      'a.jpeg': 'image/jpeg',
       'a.svg': 'image/svg+xml',
       'a.txt': 'text/plain',
       'a.png': 'image/png',

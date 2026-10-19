@@ -52,15 +52,22 @@ export function validateSubfolder(subfolder: string): void {
 const UNSAFE_FILE_NAME_CHARACTERS = /[<>:"|?*\u0000-\u001f]/;
 
 /** Names Windows reserves for devices, with or without an extension. */
-const RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+const RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9\xb9\xb2\xb3]|lpt[1-9\xb9\xb2\xb3])(\..*)?$/i;
+
+/** The longest file name accepted: the writer stages `<name>.tmp` and backs up `<name>.bak`, and those must fit in 255 as well. */
+const MAX_FILE_NAME_LENGTH = 255 - '.tmp'.length;
 
 /**
  * Validate a file item name, or one part of a subfolder path (`label`):
  * one path segment that Windows, macOS and Linux all store as one plain file.
+ * The length is counted in UTF-16 units; a file system that limits 255 bytes
+ * of UTF-8 can still refuse a long non-ASCII name.
  */
 export function validateFileName(name: string, label = 'File name'): void {
   if (name.length === 0) throw new Error(`${label} cannot be empty`);
-  if (name.length > 255) throw new Error(`${label} too long (max 255 characters)`);
+  if (name.length > MAX_FILE_NAME_LENGTH) {
+    throw new Error(`${label} too long (max ${MAX_FILE_NAME_LENGTH} characters, so that the .tmp and .bak names fit in 255)`);
+  }
   if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
     throw new Error(`${label} must be a single path segment`);
   }

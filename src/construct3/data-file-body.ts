@@ -33,6 +33,9 @@ export type DataFileKind = 'array' | 'dictionary' | 'json' | 'text';
 /** The most cells a default or supplied Array file may have: the body is built in memory. */
 export const MAX_ARRAY_CELLS = 1_000_000;
 
+/** The largest value of one arraySize dimension: with a zero dimension the cell count is 0, but the columns and rows are still built. */
+export const MAX_ARRAY_DIMENSION = 10_000;
+
 /** Parse the content of a data file; the refusal names the kind and carries the parser's reason. */
 function parseJsonArgument(content: string, kind: DataFileKind): unknown {
   try {
@@ -59,6 +62,11 @@ export function buildDataFileBody(
     const width = arraySize?.[0] ?? 1;
     const height = arraySize?.[1] ?? 1;
     const depth = arraySize?.[2] ?? 1;
+    for (const dimension of [width, height, depth]) {
+      if (!Number.isInteger(dimension) || dimension < 0 || dimension > MAX_ARRAY_DIMENSION) {
+        throw new Error(`arraySize [${width}, ${height}, ${depth}] has a dimension that is not a whole number from 0 to ${MAX_ARRAY_DIMENSION}.`);
+      }
+    }
     const cells = width * height * Math.max(depth, 1);
     if (cells > MAX_ARRAY_CELLS) {
       throw new Error(

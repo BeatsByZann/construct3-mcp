@@ -149,6 +149,35 @@ describe('applyRegistration', () => {
     expect(root.subfolders).toEqual([]);
   });
 
+  it('adds the metadata to an entry that has neither script-info nor file-info', () => {
+    const project = projectWith({ script: folder([{ name: 'host.js', type: 'application/javascript', sid: 5 }]) });
+    const outcome = applyRegistration(project, 'script', SCRIPT);
+    expect(outcome).toEqual({ kind: 'repaired', sid: 5, repairs: ['script-info added'] });
+    const entry = itemsOf(project, 'script')[0];
+    expect(Object.keys(entry)).toEqual(['name', 'type', 'sid', 'script-info']);
+    expect(entry['script-info']).toEqual({ purpose: 'none' });
+  });
+
+  it('adds to a root that lacks items and keeps its subfolders', () => {
+    const project = projectWith({ script: { subfolders: [{ items: [], subfolders: [], name: 'keep' }] } });
+    expect(applyRegistration(project, 'script', { ...SCRIPT, sid: 2 })).toEqual({ kind: 'added', sid: 2 });
+    const root = (project.rootFileFolders as unknown as { script: { items: FileItem[]; subfolders: Array<{ name: string }> } }).script;
+    expect(root.items.map(item => item.name)).toEqual(['host.js']);
+    expect(root.subfolders.map(sub => sub.name)).toEqual(['keep']);
+  });
+
+  it('adds into an existing nested folder that lacks items', () => {
+    const project = projectWith({ script: { items: [], subfolders: [{ name: 'a' }] } });
+    expect(applyRegistration(project, 'script', { ...SCRIPT, sid: 3, subfolder: 'a' })).toEqual({ kind: 'added', sid: 3 });
+    expect(findFileEntry(project, 'script', 'host.js', 'a')?.entry.sid).toBe(3);
+  });
+
+  it('adds below an existing nested folder that lacks subfolders', () => {
+    const project = projectWith({ script: { items: [], subfolders: [{ items: [], name: 'a' }] } });
+    expect(applyRegistration(project, 'script', { ...SCRIPT, sid: 4, subfolder: 'a/b' })).toEqual({ kind: 'added', sid: 4 });
+    expect(findFileEntry(project, 'script', 'host.js', 'a/b')?.entry.sid).toBe(4);
+  });
+
   it('creates rootFileFolders.script in a project without rootFileFolders', () => {
     const project = projectWith(undefined);
     expect(findFileEntry(project, 'script', 'host.js')).toBeUndefined();
