@@ -53,7 +53,7 @@ Resolves the project path (first CLI argument, then `C3_PROJECT_PATH`, then the 
 
 ```
 reader  → registerProjectResources, registerQueryTools, registerWorkflowPrompts,
-          registerAnalysisTools
+          registerAnalysisTools, registerUsageTools
 (none)  → registerDocsResources (docs index, manual topics, pitfalls)
 writer  → registerMutationTools (also needs reader + idGen)
           registerRuntimeTools (also needs reader); returns a controller whose

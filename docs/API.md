@@ -436,12 +436,12 @@ Every tool except `get_project_properties` returns `complete`. It is `true` only
 
 | Field | Meaning |
 |-------|---------|
-| `unscannedFiles` | Registered files of a category the tool reads that could not be parsed. Each is `{ file, reason, textSearch }`, `file` being `category/name` as `validate_project` names it. `textSearch` is `possible-use` (the file's text holds the names the tool looks for), `no-match` (it does not), `unreadable` (the file cannot be read even as text) or `not-searched` (nothing was searched for). `names` and `searchedFor` may be added as for the reference checks. |
+| `unscannedFiles` | Registered files of a category the tool reads that could not be parsed. Each is `{ file, reason, textSearch }`, `file` being `category/name` as `validate_project` names it. `textSearch` is `possible-use` (the file's text holds the names the tool looks for), `no-match` (it does not), `unreadable` (the file cannot be read even as text) or `not-searched` (nothing was searched for). With `possible-use` the report may carry `names` (the searched names the file's text holds); with `no-match`, `searchedFor` (what was searched for). |
 | `partlyIndexedSheets` | `eventSheets/<name>` of event sheets the cross-reference index only partly walked (events nested deeper than 50 levels, or more than 100,000 nodes). References past the limit are not in the answer. |
 | `scriptsNotWalked` | `scripts/<folder>/` for script folders of the registry nested deeper than 50 levels; their scripts are not read. |
 | `unreadableScripts` | `scripts/<path>` for registered script files that could not be read. |
 
-Categories each tool reads: `get_instance_counts` layouts and object types; `search_project` event sheets when `scopes` has `events`, layouts when it has `layouts`; `find_behavior_usage`, `find_effect_usage` and `find_instance_variable_references` object types, families, event sheets and layouts. `partlyIndexedSheets`, `scriptsNotWalked` and `unreadableScripts` appear on the tools named below. Scripts are only the files the project registers (`rootFileFolders.script`); a script file that is not registered is not read.
+Categories each tool reads: `get_instance_counts` layouts and object types; `search_project` event sheets when `scopes` has `events`, layouts when it has `layouts`; `find_behavior_usage`, `find_effect_usage` and `find_instance_variable_references` object types, families, event sheets and layouts. Fields per tool: `get_instance_counts` and `find_effect_usage` return `unscannedFiles`; `find_behavior_usage` returns `unscannedFiles` and `partlyIndexedSheets`; `search_project` returns `unscannedFiles`, `scriptsNotWalked` and `unreadableScripts`; `find_instance_variable_references` returns all four. Scripts are only the files the project registers (`rootFileFolders.script`); a script file that is not registered is not read.
 
 ### `get_project_properties`
 
@@ -471,7 +471,8 @@ Counts the instances each object type has on the layouts, on every layer and sub
 Searches the strings of event sheets (parameters and expressions, comments, names, titles, script lines), the lines of registered script files, and with `layouts` the instance property, instance variable and tag values. Returns `{ query, totalHits, returned, truncated, hits, complete }` and the incompleteness fields. A hit is `{ where, file, eventSid, path, field, text }`: `file` is the file's path in the project (`eventSheets/<name>.json`, `layouts/<name>.json`, `scripts/<path>`), `eventSid` the nearest enclosing event, `path` the place inside the file (`line N` in a script) and `text` the match with up to 60 characters on each side.
 
 Limits:
-- A literal query is matched directly. A regular expression runs under a time limit of 1 second per file searched, and at most 100 matches are counted per string.
+- A literal query is matched directly. A regular expression runs under a time limit of 1 second per file searched.
+- At most 100 matches are counted per string, for either kind of query.
 - The whole search has 10 seconds, literal or regular expression. That covers matching, the walk of the strings and the last file.
 - Past a limit the call is refused and the message says which: "The regular expression took too long to run in <file>" or "The search ran past its time budget". Nothing is returned.
 - The walk of one file's strings stops at 2,000,000 values and the call is refused.

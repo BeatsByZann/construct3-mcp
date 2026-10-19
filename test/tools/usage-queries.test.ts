@@ -538,4 +538,14 @@ describe('error results of the usage tools', () => {
     expect(text).not.toContain('server');
     expect(text).toContain('<path> and <path>');
   });
+
+  it('removes a drive path or network path that contains spaces whole, and keeps a URL', async () => {
+    await startServer();
+    vi.spyOn(reader, 'readAllObjectTypes').mockRejectedValue(new Error(
+      "cannot read C:\\Users\\Primary User\\Documents\\My Game\\a b.json, then 'D:/Program Files/App Name/x.json' "
+      + 'and \\\\file server\\team share\\Game Files\\y.json; see https://example.com/help',
+    ));
+    const result = await raw('find_behavior_usage', { behaviorName: 'a' });
+    expect(result.content[0].text).toBe("Error finding behavior usage: cannot read <path>, then '<path>' and <path>; see https://example.com/help");
+  });
 });

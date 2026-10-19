@@ -379,8 +379,10 @@ function someNames(names: readonly string[], max = 20): string {
 
 /**
  * The text of a caught error with the project folder shown as `<project>` and
- * any other absolute path (a drive path, a UNC path) as `<path>`, so a reader's
- * file path never reaches a tool result.
+ * any other absolute Windows path (a drive path or a UNC path, spaces
+ * included) as `<path>`, so a reader's file path never reaches a tool result.
+ * An unquoted path ends at a quote, a line end, a comma, a semicolon, " and "
+ * or " or ". POSIX paths outside the project folder are not recognised.
  */
 function errorText(error: unknown, projectDir: string | undefined): string {
   let text = error instanceof Error ? error.message : String(error);
@@ -389,7 +391,10 @@ function errorText(error: unknown, projectDir: string | undefined): string {
       text = text.split(spelling).join('<project>');
     }
   }
-  return text.replace(/[A-Za-z]:[\\/][^\s"'<>|*?]*/g, '<path>').replace(/\\\\[^\s"'<>|*?\\]+\\[^\s"'<>|*?]*/g, '<path>');
+  const rest = '(?:(?! and | or |, |; )[^"\'<>|*?\\n])*';
+  return text
+    .replace(new RegExp(`(?<![A-Za-z0-9])[A-Za-z]:[\\\\/]${rest}`, 'g'), '<path>')
+    .replace(new RegExp(`\\\\\\\\[^"'<>|*?\\\\\\n]+\\\\${rest}`, 'g'), '<path>');
 }
 
 /**

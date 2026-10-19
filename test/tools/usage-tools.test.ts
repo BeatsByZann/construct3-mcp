@@ -227,6 +227,12 @@ describe('get_instance_counts', () => {
 });
 
 describe('registration', () => {
+  it('is called by the server entry point with the reader', async () => {
+    const entry = await readFile(join(__dirname, '..', '..', 'src', 'index.ts'), 'utf-8');
+    expect(entry).toContain("import { registerUsageTools } from './tools/usage-tools.js';");
+    expect(entry).toContain('registerUsageTools(server, reader);');
+  });
+
   it('registers the six usage tools', async () => {
     await startServer();
     for (const name of ['get_project_properties', 'get_instance_counts', 'search_project', 'find_behavior_usage', 'find_effect_usage', 'find_instance_variable_references']) {
