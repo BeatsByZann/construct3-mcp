@@ -163,6 +163,10 @@ describe('get_tilemap_data', () => {
     await expectReadRefused(get(PAINTED_UID, { region: { x: 3, y: 1, width: 2, height: 2 } }), 'extends past the 4x2 tilemap');
   });
 
+  it('rejects a region past the bottom edge alone', async () => {
+    await expectReadRefused(get(PAINTED_UID, { region: { x: 0, y: 1, width: 1, height: 2 } }), 'The region 0,1 1x2 extends past the 4x2 tilemap');
+  });
+
   it('shows an empty grid sized from the instance when there is no tile data', async () => {
     const data = await ok('get_tilemap_data', get(BARE_UID));
     expect(data.width).toBe(4);
@@ -221,6 +225,11 @@ describe('set_tilemap_tiles', () => {
       'tiles[0]: cell 4,0 is outside the 4x2 tilemap');
   });
 
+  it('refuses a cell below the map, which would otherwise land in the next column', async () => {
+    await expectWriteRefused('set_tilemap_tiles', { layoutName: 'Layout 1', uid: PAINTED_UID, tiles: [{ x: 0, y: 2, value: 0 }] },
+      'tiles[0]: cell 0,2 is outside the 4x2 tilemap');
+  });
+
   it('warns about a tile index outside the tileset', async () => {
     const data = await ok('set_tilemap_tiles', paint(PAINTED_UID, 16));
     expect(data.warnings!.join(' ')).toContain('Tile index 16 is outside the tileset, which holds 16 tile(s) (indices 0 to 15).');
@@ -233,6 +242,8 @@ describe('set_tilemap_tiles', () => {
   it('refuses a fill past the edge and a fill over the write limit', async () => {
     await expectWriteRefused('set_tilemap_tiles', { layoutName: 'Layout 1', uid: PAINTED_UID, fill: { x: 3, y: 0, width: 2, height: 1, value: 1 } },
       'The fill 3,0 2x1 extends past the 4x2 tilemap');
+    await expectWriteRefused('set_tilemap_tiles', { layoutName: 'Layout 1', uid: PAINTED_UID, fill: { x: 0, y: 1, width: 1, height: 2, value: 1 } },
+      'The fill 0,1 1x2 extends past the 4x2 tilemap');
     await expectWriteRefused('set_tilemap_tiles', { layoutName: 'Layout 1', uid: PAINTED_UID, fill: { x: 0, y: 0, width: 501, height: 501, value: 1 } },
       'The fill covers 251001 cells; the limit is 250000');
   });
@@ -357,6 +368,11 @@ describe('the registered tools', () => {
     await expectWriteRefused('set_tilemap_data', replace(BARE_UID, [[1]]), 'has an invalid tile size 0x16');
   });
 
+  it('refuses an invalid tile height', async () => {
+    await editInstance(BARE_UID, inst => { inst.properties['tile-height'] = 0; });
+    await expectWriteRefused('set_tilemap_tiles', paint(BARE_UID), 'has an invalid tile size 16x0');
+    await expectWriteRefused('set_tilemap_data', replace(BARE_UID, [[1]]), 'has an invalid tile size 16x0');
+  });
   it('refuses to overwrite tile data it cannot decode, except by replacing it', async () => {
     await editInstance(PAINTED_UID, inst => { ownOf(inst).tilemapData.data = '1,2,3'; });
     const text = await expectWriteRefused('set_tilemap_tiles', paint(PAINTED_UID), 'The stored tile data cannot be read: Tile data holds 3 cells');

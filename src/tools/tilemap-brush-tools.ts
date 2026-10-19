@@ -21,11 +21,11 @@
  *               "data": [[4,5,6], [15,[{"index":44,"probability":1}, ...],17], [26,27,28]] } }
  *
  * A grid cell is a tile index, `null` for an empty cell, or (in a `patch`) an
- * array of weighted alternatives `{ index, probability }`. The size of an
- * `auto47` grid comes from the fork's sample; whether the editor reads such a
- * brush was not checked. Construct 3 r506-2 (Free edition) listed `auto16`
- * and `patch` brushes from files at these paths, read tile indices written as
- * bare integers, and wrote cells back as weighted alternatives when it saved.
+ * array of weighted alternatives `{ index, probability }`. Construct 3 r506-2
+ * (Free edition) listed `auto16`, `auto47` and `patch` brushes from files at
+ * these paths (the grid of an `auto47` brush was not opened in the brush
+ * editor), read tile indices written as bare integers, and wrote cells back
+ * as weighted alternatives when it saved after brush editing.
  *
  * A placed Tilemap instance's tile data is handled separately by
  * `tilemap-data-tools.ts`.
@@ -34,7 +34,7 @@
 import { z } from 'zod';
 import type { Dirent } from 'fs';
 import { readdir, readFile, stat } from 'fs/promises';
-import { relative, sep } from 'path';
+import { dirname, relative, sep } from 'path';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { currentToolCall, fileKey, sameFileState, statFileState, StaleFileError, type FileState } from '../construct3/disk-state.js';
 import { applyJsonTextStyle, jsonTextStyleOf, parseJsonText, stripBom } from '../construct3/json-format.js';
@@ -72,8 +72,8 @@ export interface TilemapBrush {
 }
 
 /**
- * Fixed grid dimensions per auto-tiling brush type, taken from the sample:
- * `auto16` is 4 rows of 4, `auto47` is 6 rows of 8.
+ * Fixed grid dimensions per auto-tiling brush type, the sizes the tools
+ * accept: `auto16` is 4 rows of 4, `auto47` is 6 rows of 8.
  */
 const AUTO_BRUSH_DIMENSIONS: Record<'auto16' | 'auto47', { rows: number; columns: number }> = {
   auto16: { rows: 4, columns: 4 },
@@ -295,8 +295,23 @@ async function beforeCallClause(location: BrushLocation, read: BrushRead): Promi
   return 'the state from before the call is not known (no backup of this call holds it)';
 }
 
-/** The message for a brush file write that failed, saying what the file holds now. */
-async function failedWriteMessage(location: BrushLocation, read: BrushRead, written: string, cause: string): Promise<string> {
+/** What a failed write left besides the file: this call's own backup, and a folder it created. Empty when nothing is left. */
+async function leftBehind(location: BrushLocation, folderExisted: boolean): Promise<string[]> {
+  const left: string[] = [];
+  const record = currentToolCall()?.backups.get(fileKey(location.path));
+  if (record !== undefined && record.existed && (await statFileState(record.path)) !== null) left.push(`${location.label}.bak was made by this call`);
+  if (!folderExisted) {
+    try {
+      if ((await statFileState(dirname(location.path))) !== null) left.push(`the folder ${dirname(location.label).split(sep).join('/')} was created by this call`);
+    } catch {
+      // A folder that cannot be inspected is not reported
+    }
+  }
+  return left;
+}
+
+/** The message for a brush file write that failed, saying what the file holds now and what the call left beside it. */
+async function failedWriteMessage(location: BrushLocation, read: BrushRead, written: string, cause: string, folderExisted: boolean): Promise<string> {
   let now: string | null;
   try {
     now = await readFile(location.path, 'utf-8');
@@ -305,7 +320,12 @@ async function failedWriteMessage(location: BrushLocation, read: BrushRead, writ
     if (code === 'ENOENT') now = null;
     else return `${cause}. ${location.label} cannot be read now (${code ?? 'unknown error'}); ${await beforeCallClause(location, read)}.`;
   }
-  if (now === (read.text ?? null)) return `${cause}. Nothing was changed.`;
+  if (now === (read.text ?? null)) {
+    const left = await leftBehind(location, folderExisted);
+    return left.length === 0
+      ? `${cause}. Nothing was changed.`
+      : `${cause}. ${location.label} is as it was before the call; ${left.join(' and ')}.`;
+  }
   if (now === written) return `${cause}. ${location.label} holds the new brush list although the write was not confirmed; ${await beforeCallClause(location, read)}.`;
   if (now === null) return `${cause}. ${location.label} is missing; ${await beforeCallClause(location, read)}.`;
   return `${cause}. ${location.label} is not as it was before the call (it holds other content than before and than this call wrote); ${await beforeCallClause(location, read)}.`;
@@ -320,12 +340,20 @@ async function writeBrushFile(
   writer: MutationToolDeps['writer'], projectDir: string, location: BrushLocation, read: BrushRead, brushes: TilemapBrush[],
 ): Promise<{ backupPath: string | undefined } | { failure: ReturnType<typeof toolError> }> {
   const text = brushFileText(brushes, read.text);
+  let folderExisted = true;
+  if (read.state === null) {
+    try {
+      folderExisted = (await statFileState(dirname(location.path))) !== null;
+    } catch {
+      // A folder that cannot be inspected counts as existing, so none is reported as created
+    }
+  }
   try {
     return { backupPath: await writer.replaceFile(location.path, text, { expected: read.state }) };
   } catch (error) {
     // A file another program saved after it was read is refused by the writer and untouched
     if (error instanceof StaleFileError) return { failure: toolError(error.message) };
-    return { failure: toolError(await failedWriteMessage(location, read, text, causeWithoutPaths(error, projectDir).replace(/[.\s]+$/, ''))) };
+    return { failure: toolError(await failedWriteMessage(location, read, text, causeWithoutPaths(error, projectDir).replace(/[.\s]+$/, ''), folderExisted)) };
   }
 }
 

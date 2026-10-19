@@ -415,7 +415,7 @@ describe('where the brush file is', () => {
 
 describe('the brush file text and what is read', () => {
   it('keeps the text style and BOM of an existing file, and writes a new one compact', async () => {
-    const styled = (brushes: unknown[]) => '﻿' + JSON.stringify(brushes, null, '\t').replace(/\n/g, '\r\n') + '\r\n';
+    const styled = (brushes: unknown[]) => '\uFEFF' + JSON.stringify(brushes, null, '\t').replace(/\n/g, '\r\n') + '\r\n';
     await writeFile(at(TILES_BRUSH_PATH), styled([BRUSH_0]));
     await ok('add_tilemap_brush', addArgs('Tiles'));
     expect(await brushBytes(TILES_BRUSH_PATH)).toBe(styled([BRUSH_0, { name: 'New', type: 'auto16', data: AUTO16 }]));
@@ -629,6 +629,39 @@ describe('a write that goes wrong', () => {
     spy = failWith('replaced', async path => { await unlink(path); await mkdir(path); });
     const f = await call('add_tilemap_brush', addArgs('Tiles'));
     expect(f.text).toContain(`${TILES_BRUSH_PATH} cannot be read now (EISDIR)`);
+    spy.mockRestore();
+  });
+
+  it('names what a failed write left beside a file that is as before', async () => {
+    const bak = `${TILES_BRUSH_PATH}.bak`;
+
+    // The file holds its old text again, but this call's backup is on disk
+    let spy = wrapReplaceFile(async (path, original) => {
+      await original();
+      await writeFile(path, BRUSH_0_TEXT);
+      throw new Error('put back');
+    });
+    const kept = await call('add_tilemap_brush', addArgs('Tiles'));
+    expect(kept.isError).toBe(true);
+    expect(kept.text).toContain(`${TILES_BRUSH_PATH} is as it was before the call; ${bak} was made by this call.`);
+    expect(kept.text).not.toContain(ENDING);
+    expectNoFolder(kept.text);
+    expect(await brushBytes(TILES_BRUSH_PATH)).toBe(BRUSH_0_TEXT);
+    spy.mockRestore();
+
+    // A new file is gone again, but the folder made for it is not
+    const folder = WALLS_BRUSH_PATH.slice(0, WALLS_BRUSH_PATH.lastIndexOf('/'));
+    await expect(stat(at(folder))).rejects.toThrow();
+    spy = wrapReplaceFile(async (path, original) => {
+      await original();
+      await unlink(path);
+      throw new Error('removed again');
+    });
+    const created = await call('add_tilemap_brush', addArgs('Walls'));
+    expect(created.isError).toBe(true);
+    expect(created.text).toContain(`${WALLS_BRUSH_PATH} is as it was before the call; the folder ${folder} was created by this call.`);
+    expect(created.text).not.toContain(ENDING);
+    expectNoFolder(created.text);
     spy.mockRestore();
   });
 });

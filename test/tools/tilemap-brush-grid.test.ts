@@ -110,8 +110,8 @@ describe('brushFileText', () => {
     expect(rewritten.startsWith('[\r\n\t{')).toBe(true);
 
     // A BOM and a missing trailing newline are kept
-    expect(brushFileText([other], '﻿' + JSON.stringify([brush]))).toBe('﻿' + JSON.stringify([other]));
-    expect(brushFileText([other], '﻿[\n  {"name":"B"}\n]')).toBe('﻿' + JSON.stringify([other], null, '  '));
+    expect(brushFileText([other], '\uFEFF' + JSON.stringify([brush]))).toBe('\uFEFF' + JSON.stringify([other]));
+    expect(brushFileText([other], '\uFEFF[\n  {"name":"B"}\n]')).toBe('\uFEFF' + JSON.stringify([other], null, '  '));
 
     // A new file is compact
     expect(brushFileText([brush])).toBe(JSON.stringify([brush]));
