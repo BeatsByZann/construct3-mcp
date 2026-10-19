@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
 import {
-  hierarchyEscapes, planImageCopies, remapAllSids, remapInstanceUids, sidRemapper, templateInstances,
+  hierarchyEscapes, planImageCopies, remapAllSids, remapImageSpriteIds, remapInstanceUids, sidRemapper, templateInstances,
   type CopyIdGenerator,
 } from '../../src/construct3/entity-copies.js';
 import type { Instance } from '../../src/construct3/types.js';
@@ -38,6 +38,23 @@ describe('remapAllSids', () => {
     expect([value.x, value.uid, value.list[0].n]).toEqual([5, 7, 6]);
     expect(value.sidText.sid).toBe('not a number');
     expect(sids.map.size).toBe(2);
+  });
+});
+
+describe('remapImageSpriteIds', () => {
+  it('gives every numeric imageSpriteId a fresh value, one old value one new value, and leaves sids and other keys', async () => {
+    const generator = new MockIdGenerator();
+    const value = {
+      sid: 5,
+      frames: [{ imageSpriteId: 70, sid: 6 }, { imageSpriteId: 71 }, { imageSpriteId: 70 }],
+      image: { imageSpriteId: 'text', other: 70 },
+    };
+    const count = await remapImageSpriteIds(value, () => generator.generateImageSpriteId(undefined));
+    expect(count).toBe(3);
+    expect(value.frames[0].imageSpriteId).toBe(1_000_001);
+    expect(value.frames[1].imageSpriteId).toBe(1_000_002);
+    expect(value.frames[2].imageSpriteId).toBe(1_000_001);
+    expect([value.sid, value.frames[0].sid, value.image.imageSpriteId, value.image.other]).toEqual([5, 6, 'text', 70]);
   });
 });
 

@@ -35,8 +35,8 @@ export function sidRemapper(reader: Construct3ProjectReader, idGen: CopyIdGenera
   };
 }
 
-/** Rewrite every numeric `sid` key under `value` through `fresh`; returns how many were rewritten. */
-export async function remapAllSids(value: unknown, fresh: (old: number) => Promise<number>): Promise<number> {
+/** Rewrite every numeric `name` key under `value` through `fresh`; returns how many were rewritten. */
+async function remapNumbersUnderKey(value: unknown, name: string, fresh: (old: number) => Promise<number>): Promise<number> {
   let count = 0;
   const stack: unknown[] = [value];
   while (stack.length > 0) {
@@ -46,8 +46,8 @@ export async function remapAllSids(value: unknown, fresh: (old: number) => Promi
     } else if (node && typeof node === 'object') {
       const record = node as Json;
       for (const [key, child] of Object.entries(record)) {
-        if (key === 'sid' && typeof child === 'number') {
-          record.sid = await fresh(child);
+        if (key === name && typeof child === 'number') {
+          record[key] = await fresh(child);
           count++;
         } else if (child && typeof child === 'object') {
           stack.push(child);
@@ -56,6 +56,28 @@ export async function remapAllSids(value: unknown, fresh: (old: number) => Promi
     }
   }
   return count;
+}
+
+/** Rewrite every numeric `sid` key under `value` through `fresh`; returns how many were rewritten. */
+export function remapAllSids(value: unknown, fresh: (old: number) => Promise<number>): Promise<number> {
+  return remapNumbersUnderKey(value, 'sid', fresh);
+}
+
+/**
+ * Rewrite every numeric `imageSpriteId` key under `value` (the link of a
+ * frame to its image) through a memoized `fresh`, so one old ID gets one new
+ * ID; returns how many were rewritten.
+ */
+export function remapImageSpriteIds(value: unknown, fresh: () => Promise<number>): Promise<number> {
+  const ids = new Map<number, number>();
+  return remapNumbersUnderKey(value, 'imageSpriteId', async old => {
+    let next = ids.get(old);
+    if (next === undefined) {
+      next = await fresh();
+      ids.set(old, next);
+    }
+    return next;
+  });
 }
 
 /** An instance that is a template: where it is and the name it declares. */

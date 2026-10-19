@@ -23,7 +23,7 @@ type Args = Record<string, unknown>;
 type Obj = Record<string, unknown>;
 
 interface Folder { name?: string; items: unknown[]; subfolders: Folder[] }
-interface ProjectFile { layouts: Folder; eventSheets: Folder; [key: string]: unknown }
+interface ProjectFile { layouts: Folder; eventSheets: Folder; objectTypes: Folder; [key: string]: unknown }
 interface InstanceJson {
   type: string;
   uid: number;
@@ -60,6 +60,7 @@ interface ToolData {
 let tmpDir: string;
 let reader: Construct3ProjectReader;
 let writer: Construct3ProjectWriter;
+let idGen: IdGenerator;
 let server: MockServer;
 
 const path = (...parts: string[]) => join(tmpDir, ...parts);
@@ -106,6 +107,30 @@ async function refusal(tool: string, args: Args, ...parts: string[]): Promise<To
   expect(data.text, `${tool} ${JSON.stringify(args)}`).not.toContain(tmpDir);
   expect(await snapshotProject()).toEqual(before);
   return data;
+}
+
+/** The entity file of every name registered in a Project Bar tree, folders included, as a project path. */
+function treeFiles(folder: Folder, prefix: string): string[] {
+  return [
+    ...folder.items.map(name => `${prefix}/${String(name)}.json`),
+    ...folder.subfolders.flatMap(sub => treeFiles(sub, `${prefix}/${sub.name}`)),
+  ];
+}
+
+/** Every numeric imageSpriteId in a JSON value. */
+function imageSpriteIdsOf(value: unknown): number[] {
+  const out: number[] = [];
+  const walk = (node: unknown) => {
+    if (Array.isArray(node)) node.forEach(walk);
+    else if (node && typeof node === 'object') {
+      for (const [key, child] of Object.entries(node)) {
+        if (key === 'imageSpriteId' && typeof child === 'number') out.push(child);
+        else walk(child);
+      }
+    }
+  };
+  walk(value);
+  return out;
 }
 
 /** Every numeric sid in a JSON value. */
@@ -162,7 +187,7 @@ beforeEach(async () => {
   await cp(FIXTURE_DIR, tmpDir, { recursive: true });
   reader = new Construct3ProjectReader(path('project.c3proj'));
   await reader.loadProject();
-  const idGen = new IdGenerator();
+  idGen = new IdGenerator();
   writer = new Construct3ProjectWriter(reader, idGen);
   server = new MockServer();
   registerDuplicateTools({ server, reader, writer, idGen } as unknown as Parameters<typeof registerDuplicateTools>[0]);
@@ -557,7 +582,349 @@ describe('duplicate_layer', () => {
   });
 });
 
+describe('duplicate_event_sheet', () => {
+  /** Helpers without its global variable, so it can be copied. */
+  async function allowCopy(): Promise<void> {
+    const helpers = await readJson<{ events: Array<{ eventType: string }> }>('eventSheets', 'Shared', 'Helpers.json');
+    helpers.events = helpers.events.filter(event => event.eventType !== 'variable');
+    await writeJson(['eventSheets', 'Shared', 'Helpers.json'], helpers);
+  }
+
+  it('copies a sheet with fresh SIDs into the source folder, registered after the source', async () => {
+    await allowCopy();
+    const sourceBytes = await text('eventSheets', 'Shared', 'Helpers.json');
+    const source = JSON.parse(sourceBytes) as Obj;
+    const data = await call('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Helpers Copy' });
+    expect(data.isError).not.toBe(true);
+
+    const copy = await readJson<Obj>('eventSheets', 'Shared', 'Helpers Copy.json');
+    expect(copy.name).toBe('Helpers Copy');
+    expect(Object.keys(copy)).toEqual(Object.keys(source));
+    expect(sidsOf(copy)).toHaveLength(sidsOf(source).length);
+    const used = new Set([...sidsOf(source), ...sidsOf(await readJson<Obj>('eventSheets', 'Main.json'))]);
+    expect(sidsOf(copy).some(sid => used.has(sid))).toBe(false);
+    expect(new Set(sidsOf(copy)).size).toBe(sidsOf(copy).length);
+    expect(data.reassignedSids).toBe(sidsOf(source).length);
+    expect(data.generatedSid).toBe(copy.sid);
+    expect(data.folder).toBe('Shared');
+    expect(warningsOf(data)).toBe('The copy is not attached to any layout and is not included by any sheet.');
+    expect(await text('eventSheets', 'Shared', 'Helpers.json')).toBe(sourceBytes);
+    expect((await project()).eventSheets.subfolders[0].items).toEqual(['Helpers', 'Helpers Copy']);
+    expect(data.backupFile).toBe('project.c3proj.bak');
+  });
+
+  it('refuses a sheet that declares project-wide names, naming each, and leaves every file as it was', async () => {
+    await refusal('duplicate_event_sheet', { sheetName: 'Main', newName: 'Main Copy' },
+      'declares 3 project-wide name(s): global variable "score", group "Hostile handling", custom action "Alert" on Hostiles');
+    await writeJson(['eventSheets', 'Decl.json'], {
+      name: 'Decl',
+      events: [
+        { eventType: 'function-block', functionName: 'Spawn', sid: 1 },
+        { eventType: 'custom-ace-block', aceName: 'Hit', objectClass: 'Player', sid: 2 },
+        { eventType: 'group', title: 'Setup', children: [{ eventType: 'variable', name: 'local', sid: 3 }], sid: 4 },
+      ],
+      sid: 5,
+    });
+    const registered = await project();
+    registered.eventSheets.items.push('Decl');
+    await writeJson(['project.c3proj'], registered);
+    await reader.reloadProject();
+    await refusal('duplicate_event_sheet', { sheetName: 'Decl', newName: 'Decl Copy' },
+      'declares 3 project-wide name(s): function "Spawn", custom action "Hit" on Player, group "Setup"');
+  });
+
+  it('refuses a name that cannot be used, an unknown sheet and a case-variant source, saying Nothing was changed.', async () => {
+    await allowCopy();
+    await refusal('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'main' }, 'An event sheet named "Main" already exists');
+    await refusal('duplicate_event_sheet', { sheetName: 'helpers', newName: 'Copy' }, 'names are matched with their letter case', 'Did you mean "Helpers"?');
+    await refusal('duplicate_event_sheet', { sheetName: 'Nope', newName: 'Copy' }, 'Event sheet "Nope" not found.');
+    await refusal('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'bad/name' }, 'Name must start with a letter or underscore');
+    await writeFile(path('eventSheets', 'Shared', 'helpers copy.json'), '{}');
+    await refusal('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Helpers Copy' }, 'the file eventSheets/Shared/helpers copy.json already exists');
+  });
+
+  it('refuses a sheet file it cannot parse, without a path', async () => {
+    await writeFile(path('eventSheets', 'Shared', 'Helpers.json'), '{ broken');
+    await refusal('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Copy' }, 'Cannot read event sheet "Helpers" (not valid JSON).');
+  });
+
+  it('refuses when a fresh SID cannot be generated', async () => {
+    await allowCopy();
+    vi.spyOn(idGen, 'generateSid').mockRejectedValueOnce(new Error('no free SID'));
+    await refusal('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Copy' }, 'no free SID');
+  });
+
+  it('says Nothing was changed. when a step before the write throws unexpectedly, without a path', async () => {
+    const failure = Object.assign(new Error(`EACCES: permission denied, scandir '${path('eventSheets')}'`), { code: 'EACCES', path: path('eventSheets') });
+    vi.spyOn(reader, 'listEventSheets').mockRejectedValueOnce(failure);
+    await refusal('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Copy' }, 'Error duplicating event sheet: EACCES on eventSheets. Nothing was changed.');
+  });
+
+  it('removes the copy when the registration fails, rolling back once', async () => {
+    await allowCopy();
+    const undoToolCall = vi.spyOn(writer, 'undoToolCall');
+    vi.spyOn(writer, 'updateProject').mockRejectedValueOnce(new Error('boom'));
+    const before = await snapshotProject();
+    const data = await call('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Helpers Copy' });
+    expect(data.text).toBe('boom. The call was rolled back: eventSheets/Shared/Helpers Copy.json (removed: the call had created it) is as before the call.');
+    expect(await snapshotProject()).toEqual(before);
+    expect(undoToolCall).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('duplicate_object_type', () => {
+  /** Player with two frames that have image files, an instance variable, a behavior and an effect. */
+  async function prepareSprite(): Promise<void> {
+    const player = await readJson<Obj>('objectTypes', 'Actors', 'Player.json');
+    const animation = (player.animations as { items: Array<{ frames: Obj[] }> }).items[0];
+    const [frame] = animation.frames;
+    animation.frames = [{ ...frame, imageSpriteId: 1111111 }, { ...frame, imageSpriteId: 2222222 }];
+    player.instanceVariables = [{ name: 'hp', type: 'number', desc: '', show: true, sid: 660000000000021 }];
+    player.behaviorTypes = [{ behaviorId: 'Platform', name: 'Platform', sid: 660000000000022 }];
+    player.effectTypes = [{ name: 'Blur', sid: 660000000000023 }];
+    await writeJson(['objectTypes', 'Actors', 'Player.json'], player);
+    await mkdir(path('images'), { recursive: true });
+    await writeFile(path('images', 'player-default-000.png'), 'png0');
+    await writeFile(path('images', 'player-default-001.png'), 'png1');
+  }
+
+  /** The create of a file whose path ends with `suffix` fails with `message`; every other write runs as it is. */
+  function failCreateOf(suffix: string, message: string): void {
+    const replaceFile = writer.replaceFile.bind(writer);
+    vi.spyOn(writer, 'replaceFile').mockImplementation(async (file, content, options) => {
+      if (file.replace(/\\/g, '/').endsWith(suffix)) throw new Error(message);
+      return replaceFile(file, content, options);
+    });
+  }
+
+  it('copies a sprite with fresh SIDs and image IDs and its image files under the new name', async () => {
+    await prepareSprite();
+    const sourceBytes = await text('objectTypes', 'Actors', 'Player.json');
+    const source = JSON.parse(sourceBytes) as Obj;
+    const levelBytes = await text('layouts', 'Level 1.json');
+
+    const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
+    expect(data.isError).not.toBe(true);
+    const copy = await readJson<Obj>('objectTypes', 'Actors', 'Hero.json');
+    expect(copy.name).toBe('Hero');
+    expect(Object.keys(copy)).toEqual(Object.keys(source));
+    expect(sidsOf(copy)).toHaveLength(sidsOf(source).length);
+    expect(data.reassignedSids).toBe(sidsOf(source).length);
+    const sourceSids = new Set(sidsOf(source));
+    expect(sidsOf(copy).some(sid => sourceSids.has(sid))).toBe(false);
+    expect(data.generatedSid).toBe(copy.sid);
+    const ids = imageSpriteIdsOf(copy);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.some(id => id === 1111111 || id === 2222222)).toBe(false);
+    expect(data.newImageSpriteIds).toBe(2);
+    for (const key of ['instanceVariables', 'behaviorTypes', 'effectTypes']) {
+      expect((copy[key] as Array<{ name: string }>).map(entry => entry.name)).toEqual((source[key] as Array<{ name: string }>).map(entry => entry.name));
+    }
+
+    expect(await text('images', 'hero-default-000.png')).toBe('png0');
+    expect(await text('images', 'hero-default-001.png')).toBe('png1');
+    expect(await text('images', 'player-default-000.png')).toBe('png0');
+    expect(data.filesCopied).toEqual([
+      { from: 'images/player-default-000.png', to: 'images/hero-default-000.png' },
+      { from: 'images/player-default-001.png', to: 'images/hero-default-001.png' },
+    ]);
+    expect(data.folder).toBe('Actors');
+    expect(await text('objectTypes', 'Actors', 'Player.json')).toBe(sourceBytes);
+    expect(await text('layouts', 'Level 1.json')).toBe(levelBytes);
+    expect((await project()).objectTypes.subfolders[0].items).toEqual(['Player', 'Hero', 'PlayerShip', 'Enemy']);
+    expect(data.backupFile).toBe('project.c3proj.bak');
+  });
+
+  it('copies a tilemap with a new image ID, its image file and its brush file', async () => {
+    await mkdir(path('images'), { recursive: true });
+    await writeFile(path('images', 'tiles.png'), 'tile image');
+    const data = await call('duplicate_object_type', { objectName: 'Tiles', newName: 'Floor' });
+    expect(data.isError).not.toBe(true);
+    const copy = await readJson<{ image: { imageSpriteId: number } }>('objectTypes', 'Floor.json');
+    expect(copy.image.imageSpriteId).not.toBe(1234567);
+    expect(data.newImageSpriteIds).toBe(1);
+    expect(await text('images', 'floor.png')).toBe('tile image');
+    expect(await text('tilemapBrushes', 'objectTypes', 'Floor.brush.json')).toBe(await text('tilemapBrushes', 'objectTypes', 'Tiles.brush.json'));
+    expect(data.filesCopied).toEqual([
+      { from: 'images/tiles.png', to: 'images/floor.png' },
+      { from: 'tilemapBrushes/objectTypes/Tiles.brush.json', to: 'tilemapBrushes/objectTypes/Floor.brush.json' },
+    ]);
+    expect((await project()).objectTypes.items).toEqual(['Tiles', 'Floor', 'Keyboard']);
+  });
+
+  it('puts the brush file of an object type in a folder under the same folders', async () => {
+    await mkdir(path('tilemapBrushes', 'objectTypes', 'Actors'), { recursive: true });
+    await writeFile(path('tilemapBrushes', 'objectTypes', 'Actors', 'Player.brush.json'), '[]');
+    await writeFile(path('tilemapBrushes', 'objectTypes', 'Hero.brush.json'), '[ "elsewhere" ]');
+    const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
+    expect(data.isError).not.toBe(true);
+    expect(data.filesCopied).toEqual([
+      { from: 'tilemapBrushes/objectTypes/Actors/Player.brush.json', to: 'tilemapBrushes/objectTypes/Actors/Hero.brush.json' },
+    ]);
+    expect(await text('tilemapBrushes', 'objectTypes', 'Actors', 'Hero.brush.json')).toBe('[]');
+  });
+
+  it('refuses a copy that cannot be made, saying Nothing was changed. and leaving every file as it was', async () => {
+    await prepareSprite();
+    const keyboard = await readJson<Obj>('objectTypes', 'Keyboard.json');
+    keyboard['singleglobal-inst'] = { type: 'Keyboard', properties: [], tags: '', instanceFolderItem: { sid: 1, expanded: true } };
+    await writeJson(['objectTypes', 'Keyboard.json'], keyboard);
+    await refusal('duplicate_object_type', { objectName: 'Keyboard', newName: 'Keys' }, '"Keyboard" is a single-global Keyboard object; a project can hold only one.');
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'enemy' }, '"Enemy" is already an object type or family name');
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'hostiles' }, '"Hostiles" is already an object type or family name');
+    await refusal('duplicate_object_type', { objectName: 'player', newName: 'Hero' }, 'names are matched with their letter case', 'Did you mean "Player"?');
+    await refusal('duplicate_object_type', { objectName: 'Nope', newName: 'Hero' }, 'Object "Nope" not found.');
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'bad/name' }, 'Name must start with a letter or underscore');
+    await writeFile(path('objectTypes', 'Actors', 'hero.json'), '{}');
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'the file objectTypes/Actors/hero.json already exists');
+    await rm(path('objectTypes', 'Actors', 'hero.json'));
+    await writeFile(path('images', 'Hero-Default-001.PNG'), 'taken');
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'images/hero-default-001.png already exists; the copy\'s files would overwrite it.');
+    await mkdir(path('tilemapBrushes', 'objectTypes'), { recursive: true });
+    await writeFile(path('tilemapBrushes', 'objectTypes', 'FLOOR.brush.json'), '[]');
+    await refusal('duplicate_object_type', { objectName: 'Tiles', newName: 'Floor' }, 'tilemapBrushes/objectTypes/Floor.brush.json already exists; the copy\'s files would overwrite it.');
+  });
+
+  it('refuses an image or a brush file it cannot read, without a path', async () => {
+    await prepareSprite();
+    await rm(path('images', 'player-default-001.png'));
+    await mkdir(path('images', 'player-default-001.png'));
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'images/player-default-001.png could not be read (could not be read).');
+    await rm(path('images', 'player-default-001.png'), { recursive: true });
+    await writeFile(path('images', 'player-default-001.png'), 'png1');
+
+    vi.spyOn(writer, 'listImageFiles').mockResolvedValueOnce(['player-default-000.png', 'player-default-001.png', 'ghost.png']);
+    await rm(path('images', 'player-default-000.png'));
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'images/player-default-000.png could not be read (not found).');
+    await writeFile(path('images', 'player-default-000.png'), 'png0');
+
+    await rm(path('tilemapBrushes', 'objectTypes', 'Tiles.brush.json'));
+    await mkdir(path('tilemapBrushes', 'objectTypes', 'Tiles.brush.json'));
+    await refusal('duplicate_object_type', { objectName: 'Tiles', newName: 'Floor' }, 'tilemapBrushes/objectTypes/Tiles.brush.json could not be read (could not be read).');
+  });
+
+  it('refuses an object file it cannot parse, without a path', async () => {
+    await writeFile(path('objectTypes', 'Actors', 'Player.json'), '{ broken');
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'Cannot read object type "Player" (not valid JSON).');
+  });
+
+  it('refuses when a fresh ID cannot be generated', async () => {
+    await prepareSprite();
+    vi.spyOn(idGen, 'generateSid').mockRejectedValueOnce(new Error('no free SID'));
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'no free SID');
+    vi.spyOn(idGen, 'generateImageSpriteId').mockRejectedValueOnce(new Error('no free image ID'));
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'no free image ID');
+  });
+
+  it('says Nothing was changed. when a step before the write throws unexpectedly, without a path', async () => {
+    const failure = Object.assign(new Error(`EACCES: permission denied, scandir '${path('images')}'`), { code: 'EACCES', path: path('images') });
+    vi.spyOn(writer, 'listImageFiles').mockRejectedValueOnce(failure);
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'Error duplicating object type: EACCES on images. Nothing was changed.');
+  });
+
+  it('warns about family and container membership that is not copied, and about frames without image files', async () => {
+    await prepareSprite();
+    await rm(path('images', 'player-default-001.png'));
+    const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
+    expect(data.isError).not.toBe(true);
+    expect(data.warnings).toEqual([
+      '"Player" belongs to family Hostiles; the copy was not added. Use update_family to add it.',
+      '"Player" is in 1 container(s); the copy was not added.',
+      'No image file was found in images/ for player-default-001.png; the copy has no file for those frames.',
+    ]);
+    expect(existsSync(path('images', 'hero-default-001.png'))).toBe(false);
+  });
+
+  it('warns when the copy names a default template, and keeps both editor fields', async () => {
+    const player = await readJson<Obj>('objectTypes', 'Actors', 'Player.json');
+    player.editorNewInstanceIsReplica = true;
+    player.editorNewInstanceTemplateName = 'PlayerT';
+    await writeJson(['objectTypes', 'Actors', 'Player.json'], player);
+    const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
+    expect(data.isError).not.toBe(true);
+    const copy = await readJson<Obj>('objectTypes', 'Actors', 'Hero.json');
+    expect(copy.editorNewInstanceIsReplica).toBe(true);
+    expect(copy.editorNewInstanceTemplateName).toBe('PlayerT');
+    expect(warningsOf(data)).toContain('The copy creates new instances from the template "PlayerT", which belongs to "Player"; no instance of "Hero" is that template. Clear it with set_default_template.');
+  });
+
+  it('removes the copy when the registration fails, rolling back once and creating no image first', async () => {
+    await prepareSprite();
+    const undoToolCall = vi.spyOn(writer, 'undoToolCall');
+    vi.spyOn(writer, 'updateProject').mockRejectedValueOnce(new Error('boom'));
+    const before = await snapshotProject();
+    const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe('boom. The call was rolled back: objectTypes/Actors/Hero.json (removed: the call had created it) is as before the call.');
+    expect(await snapshotProject()).toEqual(before);
+    expect(existsSync(path('images', 'hero-default-000.png'))).toBe(false);
+    expect(undoToolCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('names a copied file it could not remove', async () => {
+    await mkdir(path('images'), { recursive: true });
+    await writeFile(path('images', 'tiles.png'), 'tile image');
+    failCreateOf('Floor.brush.json', 'brush failed');
+    const restoreForCall = writer.restoreForCall.bind(writer);
+    vi.spyOn(writer, 'restoreForCall').mockImplementation(async (file, content) => {
+      if (file.replace(/\\/g, '/').endsWith('images/floor.png')) throw new Error('cannot remove it');
+      return restoreForCall(file, content);
+    });
+    const data = await call('duplicate_object_type', { objectName: 'Tiles', newName: 'Floor' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe('brush failed. The call was rolled back: project.c3proj is as before the call. '
+      + 'Of the other files the call changed: as before the call: objectTypes/Floor.json (removed: the call had created it); '
+      + 'left as it is: images/floor.png (cannot remove it; it did not exist before the call). '
+      + 'Check the project (validate_project, git diff) before you run the tool again.');
+    expect(existsSync(path('images', 'floor.png'))).toBe(true);
+    expect(existsSync(path('objectTypes', 'Floor.json'))).toBe(false);
+  });
+
+  it('creates the files after the entity: a failing image copy rolls the entity and the registration back', async () => {
+    await prepareSprite();
+    failCreateOf('images/hero-default-001.png', 'x');
+    const before = await snapshotProject();
+    const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe('x. The call was rolled back: project.c3proj is as before the call. Also as before the call: '
+      + 'images/hero-default-000.png (removed: the call had created it), objectTypes/Actors/Hero.json (removed: the call had created it).');
+    expect(await snapshotProject()).toEqual(before);
+    expect(existsSync(path('project.c3proj.bak'))).toBe(true);
+  });
+
+  it('keeps the entity file and the images while project.c3proj still registers the copy', async () => {
+    await prepareSprite();
+    const updateProject = writer.updateProject.bind(writer);
+    vi.spyOn(writer, 'updateProject').mockImplementationOnce(async change => {
+      const backup = await updateProject(change);
+      const registered = await project();
+      await editorSave(path('project.c3proj'), JSON.stringify(registered, null, '\t') + '\n');
+      return backup;
+    });
+    failCreateOf('images/hero-default-001.png', 'x');
+    const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('objectTypes/Actors/Hero.json (kept: project.c3proj still registers what this call added');
+    expect(data.text).toContain('images/hero-default-000.png (kept: project.c3proj still registers what this call added');
+    expect(existsSync(path('objectTypes', 'Actors', 'Hero.json'))).toBe(true);
+    expect(existsSync(path('images', 'hero-default-000.png'))).toBe(true);
+    const registered = treeFiles((await project()).objectTypes, 'objectTypes');
+    expect(registered).toContain('objectTypes/Actors/Hero.json');
+    for (const file of registered) expect(existsSync(path(...file.split('/'))), file).toBe(true);
+  });
+});
+
 describe('a refused call', () => {
+  it('leaves the event sheets and object types the reader holds as they were', async () => {
+    const sheets = structuredClone([...(await reader.readAllEventSheets()).entries()]);
+    const objects = structuredClone([...(await reader.readAllObjectTypes()).entries()]);
+    await call('duplicate_event_sheet', { sheetName: 'Main', newName: 'Main Copy' });
+    await call('duplicate_object_type', { objectName: 'Player', newName: 'enemy' });
+    expect([...(await reader.readAllEventSheets()).entries()]).toEqual(sheets);
+    expect([...(await reader.readAllObjectTypes()).entries()]).toEqual(objects);
+  });
+
   it('leaves the layouts the reader holds as they were', async () => {
     const before = structuredClone([...(await reader.readAllLayouts()).entries()]);
     await call('duplicate_layout', { layoutName: 'Level 1', newName: 'level 2' });

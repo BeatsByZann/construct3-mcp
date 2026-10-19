@@ -1,5 +1,6 @@
 /**
- * Duplicate tools: duplicate_layout and duplicate_layer.
+ * Duplicate tools: duplicate_layout, duplicate_layer, duplicate_event_sheet
+ * and duplicate_object_type.
  *
  * A copy gets fresh IDs: every SID in it is new, a layout copy's instances get
  * UIDs above the project maximum, and the hierarchy links inside the copy
@@ -11,7 +12,10 @@
  *
  * A new entity file is created as a file of the call (createFileForCall) and
  * registered right after its source; a failure removes the file again once
- * project.c3proj no longer registers it (rollBackStructureCall).
+ * project.c3proj no longer registers it (rollBackStructureCall). An object
+ * type's image files and tilemap brush file are created after its entity
+ * file and its registration, also as files of the call, so a failure puts
+ * them back last created first.
  */
 
 import { z } from 'zod';
@@ -19,19 +23,23 @@ import { readFile } from 'fs/promises';
 import { dirname } from 'path';
 import { applyJsonTextStyle, parseJsonText, resolveJsonTextStyle } from '../construct3/json-format.js';
 import { forEachLayerInstance, forEachLayoutInstance, findLayerNameClash, findLayersByName, allLayers } from '../construct3/layers.js';
-import { findNameClash } from '../construct3/names.js';
+import { findFileIgnoringCase } from '../construct3/atomic-write.js';
+import { containerMemberships } from '../construct3/containers.js';
+import { findNameClash, nameKey } from '../construct3/names.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { classifyReadError } from '../construct3/project-reader.js';
 import { describeReadFailure, unscannedFilesOf } from '../construct3/analyzers/unscanned-uses.js';
 import { allTreeNames, isTree, registerAfterInTree } from '../construct3/project-tree.js';
-import { hierarchyEscapes, remapAllSids, remapInstanceUids, sidRemapper, templateInstances } from '../construct3/entity-copies.js';
-import type { Instance, Layout } from '../construct3/types.js';
+import {
+  hierarchyEscapes, planImageCopies, remapAllSids, remapImageSpriteIds, remapInstanceUids, sidRemapper, templateInstances,
+} from '../construct3/entity-copies.js';
+import type { EventSheet, Instance, Layout, ObjectType } from '../construct3/types.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { nothingChanged } from './event-helpers.js';
 import { withProjectSync } from './project-sync.js';
 import { unregisteredNameMessage } from './registered-names.js';
 import {
-  createFileForCall, entityFileSegments, newSideWrites, reasonOf, type RenamedCategory, type RenameSideWrites,
+  createFileForCall, entityFileSegments, newSideWrites, readForRename, reasonOf, type RenamedCategory, type RenameSideWrites,
 } from './rename-files.js';
 import { rollBackStructureCall } from './side-files.js';
 import { toolError, toolResult, validateName, type MutationToolDeps } from './shared.js';
@@ -191,7 +199,56 @@ async function sheetsPickingUids(reader: Reader, uids: Set<number>): Promise<Uid
   return scan;
 }
 
-/** Register the layout and layer duplicate tools. */
+/**
+ * The names an event sheet declares that must be unique in the project: its
+ * functions, custom actions, global variables (top-level variables) and
+ * groups (group titles are unique project-wide). A copy would declare each
+ * twice.
+ */
+function projectWideNames(events: readonly unknown[]): string[] {
+  const unique: string[] = [];
+  const walk = (list: readonly unknown[], depth: number) => {
+    if (depth > 64) return;
+    for (const entry of list) {
+      const event = entry as Json;
+      if (event.eventType === 'function-block') unique.push(`function "${String(event.functionName)}"`);
+      if (event.eventType === 'custom-ace-block') unique.push(`custom action "${String(event.aceName)}" on ${String(event.objectClass)}`);
+      if (event.eventType === 'variable' && depth === 0) unique.push(`global variable "${String(event.name)}"`);
+      if (event.eventType === 'group') unique.push(`group "${String(event.title)}"`);
+      if (Array.isArray(event.children)) walk(event.children, depth + 1);
+    }
+  };
+  walk(events, 0);
+  return unique;
+}
+
+/** A file an object type copy creates: its project path before and after, the absolute target and the bytes read before any write. */
+interface FileToCopy {
+  from: string;
+  to: string;
+  toPath: string;
+  bytes: Buffer;
+}
+
+/**
+ * Read a file the copy duplicates, recorded for the writer's own checks
+ * (readForRename). A file that cannot be read is a refusal naming only its
+ * reason; a missing one is a refusal too unless `optional`, where its bytes
+ * are null.
+ */
+async function readCopySource(path: string, label: string, optional: true): Promise<{ bytes: Buffer | null } | { problem: string }>;
+async function readCopySource(path: string, label: string): Promise<{ bytes: Buffer } | { problem: string }>;
+async function readCopySource(path: string, label: string, optional = false): Promise<{ bytes: Buffer | null } | { problem: string }> {
+  try {
+    const read = await readForRename(path);
+    if (read.bytes === null && !optional) return { problem: `${label} could not be read (${describeReadFailure('E_FILE_NOT_FOUND')}).` };
+    return { bytes: read.bytes };
+  } catch (error) {
+    return { problem: `${label} could not be read (${describeReadFailure(classifyReadError(error))}).` };
+  }
+}
+
+/** Register the layout, layer, event sheet and object type duplicate tools. */
 export function registerDuplicateTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps): void {
   const server = withProjectSync(mcpServer, reader);
   const newNameSchema = z.string().max(200).describe('Name for the copy');
@@ -437,6 +494,225 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         console.error('[duplicate_layer] failed:', error);
         // Only the steps before the layout write can throw out of the inner blocks; the write and its rollback are inside them
         return refuse(`Error duplicating layer: ${reasonOf(error, path => writer.projectRelative(path))}`);
+      }
+    },
+  );
+
+  // ─── duplicate_event_sheet ────────────────────────────
+
+  server.registerTool(
+    'duplicate_event_sheet',
+    {
+      description: 'Duplicate an event sheet under a new name in the same Project Bar folder, with fresh SIDs on every event, condition, action and parameter. '
+        + 'The name is matched as registered. Refused when the sheet declares groups, functions, custom actions or global variables, whose names must be unique in the project. '
+        + 'The copy is attached to no layout and included by no sheet. A failure puts back what the call wrote.',
+      inputSchema: {
+        sheetName: z.string().max(200).describe('Event sheet to copy (as registered)'),
+        newName: newNameSchema,
+      },
+    },
+    async (args) => {
+      try {
+        const sheets = await reader.listEventSheets();
+        const missing = unregisteredNameMessage('Event sheet', args.sheetName, sheets,
+          () => reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        if (missing !== undefined) return refuse(missing);
+        try {
+          validateName(args.newName);
+        } catch (error) {
+          return refuse(error instanceof Error ? error.message : String(error));
+        }
+        const clash = findNameClash(args.newName, sheets);
+        if (clash !== undefined) return refuse(`An event sheet named "${clash}" already exists. Sheet names are compared without case because they are file names.`);
+
+        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        const existing = await writer.entityFileRefusal('eventSheets', args.newName, subfolder);
+        if (existing !== undefined) return refuse(existing);
+
+        // A fresh parse: this call's own object, changed in place below
+        let copy: EventSheet;
+        try {
+          copy = await reader.readEventSheet(args.sheetName);
+        } catch (error) {
+          return refuse(`Cannot read event sheet "${args.sheetName}" (${describeReadFailure(classifyReadError(error))}).`);
+        }
+        const unique = projectWideNames(copy.events ?? []);
+        if (unique.length > 0) {
+          return refuse(
+            `Event sheet "${args.sheetName}" declares ${unique.length} project-wide name(s): ${unique.slice(0, 10).join(', ')}`
+            + `${unique.length > 10 ? ', ...' : ''}. A copy would declare them twice, which Construct rejects. `
+            + 'Move those events to another sheet (move_events_between_sheets) or rename them before duplicating.',
+          );
+        }
+
+        let reassigned: number;
+        try {
+          reassigned = await remapAllSids(copy, sidRemapper(reader, idGen).fresh);
+        } catch (error) {
+          return refuse(error instanceof Error ? error.message : String(error));
+        }
+        copy.name = args.newName;
+
+        const side = newSideWrites();
+        let backupPath: string | undefined;
+        try {
+          backupPath = await writeAndRegisterCopy(writer, 'eventSheets', args.sheetName, args.newName,
+            () => createEntityCopy(writer, reader, side, 'eventSheets', args.newName, subfolder, copy));
+        } catch (error) {
+          return toolError(await rollBackCopy(writer, reader, error, side, 'eventSheets', args.newName));
+        }
+
+        return toolResult({
+          success: true,
+          entity: args.newName,
+          category: 'eventsheet',
+          action: 'duplicated',
+          source: args.sheetName,
+          folder: subfolder ?? '',
+          generatedSid: copy.sid,
+          reassignedSids: reassigned,
+          warnings: ['The copy is not attached to any layout and is not included by any sheet.'],
+          backupFile: backupPath === undefined ? undefined : writer.projectRelative(backupPath),
+        });
+      } catch (error) {
+        console.error('[duplicate_event_sheet] failed:', error);
+        // Only the steps before the first write can throw out of the inner blocks; the copy's write and its rollback are inside them
+        return refuse(`Error duplicating event sheet: ${reasonOf(error, path => writer.projectRelative(path))}`);
+      }
+    },
+  );
+
+  // ─── duplicate_object_type ────────────────────────────
+
+  server.registerTool(
+    'duplicate_object_type',
+    {
+      description: 'Duplicate an object type under a new name in the same Project Bar folder: behaviors, instance variables, effects and animations are copied with fresh SIDs and image IDs, '
+        + 'its image files are copied under the new name, and its tilemap brush file is copied. The name is matched as registered. '
+        + 'No instances are placed; family and container membership is not copied. Single-global plugins (Keyboard, Mouse, ...) cannot be duplicated. '
+        + 'A failure puts back what the call wrote.',
+      inputSchema: {
+        objectName: z.string().max(200).describe('Object type to copy (as registered)'),
+        newName: newNameSchema,
+      },
+    },
+    async (args) => {
+      try {
+        const objects = await reader.listObjectTypes();
+        const missing = unregisteredNameMessage('Object', args.objectName, objects,
+          () => reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        if (missing !== undefined) return refuse(missing);
+        try {
+          validateName(args.newName);
+        } catch (error) {
+          return refuse(error instanceof Error ? error.message : String(error));
+        }
+        const families = await reader.listFamilies();
+        const clash = findNameClash(args.newName, [...objects, ...families]);
+        if (clash !== undefined) {
+          return refuse(`"${clash}" is already an object type or family name. Object types and families share one name space.`);
+        }
+
+        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+        const existing = await writer.entityFileRefusal('objectTypes', args.newName, subfolder);
+        if (existing !== undefined) return refuse(existing);
+
+        // A fresh parse: this call's own object, changed in place below
+        let copy: ObjectType;
+        try {
+          copy = await reader.readObjectType(args.objectName);
+        } catch (error) {
+          return refuse(`Cannot read object type "${args.objectName}" (${describeReadFailure(classifyReadError(error))}).`);
+        }
+        if (copy['singleglobal-inst']) {
+          return refuse(`"${args.objectName}" is a single-global ${copy['plugin-id']} object; a project can hold only one.`);
+        }
+
+        // Plan and read every file to copy before anything is written
+        const projectDir = reader.getProjectDir();
+        const images = planImageCopies(await writer.listImageFiles(), args.objectName, copy, args.newName);
+        if (images.clashes.length > 0) {
+          return refuse(`images/${images.clashes[0]} already exists; the copy's files would overwrite it.`);
+        }
+        const files: FileToCopy[] = [];
+        for (const image of images.copies) {
+          const read = await readCopySource(resolveProjectPath(projectDir, 'images', image.from), `images/${image.from}`);
+          if ('problem' in read) return refuse(read.problem);
+          files.push({ from: `images/${image.from}`, to: `images/${image.to}`, toPath: resolveProjectPath(projectDir, 'images', image.to), bytes: read.bytes });
+        }
+        const folderParts = subfolder ? subfolder.split('/') : [];
+        const brushFrom = ['tilemapBrushes', 'objectTypes', ...folderParts, `${args.objectName}.brush.json`];
+        const brushTo = ['tilemapBrushes', 'objectTypes', ...folderParts, `${args.newName}.brush.json`];
+        const brush = await readCopySource(resolveProjectPath(projectDir, ...brushFrom), brushFrom.join('/'), true);
+        if ('problem' in brush) return refuse(brush.problem);
+        if (brush.bytes !== null) {
+          const toPath = resolveProjectPath(projectDir, ...brushTo);
+          if (await findFileIgnoringCase(toPath) !== undefined) {
+            return refuse(`${brushTo.join('/')} already exists; the copy's files would overwrite it.`);
+          }
+          files.push({ from: brushFrom.join('/'), to: brushTo.join('/'), toPath, bytes: brush.bytes });
+        }
+
+        const source = args.objectName;
+        const templateName = copy.editorNewInstanceTemplateName;
+        let sidCount: number;
+        let imageIds: number;
+        try {
+          sidCount = await remapAllSids(copy, sidRemapper(reader, idGen).fresh);
+          imageIds = await remapImageSpriteIds(copy, () => idGen.generateImageSpriteId(reader));
+        } catch (error) {
+          return refuse(error instanceof Error ? error.message : String(error));
+        }
+        copy.name = args.newName;
+
+        const warnings: string[] = [];
+        const memberOf: string[] = [];
+        for (const [familyName, family] of await reader.readAllFamilies()) {
+          if (Array.isArray(family.members) && (family.members as unknown[]).includes(source)) memberOf.push(familyName);
+        }
+        if (memberOf.length > 0) {
+          warnings.push(`"${source}" belongs to famil${memberOf.length === 1 ? 'y' : 'ies'} ${memberOf.join(', ')}; the copy was not added. Use update_family to add it.`);
+        }
+        const containers = containerMemberships(reader.getProject()).get(nameKey(source)) ?? [];
+        if (containers.length > 0) {
+          warnings.push(`"${source}" is in ${containers.length} container(s); the copy was not added.`);
+        }
+        if (images.missing.length > 0) {
+          warnings.push(`No image file was found in images/ for ${images.missing.slice(0, 10).join(', ')}${images.missing.length > 10 ? ', ...' : ''}; the copy has no file for those frames.`);
+        }
+        if (typeof templateName === 'string' && templateName !== '') {
+          warnings.push(`The copy creates new instances from the template "${templateName}", which belongs to "${source}"; `
+            + `no instance of "${args.newName}" is that template. Clear it with set_default_template.`);
+        }
+
+        const side = newSideWrites();
+        let backupPath: string | undefined;
+        try {
+          backupPath = await writeAndRegisterCopy(writer, 'objectTypes', source, args.newName,
+            () => createEntityCopy(writer, reader, side, 'objectTypes', args.newName, subfolder, copy));
+          for (const file of files) await createFileForCall(writer, side, file.toPath, file.bytes);
+        } catch (error) {
+          return toolError(await rollBackCopy(writer, reader, error, side, 'objectTypes', args.newName));
+        }
+
+        return toolResult({
+          success: true,
+          entity: args.newName,
+          category: 'objecttype',
+          action: 'duplicated',
+          source,
+          folder: subfolder ?? '',
+          generatedSid: copy.sid,
+          reassignedSids: sidCount,
+          newImageSpriteIds: imageIds,
+          filesCopied: files.map(file => ({ from: file.from, to: file.to })),
+          warnings: warnings.length > 0 ? warnings : undefined,
+          backupFile: backupPath === undefined ? undefined : writer.projectRelative(backupPath),
+        });
+      } catch (error) {
+        console.error('[duplicate_object_type] failed:', error);
+        // Only the steps before the first write can throw out of the inner blocks; the copy's write and its rollback are inside them
+        return refuse(`Error duplicating object type: ${reasonOf(error, path => writer.projectRelative(path))}`);
       }
     },
   );
