@@ -151,7 +151,7 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `create_object` | Create a new object type (Sprite, Text, TiledBg, global plugins, etc.); refuses names that clash with an object type, a family, System or the Functions object, ignoring case |
 | `update_object_properties` | Add/remove instance variables and behaviors, change global status; removing one that events still use is refused, listing the uses, unless forced |
 | `delete_object` | Delete an object; refused while anything uses it (events, instances on any layer or sub-layer, families), listing where, unless forced; its image files are kept as `.bak` |
-| `rename_object_type` | Rename an object type with its event sheet uses, layout instances, family and container memberships and frame image files (dry run, force); lists timeline tracks, strings and scripts that may name it, never changes them |
+| `rename_object_type` | Rename an object type with its event sheet uses, layout instances, family and container memberships, frame image files and its tilemap brush file (dry run, force); lists timeline tracks, strings and scripts that may name it, never changes them |
 | `rename_family` | Rename a family with its event sheet uses (dry run, force) |
 | `create_family` | Create a family; refuses name clashes and members of mixed plugins (load-time checked) |
 | `update_family` | Add/remove members and shared instance variables; refuses member changes that mix plugins (load-time checked), and removing an instance variable or member through which events still use the family's instance variables, behaviors or effects, unless forced |
