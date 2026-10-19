@@ -368,3 +368,38 @@ describe('a failed layout write', () => {
     expect(await readFile(layoutPath(), 'utf8')).toBe(saved);
   });
 });
+
+describe('move_instance keeps its arguments', () => {
+  // An array of [key, description] pairs: the snapshot formatter sorts an object's keys, not an array's entries
+  it('takes the same arguments, described the same', () => {
+    const shape = Object.entries(server.getTool('move_instance')!.schema).map(([key, value]) => [key, value.description]);
+    expect(shape).toMatchInlineSnapshot(`
+      [
+        [
+          "layoutName",
+          "Layout name",
+        ],
+        [
+          "uid",
+          "UID of the instance to move (an instance on a layer or sub-layer)",
+        ],
+        [
+          "toLayer",
+          "Destination layer (a sub-layer can be given by its path, e.g. "Main > HUD"); default: its own layer",
+        ],
+        [
+          "position",
+          ""first", "last" or an index in the destination layer's instances once moved; default "last" when it changes layer",
+        ],
+        [
+          "afterUid",
+          "Place it right after this instance of the destination layer",
+        ],
+        [
+          "beforeUid",
+          "Place it right before this instance of the destination layer",
+        ],
+      ]
+    `);
+  });
+});
