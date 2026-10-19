@@ -504,19 +504,12 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
     const issues = catalogIssues(report);
     expect(issues.filter(i => i.check === 'ace-catalog-other-release')).toHaveLength(1);
 
-    // The class and head names the sheets use, none of which the project registers
-    const used = new Set<string>();
-    for (const file of ['c3_json_helper', 'dialogue', 'interrogation_text_events', 'lab_events', 'tomography_control']) {
-      const text = await readFile(join(dir, 'eventSheets', `${file}.json`), 'utf8');
-      for (const m of text.matchAll(/"objectClass":\s*"([^"]+)"/g)) used.add(m[1]);
-      for (const m of text.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\./g)) used.add(m[1]);
-    }
+    // The sheets use these objects without the project registering them
     const unknownObjects = issues.filter(i => i.check === 'expression-unknown-object');
-    expect(unknownObjects.length).toBeGreaterThan(0);
-    for (const issue of unknownObjects) {
-      expect([...used].some(name => issue.message.includes(`"${name}"`))).toBe(true);
-    }
-    expect(['slider_theta', 'slider_phi', 'shots_max_txt'].some(name => unknownObjects.some(i => i.message.includes(`"${name}"`)))).toBe(true);
+    const namedIn = (list: Issue[]): string[] => list.map(i => /"([^"]+)" is not/.exec(i.message)![1]).sort();
+    expect(namedIn(unknownObjects)).toEqual(['shots_max_txt', 'slider_phi', 'slider_theta', 'slider_theta']);
+    // Names that no sheet of this trimmed fixture declares (the original project declares them elsewhere)
+    expect(namedIn(withCode(report, 'expression-unknown-name'))).toEqual(['dialog_type', 'dialog_type', 'dialog_type', 'dialog_type', 'dialog_type', 'level']);
   });
 
   it('applies the scope of a function parameter through the whole tool, and resolves behaviors and argument counts', async () => {
@@ -604,17 +597,17 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
         expect(otherIssues(report)).toEqual(otherIssues(reference));
       }
       expect(reference.summary.checksRun).toBe(32);
-      expect(offline.calls.length).toBeGreaterThan(0);
+      expect(offline.calls).toHaveLength(1);
     });
 
     it('makes one attempt for the process through the tool', async () => {
       const offline = offlineStub();
       const open = await faultyProject(new AceCatalogProvider({ cacheDir: await tempDir(), fetch: offline }));
       const first = await open.validate();
-      const attempts = offline.calls.length;
-      expect(attempts).toBeGreaterThan(0);
+      // A failed attempt stops at its first request
+      expect(offline.calls).toHaveLength(1);
       const second = await open.validate();
-      expect(offline.calls.length).toBe(attempts);
+      expect(offline.calls).toHaveLength(1);
       expect(withCode(first, 'ace-catalog-unavailable')).toHaveLength(1);
       expect(withCode(second, 'ace-catalog-unavailable')).toHaveLength(1);
     });

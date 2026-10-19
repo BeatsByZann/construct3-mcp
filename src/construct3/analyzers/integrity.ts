@@ -204,10 +204,9 @@ export async function validateProjectIntegrity(
   // duplicate-object-name, family-plugin-mismatch, file-name-case-mismatch,
   // duplicate-layer-name, missing-behavior-entry, missing-behavior-or-variable,
   // frame-image, hierarchy-link, orphaned-image, duplicate-function-name +
-  // ace-catalog (the ace-* codes), expression-catalog (the expression-* codes
-  // of the parameters) and ace-definitions-unavailable; these count whether or
-  // not a catalogue was found, since they ran and reported why they found
-  // nothing to check
+  // the ace- codes, the expression- codes of the parameters and
+  // ace-definitions-unavailable; these count whether or not a catalogue was
+  // found, since they ran and reported why they found nothing to check
   const checksRun = 32;
 
   return {
@@ -1229,6 +1228,7 @@ async function checkAcesAndExpressions(
   const addons = addonDefinitionsOf(reader);
   const aceContext = buildAceContext(data);
   const expressionContext = buildExpressionContext(data, aceContext);
+  /** The entity of a finding: the sheet, and the ACE's SID when it has one. */
   const where = (sheet: string, sid: number | undefined) =>
     sid === undefined ? `eventSheets/${sheet}` : `eventSheets/${sheet}/sid:${sid}`;
 
