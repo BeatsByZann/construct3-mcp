@@ -1059,9 +1059,23 @@ describe('duplicate_timeline', () => {
 
   it('says Nothing was changed. when a step before the write throws unexpectedly, without a path', async () => {
     const failure = Object.assign(new Error(`EACCES: permission denied, scandir '${path('timelines')}'`), { code: 'EACCES', path: path('timelines') });
-    // The first call is the reader's own, while it reads the source; the second is the tool's, for the target path
+    // The first getProjectDir call after the source file was read throws, however many calls the reader made while reading it
+    const readSource = reader.readDataFileText.bind(reader);
     const projectDir = reader.getProjectDir.bind(reader);
-    vi.spyOn(reader, 'getProjectDir').mockImplementationOnce(projectDir).mockImplementationOnce(() => { throw failure; });
+    let sourceRead = false;
+    let thrown = false;
+    vi.spyOn(reader, 'readDataFileText').mockImplementation(async (...args) => {
+      const content = await readSource(...args);
+      sourceRead = true;
+      return content;
+    });
+    vi.spyOn(reader, 'getProjectDir').mockImplementation(() => {
+      if (sourceRead && !thrown) {
+        thrown = true;
+        throw failure;
+      }
+      return projectDir();
+    });
     await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'Error duplicating timeline: EACCES on timelines. Nothing was changed.');
   });
 
