@@ -707,6 +707,10 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         if (!node) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.nodeSid));
 
         const current = (node.outputs ?? []).map(o => o.sid);
+        const repeated = current.find((sid, index) => current.indexOf(sid) !== index);
+        if (repeated !== undefined) {
+          return refuse(`Node ${node.sid} holds output SID ${repeated} more than once, so its outputs cannot be reordered without losing one. Fix the flowchart file first.`);
+        }
         const sorted = (sids: number[]) => [...sids].sort((x, y) => x - y).join(',');
         if (args.outputSids.length !== current.length || sorted(args.outputSids) !== sorted(current)) {
           return refuse(

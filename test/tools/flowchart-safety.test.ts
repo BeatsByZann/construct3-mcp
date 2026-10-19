@@ -1009,3 +1009,25 @@ describe('every refusal of a tool that writes', () => {
     });
   }
 });
+
+describe('reorder_flowchart_outputs on a node that holds one output SID twice', () => {
+  it('names the node and the SID and changes nothing, instead of dropping an output', async () => {
+    expect((await call('create_flowchart', { name: 'Graph' })).isError).toBe(false);
+    const node = parseResult((await call('add_flowchart_node', {
+      flowchartName: 'Graph', caption: 'A', x: 0, y: 0, outputs: [{ name: 'One' }, { name: 'Two' }],
+    })).result);
+    const path = flowchartFile(project.dir, 'Graph');
+    const data = JSON.parse(await readFile(path, 'utf-8'));
+    data.nodes[0].outputs[1].sid = node.outputSids[0];
+    await writeFile(path, JSON.stringify(data, null, '\t'));
+    await project.reader.loadProject();
+    const before = await snapshotFiles(project.dir);
+    const { text, isError } = await call('reorder_flowchart_outputs', {
+      flowchartName: 'Graph', nodeSid: node.generatedSid, outputSids: [node.outputSids[0], node.outputSids[0]],
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain(`Node ${node.generatedSid} holds output SID ${node.outputSids[0]} more than once`);
+    expect(text.endsWith(' Nothing was changed.')).toBe(true);
+    expect(await snapshotFiles(project.dir)).toEqual(before);
+  });
+});
