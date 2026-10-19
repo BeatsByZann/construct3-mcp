@@ -524,13 +524,17 @@ describe('a write-back that fails', () => {
     hooks.before.link = (existing) => {
       if (existing.endsWith('.tmp')) throw fault('EIO');
     };
+    hooks.before.copyFileExclusive = (from) => {
+      if (from.endsWith('.tmp')) throw fault('EIO');
+    };
     const place = await archive.sync();
     expect(place.status).toBe('failed');
     expect(place.reason).toContain('could not be put in place');
     expect(await bytesAt(archivePath)).toEqual(original);
     expect(await rootNames()).toEqual(['game.c3p']);
-    expect(hooks.calls.some(call => call.op === 'copyFileExclusive')).toBe(false);
+    expect(hooks.calls.some(call => call.op === 'copyFileExclusive' && call.a.endsWith('.tmp'))).toBe(true);
     delete hooks.before.link;
+    delete hooks.before.copyFileExclusive;
 
     expect((await archive.sync()).status).toBe('saved');
     expect((await archiveFiles()).get('eventSheets/Main.json')).toBe(Buffer.from(CHANGED).toString('base64'));
@@ -721,6 +725,7 @@ describe('taking the archive as it changed', () => {
 
     const markerPath = `${archive.sessionDir}.session.json`;
     const marker = JSON.parse(await nodeFs.readFile(markerPath, 'utf-8'));
+    expect(marker.pending).toBeUndefined();
     await nodeFs.writeFile(markerPath, JSON.stringify({ ...marker, pid: 0x7fffffff }));
     const left = await findLeftWorkFolders(work);
     expect(left).toHaveLength(1);
@@ -809,7 +814,191 @@ describe('what counts as a change in the folder', () => {
   });
 });
 
+describe('placing the archive when the file system or a save interferes', () => {
+  it('places the archive by copy whatever code a file system without hard links reports', async () => {
+    const original = await bytesAt(archivePath);
+    const { hooks, fs } = hookedFs();
+    hooks.before.link = () => {
+      throw fault('EISDIR');
+    };
+    const archive = await openArchive({ fs });
+    await changeFolder(archive);
+    expect((await archive.sync()).status).toBe('saved');
+    expect((await archiveFiles()).get('eventSheets/Main.json')).toBe(Buffer.from(CHANGED).toString('base64'));
+    expect(await bytesAt(`${archivePath}.bak`)).toEqual(original);
+    expect(await rootNames()).toEqual(['game.c3p', 'game.c3p.bak']);
+  });
+
+  it('says where the archive is when it can be neither placed nor put back, and names no file that was removed', async () => {
+    const original = await bytesAt(archivePath);
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await changeFolder(archive);
+    hooks.before.link = () => {
+      throw fault('EIO');
+    };
+    hooks.before.copyFileExclusive = () => {
+      throw fault('EIO');
+    };
+    const result = await archive.sync();
+    const previous = (await rootNames()).filter(name => name.endsWith('.previous'));
+    expect(previous).toHaveLength(1);
+    expect(result.status).toBe('conflict');
+    expect(result.reason).toContain('could not be put in place');
+    expect(result.reason).toContain('could not be put back');
+    expect(result.reason).toContain(previous[0]);
+    expect(result.reason).not.toContain('.tmp');
+    expect(await exists(archivePath)).toBe(false);
+    expect(await bytesAt(join(root, previous[0]))).toEqual(original);
+    expect((await rootNames()).filter(name => name.endsWith('.tmp'))).toEqual([]);
+    expect((await archive.sync()).status).toBe('conflict');
+    const text = describeArchiveSync(archive, result);
+    expect(text).not.toContain('The next tool call writes it back again');
+  });
+
+  it('says only what happened when the file moved aside was not the session\'s own and cannot be put back', async () => {
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await changeFolder(archive);
+    const saveA = zipBuffer(variant('save A'));
+    afterBuild(archive, () => nodeFs.writeFile(archivePath, saveA));
+    hooks.before.link = (existing) => {
+      if (existing.endsWith('.previous')) throw fault('EIO');
+    };
+    hooks.before.copyFileExclusive = (from) => {
+      if (from.endsWith('.previous')) throw fault('EIO');
+    };
+    const result = await archive.sync();
+    const previous = (await rootNames()).filter(name => name.endsWith('.previous'));
+    expect(previous).toHaveLength(1);
+    expect(result.status).toBe('conflict');
+    expect(result.reason).toContain('could not be put back');
+    expect(result.reason).toContain(previous[0]);
+    expect(result.reason).not.toContain('newer save is at its path');
+    expect(await exists(archivePath)).toBe(false);
+    expect(await bytesAt(join(root, previous[0]))).toEqual(saveA);
+    expect(JSON.parse(await nodeFs.readFile(`${archive.sessionDir}.session.json`, 'utf-8')).pending).toEqual({ previousArchive: join(root, previous[0]) });
+  });
+
+  it('reports an archive that vanished before it could be moved aside as missing', async () => {
+    const original = await bytesAt(archivePath);
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await changeFolder(archive);
+    hooks.before.rename = from => {
+      if (from === resolve(archivePath)) throw fault('ENOENT');
+    };
+    const result = await archive.sync();
+    expect(result.status).toBe('conflict');
+    expect(result.reason).toContain('no longer exists');
+    expect(await bytesAt(archivePath)).toEqual(original);
+    expect((await rootNames()).filter(name => name.endsWith('.tmp'))).toEqual([]);
+    expect((await archive.sync()).status).toBe('conflict');
+  });
+
+  it('puts the archive back unchanged when what was moved aside cannot be read', async () => {
+    const original = await bytesAt(archivePath);
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await changeFolder(archive);
+    hooks.before.readFile = path => {
+      if (path.endsWith('.previous')) throw fault('EIO');
+    };
+    const result = await archive.sync();
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('could not be read after it was moved aside');
+    expect(await bytesAt(archivePath)).toEqual(original);
+    expect(await rootNames()).toEqual(['game.c3p']);
+    delete hooks.before.readFile;
+    expect((await archive.sync()).status).toBe('saved');
+  });
+
+  it('keeps both files when placing the new archive fails and a save arrives before the old one is put back', async () => {
+    const original = await bytesAt(archivePath);
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await changeFolder(archive);
+    const saveB = zipBuffer(variant('save B'));
+    hooks.before.link = async (existing) => {
+      if (existing.endsWith('.tmp')) throw fault('EIO');
+      await nodeFs.writeFile(archivePath, saveB);
+    };
+    hooks.before.copyFileExclusive = (from) => {
+      if (from.endsWith('.tmp')) throw fault('EIO');
+    };
+    const result = await archive.sync();
+    const previous = (await rootNames()).filter(name => name.endsWith('.previous'));
+    expect(previous).toHaveLength(1);
+    expect(result.status).toBe('conflict');
+    expect(result.reason).toContain(previous[0]);
+    expect(result.reason).toContain('while this server was writing it back; its version before that is in');
+    expect(await bytesAt(archivePath)).toEqual(saveB);
+    expect(await bytesAt(join(root, previous[0]))).toEqual(original);
+  });
+
+  it('reports an archive that vanished right after the write-back', async () => {
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await changeFolder(archive);
+    hooks.after.link = async (existing) => {
+      if (existing.endsWith('.tmp')) await nodeFs.rm(archivePath);
+    };
+    const result = await archive.sync();
+    expect(result.status).toBe('conflict');
+    expect(result.reason).toContain('no longer exists right after this server wrote it back');
+    expect((await archive.sync()).status).toBe('conflict');
+  });
+
+  it('never replaces a backup that is already there', async () => {
+    const original = await bytesAt(archivePath);
+    await nodeFs.writeFile(`${archivePath}.bak`, 'USER BACKUP');
+    const archive = await openArchive();
+    await changeFolder(archive);
+    const result = await archive.sync();
+    expect(result.status).toBe('saved');
+    expect(result.notes?.join(' ')).toContain('already existed and was not replaced');
+    expect(await nodeFs.readFile(`${archivePath}.bak`, 'utf-8')).toBe('USER BACKUP');
+    const second = (await rootNames()).filter(name => name.endsWith('.bak') && name !== 'game.c3p.bak');
+    expect(second).toHaveLength(1);
+    expect(await bytesAt(join(root, second[0]))).toEqual(original);
+    expect((await rootNames()).filter(name => name.endsWith('.previous'))).toEqual([]);
+  });
+});
+
+describe('a refresh whose baseline cannot be recorded', () => {
+  it('reports the refresh as done and writes the folder back at the next sync', async () => {
+    const archive = await openArchive();
+    await writeArchive(variant('replaced'));
+    const target = archive as unknown as { folderStamp: (...a: unknown[]) => Promise<Map<string, string>> };
+    const original = target.folderStamp.bind(archive);
+    let calls = 0;
+    const spy = vi.spyOn(target, 'folderStamp').mockImplementation(async (...args: unknown[]) => {
+      calls++;
+      if (calls === 2) throw new Error('stat failed');
+      return original(...args);
+    });
+    const result = await archive.refresh();
+    expect(result.status).toBe('refreshed');
+    expect(result.notes?.join(' ')).toContain('could not be recorded');
+    expect(await nodeFs.readFile(mainPath(archive), 'utf-8')).toBe('{"events":["replaced"]}');
+    spy.mockRestore();
+    expect((await archive.sync()).status).toBe('saved');
+    expect((await archiveFiles()).get('eventSheets/Main.json')).toBe(Buffer.from('{"events":["replaced"]}').toString('base64'));
+  });
+});
+
 describe('closing', () => {
+  it('keeps the working folder when the archive no longer exists', async () => {
+    const archive = await openArchive();
+    await nodeFs.rm(archivePath);
+    const closed = await archive.close();
+    expect(closed.kept).toBe(archive.workDir);
+    expect(closed.sync.status).toBe('conflict');
+    expect(closed.sync.reason).toContain('no longer exists');
+    expect(await exists(mainPath(archive))).toBe(true);
+    expect(await exists(archivePath)).toBe(false);
+  });
+
   it('writes back and removes the session folder, or keeps it', async () => {
     const archive = await openArchive();
     await changeFolder(archive);
@@ -894,9 +1083,11 @@ describe('describing a result', () => {
     expect(failed).toContain('NOT saved');
     expect(failed).toContain('the disk is full');
     expect(failed).toContain('The next tool call writes it back again.');
-    const stopped = describeArchiveSync(archive, { status: 'failed', reason: 'the working folder could not be put back after a failed refresh (x)' });
+    const stopped = describeArchiveSync(archive, { status: 'failed', reason: 'it stopped', stopped: true });
     expect(stopped).toContain('Restart the server');
     expect(stopped).not.toContain('The next tool call');
+    const reworded = describeArchiveSync(archive, { status: 'failed', reason: 'the working folder could not be put back after a failed refresh (x)' });
+    expect(reworded).toContain('The next tool call writes it back again.');
   });
 
   it('describes a refresh', () => {
@@ -911,5 +1102,9 @@ describe('describing a result', () => {
     const conflict = describeArchiveRefresh(archive, { status: 'conflict', reason: 'it was changed on disk' });
     expect(conflict).toContain('NOT saved');
     expect(conflict).toContain('it was changed on disk');
+    const stopped = describeArchiveRefresh(archive, { status: 'failed', reason: 'it stopped', stopped: true });
+    expect(stopped).toContain('Nothing was run: it stopped.');
+    expect(stopped).toContain('Restart the server');
+    expect(describeArchiveRefresh(archive, { status: 'failed', reason: 'the working folder could not be put back' })).toContain('Try the call again.');
   });
 });

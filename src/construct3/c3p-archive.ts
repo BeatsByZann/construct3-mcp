@@ -20,8 +20,9 @@
  *   moved aside, compared by content with what this session last read or
  *   wrote, and the new one placed with link (or an exclusive copy), which
  *   fails when a file is there. The first write-back of a session keeps
- *   the archive as it was before it in <archive>.bak (each session
- *   replaces that file).
+ *   the archive as it was before it in <archive>.bak; a file already
+ *   named so is never replaced (the copy then gets a second name, and the
+ *   result says so).
  * - when another program changed the archive and the folder changed too,
  *   the archive is never written: the conflict sticks, every later sync
  *   and refresh reports it, and the folder is kept with the session's
@@ -34,6 +35,10 @@
  * The archive and the session folder are written here directly, not
  * through the project writer: the archive is outside the project, and the
  * folder is the server's own copy of it.
+ *
+ * refresh, sync and close must not overlap on one instance: a refresh that
+ * ran during a write-back would see the archive moved aside. The caller
+ * serializes them (archive-sync.ts).
  */
 
 import { createHash } from 'node:crypto';
@@ -51,8 +56,6 @@ const SESSION_PREFIX = 'c3p-';
 const MARKER_SUFFIX = '.session.json';
 /** Default for `recentMs`: a file modified this recently is also compared by content (a write of the same size within one timestamp tick). */
 const RECENT_MS = 2000;
-/** Error codes of a file system that cannot make hard links. */
-const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS', 'EINVAL']);
 
 /** What a write-back did: nothing to write, written, refused because the archive changed (the conflict), or failed. */
 export type ArchiveSyncStatus = 'unchanged' | 'saved' | 'conflict' | 'failed';
@@ -66,6 +69,8 @@ export interface ArchiveSyncResult {
   reason?: string;
   /** What else the user should know: a write-back not confirmed, a file left beside the archive */
   notes?: string[];
+  /** The archive stopped (the working folder could not be put back), so only a restart helps */
+  stopped?: boolean;
 }
 
 /** What a refresh from the archive did. */
@@ -73,6 +78,8 @@ export interface ArchiveRefreshResult {
   status: 'unchanged' | 'refreshed' | 'conflict' | 'failed';
   reason?: string;
   notes?: string[];
+  /** The archive stopped (the working folder could not be put back), so only a restart helps */
+  stopped?: boolean;
 }
 
 /** The file operations the archive uses (injectable for tests). */
@@ -354,8 +361,8 @@ export class C3pArchive {
   }
 
   /** The result while the archive is in conflict or stopped, or undefined. */
-  private stuck(): { status: 'conflict' | 'failed'; reason: string } | undefined {
-    if (this.stoppedReason) return { status: 'failed', reason: this.stoppedReason };
+  private stuck(): { status: 'conflict' | 'failed'; reason: string; stopped?: boolean } | undefined {
+    if (this.stoppedReason) return { status: 'failed', reason: this.stoppedReason, stopped: true };
     if (this.conflictReason) return { status: 'conflict', reason: this.conflictReason };
     return undefined;
   }
@@ -436,14 +443,20 @@ export class C3pArchive {
       // Published: the new folder and its baseline go together
       this.stamp = change.stamp;
       this.directories = content.directories;
-      this.folder = await this.folderStamp(await this.projectFiles());
       const notes: string[] = [];
       try {
+        this.folder = await this.folderStamp(await this.projectFiles());
+      } catch (error) {
+        // The folder was replaced, so the old baseline is wrong; an empty one makes the next sync write back (nothing is lost)
+        this.folder = new Map();
+        notes.push(`the state of the new working folder could not be recorded (${messageOf(error)}); the next write-back may rewrite the archive with the same content`);
+      }
+      try {
         await this.fs.rm(previous);
-        await this.mark();
       } catch (error) {
         notes.push(`the old working folder "${previous}" could not be removed (${messageOf(error)}); it can be deleted`);
       }
+      await this.mark().catch(() => undefined);
       return { status: 'refreshed', ...(notes.length ? { notes } : {}) };
     } catch (error) {
       return this.stuck() ?? { status: 'failed', reason: messageOf(error) };
@@ -477,17 +490,22 @@ export class C3pArchive {
     }
   }
 
-  /** Put a file at the archive's path without replacing one: 'placed', 'exists' (a file is there), or the error. */
-  private async placeAt(source: string): Promise<'placed' | 'exists' | { error: unknown }> {
+  /**
+   * Put a file at `target` (default: the archive's path) without replacing
+   * one: 'placed', 'exists' (a file is there), or the error. A link that
+   * fails for any reason but an existing file (a volume without hard links
+   * reports various codes) is followed by the exclusive copy, which refuses
+   * to replace a file just the same.
+   */
+  private async placeAt(source: string, target: string = this.resolved): Promise<'placed' | 'exists' | { error: unknown }> {
     try {
-      await this.fs.link(source, this.resolved);
+      await this.fs.link(source, target);
       return 'placed';
     } catch (error) {
       if (codeOf(error) === 'EEXIST') return 'exists';
-      if (!NO_LINKS.has(String(codeOf(error)))) return { error };
     }
     try {
-      await this.fs.copyFileExclusive(source, this.resolved);
+      await this.fs.copyFileExclusive(source, target);
       return 'placed';
     } catch (error) {
       return codeOf(error) === 'EEXIST' ? 'exists' : { error };
@@ -568,9 +586,14 @@ export class C3pArchive {
           ? { status: 'failed', reason: `"${this.archivePath}" could not be read after it was moved aside; it was put back unchanged` }
           : this.stop(`"${this.archivePath}" was changed on disk (saved in Construct 3?) after this server read it`);
       }
-      // Another file arrived at the path meanwhile: both are kept
-      return this.stop(`"${this.archivePath}" was saved on disk (saved in Construct 3?) twice while this server was writing it back; `
-        + `the newer save is at its path, the earlier one in "${previousArchive}"`);
+      await this.mark({ previousArchive }).catch(() => undefined);
+      if (back === 'exists') {
+        // Another file arrived at the path meanwhile: both are kept
+        return this.stop(`"${this.archivePath}" was saved on disk (saved in Construct 3?) twice while this server was writing it back; `
+          + `the newer save is at its path, the earlier one in "${previousArchive}"`);
+      }
+      return this.stop(`"${this.archivePath}" was moved aside to be replaced and could not be put back (${messageOf(back.error)}); `
+        + `the file that was at its path is in "${previousArchive}"`);
     }
 
     // 4. The new archive placed without replacing anything: a save that lands meanwhile makes this fail, and is kept
@@ -578,8 +601,12 @@ export class C3pArchive {
     if (placed !== 'placed') {
       await removeStaging();
       if (placed === 'exists') {
-        await this.keepPrevious(previousArchive).catch(() => undefined);
-        await this.mark().catch(() => undefined);
+        try {
+          await this.keepPrevious(previousArchive, n);
+          await this.mark().catch(() => undefined);
+        } catch {
+          await this.mark({ previousArchive }).catch(() => undefined);
+        }
         return this.stop(`"${this.archivePath}" was saved on disk (saved in Construct 3?) while this server was writing it back`);
       }
       const back = await this.placeAt(previousArchive);
@@ -588,11 +615,12 @@ export class C3pArchive {
         await this.mark().catch(() => undefined);
         return { status: 'failed', reason: `the new archive could not be put in place (${messageOf(placed.error)}); "${this.archivePath}" is as it was` };
       }
-      return back === 'exists'
-        ? this.stop(`"${this.archivePath}" was saved on disk (saved in Construct 3?) while this server was writing it back; `
-          + `its version before that is in "${previousArchive}"`)
-        : { status: 'failed', reason: `the new archive could not be put in place (${messageOf(placed.error)}), and "${this.archivePath}" `
-          + `could not be put back (${messageOf(back.error)}); it is in "${previousArchive}", the new one in "${staging}"` };
+      await this.mark({ previousArchive }).catch(() => undefined);
+      return this.stop(back === 'exists'
+        ? `"${this.archivePath}" was saved on disk (saved in Construct 3?) while this server was writing it back; `
+          + `its version before that is in "${previousArchive}"`
+        : `the new archive could not be put in place (${messageOf(placed.error)}), and "${this.archivePath}" `
+          + `could not be put back (${messageOf(back.error)}); the file that was at its path is in "${previousArchive}"`);
     }
 
     // Committed: this session's own bytes are at the archive's path
@@ -601,7 +629,10 @@ export class C3pArchive {
     this.folder = current;
     await removeStaging();
     try {
-      await this.keepPrevious(previousArchive);
+      const kept = await this.keepPrevious(previousArchive, n);
+      if (kept && kept !== `${this.resolved}.bak`) {
+        notes.push(`"${this.resolved}.bak" already existed and was not replaced; the archive's previous version is kept as "${kept}"`);
+      }
     } catch (error) {
       notes.push(`the archive's previous version is left in "${previousArchive}" (${messageOf(error)})`);
     }
@@ -621,14 +652,27 @@ export class C3pArchive {
     return { status: 'saved', fileCount, ...(notes.length ? { notes } : {}) };
   }
 
-  /** The version moved aside, which is this session's own: the session's first write-back keeps it as <archive>.bak, later ones remove it. */
-  private async keepPrevious(previousArchive: string): Promise<void> {
-    if (!this.savedThisSession) {
-      await this.fs.rename(previousArchive, `${this.resolved}.bak`);
-      this.savedThisSession = true;
-    } else {
+  /**
+   * The version moved aside, which is this session's own: the session's
+   * first write-back keeps it as <archive>.bak (or, where that name is
+   * taken, under a second name; no file is replaced), later ones remove it.
+   * Returns the name it was kept under, if any.
+   */
+  private async keepPrevious(previousArchive: string, n: number): Promise<string | undefined> {
+    if (this.savedThisSession) {
       await this.fs.unlink(previousArchive);
+      return undefined;
     }
+    for (const target of [`${this.resolved}.bak`, `${this.resolved}.${process.pid}.${n}.bak`]) {
+      const placed = await this.placeAt(previousArchive, target);
+      if (placed === 'placed') {
+        this.savedThisSession = true;
+        await this.fs.unlink(previousArchive);
+        return target;
+      }
+      if (placed !== 'exists') throw placed.error;
+    }
+    throw new Error('both names for a backup of the archive are taken');
   }
 
   /**
@@ -640,9 +684,13 @@ export class C3pArchive {
    * and named in the notes of the (still saved) result. Never throws.
    */
   async close(): Promise<{ kept?: string; sync: ArchiveSyncResult }> {
-    if (this.stoppedReason) return { kept: `${this.sessionDir}.previous`, sync: { status: 'failed', reason: this.stoppedReason } };
+    if (this.stoppedReason) return { kept: `${this.sessionDir}.previous`, sync: { status: 'failed', reason: this.stoppedReason, stopped: true } };
     const sync = await this.sync();
     if (sync.status === 'conflict' || sync.status === 'failed') return { kept: this.workDir, sync };
+    if (sync.status === 'unchanged' && (await this.externalChange(false)).kind === 'missing') {
+      // The folder may be the last copy of the project
+      return { kept: this.workDir, sync: this.stop(`"${this.archivePath}" no longer exists`) };
+    }
     try {
       await this.fs.rm(this.sessionDir);
       await nodeFs.rm(markerOf(this.sessionDir), { force: true });
@@ -716,7 +764,7 @@ export function describeArchiveSync(archive: Pick<C3pArchive, 'archivePath' | 'w
         + `folder "${archive.workDir}". Take what you need from it, then restart the server to load the archive as it is now.`, result.notes);
     case 'failed':
       return withNotes(`The project was NOT saved to "${archive.archivePath}": ${result.reason}. `
-        + (/working folder could not be put back/.test(result.reason ?? '')
+        + (result.stopped
           ? 'Restart the server after taking what you need from the folders named.'
           : 'The next tool call writes it back again.'), result.notes);
   }
@@ -730,7 +778,7 @@ export function describeArchiveRefresh(archive: Pick<C3pArchive, 'archivePath' |
     case 'refreshed':
       return withNotes(`"${archive.archivePath}" changed on disk, so the project was read again from it before this call.`, result.notes);
     case 'failed':
-      return /working folder could not be put back/.test(result.reason ?? '')
+      return result.stopped
         ? `Nothing was run: ${result.reason}. Restart the server after taking what you need from the folders named.`
         : `"${archive.archivePath}" changed on disk and could not be read again (${result.reason}). Nothing was run. Try the call again.`;
     case 'conflict':
