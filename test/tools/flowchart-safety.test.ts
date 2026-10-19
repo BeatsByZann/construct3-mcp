@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { statFileState } from '../../src/construct3/disk-state.js';
+import { StaleFileError, statFileState } from '../../src/construct3/disk-state.js';
 import {
   editorSave,
   editorSaveSync,
@@ -842,6 +842,12 @@ describe('add_flowchart_node and update_flowchart_node', () => {
   const THROWING_CALLS: Array<[string, Record<string, unknown>]> = [
     ['update_flowchart_node', { flowchartName: 'Graph', nodeSid: 1, caption: 'A2' }],
     ['delete_flowchart_node', { flowchartName: 'Graph', nodeSid: 1 }],
+    ['add_flowchart_output', { flowchartName: 'Graph', nodeSid: 1, name: 'Out' }],
+    ['update_flowchart_output', { flowchartName: 'Graph', outputSid: 1, name: 'Out' }],
+    ['delete_flowchart_output', { flowchartName: 'Graph', outputSid: 1 }],
+    ['reorder_flowchart_outputs', { flowchartName: 'Graph', nodeSid: 1, outputSids: [1] }],
+    ['connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: 1, targetNodeSid: 2 }],
+    ['disconnect_flowchart_nodes', { flowchartName: 'Graph', outputSid: 1 }],
   ];
   for (const [tool, args] of THROWING_CALLS) {
     it(`${tool} stops before anything is written when reading the file's state throws`, async () => {
@@ -861,6 +867,12 @@ describe('add_flowchart_node and update_flowchart_node', () => {
     ['add_flowchart_node', () => ({ flowchartName: 'Graph', caption: 'N', x: 0, y: 0 })],
     ['update_flowchart_node', ids => ({ flowchartName: 'Graph', nodeSid: ids.a, caption: 'A2' })],
     ['delete_flowchart_node', ids => ({ flowchartName: 'Graph', nodeSid: ids.c })],
+    ['add_flowchart_output', ids => ({ flowchartName: 'Graph', nodeSid: ids.b, name: 'Out' })],
+    ['update_flowchart_output', ids => ({ flowchartName: 'Graph', outputSid: ids.aOut2, name: 'Renamed' })],
+    ['delete_flowchart_output', ids => ({ flowchartName: 'Graph', outputSid: ids.aOut2 })],
+    ['reorder_flowchart_outputs', ids => ({ flowchartName: 'Graph', nodeSid: ids.a, outputSids: [ids.aOut2, ids.aOut1] })],
+    ['connect_flowchart_nodes', ids => ({ flowchartName: 'Graph', outputSid: ids.aOut2, targetNodeSid: ids.c })],
+    ['disconnect_flowchart_nodes', ids => ({ flowchartName: 'Graph', outputSid: ids.aOut1 })],
   ];
 
   /** Graph with a start node A (outputs Next and Other) and two more nodes, B and C, made through the tools. */
@@ -871,6 +883,7 @@ describe('add_flowchart_node and update_flowchart_node', () => {
     const a = await add({ caption: 'A', isStart: true, outputs: [{ name: 'Next' }, { name: 'Other' }] });
     const b = await add({ caption: 'B' });
     const c = await add({ caption: 'C' });
+    expect((await call('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: (a.outputSids as number[])[0], targetNodeSid: b.generatedSid })).isError).toBe(false);
     return {
       a: a.generatedSid, aOut1: a.outputSids[0], aOut2: a.outputSids[1],
       b: b.generatedSid, c: c.generatedSid,
@@ -904,6 +917,94 @@ describe('add_flowchart_node and update_flowchart_node', () => {
       const { text, isError } = await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0 });
       expect(isError).toBe(true);
       expect(text).toBe('Flowchart "Graph" is registered in the project but flowcharts/Graph.json does not hold a flowchart: it has no list of nodes. Nothing was changed.');
+      expect(await snapshotFiles(project.dir)).toEqual(before);
+    });
+  }
+});
+
+describe('a stale file found before the first write of an output tool', () => {
+  it('add_flowchart_output passes the writer\'s refusal on as it worded it', async () => {
+    expect((await call('create_flowchart', { name: 'Graph' })).isError).toBe(false);
+    const node = parseResult((await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0 })).result);
+    const before = await snapshotFiles(project.dir);
+    vi.spyOn(project.idGen, 'generateSid').mockRejectedValue(new StaleFileError(staleText('flowcharts/Graph.json'), 'flowcharts/Graph.json'));
+    const { text, isError } = await call('add_flowchart_output', { flowchartName: 'Graph', nodeSid: node.generatedSid, name: 'Out' });
+    expect(isError).toBe(true);
+    expect(text).toBe(staleText('flowcharts/Graph.json'));
+    expect(await snapshotFiles(project.dir)).toEqual(before);
+  });
+});
+
+describe('every refusal of a tool that writes', () => {
+  type Case = [tool: string, args: (ids: Ids) => Record<string, unknown>, fragment: string];
+  interface Ids { a: number; aOut1: number; aOut2: number; b: number; note: number }
+
+  async function seed(): Promise<Ids> {
+    expect((await call('create_flowchart', { name: 'Graph' })).isError).toBe(false);
+    const add = async (args: Record<string, unknown>) => parseResult((await call('add_flowchart_node', { flowchartName: 'Graph', x: 0, y: 0, ...args })).result);
+    const a = await add({ caption: 'A', isStart: true, outputs: [{ name: 'Next' }, { name: 'Other' }] });
+    const b = await add({ caption: 'B' });
+    const note = await add({ caption: 'Note', valueType: 'comment' });
+    const connected = await call('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: a.outputSids[0], targetNodeSid: b.generatedSid });
+    expect(connected.isError).toBe(false);
+    await writeFile(flowchartFile(project.dir, 'Broken'), '{ broken');
+    await setFlowchartContainer(project, { items: ['Graph', 'Broken'], subfolders: [] });
+    return {
+      a: a.generatedSid, aOut1: a.outputSids[0], aOut2: a.outputSids[1],
+      b: b.generatedSid, note: note.generatedSid,
+    };
+  }
+
+  const G = 'Graph';
+  const cases: Case[] = [
+    ['add_flowchart_node', () => ({ flowchartName: 'Ghost', caption: 'N', x: 0, y: 0 }), 'Flowchart "Ghost" not found'],
+    ['add_flowchart_node', () => ({ flowchartName: 'graph', caption: 'N', x: 0, y: 0 }), 'Did you mean "Graph"?'],
+    ['add_flowchart_node', () => ({ flowchartName: 'Broken', caption: 'N', x: 0, y: 0 }), 'flowcharts/Broken.json is not valid JSON'],
+    ['add_flowchart_node', () => ({ flowchartName: G, caption: 'N', x: 0, y: 0, valueType: 'comment', isStart: true }), 'A comment node cannot be the start node.'],
+    ['add_flowchart_node', () => ({ flowchartName: G, caption: 'N', x: 0, y: 0, valueType: 'comment', outputs: [{ name: 'o' }] }), 'A comment node has no outputs'],
+    ['add_flowchart_node', () => ({ flowchartName: G, caption: 'N', x: 0, y: 0, bold: true }), 'apply to comment nodes only'],
+    ['add_flowchart_node', () => ({ flowchartName: G, caption: 'N', x: 0, y: 0, valueType: 'comment', commentText: 'a', commentHtml: 'b' }), 'Give commentText or commentHtml, not both.'],
+    ['update_flowchart_node', ids => ({ flowchartName: G, nodeSid: ids.a }), 'No updates provided.'],
+    ['update_flowchart_node', () => ({ flowchartName: G, nodeSid: 123, caption: 'X' }), 'Node 123 not found in flowchart "Graph".'],
+    ['update_flowchart_node', ids => ({ flowchartName: G, nodeSid: ids.a, valueType: 'comment' }), 'would be a comment and the start node'],
+    ['update_flowchart_node', ids => ({ flowchartName: G, nodeSid: ids.b, bold: true }), 'apply to comment nodes only.'],
+    ['update_flowchart_node', ids => ({ flowchartName: G, nodeSid: ids.b, valueType: 'comment' }), 'a comment node has none'],
+    ['update_flowchart_node', ids => ({ flowchartName: G, nodeSid: ids.note, isStart: true }), 'would be a comment and the start node'],
+    ['delete_flowchart_node', () => ({ flowchartName: G, nodeSid: 123 }), 'Node 123 not found in flowchart "Graph".'],
+    ['add_flowchart_output', () => ({ flowchartName: G, nodeSid: 123, name: 'o' }), 'Node 123 not found'],
+    ['add_flowchart_output', ids => ({ flowchartName: G, nodeSid: ids.note, name: 'o' }), 'a comment node has no outputs'],
+    ['add_flowchart_output', ids => ({ flowchartName: G, nodeSid: ids.a, name: 'o', index: 9 }), 'out of range'],
+    ['update_flowchart_output', () => ({ flowchartName: G, outputSid: 123, name: 'o' }), 'Output 123 not found'],
+    ['update_flowchart_output', ids => ({ flowchartName: G, outputSid: ids.aOut1 }), 'No updates provided.'],
+    ['delete_flowchart_output', () => ({ flowchartName: G, outputSid: 123 }), 'Output 123 not found'],
+    ['reorder_flowchart_outputs', () => ({ flowchartName: G, nodeSid: 123, outputSids: [1] }), 'Node 123 not found'],
+    ['reorder_flowchart_outputs', ids => ({ flowchartName: G, nodeSid: ids.a, outputSids: [ids.aOut1] }), 'must be a permutation'],
+    ['reorder_flowchart_outputs', ids => ({ flowchartName: G, nodeSid: ids.a, outputSids: [ids.aOut1, ids.aOut1] }), 'must be a permutation'],
+    ['connect_flowchart_nodes', () => ({ flowchartName: G, outputSid: 123, targetNodeSid: 1 }), 'Output 123 not found'],
+    ['connect_flowchart_nodes', ids => ({ flowchartName: G, outputSid: ids.aOut2, targetNodeSid: 123 }), 'Node 123 not found'],
+    ['connect_flowchart_nodes', ids => ({ flowchartName: G, outputSid: ids.aOut2, targetNodeSid: ids.note }), 'to comment node'],
+    ['connect_flowchart_nodes', ids => ({ flowchartName: G, outputSid: ids.aOut2, targetNodeSid: ids.a }), 'to itself'],
+    ['connect_flowchart_nodes', ids => ({ flowchartName: G, outputSid: ids.aOut1, targetNodeSid: ids.b }), 'already connected'],
+    ['disconnect_flowchart_nodes', () => ({ flowchartName: G, outputSid: 123 }), 'Output 123 not found'],
+    ['disconnect_flowchart_nodes', ids => ({ flowchartName: G, outputSid: ids.aOut2 }), 'is not connected to anything'],
+  ];
+
+  for (const [index, [tool, args, fragment]] of cases.entries()) {
+    it(`refuses ${tool} case ${index} with "${fragment}", changing nothing`, async () => {
+      const ids = await seed();
+      const before = await snapshotFiles(project.dir);
+      const spies = [
+        vi.spyOn(project.writer, 'replaceFile'),
+        vi.spyOn(project.writer, 'deleteFile'),
+        vi.spyOn(project.writer, 'updateProject'),
+      ];
+      const { text, isError } = await call(tool, args(ids));
+      expect(isError).toBe(true);
+      expect(text).toContain(fragment);
+      expect(text.endsWith(' Nothing was changed.')).toBe(true);
+      expect(text.match(/Nothing was changed\./g)).toHaveLength(1);
+      expect(text).not.toContain(project.dir);
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
       expect(await snapshotFiles(project.dir)).toEqual(before);
     });
   }

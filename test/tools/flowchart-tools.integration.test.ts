@@ -346,6 +346,235 @@ describe('flowchart tools (real project on disk)', () => {
     expect(result.warnings?.join(' ')).toContain('no start node');
   });
 
+  // ─── outputs ────────────────────────────────────────────
+
+  it('adds an output at the end or at a requested index', async () => {
+    await createGraph();
+    const node = await addNode({ caption: 'A', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }, { name: 'Option 3' }] });
+
+    const appended = parseResult(await server.callTool('add_flowchart_output', {
+      flowchartName: 'Graph', nodeSid: node.sid, name: 'Option 4', value: 'Value 4',
+    }));
+    const inserted = parseResult(await server.callTool('add_flowchart_output', {
+      flowchartName: 'Graph', nodeSid: node.sid, name: 'Option 2', index: 1, enabled: false, isDefault: true,
+    }));
+
+    const outputs = (await onDisk('Graph')).nodes[0].outputs;
+    expect(outputs.map(o => o.name)).toEqual(['Option 1', 'Option 2', 'Option 3', 'Option 4']);
+    expect(outputs[1]).toMatchObject({ sid: inserted.generatedSid, cnSID: null, value: '', enable: false, default: true });
+    expect(outputs[3].sid).toBe(appended.generatedSid);
+  });
+
+  it('rejects an insertion index past the end of the outputs array', async () => {
+    await createGraph();
+    const node = await addNode({ caption: 'A', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
+    const result = await server.callTool('add_flowchart_output', {
+      flowchartName: 'Graph', nodeSid: node.sid, name: 'Option 2', index: 5,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('out of range');
+    expect((await onDisk('Graph')).nodes[0].outputs).toHaveLength(1);
+  });
+
+  it('updates an output and preserves its connection', async () => {
+    await createGraph();
+    const parent = await addNode({ caption: 'Parent', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
+    const child = await addNode({ caption: 'Child', x: 400, y: 0 });
+    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: child.sid });
+
+    const result = parseResult(await server.callTool('update_flowchart_output', {
+      flowchartName: 'Graph', outputSid: parent.outputSids[0],
+      name: 'Condition', value: 'CheckIsHungry', enabled: false, isDefault: true,
+    }));
+    expect(result.success).toBe(true);
+
+    const output = (await onDisk('Graph')).nodes.find(n => n.sid === parent.sid)!.outputs[0];
+    expect(output).toEqual({
+      sid: parent.outputSids[0], cnSID: child.sid, name: 'Condition',
+      value: 'CheckIsHungry', enable: false, default: true,
+    });
+  });
+
+  it('deletes an output and undoes the connection it held', async () => {
+    await createGraph();
+    const parent = await addNode({ caption: 'Parent', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
+    const child = await addNode({ caption: 'Child', x: 400, y: 0 });
+    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: child.sid });
+
+    const result = parseResult(await server.callTool('delete_flowchart_output', {
+      flowchartName: 'Graph', outputSid: parent.outputSids[0],
+    }));
+    expect(result.success).toBe(true);
+    expect(result.warnings?.join(' ')).toContain(String(child.sid));
+
+    const data = await onDisk('Graph');
+    expect(data.nodes.find(n => n.sid === parent.sid)!.outputs).toEqual([]);
+    expect(data.nodes.find(n => n.sid === parent.sid)!.nodeSIDs).toEqual([]);
+    expect(data.nodes.find(n => n.sid === child.sid)!.pnSIDs).toEqual([]);
+    expect(data.nodes.find(n => n.sid === child.sid)!.poSIDs).toEqual([]);
+  });
+
+  it('reorders outputs and rejects anything that is not a permutation', async () => {
+    await createGraph();
+    const node = await addNode({
+      caption: 'A', x: 0, y: 0, isStart: true,
+      outputs: [{ name: 'Option 1' }, { name: 'Option 2' }, { name: 'Option 3' }],
+    });
+    const [a, b, c] = node.outputSids;
+
+    const tooShort = await server.callTool('reorder_flowchart_outputs', {
+      flowchartName: 'Graph', nodeSid: node.sid, outputSids: [b, a],
+    });
+    expect(tooShort.isError).toBe(true);
+    expect(tooShort.content[0].text).toContain('must be a permutation');
+
+    const foreign = await server.callTool('reorder_flowchart_outputs', {
+      flowchartName: 'Graph', nodeSid: node.sid, outputSids: [a, b, 999],
+    });
+    expect(foreign.isError).toBe(true);
+
+    const duplicated = await server.callTool('reorder_flowchart_outputs', {
+      flowchartName: 'Graph', nodeSid: node.sid, outputSids: [a, a, b],
+    });
+    expect(duplicated.isError).toBe(true);
+
+    // Nothing was written by any of the rejected calls.
+    expect((await onDisk('Graph')).nodes[0].outputs.map(o => o.sid)).toEqual([a, b, c]);
+
+    const ok = parseResult(await server.callTool('reorder_flowchart_outputs', {
+      flowchartName: 'Graph', nodeSid: node.sid, outputSids: [c, a, b],
+    }));
+    expect(ok.success).toBe(true);
+    const outputs = (await onDisk('Graph')).nodes[0].outputs;
+    expect(outputs.map(o => o.sid)).toEqual([c, a, b]);
+    expect(outputs.map(o => o.name)).toEqual(['Option 3', 'Option 1', 'Option 2']);
+  });
+
+  // ─── connections ────────────────────────────────────────
+
+  it('connects an output and updates cnSID, pnSIDs, poSIDs and nodeSIDs', async () => {
+    await createGraph();
+    const parent = await addNode({ caption: 'Parent', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
+    const child = await addNode({ caption: 'Child', x: 400, y: 0 });
+
+    const result = parseResult(await server.callTool('connect_flowchart_nodes', {
+      flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: child.sid,
+    }));
+    expect(result.success).toBe(true);
+    expect(result.action).toBe('connected');
+
+    const data = await onDisk('Graph');
+    const parentNode = data.nodes.find(n => n.sid === parent.sid)!;
+    const childNode = data.nodes.find(n => n.sid === child.sid)!;
+    expect(parentNode.outputs[0].cnSID).toBe(child.sid);
+    expect(parentNode.nodeSIDs).toEqual([child.sid]);
+    expect(childNode.pnSIDs).toEqual([parent.sid]);
+    expect(childNode.poSIDs).toEqual([parent.outputSids[0]]);
+  });
+
+  it('refuses to connect a node to itself', async () => {
+    await createGraph();
+    const node = await addNode({ caption: 'A', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
+
+    const result = await server.callTool('connect_flowchart_nodes', {
+      flowchartName: 'Graph', outputSid: node.outputSids[0], targetNodeSid: node.sid,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('to itself');
+
+    const written = (await onDisk('Graph')).nodes[0];
+    expect(written.outputs[0].cnSID).toBeNull();
+    expect(written.nodeSIDs).toEqual([]);
+    expect(written.pnSIDs).toEqual([]);
+    expect(written.poSIDs).toEqual([]);
+  });
+
+  it('refuses to connect an output that is already connected', async () => {
+    await createGraph();
+    const parent = await addNode({ caption: 'Parent', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
+    const child = await addNode({ caption: 'Child', x: 400, y: 0 });
+    const other = await addNode({ caption: 'Other', x: 400, y: 300 });
+    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: child.sid });
+
+    const result = await server.callTool('connect_flowchart_nodes', {
+      flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: other.sid,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already connected');
+    expect(result.content[0].text).toContain('disconnect_flowchart_nodes');
+
+    const data = await onDisk('Graph');
+    expect(data.nodes.find(n => n.sid === parent.sid)!.outputs[0].cnSID).toBe(child.sid);
+    expect(data.nodes.find(n => n.sid === other.sid)!.pnSIDs).toEqual([]);
+  });
+
+  it('errors when the connection target node does not exist', async () => {
+    await createGraph();
+    const node = await addNode({ caption: 'A', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
+    const result = await server.callTool('connect_flowchart_nodes', {
+      flowchartName: 'Graph', outputSid: node.outputSids[0], targetNodeSid: 987654,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Node 987654 not found');
+  });
+
+  it('disconnects exactly one connection, leaving a second one between the same two nodes intact', async () => {
+    await createGraph();
+    const parent = await addNode({
+      caption: 'Parent', x: 0, y: 0, isStart: true,
+      outputs: [{ name: 'Option 1' }, { name: 'Option 2' }],
+    });
+    const child = await addNode({ caption: 'Child', x: 400, y: 0 });
+    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: child.sid });
+    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[1], targetNodeSid: child.sid });
+
+    const result = parseResult(await server.callTool('disconnect_flowchart_nodes', {
+      flowchartName: 'Graph', outputSid: parent.outputSids[0],
+    }));
+    expect(result.success).toBe(true);
+    expect(result.formerTargetNodeSid).toBe(child.sid);
+
+    const data = await onDisk('Graph');
+    const parentNode = data.nodes.find(n => n.sid === parent.sid)!;
+    const childNode = data.nodes.find(n => n.sid === child.sid)!;
+    expect(parentNode.outputs[0].cnSID).toBeNull();
+    expect(parentNode.outputs[1].cnSID).toBe(child.sid);
+    // The child is still a child: the second connection still points at it.
+    expect(parentNode.nodeSIDs).toEqual([child.sid]);
+    expect(childNode.pnSIDs).toEqual([parent.sid]);
+    expect(childNode.poSIDs).toEqual([parent.outputSids[1]]);
+
+    // Disconnecting the second one clears the child link entirely.
+    await server.callTool('disconnect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[1] });
+    const after = await onDisk('Graph');
+    expect(after.nodes.find(n => n.sid === parent.sid)!.nodeSIDs).toEqual([]);
+    expect(after.nodes.find(n => n.sid === child.sid)!.pnSIDs).toEqual([]);
+    expect(after.nodes.find(n => n.sid === child.sid)!.poSIDs).toEqual([]);
+  });
+
+  it('errors when disconnecting an output that is not connected', async () => {
+    await createGraph();
+    const node = await addNode({ caption: 'A', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
+    const result = await server.callTool('disconnect_flowchart_nodes', {
+      flowchartName: 'Graph', outputSid: node.outputSids[0],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not connected');
+  });
+
+  it('backs the flowchart file up before every node mutation', async () => {
+    await createGraph();
+    const node = await addNode({ caption: 'A', x: 0, y: 0, isStart: true });
+    const bak = join(tmpDir, 'flowcharts', 'Graph.json.bak');
+    await expect(stat(bak)).resolves.toBeDefined();
+
+    await server.callTool('update_flowchart_node', { flowchartName: 'Graph', nodeSid: node.sid, caption: 'B' });
+    // The backup holds the state before the last write.
+    const previous = JSON.parse(await readFile(bak, 'utf-8')) as Flowchart;
+    expect(previous.nodes[0].c).toBe('A');
+    expect((await onDisk('Graph')).nodes[0].c).toBe('B');
+  });
+
   // ─── file names on a case-insensitive file system ────────
 
   describe.skipIf(!caseInsensitive)('when the file on disk is spelled differently from the registered name', () => {

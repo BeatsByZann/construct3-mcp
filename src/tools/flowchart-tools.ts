@@ -31,10 +31,13 @@ import {
   createFlowchartData,
   createOutput,
   defaultedWarning,
+  disconnectOutput,
   findNode,
+  findOutput,
   hasCommentInput,
   locateFlowcharts,
   nodeNotFoundMessage,
+  outputNotFoundMessage,
   removeNodeReferences,
   startNodeWarnings,
   type FlowchartNode,
@@ -182,6 +185,47 @@ const updateNodeShape = {
 const deleteNodeShape = {
   flowchartName: z.string().max(200).describe('Flowchart name'),
   nodeSid: z.number().int().describe('SID of the node to delete'),
+};
+
+const addOutputShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  nodeSid: z.number().int().describe('SID of the node to add the output to'),
+  name: z.string().min(1).max(200).describe('Output pin name'),
+  value: z.string().max(1000).optional().default('').describe('Output value (default: empty string)'),
+  enabled: z.boolean().optional().default(true).describe('Enable the output (default: true)'),
+  isDefault: z.boolean().optional().default(false).describe('Mark the output as the default (default: false)'),
+  index: z.number().int().min(0).optional().describe('Insertion index in the outputs array (default: append)'),
+};
+
+const updateOutputShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  outputSid: z.number().int().describe('SID of the output to update'),
+  name: z.string().min(1).max(200).optional().describe('New output pin name'),
+  value: z.string().max(1000).optional().describe('New output value'),
+  enabled: z.boolean().optional().describe('Enable/disable the output'),
+  isDefault: z.boolean().optional().describe('Mark/unmark the output as the default'),
+};
+
+const deleteOutputShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  outputSid: z.number().int().describe('SID of the output to delete'),
+};
+
+const reorderShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  nodeSid: z.number().int().describe('SID of the node whose outputs to reorder'),
+  outputSids: z.array(z.number().int()).min(1).max(200).describe('The node\'s output SIDs in their new order'),
+};
+
+const connectShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  outputSid: z.number().int().describe('SID of the source output pin'),
+  targetNodeSid: z.number().int().describe('SID of the node to connect to'),
+};
+
+const disconnectShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  outputSid: z.number().int().describe('SID of the output pin to disconnect'),
 };
 
 // ─── Registration ──────────────────────────────────────────
@@ -519,6 +563,258 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[delete_flowchart_node] failed:', error);
+        return stoppedBeforeWrite(error);
+      }
+    }
+  );
+
+  // ─── add_flowchart_output ───────────────────────────────
+
+  server.registerTool(
+    'add_flowchart_output',
+    {
+      description: 'Add an output pin to a flowchart node. The pin is created unconnected.',
+      inputSchema: strictArguments('add_flowchart_output', addOutputShape),
+    },
+    async (args) => {
+      try {
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
+
+        const node = findNode(data, args.nodeSid);
+        if (!node) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.nodeSid));
+        if (node.ty === 'comment') return refuse(`Node ${node.sid} is a comment node, and a comment node has no outputs.`);
+        if (!Array.isArray(node.outputs)) node.outputs = [];
+
+        if (args.index !== undefined && args.index > node.outputs.length) {
+          return refuse(`Index ${args.index} is out of range: node ${node.sid} has ${node.outputs.length} output(s), so the highest valid index is ${node.outputs.length}.`);
+        }
+
+        const outputSid = await idGen.generateSid(reader);
+        const output = createOutput(outputSid, args.name, args.value, args.enabled, args.isDefault);
+        if (args.index === undefined) node.outputs.push(output);
+        else node.outputs.splice(args.index, 0, output);
+
+        return await saveAndReport(flowchart, {
+          success: true,
+          entity: `${args.flowchartName}/${node.sid}/${outputSid}`,
+          category: 'flowchart-output',
+          action: 'created',
+          generatedSid: outputSid,
+        });
+      } catch (error) {
+        console.error('[add_flowchart_output] failed:', error);
+        return stoppedBeforeWrite(error);
+      }
+    }
+  );
+
+  // ─── update_flowchart_output ────────────────────────────
+
+  server.registerTool(
+    'update_flowchart_output',
+    {
+      description: 'Update an output pin. Its connection (cnSID) is preserved; use connect/disconnect_flowchart_nodes to change that.',
+      inputSchema: strictArguments('update_flowchart_output', updateOutputShape),
+    },
+    async (args) => {
+      try {
+        const hasUpdates = args.name !== undefined || args.value !== undefined ||
+          args.enabled !== undefined || args.isDefault !== undefined;
+        if (!hasUpdates) return refuse('No updates provided. Specify at least one of: name, value, enabled, isDefault.');
+
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
+
+        const found = findOutput(data, args.outputSid);
+        if (!found) return refuse(outputNotFoundMessage(data, args.flowchartName, args.outputSid));
+
+        if (args.name !== undefined) found.output.name = args.name;
+        if (args.value !== undefined) found.output.value = args.value;
+        if (args.enabled !== undefined) found.output.enable = args.enabled;
+        if (args.isDefault !== undefined) found.output.default = args.isDefault;
+
+        return await saveAndReport(flowchart, {
+          success: true,
+          entity: `${args.flowchartName}/${found.node.sid}/${args.outputSid}`,
+          category: 'flowchart-output',
+          action: 'updated',
+        });
+      } catch (error) {
+        console.error('[update_flowchart_output] failed:', error);
+        return stoppedBeforeWrite(error);
+      }
+    }
+  );
+
+  // ─── delete_flowchart_output ────────────────────────────
+
+  server.registerTool(
+    'delete_flowchart_output',
+    {
+      description: 'Delete an output pin, first undoing any connection it holds',
+      inputSchema: strictArguments('delete_flowchart_output', deleteOutputShape),
+    },
+    async (args) => {
+      try {
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
+
+        const found = findOutput(data, args.outputSid);
+        if (!found) return refuse(outputNotFoundMessage(data, args.flowchartName, args.outputSid));
+
+        const formerTarget = disconnectOutput(data, found.node, found.output);
+        found.node.outputs.splice(found.index, 1);
+
+        return await saveAndReport(flowchart, {
+          success: true,
+          entity: `${args.flowchartName}/${found.node.sid}/${args.outputSid}`,
+          category: 'flowchart-output',
+          action: 'deleted',
+          ...(formerTarget !== null
+            ? { warnings: [`The output was connected to node ${formerTarget}; that connection was removed too.`] }
+            : {}),
+        });
+      } catch (error) {
+        console.error('[delete_flowchart_output] failed:', error);
+        return stoppedBeforeWrite(error);
+      }
+    }
+  );
+
+  // ─── reorder_flowchart_outputs ──────────────────────────
+
+  server.registerTool(
+    'reorder_flowchart_outputs',
+    {
+      description: 'Reorder a node\'s output pins. outputSids must be a permutation of the node\'s current output SIDs. The new order is the order of the outputs array in the flowchart file. Whether Construct 3 runs the outputs in that order was not observed, so check the flowchart\'s behavior after a reorder.',
+      inputSchema: strictArguments('reorder_flowchart_outputs', reorderShape),
+    },
+    async (args) => {
+      try {
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
+
+        const node = findNode(data, args.nodeSid);
+        if (!node) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.nodeSid));
+
+        const current = (node.outputs ?? []).map(o => o.sid);
+        const sorted = (sids: number[]) => [...sids].sort((x, y) => x - y).join(',');
+        if (args.outputSids.length !== current.length || sorted(args.outputSids) !== sorted(current)) {
+          return refuse(
+            `outputSids must be a permutation of node ${node.sid}'s outputs. ` +
+            `Expected exactly these ${current.length} SID(s): ${current.join(', ')}; got ${args.outputSids.join(', ')}.`
+          );
+        }
+
+        const bySid = new Map(node.outputs.map(o => [o.sid, o]));
+        node.outputs = args.outputSids.map(sid => bySid.get(sid) as FlowchartOutput);
+
+        return await saveAndReport(flowchart, {
+          success: true,
+          entity: `${args.flowchartName}/${node.sid}`,
+          category: 'flowchart-output',
+          action: 'reordered',
+        });
+      } catch (error) {
+        console.error('[reorder_flowchart_outputs] failed:', error);
+        return stoppedBeforeWrite(error);
+      }
+    }
+  );
+
+  // ─── connect_flowchart_nodes ────────────────────────────
+
+  server.registerTool(
+    'connect_flowchart_nodes',
+    {
+      description: 'Connect an output pin to a target node: sets the output\'s cnSID and updates the target\'s pnSIDs/poSIDs and the source\'s nodeSIDs',
+      inputSchema: strictArguments('connect_flowchart_nodes', connectShape),
+    },
+    async (args) => {
+      try {
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
+
+        const found = findOutput(data, args.outputSid);
+        if (!found) return refuse(outputNotFoundMessage(data, args.flowchartName, args.outputSid));
+        const { node, output } = found;
+
+        const target = findNode(data, args.targetNodeSid);
+        if (!target) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.targetNodeSid));
+
+        if (node.ty === 'comment' || target.ty === 'comment') {
+          return refuse(`Cannot connect ${node.ty === 'comment' ? `from comment node ${node.sid}` : `to comment node ${target.sid}`}: a comment node has no connections.`);
+        }
+        if (node.sid === args.targetNodeSid) {
+          return refuse(`Cannot connect node ${node.sid} to itself: output ${args.outputSid} belongs to that same node.`);
+        }
+        if (output.cnSID !== null && output.cnSID !== undefined) {
+          return refuse(`Output ${args.outputSid} is already connected to node ${output.cnSID}. Call disconnect_flowchart_nodes first.`);
+        }
+
+        output.cnSID = target.sid;
+        if (!Array.isArray(target.pnSIDs)) target.pnSIDs = [];
+        if (!Array.isArray(target.poSIDs)) target.poSIDs = [];
+        // pnSIDs and poSIDs stay parallel, one entry per connection.
+        target.pnSIDs.push(node.sid);
+        target.poSIDs.push(output.sid);
+        if (!Array.isArray(node.nodeSIDs)) node.nodeSIDs = [];
+        if (!node.nodeSIDs.includes(target.sid)) node.nodeSIDs.push(target.sid);
+
+        return await saveAndReport(flowchart, {
+          success: true,
+          entity: `${args.flowchartName}/${node.sid}/${args.outputSid}`,
+          category: 'flowchart-connection',
+          action: 'connected',
+        });
+      } catch (error) {
+        console.error('[connect_flowchart_nodes] failed:', error);
+        return stoppedBeforeWrite(error);
+      }
+    }
+  );
+
+  // ─── disconnect_flowchart_nodes ─────────────────────────
+
+  server.registerTool(
+    'disconnect_flowchart_nodes',
+    {
+      description: 'Disconnect an output pin, leaving any other connection between the same two nodes intact',
+      inputSchema: strictArguments('disconnect_flowchart_nodes', disconnectShape),
+    },
+    async (args) => {
+      try {
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
+
+        const found = findOutput(data, args.outputSid);
+        if (!found) return refuse(outputNotFoundMessage(data, args.flowchartName, args.outputSid));
+        if (found.output.cnSID === null || found.output.cnSID === undefined) {
+          return refuse(`Output ${args.outputSid} is not connected to anything.`);
+        }
+
+        const formerTarget = disconnectOutput(data, found.node, found.output);
+        return await saveAndReport(flowchart, {
+          success: true,
+          entity: `${args.flowchartName}/${found.node.sid}/${args.outputSid}`,
+          category: 'flowchart-connection',
+          action: 'disconnected',
+        }, { formerTargetNodeSid: formerTarget });
+      } catch (error) {
+        console.error('[disconnect_flowchart_nodes] failed:', error);
         return stoppedBeforeWrite(error);
       }
     }

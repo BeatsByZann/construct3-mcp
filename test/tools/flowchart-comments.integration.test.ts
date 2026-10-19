@@ -206,6 +206,32 @@ describe('flowchart comment nodes and value types (real project on disk)', () =>
     expect(after[1].outputs[0].cnSID).toBeNull();
   });
 
+  it('refuses outputs and connections on comment nodes', async () => {
+    const note = parseResult(await add({ valueType: 'comment' }));
+    const other = parseResult(await add({ caption: 'Other', outputs: [{ name: 'Out' }] }));
+
+    const output = await server.callTool('add_flowchart_output', { flowchartName: 'Graph', nodeSid: note.generatedSid, name: 'Out' });
+    expect(output.isError).toBe(true);
+    expect(output.content[0].text).toContain('has no outputs');
+
+    const toComment = await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: other.outputSids[0], targetNodeSid: note.generatedSid });
+    expect(toComment.isError).toBe(true);
+    expect(toComment.content[0].text).toContain('to comment node');
+
+    // A comment that somehow carries an output still cannot be wired from.
+    const path = flowchartFile(tmpDir, 'Graph');
+    const data = JSON.parse(await readFile(path, 'utf-8')) as Flowchart;
+    data.nodes[0].outputs = [{ sid: 123456789012345, cnSID: null, name: 'Stray', value: '', enable: true, default: false }];
+    await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
+    const fromComment = await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: 123456789012345, targetNodeSid: other.generatedSid });
+    expect(fromComment.isError).toBe(true);
+    expect(fromComment.content[0].text).toContain('from comment node');
+
+    const after = await nodes();
+    expect(after[1].outputs[0].cnSID).toBeNull();
+    expect(after[0].pnSIDs).toEqual([]);
+  });
+
   it('refuses to make a node with outputs or connections a comment', async () => {
     const parent = parseResult(await add({ caption: 'A', outputs: [{ name: 'Next' }] }));
     const child = parseResult(await add({ caption: 'B' }));
