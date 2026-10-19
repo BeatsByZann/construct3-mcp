@@ -9,6 +9,7 @@ import { runInToolCall } from '../../src/construct3/disk-state.js';
 import { createFlowchartData, createOutput, type Flowchart } from '../../src/construct3/flowchart-model.js';
 import {
   describeError,
+  flowchartFilePath,
   flowchartLabel,
   isRegistered,
   openFlowchart,
@@ -83,13 +84,13 @@ describe('openFlowchart', () => {
     ['an array', async () => { await registerByHand(project, 'Graph', '[]'); }, 'does not hold a flowchart'],
     ['an object without nodes', async () => { await registerByHand(project, 'Graph', '{"name":"x"}'); }, 'does not hold a flowchart'],
     ['nodes that are not a list', async () => { await registerByHand(project, 'Graph', '{"nodes":{}}'); }, 'it has no list of nodes'],
-  ['nodes that are text', async () => { await registerByHand(project, 'Graph', '{"nodes":"x"}'); }, 'it has no list of nodes'],
-  ['a node that is a number', async () => { await registerByHand(project, 'Graph', '{"nodes":[{"sid":1},5]}'); }, 'a node in it is not an object'],
-  ['a node that is null', async () => { await registerByHand(project, 'Graph', '{"nodes":[null]}'); }, 'a node in it is not an object'],
-  ['a node that is a list', async () => { await registerByHand(project, 'Graph', '{"nodes":[[]]}'); }, 'a node in it is not an object'],
-  ['outputs that are not a list', async () => { await registerByHand(project, 'Graph', '{"nodes":[{"sid":1,"outputs":{}}]}'); }, 'the outputs of a node are not a list'],
-  ['an output that is a number', async () => { await registerByHand(project, 'Graph', '{"nodes":[{"sid":1,"outputs":[{"sid":2},7]}]}'); }, 'an output in it is not an object'],
-  ['an output that is null', async () => { await registerByHand(project, 'Graph', '{"nodes":[{"sid":1,"outputs":[null]}]}'); }, 'an output in it is not an object'],
+    ['nodes that are text', async () => { await registerByHand(project, 'Graph', '{"nodes":"x"}'); }, 'it has no list of nodes'],
+    ['a node that is a number', async () => { await registerByHand(project, 'Graph', '{"nodes":[{"sid":1},5]}'); }, 'a node in it is not an object'],
+    ['a node that is null', async () => { await registerByHand(project, 'Graph', '{"nodes":[null]}'); }, 'a node in it is not an object'],
+    ['a node that is a list', async () => { await registerByHand(project, 'Graph', '{"nodes":[[]]}'); }, 'a node in it is not an object'],
+    ['outputs that are not a list', async () => { await registerByHand(project, 'Graph', '{"nodes":[{"sid":1,"outputs":{}}]}'); }, 'the outputs of a node are not a list'],
+    ['an output that is a number', async () => { await registerByHand(project, 'Graph', '{"nodes":[{"sid":1,"outputs":[{"sid":2},7]}]}'); }, 'an output in it is not an object'],
+    ['an output that is null', async () => { await registerByHand(project, 'Graph', '{"nodes":[{"sid":1,"outputs":[null]}]}'); }, 'an output in it is not an object'],
   ];
   for (const [title, arrange, fragment] of refusals) {
     it(`refuses ${title}, without the project folder in the text`, async () => {
@@ -271,6 +272,15 @@ describe('the project.c3proj registration', () => {
     expect(project.flowcharts).toEqual({ items: ['A'], subfolders: [{ items: ['B'], subfolders: [], name: 'X' }] });
   });
 
+  it('creates the items list of a root and of a named folder that has none', () => {
+    const root: { flowcharts?: unknown } = { flowcharts: { subfolders: [] } };
+    expect(registerFlowchart(root, 'A', [])).toEqual({ container: false, foldersMade: 0 });
+    expect(root.flowcharts).toEqual({ subfolders: [], items: ['A'] });
+    const named: { flowcharts?: unknown } = { flowcharts: { items: [], subfolders: [{ name: 'X', subfolders: [] }] } };
+    expect(registerFlowchart(named, 'B', ['X'])).toEqual({ container: false, foldersMade: 0 });
+    expect(named.flowcharts).toEqual({ items: [], subfolders: [{ name: 'X', subfolders: [], items: ['B'] }] });
+  });
+
   it('says whether a name is registered in exactly one folder', () => {
     const project = { flowcharts: { items: ['Root'], subfolders: [{ items: ['A'], subfolders: [], name: 'AI' }] } };
     expect(isRegistered(project, 'Root', [])).toBe(true);
@@ -317,6 +327,14 @@ describe('withdrawing a registration', () => {
     expect(project.flowcharts).toEqual({ items: ['Saved'], subfolders: [] });
     expect(withdrawFlowchart(project, 'Graph', [], made)).toBe(false);
     expect(project.flowcharts).toEqual({ items: ['Saved'], subfolders: [] });
+  });
+});
+
+describe('flowchartFilePath', () => {
+  it('stays inside the flowcharts folder', () => {
+    expect(flowchartFilePath(project.dir, 'G', ['A'])).toBe(flowchartFile(project.dir, 'G', ['A']));
+    expect(() => flowchartFilePath(project.dir, 'x', ['..'])).toThrow('Path traversal detected');
+    expect(() => flowchartFilePath(project.dir, '../x', [])).toThrow('Path traversal detected');
   });
 });
 
