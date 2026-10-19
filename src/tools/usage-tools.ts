@@ -19,7 +19,8 @@ import {
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm, type RawTextTerm } from '../construct3/raw-text-search.js';
 import { nameKey } from '../construct3/names.js';
-import { forEachLayoutInstance } from '../construct3/layers.js';
+import { allLayers, forEachLayoutInstance } from '../construct3/layers.js';
+import { findEffectUses } from '../construct3/analyzers/effect-uses.js';
 import { registeredScriptFiles } from '../construct3/script-files.js';
 import { notFoundError, toolError, toolResult } from './shared.js';
 import { withProjectSync } from './project-sync.js';
@@ -332,6 +333,55 @@ function collectStrings(
   }
 }
 
+/** An entry of a `behaviorTypes` or `effectTypes` list: its name and its addon id. */
+interface DeclaredEntry { name: string; id?: string }
+
+/** The named entries of `holder[key]`, with the addon id they hold under `idKey`. */
+function declaredEntries(holder: unknown, key: 'behaviorTypes' | 'effectTypes', idKey: 'behaviorId' | 'effectId'): DeclaredEntry[] {
+  const list = typeof holder === 'object' && holder !== null ? (holder as Record<string, unknown>)[key] : undefined;
+  if (!Array.isArray(list)) return [];
+  const entries: DeclaredEntry[] = [];
+  for (const item of list) {
+    if (typeof item !== 'object' || item === null) continue;
+    const { name, [idKey]: id } = item as Record<string, unknown>;
+    if (typeof name === 'string') entries.push({ name, ...(typeof id === 'string' ? { id } : {}) });
+  }
+  return entries;
+}
+
+/** A declaration on an object type or family that a query matched. */
+interface Declaration { owner: string; ownerKind: 'object' | 'family'; name: string; id?: string }
+
+/**
+ * The classes (object types, families) that a name declared on an owner
+ * reaches, as nameKey → nameKeys of the names: the owner itself and, for a
+ * family, its members.
+ */
+function declarationScopes(declarations: readonly Declaration[], members: ReadonlyMap<string, readonly string[]>): Map<string, Set<string>> {
+  const scopes = new Map<string, Set<string>>();
+  const add = (cls: string, name: string): void => {
+    const key = nameKey(cls);
+    if (!scopes.has(key)) scopes.set(key, new Set());
+    scopes.get(key)!.add(nameKey(name));
+  };
+  for (const d of declarations) {
+    add(d.owner, d.name);
+    if (d.ownerKind === 'family') for (const member of members.get(d.owner) ?? []) add(member, d.name);
+  }
+  return scopes;
+}
+
+/** `a, b, c` or `a, b, c and 3 more`, for the names a refusal offers. */
+function someNames(names: readonly string[], max = 20): string {
+  if (names.length === 0) return '(none)';
+  return names.length > max ? `${names.slice(0, max).join(', ')} and ${names.length - max} more` : names.join(', ');
+}
+
+/** The members of every family, from the index (family name as registered). */
+function familyMembersOf(index: Pick<ProjectIndex, 'familyMembers'>): Map<string, string[]> {
+  return new Map([...index.familyMembers].map(([family, members]) => [family, Array.isArray(members) ? members.filter(m => typeof m === 'string') : []]));
+}
+
 /** Register the read-only usage and inventory tools. */
 export function registerUsageTools(mcpServer: McpServer, reader: Construct3ProjectReader): void {
   const server = withProjectSync(mcpServer, reader);
@@ -588,6 +638,193 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           return toolError('The search exceeded the node limit. Nothing was returned.');
         }
         return toolError(`Error searching the project: ${error instanceof Error ? error.message : String(error)}. Nothing was returned.`);
+      }
+    },
+  );
+
+  const ALL_CATEGORIES: EntityCategory[] = ['objectTypes', 'families', 'eventSheets', 'layouts'];
+
+  server.tool(
+    'find_behavior_usage',
+    'Find where a behavior is used: the object types and families that declare it (declarations), the event conditions, actions and expressions that use it through the owner, the members of a declaring family or the family itself (eventReferences, sheets), and the placed instances with their own settings for it (instanceSettings). Names are compared ignoring letter case. References inside script actions and script files are not listed; use search_project. An event sheet the index only partly walked (partlyIndexedSheets), or a file that could not be parsed (unscannedFiles), makes complete false.',
+    {
+      behaviorName: z.string().max(200).optional().describe('Behavior name as declared on the object type or family (e.g. "Platform"), any letter case'),
+      behaviorId: z.string().max(200).optional().describe('Behavior addon id (e.g. "Platform", "Sin"); matches every declaration of that addon'),
+    },
+    async (args) => {
+      try {
+        if (!args.behaviorName && !args.behaviorId) {
+          return toolError('Specify behaviorName, behaviorId, or both. Nothing was returned.');
+        }
+        const wanted = (entry: DeclaredEntry): boolean =>
+          (!args.behaviorName || nameKey(entry.name) === nameKey(args.behaviorName)) && (!args.behaviorId || entry.id === args.behaviorId);
+
+        const index = await getProjectIndex(reader);
+        const declarations: Declaration[] = [];
+        for (const [owner, data] of await reader.readAllObjectTypes()) {
+          for (const entry of declaredEntries(data, 'behaviorTypes', 'behaviorId')) {
+            if (wanted(entry)) declarations.push({ owner, ownerKind: 'object', ...entry });
+          }
+        }
+        for (const [owner, data] of await reader.readAllFamilies()) {
+          for (const entry of declaredEntries(data, 'behaviorTypes', 'behaviorId')) {
+            if (wanted(entry)) declarations.push({ owner, ownerKind: 'family', ...entry });
+          }
+        }
+        const scopes = declarationScopes(declarations, familyMembersOf(index));
+
+        const eventReferences = index.memberReferences.filter(ref =>
+          ref.kind === 'behavior' && scopes.get(nameKey(ref.objectClass))?.has(nameKey(ref.name)));
+
+        const instanceSettings: Array<{ layout: string; uid: number; type: string; behavior: string; properties: Record<string, unknown> }> = [];
+        for (const [layoutName, layout] of await reader.readAllLayouts()) {
+          forEachLayoutInstance(layout, instance => {
+            const names = scopes.get(nameKey(instance.type));
+            if (!names || typeof instance.behaviors !== 'object' || instance.behaviors === null) return;
+            for (const [behavior, state] of Object.entries(instance.behaviors)) {
+              const properties = (state as { properties?: unknown } | null)?.properties;
+              if (names.has(nameKey(behavior)) && typeof properties === 'object' && properties !== null && Object.keys(properties).length > 0) {
+                instanceSettings.push({ layout: layoutName, uid: instance.uid, type: instance.type, behavior, properties: properties as Record<string, unknown> });
+              }
+            }
+          });
+        }
+
+        const names = args.behaviorName ? [args.behaviorName] : [...new Set(declarations.map(d => d.name))];
+        const status = await completeness(
+          reader, index.unscannedFiles, ALL_CATEGORIES,
+          names.length > 0 ? [names.map(name => nameTerm(name))] : [],
+          { partlyIndexedSheets: partlyIndexed(index) },
+        );
+        return toolResult({
+          declarations,
+          eventReferences,
+          eventReferenceCount: eventReferences.length,
+          sheets: [...new Set(eventReferences.map(ref => ref.eventSheet))],
+          instanceSettings,
+          ...status,
+        });
+      } catch (error) {
+        return toolError(`Error finding behavior usage: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  server.tool(
+    'find_effect_usage',
+    'Find where an effect is used: the object types, families, layouts and layers that list it (uses), the placed instances with a state for it (instanceStates), and the event conditions and actions that name it through its object type, a declaring family or a member of one (eventReferences). A use through a family member whose own effect has the same name is marked nameAlsoDeclaredBy. A use whose effect parameter is not a quoted name is listed in unresolvedEventReferences. Names are compared ignoring letter case. Layer and layout effect uses in System actions are not listed (notFollowed). A file that could not be parsed (unscannedFiles) makes complete false.',
+    {
+      effectId: z.string().max(200).optional().describe('Effect addon id (e.g. "hsladjust")'),
+      effectName: z.string().max(200).optional().describe('Effect name as listed on the target, any letter case'),
+    },
+    async (args) => {
+      try {
+        if (!args.effectId && !args.effectName) {
+          return toolError('Specify effectId, effectName, or both. Nothing was returned.');
+        }
+        const wanted = (entry: DeclaredEntry): boolean =>
+          (!args.effectId || entry.id === args.effectId) && (!args.effectName || nameKey(entry.name) === nameKey(args.effectName));
+
+        const index = await getProjectIndex(reader);
+        const objectTypes = await reader.readAllObjectTypes();
+        const declarations: Declaration[] = [];
+        /** Effect names each object type declares itself, whatever the query, as nameKeys. */
+        const ownNames = new Map<string, Set<string>>();
+        const uses: Array<{ targetType: 'objectType' | 'family' | 'layout' | 'layer'; target: string; layout?: string; name: string; effectId?: string }> = [];
+        const named: string[] = [];
+        for (const [owner, data] of objectTypes) {
+          const own = new Set<string>();
+          for (const entry of declaredEntries(data, 'effectTypes', 'effectId')) {
+            own.add(nameKey(entry.name));
+            if (!wanted(entry)) continue;
+            declarations.push({ owner, ownerKind: 'object', ...entry });
+            uses.push({ targetType: 'objectType', target: owner, name: entry.name, ...(entry.id !== undefined ? { effectId: entry.id } : {}) });
+            named.push(entry.name);
+          }
+          ownNames.set(nameKey(owner), own);
+        }
+        for (const [owner, data] of await reader.readAllFamilies()) {
+          for (const entry of declaredEntries(data, 'effectTypes', 'effectId')) {
+            if (!wanted(entry)) continue;
+            declarations.push({ owner, ownerKind: 'family', ...entry });
+            uses.push({ targetType: 'family', target: owner, name: entry.name, ...(entry.id !== undefined ? { effectId: entry.id } : {}) });
+            named.push(entry.name);
+          }
+        }
+        const members = familyMembersOf(index);
+        const scopes = declarationScopes(declarations, members);
+        /** Classes that get a wanted effect through a family, with the names, as nameKeys. */
+        const viaFamily = declarationScopes(declarations.filter(d => d.ownerKind === 'family'), members);
+        for (const d of declarations) if (d.ownerKind === 'family') viaFamily.delete(nameKey(d.owner));
+
+        const layouts = await reader.readAllLayouts();
+        for (const [layoutName, layout] of layouts) {
+          for (const entry of declaredEntries(layout, 'effectTypes', 'effectId')) {
+            if (!wanted(entry)) continue;
+            uses.push({ targetType: 'layout', target: layoutName, name: entry.name, ...(entry.id !== undefined ? { effectId: entry.id } : {}) });
+            named.push(entry.name);
+          }
+          for (const layer of allLayers((layout as { layers?: unknown }).layers)) {
+            for (const entry of declaredEntries(layer, 'effectTypes', 'effectId')) {
+              if (!wanted(entry)) continue;
+              uses.push({ targetType: 'layer', target: layer.name, layout: layoutName, name: entry.name, ...(entry.id !== undefined ? { effectId: entry.id } : {}) });
+              named.push(entry.name);
+            }
+          }
+        }
+
+        const instanceStates: Array<{ layout: string; uid: number; type: string; effect: string; isEnabled?: boolean }> = [];
+        for (const [layoutName, layout] of layouts) {
+          forEachLayoutInstance(layout, instance => {
+            const names = scopes.get(nameKey(instance.type));
+            const effects = instance.effects;
+            if (!names || typeof effects !== 'object' || effects === null) return;
+            for (const [effect, state] of Object.entries(effects)) {
+              if (!names.has(nameKey(effect))) continue;
+              const isEnabled = (state as { isEnabled?: unknown } | null)?.isEnabled;
+              instanceStates.push({ layout: layoutName, uid: instance.uid, type: instance.type, effect, ...(typeof isEnabled === 'boolean' ? { isEnabled } : {}) });
+            }
+          });
+        }
+
+        const registeredObjects = [...objectTypes.keys()];
+        const eventReferences: Array<ReturnType<typeof findEffectUses>[number] & { nameAlsoDeclaredBy?: string }> = [];
+        const unresolvedEventReferences: ReturnType<typeof findEffectUses> = [];
+        for (const use of findEffectUses(await reader.readAllEventSheets())) {
+          const names = scopes.get(nameKey(use.objectClass));
+          if (!names) continue;
+          if (use.name === undefined) {
+            unresolvedEventReferences.push(use);
+            continue;
+          }
+          const key = nameKey(use.name);
+          if (!names.has(key)) continue;
+          if (viaFamily.get(nameKey(use.objectClass))?.has(key) && ownNames.get(nameKey(use.objectClass))?.has(key)) {
+            eventReferences.push({ ...use, nameAlsoDeclaredBy: registeredName(registeredObjects, use.objectClass) ?? use.objectClass });
+          } else {
+            eventReferences.push(use);
+          }
+        }
+
+        const searchNames = args.effectName ? [args.effectName] : [...new Set(named)];
+        const status = await completeness(
+          reader, index.unscannedFiles, ALL_CATEGORIES,
+          searchNames.length > 0 ? [searchNames.map(name => nameTerm(name))] : [],
+        );
+        return toolResult({
+          uses,
+          useCount: uses.length,
+          instanceStates,
+          eventReferences,
+          eventReferenceCount: eventReferences.length,
+          unresolvedEventReferences,
+          ...(uses.some(use => use.targetType === 'layer' || use.targetType === 'layout')
+            ? { notFollowed: 'Layer and layout effect uses in System actions are not listed.' }
+            : {}),
+          ...status,
+        });
+      } catch (error) {
+        return toolError(`Error finding effect usage: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
   );
