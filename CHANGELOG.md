@@ -8,11 +8,11 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 - Timeline tools, 18 in all. Instance tracks and keyframes: `add_timeline_track`, `remove_timeline_track`, `add_property_track`, `remove_property_track`, `set_keyframe`, `delete_keyframe`, `update_track` and the read-only `list_timeline_tracks`. Value and audio tracks and track folders: `add_value_track`, `add_audio_track`, `add_timeline_folder`, `rename_timeline_folder`, `delete_timeline_folder` and `move_timeline_track`. Custom eases: `list_eases` (read-only), `create_ease`, `update_ease` and `delete_ease`.
 - `update_timeline` sets the timeline-level `ease`, `interpolationMode`, `resultMode`, `pathMode` and `transformWithSceneGraph`.
-- `create_timeline`, `delete_timeline`, `create_ease`, `update_ease` and `delete_ease` put back the files they had written when a later step fails, and name a file they could not put back.
+- `create_ease`, `update_ease` and `delete_ease` put back the files they had written when a later step fails, and name a file they could not put back.
+- `add_timeline_track`, `add_property_track` and `set_keyframe` refuse a property name that matches no world property, instance variable or plugin property of the instance, before writing anything, and name the known world properties. Construct 3 r506-2 (Free edition, guest) refused to open a project with a property track named `angle` on a Text object type ("property track type 'undefined' is not valid", then "Failed to open project"); no other unknown name was tried, and the tools refuse every one. A property track that already has such a name can still be set with `set_keyframe`.
 
 ### Changed
 
-- `add_timeline_track`, `add_property_track` and `set_keyframe` refuse a property name that matches no world property, instance variable or plugin property of the instance, before writing anything, and name the known world properties. They used to write the track with a warning, and Construct 3 r506-2 (Free edition) refused to open a project holding such a track ("property track type 'undefined' is not valid", then "Failed to open project"). A property track that already has such a name can still be set with `set_keyframe`.
 - `delete_timeline` of a registered timeline whose file is missing removes the registration (`action: "deregistered"`) instead of refusing; a file that exists but cannot be read is not deleted.
 - `create_timeline` and `delete_timeline` put back their file when the registration step fails.
 - `update_timeline` refuses to overwrite a timeline file that was saved on disk after it read it.

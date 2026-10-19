@@ -55,18 +55,33 @@ import { withProjectSync } from './project-sync.js';
 
 /**
  * The refusal for a property name that matches no world property, instance
- * variable or plugin property. Construct 3 cannot open a project whose
- * property track has such a name, so no track is written for it.
+ * variable or plugin property. Every such name is refused, so no track is
+ * written for it. The one name tried in the editor was `angle` on a Text
+ * object type.
  */
 function unknownPropertyRefusal(name: string, instance: Instance, objectType: ObjectType | undefined): ErrorResult {
-  const unreadable = objectType === undefined
-    ? ` The object type "${instance.type}" could not be read, so its instance variables and plugin properties are not known.`
-    : '';
   return refuse(
-    `Property "${name}" matches no world property, instance variable or plugin property of instance UID ${instance.uid} ("${instance.type}"), ` +
-    `and Construct 3 cannot open a project whose property track has such a name.${unreadable} ` +
+    `Property "${name}" matches no world property, instance variable or plugin property of instance UID ${instance.uid} ("${instance.type}"). ` +
+    'This tool refuses every such name: Construct 3 r506-2 (Free edition, guest) refused to open a project with a property track named "angle" on a Text object type, ' +
+    `and no other unknown name was tried.${unreadableNote(instance, objectType)} ` +
     `World properties: ${Object.keys(WORLD_PROPERTIES).join(', ')}.`,
   );
+}
+
+/**
+ * The sentence that says an object type file could not be read, so a name
+ * that matches no property may be an instance variable or plugin property.
+ * Empty when the object type was read.
+ */
+function unreadableNote(instance: Instance, objectType: ObjectType | undefined): string {
+  return objectType === undefined
+    ? ` The object type "${instance.type}" could not be read, so its instance variables and plugin properties are not known.`
+    : '';
+}
+
+/** A property resolution error, with the unreadable object type said when that is the reason the name matched nothing. */
+function resolutionRefusal(error: string, instance: Instance, objectType: ObjectType | undefined): ErrorResult {
+  return refuse(`${error}${unreadableNote(instance, objectType)}`);
 }
 
 /**
@@ -288,7 +303,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
     const specs: PropertySpec[] = [];
     for (const name of properties) {
       const resolved = resolveTimelineProperty(name, instance, objectType);
-      if (!resolved.ok) return { ok: false, error: refuse(resolved.error) };
+      if (!resolved.ok) return { ok: false, error: resolutionRefusal(resolved.error, instance, objectType) };
       const spec = resolved.spec;
       if (!spec.verified) return { ok: false, error: unknownPropertyRefusal(name, instance, objectType) };
       if (spec.base === undefined) {
@@ -660,7 +675,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           const lookup = existing
             ? specForExistingTrack(existing as { property: string; source: { type: string; uid: number | string } }, located!.instance, located!.objectType)
             : resolveTimelineProperty(name, located!.instance, located!.objectType);
-          if (!lookup.ok) return refuse(lookup.error);
+          if (!lookup.ok) return resolutionRefusal(lookup.error, located!.instance, located!.objectType);
           const spec = lookup.spec;
           // A new property track needs a name Construct 3 knows; an existing one is edited as stored
           if (!existing && !spec.verified) return unknownPropertyRefusal(name, located!.instance, located!.objectType);

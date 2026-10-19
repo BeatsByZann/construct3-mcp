@@ -304,7 +304,7 @@ describe('custom eases (real project on disk)', () => {
 
   // ─── eases and the files that name them ───────────────────
 
-  describe('review follow-ups: eases', () => {
+  describe('eases: refusals and edge cases',() => {
     const POINTS = [{ x: 0, y: 0 }, { x: 1, y: 1 }];
 
     async function rawTimeline(name = 'Move') {
