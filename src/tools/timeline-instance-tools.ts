@@ -795,7 +795,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           // add_audio_track writes an audio track with a keyframe at 0; deleting
           // it here would leave a track the editor may have to rewrite.
           if (found.kind === 'audio-track' && sameTime(args.time, 0)) {
-            return refuse(`${trackLabel} is an audio track, which needs its keyframe at time 0 (Construct moves one there on load). Delete a later keyframe, or remove_timeline_track to remove the whole track.`);
+            return refuse(`${trackLabel} is an audio track, which needs its keyframe at time 0. Delete a later keyframe, or remove_timeline_track to remove the whole track.`);
           }
           keyframes.splice(index, 1);
           for (const { propertyTrack } of listPropertyTracks(track)) {

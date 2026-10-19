@@ -248,6 +248,20 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
   row('update_timeline', 'a transition', { name: 'Smooth', loop: true }, transitionText('Smooth'));
   row('update_timeline', 'name in a folder the tools cannot resolve', { name: 'Lost', loop: true }, unresolvedText('Lost'),
     { prepare: () => editProject(project => { project.timelines.subfolders.push({ items: ['Lost'], subfolders: [] }); }) });
+  row('update_timeline', 'result mode while an untyped track follows the timeline', { name: 'Legacy', resultMode: 'absolute' },
+    'The untyped (older) track(s) for instance UID 0 take their result mode from the timeline, and changing it would leave their stored values stale. Open and save the timeline in the Construct 3 editor first.',
+    {
+      prepare: async () => {
+        await withLegacy();
+        // The fixture track has modes of its own; with "default" it follows the timeline
+        await patchTimeline('Legacy', timeline => {
+          for (const track of timeline.tracks) {
+            track.resultMode = 'default';
+            for (const propertyTrack of track.propertyTracks as TrackJson[]) propertyTrack.resultMode = 'default';
+          }
+        });
+      },
+    });
   row('update_timeline', 'result mode with a folder that holds one', { name: 'Move', resultMode: 'absolute' }, FOLDER_MODE, { prepare: withRootMode });
 
   // ─── delete_timeline ──────────────────────────────────────
@@ -257,6 +271,8 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
   row('delete_timeline', 'a transition', { name: 'Smooth' }, transitionText('Smooth'));
   row('delete_timeline', 'name in a folder the tools cannot resolve', { name: 'Lost' }, unresolvedText('Lost'),
     { prepare: () => editProject(project => { project.timelines.subfolders.push({ items: ['Lost'], subfolders: [] }); }) });
+  row('delete_timeline', 'a registered name that leaves the timelines folder', { name: '../Evil' }, 'Timeline "../Evil": ',
+    { partial: true, prepare: () => editProject(project => { project.timelines.items.push('../Evil'); }) });
   row('delete_timeline', 'a file without tracks', { name: 'Hollow' },
     'Timeline "Hollow" is registered but its file timelines/Hollow.json holds no tracks, so it was not deleted. Check it with get_timeline_details.', { prepare: withHollow });
   row('delete_timeline', 'a file that is not JSON', { name: 'Broken' },
@@ -396,7 +412,7 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
   row('delete_keyframe', 'last master keyframe', { timelineName: 'Move', trackName: 'Level', time: 0 },
     'Refusing to delete the last master keyframe of track "Level": a track with no keyframes is not a valid track. Use remove_timeline_track to remove the whole track.');
   row('delete_keyframe', 'audio track keyframe at time 0', { timelineName: 'Move', trackName: 'Sfx', time: 0 },
-    'Track "Sfx" is an audio track, which needs its keyframe at time 0 (Construct moves one there on load). Delete a later keyframe, or remove_timeline_track to remove the whole track.',
+    'Track "Sfx" is an audio track, which needs its keyframe at time 0. Delete a later keyframe, or remove_timeline_track to remove the whole track.',
     { prepare: withAudio });
 
   // ─── update_track ─────────────────────────────────────────
@@ -479,6 +495,10 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
       },
     });
 
+  row('delete_timeline_folder', 'subfolder whose name the parent already has', { timelineName: 'Move', folder: 'Other' },
+    'Cannot move subfolder "Group" up: the parent already has a folder of that name. Rename one first or pass deleteContents.',
+    { prepare: async () => { await ok('add_timeline_folder', { timelineName: 'Move', name: 'Group', parentFolder: 'Other' }); } });
+
   row('move_timeline_track', 'unknown timeline', { timelineName: 'Nope', instanceUid: 0, folder: 'Other' }, notFound('Nope'));
   row('move_timeline_track', 'neither instanceUid nor trackName', { timelineName: 'Move', folder: 'Other' }, EXACTLY_ONE);
   row('move_timeline_track', 'both instanceUid and trackName', { timelineName: 'Move', instanceUid: 0, trackName: 'Level', folder: 'Other' }, EXACTLY_ONE);
@@ -528,6 +548,16 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
   row('delete_ease', 'case variant of a name', { name: 'bouncy' }, easeCaseHint('bouncy', 'Bouncy'));
   row('delete_ease', 'ease used by a timeline', { name: 'Smooth' },
     'Custom ease "Smooth" is used by timeline(s) Move; change those eases first (update_timeline, update_track, set_keyframe).');
+  row('delete_ease', 'event sheet that cannot be read, without force', { name: 'Bouncy' },
+    'Custom ease "Bouncy" was not deleted: event sheet "MainSheet" could not be read. Check those uses, then pass force: true to delete anyway.',
+    { prepare: () => writeFile(file('eventSheets/MainSheet.json'), '{ broken', 'utf-8') });
+  row('delete_ease', 'script that cannot be read, besides a use in an event sheet', { name: 'Bouncy' },
+    'Custom ease "Bouncy" was not deleted: the name "Bouncy" appears in event sheet "MainSheet" (for example as a Tween ease); script "scripts/gone.js" could not be read. Check those uses, then pass force: true to delete anyway.',
+    {
+      prepare: () => editProject(project => {
+        project.rootFileFolders.script.items.push({ name: 'gone.js', type: 'application/javascript', sid: 700000000000009, 'script-info': { purpose: 'import' } });
+      }),
+    });
   row('delete_ease', 'ease named in an event sheet, without force', { name: 'Bouncy' },
     'Custom ease "Bouncy" was not deleted: the name "Bouncy" appears in event sheet "MainSheet" (for example as a Tween ease). Check those uses, then pass force: true to delete anyway.');
 
@@ -688,9 +718,10 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
       // The lookup reads the project's timelines container first; the reader failing there is not one of the lookup's own refusals
       tool: 'list_timeline_tracks', args: { timelineName: 'Move' },
       arm: () => {
+        // The original is taken before the spy replaces it, so a later call cannot reach the spy again
+        const getProject = reader.getProject.bind(reader);
         const spy = vi.spyOn(reader, 'getProject');
         let armed = false;
-        const getProject = reader.getProject.bind(reader);
         spy.mockImplementation(() => {
           if (armed) return getProject();
           armed = true;
