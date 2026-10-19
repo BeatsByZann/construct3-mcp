@@ -15,6 +15,7 @@ import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 import { registerObjectRenameTools } from './object-rename.js';
 import { registerStructureTools } from './structure-tools.js';
+import { registerDuplicateTools } from './duplicate-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -31,4 +32,5 @@ export function registerMutationTools(
   registerTimelineTools(deps);
   registerObjectRenameTools(deps);
   registerStructureTools(deps);
+  registerDuplicateTools(deps);
 }
