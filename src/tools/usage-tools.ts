@@ -828,4 +828,92 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
       }
     },
   );
+
+  server.tool(
+    'find_instance_variable_references',
+    'Find where an instance variable is used: the event-sheet references through its owner (instance-variable parameters, <Object>.<variable> expressions and call arguments; for a family, through the family and its members), the values placed instances store for it (storedValues), and the script actions, script events and script files that read an instance variable of that name (scriptReads: possible uses, a script\'s instVars.<name> cannot be tied to one object type). Names are compared ignoring letter case. A file that could not be parsed, an event sheet the index only partly walked, a registered script that could not be read and script folders nested too deep to be walked are named and make complete false. If the owner\'s own file could not be parsed, the variable cannot be confirmed (variableUnconfirmed).',
+    {
+      objectName: z.string().max(200).optional().describe('Object type that owns the variable (supply exactly one of objectName/familyName)'),
+      familyName: z.string().max(200).optional().describe('Family that owns the variable'),
+      variableName: z.string().min(1).max(200).describe('Instance variable name, any letter case'),
+    },
+    async (args) => {
+      try {
+        if ((args.objectName === undefined) === (args.familyName === undefined)) {
+          return toolError('Specify exactly one of objectName or familyName. Nothing was returned.');
+        }
+        const isFamily = args.familyName !== undefined;
+        const index = await getProjectIndex(reader);
+        const registered = isFamily ? await reader.listFamilies() : index.allObjects;
+        const owner = registeredName(registered, (args.objectName ?? args.familyName) as string);
+        if (owner === undefined) {
+          const kind = isFamily ? 'Family' : 'Object';
+          return toolError(`${kind} "${args.objectName ?? args.familyName}" not found. Available: ${someNames(registered)}. Nothing was returned.`);
+        }
+
+        const ownerUnparsed = index.unscannedFiles.some(f => f.category === (isFamily ? 'families' : 'objectTypes') && f.name === owner);
+        let variableName = args.variableName;
+        if (!ownerUnparsed) {
+          const data = isFamily ? (await reader.readAllFamilies()).get(owner) : (await reader.readAllObjectTypes()).get(owner);
+          const own = (data && Array.isArray((data as { instanceVariables?: unknown }).instanceVariables)
+            ? (data as { instanceVariables: unknown[] }).instanceVariables : [])
+            .map(v => (v as { name?: unknown } | null)?.name)
+            .filter((n): n is string => typeof n === 'string');
+          const found = registeredName(own, args.variableName);
+          if (found === undefined) {
+            return toolError(`Instance variable "${args.variableName}" not found on ${isFamily ? 'family' : 'object'} "${owner}". Available: ${someNames(own)}. Nothing was returned.`);
+          }
+          variableName = found;
+        }
+        const variableKey = nameKey(variableName);
+
+        const members = isFamily ? (familyMembersOf(index).get(owner) ?? []) : [];
+        const classKeys = new Set([owner, ...members].map(nameKey));
+        const references = index.memberReferences.filter(ref =>
+          ref.kind === 'instance variable' && nameKey(ref.name) === variableKey && classKeys.has(nameKey(ref.objectClass)));
+
+        const storedValues: Array<{ layout: string; uid: number; type: string; variable: string; value: unknown }> = [];
+        for (const [layoutName, layout] of await reader.readAllLayouts()) {
+          forEachLayoutInstance(layout, instance => {
+            if (!classKeys.has(nameKey(instance.type)) || typeof instance.instanceVariables !== 'object' || instance.instanceVariables === null) return;
+            for (const [key, value] of Object.entries(instance.instanceVariables)) {
+              if (nameKey(key) === variableKey) storedValues.push({ layout: layoutName, uid: instance.uid, type: instance.type, variable: key, value });
+            }
+          });
+        }
+
+        const scripts = await index.getScriptMemberReads(reader);
+        const scriptReads = scripts.reads.filter(read => read.kind === 'instance variable' && nameKey(read.name) === variableKey);
+        const registry = registeredScriptFiles(reader.getProject().rootFileFolders?.script);
+
+        const ownerTerms = [owner, ...members].map(name => nameTerm(name));
+        const status = await completeness(
+          reader, index.unscannedFiles, ALL_CATEGORIES,
+          [[nameTerm(variableName)], ownerTerms],
+          {
+            partlyIndexedSheets: partlyIndexed(index),
+            scriptsNotWalked: registry.notWalked,
+            unreadableScripts: scripts.unreadable.map(path => `scripts/${path}`),
+          },
+        );
+        return toolResult({
+          owner,
+          ownerKind: isFamily ? 'family' : 'object',
+          variableName,
+          references,
+          referenceCount: references.length,
+          sheets: [...new Set(references.map(ref => ref.eventSheet))],
+          storedValues,
+          scriptReads,
+          ...(scriptReads.length > 0
+            ? { scriptReadsNote: 'A script that reads an instance variable by name cannot be tied to one object type; these are possible uses.' }
+            : {}),
+          ...(ownerUnparsed ? { variableUnconfirmed: true } : {}),
+          ...status,
+        });
+      } catch (error) {
+        return toolError(`Error finding instance variable references: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
 }

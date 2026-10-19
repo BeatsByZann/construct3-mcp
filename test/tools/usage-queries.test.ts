@@ -368,3 +368,133 @@ async function editLayoutEffect(name: string): Promise<void> {
   layout.effectTypes = [effect('Blur', 'blur'), effect('Tone', 'hsladjust')];
   await writeFile(file, JSON.stringify(layout, null, '\t'));
 }
+
+describe('find_instance_variable_references', () => {
+  /** Hero (hp, mp); Enemy; family Foes (hp) with member Enemy. */
+  async function setup(): Promise<void> {
+    await addObject('Hero', { instanceVariables: [variable('hp'), variable('mp')] });
+    await addObject('Enemy');
+    await addFamily('Foes', ['Enemy'], { instanceVariables: [variable('hp')] });
+    await addSheet('Logic', [
+      block([action('Hero', 'set-instvar-value', { parameters: { 'instance-variable': 'hp', value: '1' } })]),
+      block([action('System', 'set-var', { parameters: { value: 'Hero.HP + 1' } })]),
+      block([action('Functions', 'call-function', { parameters: ['"Go"', 'Hero.hp', '2'] })]),
+      block([action('Enemy', 'set-instvar-value', { parameters: { 'instance-variable': 'hp', value: '1' } })]),
+      block([action('Foes', 'set-instvar-value', { parameters: { 'instance-variable': 'hp', value: '1' } })]),
+      block([action('Hero', 'set-instvar-value', { parameters: { 'instance-variable': 'mp', value: '1' } })]),
+      { eventType: 'script', language: 'javascript', script: ['const v = inst.instVars.hp;'], sid: nextSid++ },
+    ]);
+    await addLayout('Layout 2', [
+      instance(51, 'Hero', { instanceVariables: { hp: 5, mp: 1 } }),
+      instance(52, 'Enemy', { instanceVariables: { HP: 7 } }),
+      instance(53, 'Hero', { instanceVariables: { mp: 2 } }),
+    ]);
+    await addScript('lib/ai.js', 'export const x = inst.instVars.hp;');
+    await startServer();
+  }
+
+  it('lists the references of an object type\'s variable in every form, the stored values, and the scripts that may read it', async () => {
+    await setup();
+    const result = await call('find_instance_variable_references', { objectName: 'hero', variableName: 'HP' });
+    expect(result.owner).toBe('Hero');
+    expect(result.references?.map(r => `${r.objectClass}|${r.name}|${r.form}`)).toEqual([
+      'Hero|hp|instance-variable',
+      'Hero|HP|member-expression',
+      'Hero|hp|member-expression',
+    ]);
+    expect(result.storedValues).toEqual([{ layout: 'Layout 2', uid: 51, type: 'Hero', variable: 'hp', value: 5 }]);
+    expect(result.scriptReads?.map(r => r.path)).toEqual(expect.arrayContaining(['scripts/lib/ai.js']));
+    expect(result.scriptReads).toHaveLength(2);
+    expect(result.complete).toBe(true);
+    expect(result).not.toHaveProperty('success');
+    expect(result).not.toHaveProperty('editorNote');
+  });
+
+  it('follows a family\'s variable to the family and its members', async () => {
+    await setup();
+    const result = await call('find_instance_variable_references', { familyName: 'foes', variableName: 'hp' });
+    expect(result.owner).toBe('Foes');
+    expect(result.references?.map(r => r.objectClass)).toEqual(['Enemy', 'Foes']);
+    expect(result.storedValues).toEqual([{ layout: 'Layout 2', uid: 52, type: 'Enemy', variable: 'HP', value: 7 }]);
+  });
+
+  it('refuses a missing or double owner, an unknown owner and an unknown variable, naming what exists', async () => {
+    await setup();
+    for (const args of [{ variableName: 'hp' }, { objectName: 'Hero', familyName: 'Foes', variableName: 'hp' }]) {
+      const result = await raw('find_instance_variable_references', args);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe('Specify exactly one of objectName or familyName. Nothing was returned.');
+    }
+    const object = await raw('find_instance_variable_references', { objectName: 'Nope', variableName: 'hp' });
+    expect(object.content[0].text).toContain('Object "Nope" not found. Available: Sprite, Hero, Enemy.');
+    expect(object.content[0].text.endsWith(' Nothing was returned.')).toBe(true);
+    const family = await raw('find_instance_variable_references', { familyName: 'Nope', variableName: 'hp' });
+    expect(family.content[0].text).toContain('Family "Nope" not found. Available: Foes');
+    expect(family.content[0].text.endsWith(' Nothing was returned.')).toBe(true);
+    const unknown = await raw('find_instance_variable_references', { objectName: 'Hero', variableName: 'nope' });
+    expect(unknown.content[0].text).toBe('Instance variable "nope" not found on object "Hero". Available: hp, mp. Nothing was returned.');
+  });
+
+  it('names unparsable sheets and layouts and what a text search of each found, needing both the variable and the owner', async () => {
+    await setup();
+    await addSheet('Both', []);
+    await addSheet('OnlyVar', []);
+    await addLayout('Broken', []);
+    await overwrite('eventSheets', 'Both', '{ "objectClass": "Hero", "instance-variable": "hp" broken');
+    await overwrite('eventSheets', 'OnlyVar', '{ "instance-variable": "hp" broken');
+    await overwrite('layouts', 'Broken', '{ "type": "Hero", "hp" broken');
+    await startServer();
+    const result = await call('find_instance_variable_references', { objectName: 'Hero', variableName: 'hp' });
+    expect(result.complete).toBe(false);
+    expect(result.unscannedFiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ file: 'eventSheets/Both', textSearch: 'possible-use' }),
+      expect.objectContaining({ file: 'eventSheets/OnlyVar', textSearch: 'no-match' }),
+      expect.objectContaining({ file: 'layouts/Broken', textSearch: 'possible-use' }),
+    ]));
+    expect(result.unscannedFiles).toHaveLength(3);
+  });
+
+  it('is incomplete while a registered script cannot be read or sits below the walk depth, and complete when every script is read', async () => {
+    await setup();
+    expect((await call('find_instance_variable_references', { objectName: 'Hero', variableName: 'hp' })).complete).toBe(true);
+
+    await addScript('gone.js', undefined);
+    await addScript(`${'d/'.repeat(52)}deep.js`, 'inst.instVars.hp');
+    await startServer();
+    const result = await call('find_instance_variable_references', { objectName: 'Hero', variableName: 'hp' });
+    expect(result.complete).toBe(false);
+    expect(result.unreadableScripts).toEqual(['scripts/gone.js']);
+    expect(result.scriptsNotWalked).toEqual([`scripts/${'d/'.repeat(51)}`]);
+    expect(result.scriptReads).toHaveLength(2);
+  });
+
+  it('answers for an owner whose own file cannot be parsed, with the references the index holds and the variable unconfirmed', async () => {
+    await setup();
+    await overwrite('objectTypes', 'Hero', '{ broken');
+    await startServer();
+    const result = await call('find_instance_variable_references', { objectName: 'Hero', variableName: 'hp' });
+    expect(result.complete).toBe(false);
+    expect(result.variableUnconfirmed).toBe(true);
+    expect(result.unscannedFiles).toEqual([expect.objectContaining({ file: 'objectTypes/Hero' })]);
+    expect(result.references?.map(r => r.form)).toContain('instance-variable');
+    expect(result.storedValues?.map(v => v.uid)).toEqual([51]);
+  });
+
+  it('says a sheet the index only partly walked is incomplete, and does not claim the deeper reference', async () => {
+    await addObject('Hero', { instanceVariables: [variable('hp')] });
+    await addSheet('Deep', nested(52, block([action('Hero', 'set-instvar-value', { parameters: { 'instance-variable': 'hp', value: '1' } })])));
+    await startServer();
+    const result = await call('find_instance_variable_references', { objectName: 'Hero', variableName: 'hp' });
+    expect(result.partlyIndexedSheets).toEqual(['eventSheets/Deep']);
+    expect(result.complete).toBe(false);
+    expect(result.references).toEqual([]);
+  });
+
+  it('returns a reader failure as an error', async () => {
+    await startServer();
+    vi.spyOn(reader, 'listFamilies').mockRejectedValue(new Error('families gone'));
+    const result = await raw('find_instance_variable_references', { familyName: 'Foes', variableName: 'hp' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('Error finding instance variable references: families gone');
+  });
+});
