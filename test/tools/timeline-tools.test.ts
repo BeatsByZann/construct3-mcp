@@ -336,6 +336,20 @@ describe('track and keyframe tools', () => {
   });
 });
 
+// ─── value tracks, audio tracks and track folders ─────────
+
+describe('value track, audio track and track folder tools', () => {
+  it('registers every new tool', () => {
+    const { server } = setup();
+    for (const name of [
+      'list_timeline_tracks', 'add_value_track', 'add_audio_track',
+      'add_timeline_folder', 'rename_timeline_folder', 'delete_timeline_folder', 'move_timeline_track',
+    ]) {
+      expect(server.hasTool(name), name).toBe(true);
+    }
+  });
+});
+
 // ─── update_timeline playback fields ──────────────────────
 
 describe('update_timeline playback fields', () => {
