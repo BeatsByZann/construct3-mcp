@@ -29,9 +29,33 @@ let reader: Construct3ProjectReader;
 let server: MockServer;
 let nextSid = 900000000000000;
 
-async function editProject(change: (project: Record<string, any>) => void): Promise<void> {
+/** The folder of a project's script registry, as the tests edit it. */
+interface ScriptFolder { items: unknown[]; subfolders: Array<ScriptFolder & { name: string }> }
+
+/** The parts of project.c3proj the tests edit. */
+interface ProjectEdit {
+  eventSheets: { items: string[] };
+  layouts: { items: string[] };
+  rootFileFolders: { script: ScriptFolder };
+}
+
+/** The result of search_project, as the tests read it. */
+interface SearchResult {
+  query: string;
+  totalHits: number;
+  returned: number;
+  truncated: boolean;
+  totalHitsIsLowerBound?: boolean;
+  hits: Array<{ where: string; file: string; eventSid?: number; path: string; field: string; text: string }>;
+  complete: boolean;
+  unscannedFiles?: Array<{ file: string; reason: string; textSearch: string; names?: string[] }>;
+  unreadableScripts?: string[];
+  scriptsNotWalked?: string[];
+}
+
+async function editProject(change: (project: ProjectEdit) => void): Promise<void> {
   const path = join(tmpDir, 'project.c3proj');
-  const project = JSON.parse(await readFile(path, 'utf-8'));
+  const project = JSON.parse(await readFile(path, 'utf-8')) as ProjectEdit;
   change(project);
   await writeFile(path, JSON.stringify(project, null, '\t'));
 }
@@ -48,7 +72,7 @@ async function addScript(path: string, content: string | undefined): Promise<voi
   await editProject(project => {
     let folder = project.rootFileFolders.script;
     for (const part of parts.slice(0, -1)) {
-      let sub = folder.subfolders.find((s: { name: string }) => s.name === part);
+      let sub = folder.subfolders.find(s => s.name === part);
       if (!sub) {
         sub = { name: part, items: [], subfolders: [] };
         folder.subfolders.push(sub);
@@ -94,10 +118,10 @@ async function raw(args: Record<string, unknown>) {
   return server.callTool('search_project', args);
 }
 
-async function search(args: Record<string, unknown>): Promise<Record<string, any>> {
+async function search(args: Record<string, unknown>): Promise<SearchResult> {
   const result = await raw(args);
   expect(result.isError, result.content[0].text).toBeUndefined();
-  return JSON.parse(result.content[0].text);
+  return JSON.parse(result.content[0].text) as SearchResult;
 }
 
 beforeEach(async () => {
@@ -142,8 +166,8 @@ describe('search_project', () => {
     expect(byField).toContain('script|scripts/lib/util.js|code|line 2');
     expect(events.hits.every((h: { where: string }) => h.where !== 'layout')).toBe(true);
     const comment0 = events.hits.find((h: { path: string }) => h.path === 'events[0].text');
-    expect(comment0.text).toBe('a needle in a comment');
-    expect(typeof events.hits.find((h: { path: string }) => h.path === 'events[4].actions[0].parameters.text').eventSid).toBe('number');
+    expect(comment0?.text).toBe('a needle in a comment');
+    expect(typeof events.hits.find((h: { path: string }) => h.path === 'events[4].actions[0].parameters.text')?.eventSid).toBe('number');
     expect(events.totalHits).toBe(events.hits.length);
     expect(events.returned).toBe(events.hits.length);
     expect(events.truncated).toBe(false);
@@ -195,6 +219,8 @@ describe('search_project', () => {
     const result = await raw({ query: '(', regex: true });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Invalid regular expression');
+    expect(result.content[0].text.startsWith('Invalid regular expression: ')).toBe(true);
+    expect(result.content[0].text).not.toContain('Invalid regular expression: Invalid regular expression');
     expect(result.content[0].text.endsWith(' Nothing was returned.')).toBe(true);
   });
 
@@ -241,6 +267,17 @@ describe('search_project', () => {
     expect(result.content[0].text).toBe('Error searching the project: sheets gone. Nothing was returned.');
   });
 
+  it('counts every value of a file once against the node limit', async () => {
+    await addSheet('One', [comment('needle')]);
+    await startServer();
+    // The events array, the comment, and its two strings: four values.
+    SEARCH_LIMITS.maxNodes = 4;
+    expect((await search({ query: 'needle', scopes: ['events'], sheets: ['One'] })).totalHits).toBe(1);
+    SEARCH_LIMITS.maxNodes = 3;
+    const refused = await raw({ query: 'needle', scopes: ['events'], sheets: ['One'] });
+    expect(refused.content[0].text).toBe('The search exceeded the node limit. Nothing was returned.');
+  });
+
   it('refuses a sheet with more nodes than the limit', async () => {
     await addSheet('Many', [comment('a'), comment('b'), comment('c')]);
     await startServer();
@@ -269,7 +306,7 @@ describe('search_project', () => {
 
       for (const args of [{ query: 'needle' }, { query: 'needle', regex: true, wholeWord: true }, { query: '(needle', wholeWord: true }, { query: 'needle)', wholeWord: true }, { query: 'a needle', wholeWord: true, regex: false }]) {
         const result = await search({ ...args, scopes: ['events'] });
-        const outcomes = result.unscannedFiles.map((u: { file: string; textSearch: string }) => `${u.file}|${u.textSearch}`);
+        const outcomes = (result.unscannedFiles ?? []).map(u => `${u.file}|${u.textSearch}`);
         const expected = args.query === 'a needle' ? ['eventSheets/Holds|no-match', 'eventSheets/Empty|no-match'] : ['eventSheets/Holds|not-searched', 'eventSheets/Empty|not-searched'];
         expect(outcomes, JSON.stringify(args)).toEqual(expected);
       }
@@ -278,6 +315,29 @@ describe('search_project', () => {
       expect(named.complete).toBe(false);
       expect(named.hits).toEqual([]);
       expect(named.unscannedFiles).toEqual([expect.objectContaining({ file: 'eventSheets/Holds', textSearch: 'possible-use' })]);
+    });
+
+    it('searches an unparsable sheet as text for a whole-word query that starts and ends with a non-ASCII letter', async () => {
+      await addSheet('Umlaut', [comment('x')]);
+      await writeFile(join(tmpDir, 'eventSheets', 'Umlaut.json'), '{ broken Ärger');
+      await startServer();
+      const result = await search({ query: 'Ärger', wholeWord: true, scopes: ['events'] });
+      expect(result.unscannedFiles).toEqual([expect.objectContaining({ file: 'eventSheets/Umlaut', textSearch: 'possible-use' })]);
+      const none = await search({ query: 'Ärgerx', wholeWord: true, scopes: ['events'] });
+      expect(none.unscannedFiles).toEqual([expect.objectContaining({ file: 'eventSheets/Umlaut', textSearch: 'no-match' })]);
+    });
+
+    it('reports an unparsable layout, still returns the other layouts\' hits and is not complete', async () => {
+      await addLayout('Good', [instance(51, 'Sprite', { tags: 'needle tag' })]);
+      await addLayout('Bad', [instance(52, 'Sprite', { tags: 'needle tag' })]);
+      await writeFile(join(tmpDir, 'layouts', 'Bad.json'), '{ broken');
+      await startServer();
+      const result = await search({ query: 'needle', scopes: ['layouts'] });
+      expect(result.complete).toBe(false);
+      expect(result.hits.map(h => h.file)).toEqual(['layouts/Good.json']);
+      expect(result.unscannedFiles).toEqual([expect.objectContaining({ file: 'layouts/Bad', reason: 'not valid JSON', textSearch: 'not-searched' })]);
+      const eventsOnly = await search({ query: 'needle', scopes: ['events'] });
+      expect(eventsOnly.complete).toBe(true);
     });
 
     it('names an unreadable registered script and a script below the walk depth, and is not complete', async () => {
@@ -354,7 +414,7 @@ const MATCHERS: Array<[string, (pattern: RegExp, budget?: ReturnType<typeof newB
   ['regexMatcher', regexMatcher],
 ];
 
-describe.each(MATCHERS)('%s', (_name, make) => {
+describe.each(MATCHERS)('%s', (name, make) => {
   it('runs more than once and finds the right matches each time', () => {
     const match = make(/a/g);
     expect(match(['xax', 'aa'], 10)).toEqual({ hits: [{ text: 0, index: 1, length: 1 }, { text: 1, index: 0, length: 1 }, { text: 1, index: 1, length: 1 }], count: 3, capped: false });
@@ -397,8 +457,11 @@ describe.each(MATCHERS)('%s', (_name, make) => {
     expect(() => make(/a/g)(['a'], 1)).toThrow(SearchTimeout);
 
     SEARCH_LIMITS.budgetMs = 50;
+    // Reads before the call's last look at the budget: the budget's start and the look before
+    // the call, plus for regexMatcher the read of what is left of the budget (the vm limit stays 50 ms).
+    const readsInside = name === 'regexMatcher' ? 3 : 2;
     let calls = 0;
-    SEARCH_LIMITS.now = () => (calls++ < 2 ? 0 : 100);
+    SEARCH_LIMITS.now = () => (calls++ < readsInside ? 0 : 100);
     let thrown: unknown;
     try {
       make(/a/g)(['a'], 1);

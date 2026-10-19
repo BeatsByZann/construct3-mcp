@@ -104,7 +104,7 @@ export const SEARCH_LIMITS = {
   perCallMs: 1000,
   budgetMs: 10_000,
   maxMatchesPerText: 100,
-  /** Nodes of one file's JSON the string walk visits before it gives up. */
+  /** Values of one file's JSON the string walk counts, each as it is queued, before it gives up. */
   maxNodes: 2_000_000,
   now: (): number => performance.now(),
 };
@@ -300,16 +300,22 @@ function collectStrings(
   budget: SearchBudget,
   out: FoundString[],
 ): void {
-  const stack: Array<{ node: unknown; path: string; field: string; sid: number | undefined }> = [
-    { node: value, path: '', field: '', sid: undefined },
-  ];
+  /** Count `n` nodes as they are pushed, before they are: the limit and the budget look at the count. */
+  const count = (n: number): void => {
+    const before = state.nodes;
+    state.nodes += n;
+    if (state.nodes > SEARCH_LIMITS.maxNodes) throw new NodeLimitExceeded();
+    if (Math.floor(state.nodes / 10_000) > Math.floor(before / 10_000)) budget.check();
+  };
+  const stack: Array<{ node: unknown; path: string; field: string; sid: number | undefined }> = [];
+  count(1);
+  stack.push({ node: value, path: '', field: '', sid: undefined });
   while (stack.length > 0) {
-    if (++state.nodes > SEARCH_LIMITS.maxNodes) throw new NodeLimitExceeded();
-    if (state.nodes % 10_000 === 0) budget.check();
     const { node, path, field, sid } = stack.pop()!;
     if (typeof node === 'string') {
       if (!(skipKinds && KIND_FIELDS.has(field))) out.push({ text: node, path: prefix + path, field, sid });
     } else if (Array.isArray(node)) {
+      count(node.length);
       for (let i = node.length - 1; i >= 0; i--) {
         stack.push({ node: node[i], path: `${path}[${i}]`, field, sid });
       }
@@ -317,9 +323,10 @@ function collectStrings(
       const record = node as Record<string, unknown>;
       const ownSid = typeof record.eventType === 'string' && typeof record.sid === 'number' ? record.sid : sid;
       const entries = Object.entries(record);
+      count(entries.length);
       for (let i = entries.length - 1; i >= 0; i--) {
         const [key, child] = entries[i];
-        stack.push({ node: child, path: path ? `${path}.${key}` : key, field: key, sid: ownSid });
+        stack.push({ node: child, path: path ?`${path}.${key}` : key, field: key, sid: ownSid });
       }
     }
   }
@@ -417,7 +424,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
 
   server.tool(
     'search_project',
-    `Find text across the project like the editor's Find: event-sheet content (parameters and expressions, comments, names, titles, script actions and blocks), registered script files, and with scopes layouts the instance property, instance variable and tag values on layouts. Returns each hit with its file (its path in the project), nearest event SID and field. A literal query is matched directly; a regular expression runs under a time limit of one second per file and ten seconds for the whole search, with at most ${SEARCH_LIMITS.maxMatchesPerText} matches counted per string, and the call is refused naming the limit when it runs past one. A string with more matches than that makes truncated true and totalHits a lower bound (totalHitsIsLowerBound). A file that could not be parsed, a registered script that could not be read and script folders nested too deep to be walked are named and make the result complete false.`,
+    `Find text across the project: event-sheet content (parameters and expressions, comments, names, titles, script actions and blocks), registered script files, and with scopes layouts the instance property, instance variable and tag values on layouts. Returns each hit with its file (its path in the project), nearest event SID and field. A literal query is matched directly; a regular expression runs under a time limit of one second per file. The whole search, either kind, has ten seconds. At most ${SEARCH_LIMITS.maxMatchesPerText} matches are counted per string, and the call is refused naming the limit when it runs past one. A string with more matches than that makes truncated true and totalHits a lower bound (totalHitsIsLowerBound). A file that could not be parsed, a registered script that could not be read and script folders nested too deep to be walked are named and make the result complete false.`,
     {
       query: z.string().min(1).max(500).describe('Text to find, or a regular expression when regex is true'),
       regex: z.boolean().optional().default(false).describe('Treat query as a JavaScript regular expression'),
@@ -556,7 +563,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
         }
         budget.check();
 
-        const wordQuery = /^\w/.test(args.query) && /\w$/.test(args.query);
+        const wordQuery = /^[\p{L}\p{N}_]/u.test(args.query) && /[\p{L}\p{N}_]$/u.test(args.query);
         const status = await completeness(
           reader, skipped, categories,
           !args.regex && args.wholeWord && wordQuery ? [[nameTerm(args.query)]] : [],
