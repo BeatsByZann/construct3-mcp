@@ -125,6 +125,106 @@ function levelOf(parent: LayerEntry | undefined): string | null {
   return parent ? layerPathLabel(parent) : null;
 }
 
+/** Arguments of one move: move_instance's without layoutName, shared with move_instances. */
+const moveInstanceShape = {
+  uid: z.number().int().describe('UID of the instance to move (an instance on a layer or sub-layer)'),
+  toLayer: z.string().max(200).optional()
+    .describe('Destination layer (a sub-layer can be given by its path, e.g. "Main > HUD"); default: its own layer'),
+  position: z.union([z.enum(['first', 'last']), z.number().int().min(0)]).optional()
+    .describe('"first", "last" or an index in the destination layer\'s instances once moved; default "last" when it changes layer'),
+  afterUid: z.number().int().optional().describe('Place it right after this instance of the destination layer'),
+  beforeUid: z.number().int().optional().describe('Place it right before this instance of the destination layer'),
+};
+type MoveInstanceArgs = z.infer<z.ZodObject<typeof moveInstanceShape>>;
+
+/** Where one move took an instance; `sameLayer` when the destination is its own layer (compared as objects: two layers can share a name). */
+interface InstanceMove {
+  fromLayer: string;
+  fromIndex: number;
+  toLayer: string;
+  toIndex: number;
+  layerInstanceCount: number;
+  sameLayer: boolean;
+}
+
+/** The fields of a move a result shows, in move_instance's order. */
+function moveFields(m: InstanceMove) {
+  return { fromLayer: m.fromLayer, fromIndex: m.fromIndex, toLayer: m.toLayer, toIndex: m.toIndex, layerInstanceCount: m.layerInstanceCount };
+}
+
+/** The refusal of a move's arguments that needs no layout, without its full stop, or undefined. */
+function moveArgsError(args: MoveInstanceArgs): string | undefined {
+  const placements = [args.position, args.afterUid, args.beforeUid].filter(v => v !== undefined).length;
+  if (placements > 1) return 'Give at most one of position, afterUid and beforeUid';
+  if (placements === 0 && args.toLayer === undefined) return 'Nothing to do: give toLayer, position, afterUid or beforeUid';
+  if (args.afterUid === args.uid || args.beforeUid === args.uid) return 'An instance cannot be placed next to itself';
+  return undefined;
+}
+
+/**
+ * Move one instance of `layout` (in memory) as move_instance does, or its
+ * refusal (without the full stop). Every check runs before anything moves,
+ * so a refusal leaves the layout unchanged: the place among the
+ * destination's instances is worked out on the list as it is without the
+ * instance.
+ */
+function moveInstanceInLayout(layout: Layout, layoutName: string, args: MoveInstanceArgs): InstanceMove | { error: string } {
+  const anchor = args.afterUid ?? args.beforeUid;
+  for (const uid of anchor === undefined ? [args.uid] : [args.uid, anchor]) {
+    const count = instancesWithUid(layout, uid);
+    if (count > 1) {
+      return { error: `UID ${uid} is used by ${count} instances of layout "${layoutName}" (duplicate-uid in validate_project), `
+        + 'so which one is meant cannot be told' };
+    }
+  }
+  const found = findInstanceByUid(layout, args.uid);
+  if (!found) {
+    return { error: `Instance with UID ${args.uid} not found in layout "${layoutName}". Use get_layout_details to see all instance UIDs` };
+  }
+  if (!found.entry) return { error: `Instance ${args.uid} is a non-world instance of layout "${layoutName}": it is on no layer` };
+  const source = found.entry;
+  let target = source;
+  if (args.toLayer !== undefined) {
+    const resolved = findLayer(layout, args.toLayer, layoutName);
+    if ('error' in resolved) return { error: resolved.error };
+    target = resolved.entry;
+  }
+  const sameLayer = target.layer === source.layer;
+
+  // The destination's instances as they are without it, before anything moves
+  const destination = Array.isArray(target.layer.instances) ? target.layer.instances : [];
+  const without = sameLayer ? destination.filter((_, i) => i !== found.index) : destination;
+  let toIndex: number;
+  if (anchor !== undefined) {
+    const at = without.findIndex(i => i?.uid === anchor);
+    if (at === -1) {
+      return { error: `Instance ${anchor} is not on the destination layer "${layerPathLabel(target)}": `
+        + 'afterUid and beforeUid name an instance of the destination layer' };
+    }
+    toIndex = args.afterUid !== undefined ? at + 1 : at;
+  } else if (args.position === 'first') {
+    toIndex = 0;
+  } else if (typeof args.position === 'number') {
+    if (args.position > without.length) {
+      return { error: `position ${args.position} is out of range: layer "${layerPathLabel(target)}" would hold ${without.length + 1} instance(s), `
+        + `so the highest index is ${without.length}` };
+    }
+    toIndex = args.position;
+  } else if (args.position === undefined && sameLayer) {
+    toIndex = found.index; // toLayer named its own layer: nothing moves
+  } else {
+    toIndex = without.length;
+  }
+
+  const [instance] = found.list.splice(found.index, 1);
+  if (!Array.isArray(target.layer.instances)) target.layer.instances = [];
+  target.layer.instances.splice(toIndex, 0, instance);
+  return {
+    fromLayer: layerPathLabel(source), fromIndex: found.index, toLayer: layerPathLabel(target), toIndex,
+    layerInstanceCount: target.layer.instances.length, sameLayer,
+  };
+}
+
 const quoted = (names: readonly string[]) => names.map(n => `"${n}"`).join(', ');
 
 /** Register reorder_layers, move_layer and move_instance. */
@@ -294,20 +394,12 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
       + 'Hierarchy links stay as they are.',
     {
       layoutName: z.string().max(200).describe('Layout name'),
-      uid: z.number().int().describe('UID of the instance to move (an instance on a layer or sub-layer)'),
-      toLayer: z.string().max(200).optional()
-        .describe('Destination layer (a sub-layer can be given by its path, e.g. "Main > HUD"); default: its own layer'),
-      position: z.union([z.enum(['first', 'last']), z.number().int().min(0)]).optional()
-        .describe('"first", "last" or an index in the destination layer\'s instances once moved; default "last" when it changes layer'),
-      afterUid: z.number().int().optional().describe('Place it right after this instance of the destination layer'),
-      beforeUid: z.number().int().optional().describe('Place it right before this instance of the destination layer'),
+      ...moveInstanceShape,
     },
     async (args) => {
       try {
-        const placements = [args.position, args.afterUid, args.beforeUid].filter(v => v !== undefined).length;
-        if (placements > 1) return refusal('Give at most one of position, afterUid and beforeUid');
-        if (placements === 0 && args.toLayer === undefined) return refusal('Nothing to do: give toLayer, position, afterUid or beforeUid');
-        if (args.afterUid === args.uid || args.beforeUid === args.uid) return refusal('An instance cannot be placed next to itself');
+        const argsError = moveArgsError(args);
+        if (argsError) return refusal(argsError);
 
         let layout: Layout;
         try {
@@ -315,61 +407,11 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         } catch {
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
-        const anchor = args.afterUid ?? args.beforeUid;
-        for (const uid of anchor === undefined ? [args.uid] : [args.uid, anchor]) {
-          const count = instancesWithUid(layout, uid);
-          if (count > 1) {
-            return refusal(`UID ${uid} is used by ${count} instances of layout "${args.layoutName}" (duplicate-uid in validate_project), `
-              + 'so which one is meant cannot be told');
-          }
-        }
-        const found = findInstanceByUid(layout, args.uid);
-        if (!found) {
-          return refusal(`Instance with UID ${args.uid} not found in layout "${args.layoutName}". Use get_layout_details to see all instance UIDs`);
-        }
-        if (!found.entry) return refusal(`Instance ${args.uid} is a non-world instance of layout "${args.layoutName}": it is on no layer`);
-        const source = found.entry;
-        let target = source;
-        if (args.toLayer !== undefined) {
-          const resolved = findLayer(layout, args.toLayer, args.layoutName);
-          if ('error' in resolved) return refusal(resolved.error);
-          target = resolved.entry;
-        }
-        const sameLayer = target.layer === source.layer;
+        const moved = moveInstanceInLayout(layout, args.layoutName, args);
+        if ('error' in moved) return refusal(moved.error);
 
-        // Take it out, then find its place among the destination's instances as they are without it
-        const [instance] = found.list.splice(found.index, 1);
-        if (!Array.isArray(target.layer.instances)) target.layer.instances = [];
-        const list = target.layer.instances;
-        let toIndex: number;
-        if (anchor !== undefined) {
-          const at = list.findIndex(i => i?.uid === anchor);
-          if (at === -1) {
-            return refusal(`Instance ${anchor} is not on the destination layer "${layerPathLabel(target)}": `
-              + 'afterUid and beforeUid name an instance of the destination layer');
-          }
-          toIndex = args.afterUid !== undefined ? at + 1 : at;
-        } else if (args.position === 'first') {
-          toIndex = 0;
-        } else if (typeof args.position === 'number') {
-          if (args.position > list.length) {
-            return refusal(`position ${args.position} is out of range: layer "${layerPathLabel(target)}" would hold ${list.length + 1} instance(s), `
-              + `so the highest index is ${list.length}`);
-          }
-          toIndex = args.position;
-        } else if (args.position === undefined && sameLayer) {
-          toIndex = found.index; // toLayer named its own layer: nothing moves
-        } else {
-          toIndex = list.length;
-        }
-        list.splice(toIndex, 0, instance);
-
-        const common = {
-          success: true, entity: args.layoutName, category: 'layout', uid: args.uid,
-          fromLayer: layerPathLabel(source), fromIndex: found.index,
-          toLayer: layerPathLabel(target), toIndex, layerInstanceCount: list.length,
-        };
-        if (sameLayer && toIndex === found.index) {
+        const common = { success: true, entity: args.layoutName, category: 'layout', uid: args.uid, ...moveFields(moved) };
+        if (moved.sameLayer && moved.toIndex === moved.fromIndex) {
           return toolResult({ ...common, action: 'unchanged' }, { projectWritten: false });
         }
         const backupPath = await writeLayout(args.layoutName, layout);
