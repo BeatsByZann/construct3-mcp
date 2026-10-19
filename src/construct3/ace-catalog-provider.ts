@@ -6,9 +6,11 @@
  */
 
 import { homedir } from 'node:os';
+import { isAbsolute } from 'node:path';
 import type { AceCatalog } from './ace-types.js';
 import {
   ACE_SOURCE_HOST,
+  CACHE_DIR_NOT_ABSOLUTE,
   FALLBACK_RELEASE,
   catalogFromSources,
   defaultAceCacheDir,
@@ -46,6 +48,9 @@ const UNCHECKED = 'Conditions, actions and expressions were not checked against 
 function failureMessage(failed: SourceFailure, tried: string[], local: boolean): string {
   if (failed.reason === 'offline') {
     return `${UNCHECKED}${ACE_SOURCE_HOST} could not be reached (${failed.detail}). Set C3_ACE_SOURCE_DIR to a folder with a local copy to check offline.`;
+  }
+  if (failed.reason === 'refused' && failed.detail === CACHE_DIR_NOT_ABSOLUTE) {
+    return `${UNCHECKED}${CACHE_DIR_NOT_ABSOLUTE}; set C3_ACE_CACHE_DIR to an absolute path.`;
   }
   if (failed.reason === 'refused') {
     return local
@@ -114,6 +119,7 @@ export class AceCatalogProvider {
       if (this.options.sourceDir !== undefined) {
         return catalogFromSources(await readLocalSources(this.options.sourceDir, release, this.options.limits?.maxBytes));
       }
+      if (!isAbsolute(this.options.cacheDir)) return { ok: false, reason: 'refused', detail: CACHE_DIR_NOT_ABSOLUTE };
       const cached = await readCacheFile(this.options.cacheDir, release);
       if (cached) return { ok: true, catalog: cached };
       const fetchImpl: FetchLike = this.options.fetch ?? ((url, init) => globalThis.fetch(url, init));

@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AceCatalog, AceParam, AceSet, ExpressionDef } from './ace-types.js';
 
@@ -412,6 +412,8 @@ export const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 export const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 /** How long one request may take, in milliseconds. */
 export const FETCH_TIMEOUT_MS = 20_000;
+/** How long the three requests of one attempt may take together, in milliseconds. */
+export const FETCH_DEADLINE_MS = 60_000;
 /** The most redirects followed for one file. */
 export const MAX_REDIRECTS = 3;
 /** The layout of a cache file; raised whenever the transform's output changes. */
@@ -420,7 +422,7 @@ export const CACHE_FORMAT = 2;
 /** The part of fetch the catalogue needs; redirects are never followed by the platform. */
 export type FetchLike = (url: string, init: { redirect: 'manual'; signal: AbortSignal }) => Promise<Response>;
 /** The limits of one fetch, replaceable for tests. */
-export interface SourceLimits { timeoutMs: number; maxBytes: number }
+export interface SourceLimits { timeoutMs: number; deadlineMs: number; maxBytes: number }
 /** Why no sources were obtained: the host could not be reached, answered unusably, or does not serve the release. */
 export type SourceFailure = { ok: false; reason: 'offline' | 'refused' | 'not-served'; detail: string };
 /** The three files of a release with each file's size in bytes, or why there are none. */
@@ -491,13 +493,14 @@ async function fetchOne(
   first: boolean,
   fetchImpl: FetchLike,
   limits: SourceLimits,
+  deadline: AbortSignal,
 ): Promise<{ ok: true; text: string; size: number } | SourceFailure> {
   const expectedPath = `/${release}/${file}`;
   let url = sourceUrl(release, file);
   for (let hops = 0; ; hops++) {
     let response: Response;
     try {
-      response = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(limits.timeoutMs) });
+      response = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.any([AbortSignal.timeout(limits.timeoutMs), deadline]) });
     } catch (error) {
       return failureFromError(error);
     }
@@ -550,12 +553,17 @@ function parseSourceJson(text: string, file: string): { ok: true; value: unknown
  */
 export async function fetchCatalogSources(release: string, fetchImpl: FetchLike, limits: Partial<SourceLimits> = {}): Promise<SourceResult> {
   if (!RELEASE_PATTERN.test(release)) return failure('refused', 'not a release name');
-  const effective: SourceLimits = { timeoutMs: limits.timeoutMs ?? FETCH_TIMEOUT_MS, maxBytes: limits.maxBytes ?? MAX_SOURCE_BYTES };
+  const effective: SourceLimits = {
+    timeoutMs: limits.timeoutMs ?? FETCH_TIMEOUT_MS,
+    deadlineMs: limits.deadlineMs ?? FETCH_DEADLINE_MS,
+    maxBytes: limits.maxBytes ?? MAX_SOURCE_BYTES,
+  };
+  const deadline = AbortSignal.timeout(effective.deadlineMs);
   const texts: string[] = [];
   const bytes: number[] = [];
   const parsed: unknown[] = [];
   for (const [index, file] of ACE_SOURCE_FILES.entries()) {
-    const got = await fetchOne(release, file, index === 0, fetchImpl, effective);
+    const got = await fetchOne(release, file, index === 0, fetchImpl, effective, deadline);
     if (!got.ok) return got;
     texts.push(got.text);
     bytes.push(got.size);
@@ -659,41 +667,58 @@ function rejectCache(file: string): undefined {
   return undefined;
 }
 
+/** The failure detail for a cache folder that is not an absolute path. */
+export const CACHE_DIR_NOT_ABSOLUTE = 'the cache folder is not an absolute path';
+
+/** Remove the temporary cache files this process left in `cacheDir` for `release`. */
+async function removeOwnTempFiles(cacheDir: string, release: string): Promise<void> {
+  const own = new RegExp(`^${release}\\.json\\.${process.pid}-[0-9a-f]{8}\\.tmp$`);
+  try {
+    for (const name of await readdir(cacheDir)) if (own.test(name)) await rm(path.join(cacheDir, name), { force: true });
+  } catch {
+    // The folder may not exist; nothing was left behind.
+  }
+}
+
 /**
  * Write a catalogue to its cache file through a temporary file in the same
  * folder and a rename, so another process sees the old file or the new one.
- * Never throws; the reason of a failure is a fixed text plus the error code.
+ * Never throws, also for a release that is not a release name: a failure
+ * returns a reason made of a fixed text and the error code, after removing the
+ * temporary files this process left in the folder. An entry over
+ * MAX_CACHE_BYTES is not written, because the next read would reject it.
  */
 export async function writeCacheFile(cacheDir: string, release: string, catalog: AceCatalog): Promise<CacheWriteOutcome> {
-  const file = cacheFilePath(cacheDir, release);
-  const temp = path.join(cacheDir, `${release}.json.${process.pid}-${randomBytes(4).toString('hex')}.tmp`);
-  const entry: CacheEntry = { format: CACHE_FORMAT, sourceRelease: release, digest: catalogDigest(catalog), catalog };
   try {
+    const file = cacheFilePath(cacheDir, release);
+    const temp = path.join(cacheDir, `${release}.json.${process.pid}-${randomBytes(4).toString('hex')}.tmp`);
+    const entry: CacheEntry = { format: CACHE_FORMAT, sourceRelease: release, digest: catalogDigest(catalog), catalog };
+    const text = JSON.stringify(entry);
+    if (Buffer.byteLength(text) > MAX_CACHE_BYTES) return { written: false, reason: 'the catalogue is too large to cache' };
     await mkdir(cacheDir, { recursive: true });
-    await writeFile(temp, JSON.stringify(entry), 'utf8');
+    await writeFile(temp, text, 'utf8');
     await rename(temp, file);
     return { written: true, path: file };
   } catch (error) {
-    await rm(temp, { force: true }).catch(() => undefined);
+    await removeOwnTempFiles(cacheDir, release);
     const code = (error as { code?: unknown }).code;
     return { written: false, reason: `the cache file could not be written (${typeof code === 'string' ? code : 'error'})` };
   }
 }
 
 /**
- * The per-user folder of the cache files: C3_ACE_CACHE_DIR when it is set and
- * absolute (a relative value is ignored, with one stderr line), else the
- * platform's cache folder, then construct3-mcp/ace-catalog.
+ * The per-user folder of the cache files: C3_ACE_CACHE_DIR when it is set,
+ * else the platform's cache folder (LOCALAPPDATA or <home>\AppData\Local,
+ * <home>/Library/Caches, XDG_CACHE_HOME when absolute or <home>/.cache), then
+ * construct3-mcp/ace-catalog. The result is not made absolute: when
+ * C3_ACE_CACHE_DIR, LOCALAPPDATA or the home folder is relative, so is the
+ * result, and the caller refuses it.
  */
 export function defaultAceCacheDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string {
   const p = platform === 'win32' ? path.win32 : path.posix;
-  const override = env.C3_ACE_CACHE_DIR;
-  if (override) {
-    if (p.isAbsolute(override)) return override;
-    console.error('C3_ACE_CACHE_DIR is not an absolute path; ignoring it');
-  }
+  if (env.C3_ACE_CACHE_DIR) return env.C3_ACE_CACHE_DIR;
   let base: string;
-  if (platform === 'win32') base = env.LOCALAPPDATA && p.isAbsolute(env.LOCALAPPDATA) ? env.LOCALAPPDATA : p.join(home, 'AppData', 'Local');
+  if (platform === 'win32') base = env.LOCALAPPDATA ? env.LOCALAPPDATA : p.join(home, 'AppData', 'Local');
   else if (platform === 'darwin') base = p.join(home, 'Library', 'Caches');
   else base = env.XDG_CACHE_HOME && p.isAbsolute(env.XDG_CACHE_HOME) ? env.XDG_CACHE_HOME : p.join(home, '.cache');
   return p.join(base, 'construct3-mcp', 'ace-catalog');
@@ -738,6 +763,11 @@ export async function runBuildCatalog(args: readonly string[], deps: BuildCatalo
     deps.err(`--out must name a file called ${release}.json. ${BUILD_USAGE}`);
     return 2;
   }
+  const defaultDir = defaultAceCacheDir(deps.env, deps.platform, deps.home);
+  if (out === undefined && !(deps.platform === 'win32' ? path.win32 : path.posix).isAbsolute(defaultDir)) {
+    deps.err(`${CACHE_DIR_NOT_ABSOLUTE}. Set C3_ACE_CACHE_DIR to an absolute path.`);
+    return 1;
+  }
   const started = Date.now();
   const result = from !== undefined ? await readLocalSources(from, release) : await fetchCatalogSources(release, deps.fetch);
   const built = catalogFromSources(result);
@@ -745,7 +775,7 @@ export async function runBuildCatalog(args: readonly string[], deps: BuildCatalo
     deps.err(built.ok ? 'No sources.' : `${built.reason}: ${built.detail}`);
     return 1;
   }
-  const cacheDir = out !== undefined ? path.dirname(out) : defaultAceCacheDir(deps.env, deps.platform, deps.home);
+  const cacheDir = out !== undefined ? path.dirname(out) : defaultDir;
   const written = await writeCacheFile(cacheDir, release, built.catalog);
   if (!written.written) {
     deps.err(written.reason);

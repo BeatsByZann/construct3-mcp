@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ACE_SOURCE_FILES,
   CACHE_FORMAT,
+  MAX_CACHE_BYTES,
   MAX_SOURCE_BYTES,
   RELEASE_PATTERN,
   buildCatalog,
@@ -358,6 +359,33 @@ describe('fetching the sources', () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
+  it('stops the whole attempt at the overall deadline though every request is within its own timeout', async () => {
+    const urls: string[] = [];
+    const slowRedirects: FetchLike = (url, init) => new Promise<Response>((resolve, reject) => {
+      urls.push(url);
+      if (init.signal.aborted) return reject(init.signal.reason);
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+      setTimeout(() => resolve(new Response(null, { status: 302, headers: { location: `${PLUGINS_URL}?n=${urls.length}` } })), 40);
+    });
+    const started = Date.now();
+    const result = await fetchCatalogSources('r495-2', slowRedirects, { timeoutMs: 10_000, deadlineMs: 70 });
+    expect(result).toEqual({ ok: false, reason: 'offline', detail: 'TimeoutError' });
+    expect(urls.length).toBeLessThan(4);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('gives up on a body that stalls after its headers once the timeout is over', async () => {
+    const stalled: FetchLike = (_url, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        pull: () => new Promise<void>((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+        }),
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    };
+    expect(await fetchCatalogSources('r495-2', stalled, { timeoutMs: 50 })).toEqual({ ok: false, reason: 'offline', detail: 'TimeoutError' });
+  });
+
   describe('failures', () => {
     it('calls a network error offline and keeps only its code', async () => {
       const failing: FetchLike = () => Promise.reject(new TypeError('fetch failed', { cause: { code: 'ENOTFOUND', hostname: 'secret.example' } }));
@@ -373,7 +401,6 @@ describe('fetching the sources', () => {
     });
 
     it('tells an unserved release from a partly served one', async () => {
-      expect((await fetchCatalogSources('r495-2', fetchStub({ [PLUGINS_URL]: status(404) }))).ok).toBe(false);
       expect(await fetchCatalogSources('r495-2', fetchStub({ [PLUGINS_URL]: status(404) }))).toMatchObject({ reason: 'not-served' });
       expect(await fetchCatalogSources('r495-2', fetchStub({ [PLUGINS_URL]: status(403) }))).toMatchObject({ reason: 'not-served' });
       const partly = fetchStub({ ...fixtureRoutes(), [MAIN_URL]: status(404) });
@@ -493,6 +520,34 @@ describe('the cache write', () => {
     expect(await readdir(dir)).toEqual(['r495-2.json']);
   });
 
+  it('removes the temporary files of this process when a write fails, and no one else\'s', async () => {
+    const dir = await tempDir();
+    await mkdir(join(dir, 'r495-2.json'));
+    const mine = `r495-2.json.${process.pid}-deadbeef.tmp`;
+    const theirs = `r495-2.json.${process.pid + 1}-deadbeef.tmp`;
+    await writeFile(join(dir, mine), 'left behind');
+    await writeFile(join(dir, theirs), 'another process');
+    expect((await writeCacheFile(dir, 'r495-2', TEST_CATALOG)).written).toBe(false);
+    expect((await readdir(dir)).sort()).toEqual(['r495-2.json', theirs].sort());
+  });
+
+  it('does not throw for a release that is not a release name, and refuses an entry over the cache cap', async () => {
+    const dir = await tempDir();
+    expect(await writeCacheFile(dir, '../x', TEST_CATALOG)).toEqual({ written: false, reason: 'the cache file could not be written (error)' });
+    const big = clone(TEST_CATALOG);
+    big.plugins.Sprite.actions.huge = [{ id: 'x'.repeat(MAX_CACHE_BYTES), type: 'string' }];
+    expect(await writeCacheFile(dir, 'r495-2', big)).toEqual({ written: false, reason: 'the catalogue is too large to cache' });
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it('refuses before any request when the default cache folder is not absolute', async () => {
+    const stub = fetchStub(fixtureRoutes());
+    const run = deps({ fetch: stub, env: {}, home: 'relative-home' });
+    expect(await runBuildCatalog(['r495-2'], run)).toBe(1);
+    expect(run.errors).toEqual(['the cache folder is not an absolute path. Set C3_ACE_CACHE_DIR to an absolute path.']);
+    expect(stub.calls).toEqual([]);
+  });
+
   it('makes the script fail when the write fails, and succeed once it can', async () => {
     const dir = await tempDir();
     const target = join(dir, 'r495-2.json');
@@ -554,23 +609,24 @@ describe('the cache folder', () => {
   it('follows each platform\'s cache folder', () => {
     expect(defaultAceCacheDir({ LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, 'win32', 'C:\\Users\\u')).toBe(win('C:\\Users\\u\\AppData\\Local'));
     expect(defaultAceCacheDir({}, 'win32', 'C:\\Users\\u')).toBe(win('C:\\Users\\u', 'AppData', 'Local'));
-    expect(defaultAceCacheDir({ LOCALAPPDATA: 'relative' }, 'win32', 'C:\\Users\\u')).toBe(win('C:\\Users\\u', 'AppData', 'Local'));
     expect(defaultAceCacheDir({}, 'darwin', '/Users/u')).toBe(posix('/Users/u', 'Library', 'Caches'));
     expect(defaultAceCacheDir({ XDG_CACHE_HOME: '/x/cache' }, 'linux', '/home/u')).toBe(posix('/x/cache'));
     expect(defaultAceCacheDir({ XDG_CACHE_HOME: 'cache' }, 'linux', '/home/u')).toBe(posix('/home/u', '.cache'));
     expect(defaultAceCacheDir({}, 'linux', '/home/u')).toBe(posix('/home/u', '.cache'));
   });
 
-  it('uses an absolute C3_ACE_CACHE_DIR as it is and ignores a relative one with one line on stderr', () => {
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    try {
-      expect(defaultAceCacheDir({ C3_ACE_CACHE_DIR: '/abs/dir' }, 'linux', '/home/u')).toBe('/abs/dir');
-      expect(defaultAceCacheDir({ C3_ACE_CACHE_DIR: 'D:\\cache' }, 'win32', 'C:\\Users\\u')).toBe('D:\\cache');
-      expect(spy).not.toHaveBeenCalled();
-      expect(defaultAceCacheDir({ C3_ACE_CACHE_DIR: 'rel/dir' }, 'linux', '/home/u')).toBe(posix('/home/u', '.cache'));
-      expect(spy).toHaveBeenCalledTimes(1);
-    } finally {
-      spy.mockRestore();
-    }
+  it('uses C3_ACE_CACHE_DIR as it is', () => {
+    expect(defaultAceCacheDir({ C3_ACE_CACHE_DIR: '/abs/dir' }, 'linux', '/home/u')).toBe('/abs/dir');
+    expect(defaultAceCacheDir({ C3_ACE_CACHE_DIR: 'D:\\cache' }, 'win32', 'C:\\Users\\u')).toBe('D:\\cache');
+  });
+
+  it('gives a relative folder, for the caller to refuse, from a relative C3_ACE_CACHE_DIR, LOCALAPPDATA or home', () => {
+    const isAbsolute = (platform: NodeJS.Platform, dir: string): boolean => (platform === 'win32' ? path.win32 : path.posix).isAbsolute(dir);
+    expect(isAbsolute('linux', defaultAceCacheDir({ C3_ACE_CACHE_DIR: 'rel/dir' }, 'linux', '/home/u'))).toBe(false);
+    expect(isAbsolute('win32', defaultAceCacheDir({ LOCALAPPDATA: 'relative' }, 'win32', 'C:\\Users\\u'))).toBe(false);
+    expect(isAbsolute('win32', defaultAceCacheDir({}, 'win32', 'home'))).toBe(false);
+    expect(isAbsolute('darwin', defaultAceCacheDir({}, 'darwin', 'home'))).toBe(false);
+    expect(isAbsolute('linux', defaultAceCacheDir({}, 'linux', 'home'))).toBe(false);
+    expect(isAbsolute('linux', defaultAceCacheDir({ XDG_CACHE_HOME: '/x/cache' }, 'linux', 'home'))).toBe(true);
   });
 });

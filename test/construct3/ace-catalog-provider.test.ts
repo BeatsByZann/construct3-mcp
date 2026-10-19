@@ -180,6 +180,20 @@ describe('writing the cache', () => {
   });
 });
 
+describe('a cache folder that is not absolute', () => {
+  it('makes the catalogue unavailable with no request, no read and no write', async () => {
+    const stub = fetchStub(fixtureRoutes());
+    const lookup = failureOf(await new AceCatalogProvider({ cacheDir: join('relative', 'cache'), fetch: stub }).catalogFor(49502));
+    expect(lookup.reason).toBe('refused');
+    expect(lookup.message).toBe(
+      'Conditions, actions and expressions were not checked against Construct\'s definitions: the cache folder is not an absolute path; set C3_ACE_CACHE_DIR to an absolute path.',
+    );
+    expect(stub.calls).toEqual([]);
+    expect(vi.mocked(readFile)).not.toHaveBeenCalled();
+    expect(await readdir('.').then(names => names.includes('relative'))).toBe(false);
+  });
+});
+
 describe('local sources', () => {
   it('refuses sources that give no complete catalogue, local or fetched', async () => {
     const source = await tempDir();
@@ -219,6 +233,7 @@ describe('local sources', () => {
     const lookup = failureOf(await new AceCatalogProvider({ cacheDir: await tempDir(), sourceDir: sourcesRoot, limits: { maxBytes: 10 } }).catalogFor(49502));
     expect(lookup.reason).toBe('refused');
     expect(lookup.message).toContain('plugins/allAces.json is too large');
+    expect(vi.mocked(readFile).mock.calls.filter(call => String(call[0]).includes('allAces.json'))).toEqual([]);
   });
 });
 
