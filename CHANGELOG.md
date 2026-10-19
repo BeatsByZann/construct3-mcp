@@ -2,6 +2,12 @@
 
 All notable changes to the Construct3 MCP Server are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- A write whose temp-file rename failed with `EEXIST` no longer deletes the file it replaces, or a file another write put at its name: the file is renamed aside, the new content is linked into its place, and the file is linked back when that fails. A link never replaces an existing name, so when something else took the name meanwhile, or putting the file back fails, nothing is removed and the error names the `.old` and `.tmp` files that hold the two contents. Behavior change: this path needs hard links. In a folder that cannot make them, a write that gets `EEXIST` now fails with the file untouched, where before the file was deleted and the rename retried. Temp files are now named `.c3mcp-<16 hex digits>.tmp` and created exclusively, so a write never writes over a file an earlier one left, and the name's length no longer depends on the file's; the fallback's other files are `.c3mcp-<16 hex digits>.old` and `.link` (see TROUBLESHOOTING). Before, the file was deleted first, so a failed second rename left it missing, with no change recorded for the tool call's undo and, for `register_addon` and `unregister_addon` in 1.10.0, no `.bak` (#ISSUE).
+
 ## [1.10.0] - 2026-09-30
 
 ### Highlights
