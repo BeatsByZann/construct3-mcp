@@ -117,6 +117,7 @@ import {
   createIncludeEvent,
 } from '../construct3/templates.js';
 import { withProjectSync } from './project-sync.js';
+import { checkEventChange } from '../construct3/event-change-check.js';
 
 /** Per-sheet cap on change details returned by fix_legacy_behavior_keys. */
 const MAX_REPORTED_CHANGES = 100;
@@ -407,6 +408,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
 
+        const aceWarnings = await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events);
+        const allWarnings = [...loadCheck.warnings, ...aceWarnings];
+
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
         resetProjectIndex(reader);
@@ -417,7 +421,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           category: 'eventsheet',
           action: 'updated',
           ...(generatedSid !== undefined ? { generatedSid } : {}),
-          warnings: loadCheck.warnings.length > 0 ? loadCheck.warnings : undefined,
+          warnings: allWarnings.length > 0 ? allWarnings : undefined,
           backupFile: backupPath,
         };
         return toolResult({
@@ -535,6 +539,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
         warnings.push(...loadCheck.warnings);
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
@@ -1066,6 +1071,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
         warnings.push(...loadCheck.warnings);
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
@@ -1705,6 +1711,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
         warnings.push(...loadCheck.warnings);
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);

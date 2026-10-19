@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
+import { withoutAceLookupWarnings } from './ace-warning-filter.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -67,7 +68,7 @@ describe('add_event_block comment and script sub-events', () => {
       children: [{ eventType: 'comment', text: 'Explains the next sub-event' }, { conditions: [isVisible], actions: [setVisible] }],
     }));
     expect(data.success).toBe(true);
-    expect(data.warnings).toBeUndefined();
+    expect(withoutAceLookupWarnings(data.warnings)).toEqual([]);
     const [comment, block] = writtenEvents(writer)[0].children;
     expect(comment).toEqual({ eventType: 'comment', text: 'Explains the next sub-event' });
     expect(Object.keys(comment)).toEqual(['eventType', 'text']);
