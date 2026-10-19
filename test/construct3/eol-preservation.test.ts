@@ -16,6 +16,8 @@ import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
+import { applyJsonTextStyle, jsonTextStyleOf, stripBom } from '../../src/construct3/json-format.js';
+import { shapeByHand, type ProjectJson } from '../helpers/project-shape.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerProjectTools } from '../../src/tools/project-tools.js';
 import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
@@ -231,7 +233,11 @@ describe('Construct3ProjectWriter — text style preservation', () => {
     await writer.updateProjectProperties({ description: reader.getProject().properties.description });
 
     for (const [file, text] of before) {
-      expect(await readFile(file, 'utf-8'), file).toBe(text);
+      // The fixture is older than the baseline release: a write to project.c3proj brings it to the saved shape
+      const expected = file.endsWith('project.c3proj')
+        ? applyJsonTextStyle(JSON.stringify(shapeByHand(JSON.parse(stripBom(text)) as ProjectJson), null, '\t'), jsonTextStyleOf(text))
+        : text;
+      expect(await readFile(file, 'utf-8'), file).toBe(expected);
     }
   });
 });

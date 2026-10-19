@@ -13,6 +13,7 @@ import { atomicReplace, existingSpelling, findFileIgnoringCase } from './atomic-
 import type { Construct3ProjectReader } from './project-reader.js';
 import type { IdGenerator } from './id-generator.js';
 import type { Addon, Subfolder, ProjectProperties } from './types.js';
+import { upgradeProjectShape } from './project-shape.js';
 import { resetProjectIndex } from './analyzers/index-builder.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from './templates.js';
 import { generatePlaceholderPng, getImageFileName } from './png-generator.js';
@@ -789,6 +790,9 @@ export class Construct3ProjectWriter {
    * scan are renewed), the file is read right before the write, and when it
    * changes between that read and the write it is read and changed again.
    * Only when it keeps changing is the update refused (StaleFileError).
+   * The parsed file is brought to the shape the r495.2 editor saves
+   * (project-shape.ts) after `change` returned and before it is serialized,
+   * so a write follows that shape.
    * These updates run after the tool call wrote other files (registering a
    * new entity, removing a deleted one), so refusing them for a change they
    * can merge would leave the project half changed.
@@ -804,6 +808,8 @@ export class Construct3ProjectWriter {
           const content = await readFile(projectPath, 'utf-8');
           const project = parseJsonText(content);
           if (change(project) === false) return undefined;
+          // The shape the editor saves (project-shape.ts); only an update that writes is reshaped
+          upgradeProjectShape(project);
           const text = applyJsonTextStyle(this.validateJsonData(project, 'project.c3proj'), jsonTextStyleOf(content));
 
           const backupPath = await this.createBackup(projectPath);
