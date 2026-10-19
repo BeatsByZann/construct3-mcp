@@ -14,14 +14,16 @@ import type { MutationToolDeps } from './shared.js';
 import { folderCaseClashError, toolError, toolResult, validateFileName, validateSubfolder } from './shared.js';
 import { withProjectSync } from './project-sync.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
-import { StaleFileError } from '../construct3/disk-state.js';
+import { StaleFileError, statFileState } from '../construct3/disk-state.js';
 import { filesLeftClause } from '../construct3/project-writer.js';
 import { nameKey } from '../construct3/names.js';
+import { resolveProjectPath } from '../construct3/path-utils.js';
+import { buildDataFileBody, projectFileMimeType } from '../construct3/data-file-body.js';
 import { BRIDGE_FILENAME } from './runtime-tools.js';
 import type { Construct3Project } from '../construct3/types.js';
 import {
   applyMainScript, applyRegistration, entryPurpose, findEntryNameClash, findFileEntry, findSubfolderClash,
-  listFileEntries, removeFileEntry,
+  getFileFolderDirectory, listFileEntries, removeFileEntry,
   type FileInfoKey, type RegisteredFileFolder, type RegistrationOutcome,
 } from '../construct3/file-registration.js';
 
@@ -313,6 +315,7 @@ async function readSourceFile(sourcePath: string): Promise<{ bytes: Buffer } | {
 
 const purposeField = z.string().min(1).max(100);
 const subfolderField = z.string().min(1).max(500);
+const familyField = z.enum(['general', 'sound', 'music', 'video', 'font']);
 
 /** Register register_script_file, deregister_script_file and set_main_script. */
 export function registerFileTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
@@ -427,6 +430,217 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
       } catch (error) {
         if (!(error instanceof Refusal)) console.error('[set_main_script] failed:', error);
         return toolError(await failureText(writer, 'Error setting the main script', error));
+      }
+    },
+  );
+
+  server.tool(
+    'register_project_file',
+    'Copy a file into the directory its Project File family uses (files/, sounds/, music/, videos/, fonts/) and register it with file-info metadata and a collision-safe SID. The registration is written first; a failed copy puts it back. A file that is registered already needs no source (a source given then is not copied, and the result says so). A file at the destination is refused, checked again right before the copy; one another program creates in the moment between that check and the copy is replaced and kept as <file>.bak. A destination reached through a link or junction that leaves the project folder is refused, and so is a name whose <name>.tmp is a registered or existing file (the server writes through it). The server copies any file its process can read. Names are matched with their letter case.',
+    {
+      name: z.string().min(1).max(255).optional().describe('Destination file name; defaults to the source basename'),
+      sourcePath: z.string().min(1).optional().describe('Path to the source file to copy (up to 100 MB)'),
+      filePath: z.string().min(1).optional().describe('Alias for sourcePath'),
+      source: z.string().min(1).optional().describe('Alias for sourcePath'),
+      folder: familyField.optional().describe('Project File family (default: general)'),
+      category: familyField.optional().describe('Alias for folder'),
+      type: z.string().min(1).max(150).optional().describe('MIME type recorded by Construct 3 (inferred from the extension when omitted)'),
+      mimeType: z.string().min(1).max(150).optional().describe('Alias for type'),
+      purpose: purposeField.optional().describe('file-info purpose; a new entry gets "none" when omitted, an existing entry keeps its purpose'),
+      subfolder: subfolderField.optional().describe('Optional slash-separated subfolder inside the family directory'),
+    },
+    async (args) => {
+      try {
+        if (args.folder !== undefined && args.category !== undefined && args.folder !== args.category) {
+          return refuse(`folder and category aliases disagree ("${args.folder}" versus "${args.category}")`);
+        }
+        const folder: RegisteredFileFolder = args.category ?? args.folder ?? 'general';
+        const sourcePath = args.sourcePath ?? args.filePath ?? args.source;
+        const name = args.name ?? (sourcePath ? basename(sourcePath) : undefined);
+        if (!name) return refuse('A name or sourcePath/filePath is required');
+        const refusal = nameRefusal(reader.getProject(), folder, name, args.subfolder, 'Project File');
+        if (refusal) return refuse(refusal);
+
+        const subfolderParts = args.subfolder ? args.subfolder.split('/') : [];
+        const directory = getFileFolderDirectory(folder);
+        const relativePath = [directory, ...subfolderParts, name].join('/');
+        const base = { entity: name, category: 'project-file' as const, folder, subfolder: args.subfolder, path: relativePath };
+        const destination = resolveProjectPath(reader.getProjectDir(), directory, ...subfolderParts, name);
+
+        const known = findFileEntry(reader.getProject(), folder, name, args.subfolder);
+        if (known) {
+          const { outcome, written } = await registerInProject(writer, reader, {
+            folder, name, type: known.entry.type, infoKey: 'file-info', purpose: args.purpose, subfolder: args.subfolder, kind: 'Project File',
+          });
+          const warnings: string[] = [];
+          if (sourcePath) warnings.push(`"${name}" is already registered, so the source was not copied.`);
+          if (!(await findFileIgnoringCase(destination))) {
+            warnings.push(`${relativePath} is not on disk. To copy a source into it, run deregister_project_file and then register_project_file with the source.`);
+          }
+          return toolResult({ ...registrationResult(outcome, base), ...(warnings.length > 0 ? { warnings } : {}) }, { projectWritten: written });
+        }
+        if (!sourcePath) return refuse('sourcePath (or filePath) is required when the Project File is not already registered');
+        const source = await readSourceFile(sourcePath);
+        if ('refusal' in source) return refuse(source.refusal);
+        if (await findFileIgnoringCase(destination)) {
+          return refuse(`${relativePath} already exists (or a file whose name differs only in case does) but is not a registered Project File. It was left unchanged. Remove it or choose another name`);
+        }
+        // Not through a link out of the project; none of the writer's own files in the way
+        const blocked = await writeBlocker(reader, folder, name, args.subfolder, destination, relativePath, '.tmp');
+        if (blocked) return refuse(blocked);
+
+        const { outcome, written } = await registerInProject(writer, reader, {
+          folder, name, type: args.type ?? args.mimeType ?? projectFileMimeType(name), infoKey: 'file-info', purpose: args.purpose, subfolder: args.subfolder, kind: 'Project File',
+        });
+        // Registered by another writer meanwhile: that file is theirs, not copied over
+        if (outcome.kind !== 'added') {
+          return toolResult({
+            ...registrationResult(outcome, base),
+            warnings: [`"${name}" was registered by another writer while this call ran, so the source was not copied.`],
+          }, { projectWritten: written });
+        }
+        // Checked again after the registration: a file another program created meanwhile is left as it is
+        if (await findFileIgnoringCase(destination)) {
+          return toolError(await failedAfterRegistration(writer, destination, relativePath, `${relativePath} appeared on disk while this call ran and was left as it is`));
+        }
+        const blockedNow = await writeBlocker(reader, folder, name, args.subfolder, destination, relativePath, '.tmp');
+        if (blockedNow) return toolError(await failedAfterRegistration(writer, destination, relativePath, `Nothing was copied: ${blockedNow}`));
+        try {
+          await writer.replaceFile(destination, source.bytes);
+        } catch (error) {
+          return toolError(await failedAfterRegistration(writer, destination, relativePath, `Copying the file into ${relativePath} failed (${failureReason(error)})`));
+        }
+        return toolResult(registrationResult(outcome, base));
+      } catch (error) {
+        if (!(error instanceof Refusal)) console.error('[register_project_file] failed:', error);
+        return toolError(await failureText(writer, 'Error registering Project File', error));
+      }
+    },
+  );
+
+  server.tool(
+    'deregister_project_file',
+    'Deregister a Project File and delete its file from the directory its family uses; the file is backed up to <file>.bak first (a later delete of the same path replaces that copy; a registered <name>.bak is never replaced: the call is refused). Only the file that was registered when the call selected it is deleted: one replaced meanwhile is left in place and named. A file reached through a link or junction that leaves the project folder is not deleted. Names are matched with their letter case.',
+    {
+      name: z.string().min(1).max(255).describe('Project File name'),
+      folder: familyField.optional().describe('Project File family (default: general)'),
+      category: familyField.optional().describe('Alias for folder'),
+      subfolder: subfolderField.optional().describe('Optional slash-separated subfolder inside the family directory'),
+    },
+    async (args) => {
+      try {
+        if (args.folder !== undefined && args.category !== undefined && args.folder !== args.category) {
+          return refuse(`folder and category aliases disagree ("${args.folder}" versus "${args.category}")`);
+        }
+        const folder: RegisteredFileFolder = args.category ?? args.folder ?? 'general';
+        const refusal = nameRefusal(reader.getProject(), folder, args.name, args.subfolder, 'Project File');
+        if (refusal) return refuse(refusal);
+        const selected = findFileEntry(reader.getProject(), folder, args.name, args.subfolder);
+        if (!selected) {
+          return refuse(`Project File "${args.name}" is not registered in ${folder}`);
+        }
+        const subfolderParts = args.subfolder ? args.subfolder.split('/') : [];
+        const directory = getFileFolderDirectory(folder);
+        const relativePath = [directory, ...subfolderParts, args.name].join('/');
+        const filePath = resolveProjectPath(reader.getProjectDir(), directory, ...subfolderParts, args.name);
+        const blocked = await writeBlocker(reader, folder, args.name, args.subfolder, filePath, relativePath, '.bak');
+        if (blocked) return refuse(blocked);
+
+        // The file as it is when the registration is selected: only this file is deleted
+        const expected = await statFileState(filePath);
+        const selectedSid = selected.entry.sid;
+        const removed = await writer.updateProject(project => {
+          const current = findFileEntry(project as Construct3Project, folder, args.name, args.subfolder);
+          if (current && current.entry.sid !== selectedSid) {
+            throw new Refusal(`Project File "${args.name}" was registered again while this call ran, so its file was not touched`);
+          }
+          return removeFileEntry(project as Construct3Project, folder, args.name, args.subfolder) ? undefined : false;
+        });
+        if (removed === undefined) return refuse(`Project File "${args.name}" is no longer registered in ${folder}: project.c3proj changed on disk while this call ran`);
+        // Checked again before the delete; a link swapped in after this check is not covered
+        const blockedNow = await linkRefusal(reader.getProjectDir(), filePath, relativePath);
+        if (blockedNow) return toolError(`Deregistered "${args.name}" but ${blockedNow}. ${relativePath} was left in place.`);
+        let backup: string | undefined;
+        try {
+          backup = await writer.deleteFile(filePath, { expected });
+        } catch (error) {
+          if (error instanceof StaleFileError) {
+            return toolError(`Deregistered "${args.name}", but ${relativePath} was changed since this call selected it, so it was left in place. Check it and remove it by hand if it is not needed.`);
+          }
+          return toolError(`Deregistered "${args.name}" but could not remove ${relativePath} (${failureReason(error)}). The file is now orphaned; remove it manually.`);
+        }
+        return toolResult({
+          success: true, entity: args.name, category: 'project-file', action: 'deregistered', folder, subfolder: args.subfolder,
+          path: relativePath, fileRemoved: backup !== undefined, ...(backup ? { backup: writer.projectRelative(backup) } : {}),
+        });
+      } catch (error) {
+        if (!(error instanceof Refusal)) console.error('[deregister_project_file] failed:', error);
+        return toolError(await failureText(writer, 'Error deregistering Project File', error));
+      }
+    },
+  );
+
+  server.tool(
+    'create_data_file',
+    'Create a Construct 3 data file (Array, Dictionary, JSON or text) under files/ and register it as a general Project File. The registration is written first; a failed write puts it back. A file at the path is refused, checked again right before the write; one another program creates in the moment between that check and the write is replaced and kept as <file>.bak. A path through a link or junction that leaves the project folder is refused, and so is a name whose <name>.tmp is a registered or existing file. "array" and "dictionary" write the c2array / c2dictionary bodies the plugins load (an array of up to 1,000,000 cells, counting a depth of 0 as 1); "json" checks the content parses and writes it as given; "text" writes the content as given.',
+    {
+      name: z.string().min(1).max(255).describe('File name including its extension, for example "levels.json"'),
+      kind: z.enum(['array', 'dictionary', 'json', 'text']).describe('Body format'),
+      content: z.string().max(5_000_000).optional()
+        .describe('dictionary/json: a JSON document. text: the literal body. array: an optional JSON [width][height][depth] data array.'),
+      arraySize: z.array(z.number().int().min(0).max(10_000)).length(3).optional().describe('array only: [width, height, depth] (default: [1, 1, 1])'),
+      type: z.string().min(1).max(150).optional().describe('MIME type recorded by Construct 3 (inferred from kind when omitted)'),
+      purpose: purposeField.optional().describe('file-info purpose (default: none)'),
+      subfolder: subfolderField.optional().describe('Optional slash-separated files subfolder'),
+    },
+    async (args) => {
+      try {
+        if (args.arraySize !== undefined && args.kind !== 'array') {
+          return refuse(`arraySize applies to kind "array" only; kind "${args.kind}" ignores it`);
+        }
+        const refusal = nameRefusal(reader.getProject(), 'general', args.name, args.subfolder, 'Project File');
+        if (refusal) return refuse(refusal);
+        const subfolderParts = args.subfolder ? args.subfolder.split('/') : [];
+        const directory = getFileFolderDirectory('general');
+        const relativePath = [directory, ...subfolderParts, args.name].join('/');
+        if (findFileEntry(reader.getProject(), 'general', args.name, args.subfolder)) {
+          return refuse(`Project File "${relativePath}" is already registered. Deregister it first, or choose another name`);
+        }
+        let built: { body: string; type: string };
+        try {
+          built = buildDataFileBody(args.kind, args.content, args.arraySize);
+        } catch (error) {
+          return refuse(error instanceof Error ? error.message : String(error));
+        }
+        const destination = resolveProjectPath(reader.getProjectDir(), directory, ...subfolderParts, args.name);
+        if (await findFileIgnoringCase(destination)) {
+          return refuse(`A file already exists at ${relativePath} (or one whose name differs only in case). It was left unchanged. Remove it or choose another name`);
+        }
+        // Not through a link out of the project; none of the writer's own files in the way
+        const blocked = await writeBlocker(reader, 'general', args.name, args.subfolder, destination, relativePath, '.tmp');
+        if (blocked) return refuse(blocked);
+
+        const base = { entity: args.name, category: 'project-file' as const, folder: 'general' as const, subfolder: args.subfolder, path: relativePath };
+        // Create-only: another writer's registration of the name meanwhile is refused inside the update
+        const { outcome } = await registerInProject(writer, reader, {
+          folder: 'general', name: args.name, type: args.type ?? built.type, infoKey: 'file-info', purpose: args.purpose, subfolder: args.subfolder,
+          kind: 'Project File', createOnly: true,
+        });
+        // Checked again after the registration: a file another program created meanwhile is left as it is
+        if (await findFileIgnoringCase(destination)) {
+          return toolError(await failedAfterRegistration(writer, destination, relativePath, `${relativePath} appeared on disk while this call ran and was left as it is`));
+        }
+        const blockedNow = await writeBlocker(reader, 'general', args.name, args.subfolder, destination, relativePath, '.tmp');
+        if (blockedNow) return toolError(await failedAfterRegistration(writer, destination, relativePath, `Nothing was written: ${blockedNow}`));
+        try {
+          await writer.replaceFile(destination, built.body);
+        } catch (error) {
+          return toolError(await failedAfterRegistration(writer, destination, relativePath, `Writing ${relativePath} failed (${failureReason(error)})`));
+        }
+        return toolResult({ ...registrationResult(outcome, base), action: 'created', kind: args.kind });
+      } catch (error) {
+        if (!(error instanceof Refusal)) console.error('[create_data_file] failed:', error);
+        return toolError(await failureText(writer, 'Error creating data file', error));
       }
     },
   );

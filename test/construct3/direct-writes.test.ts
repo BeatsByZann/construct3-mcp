@@ -15,7 +15,7 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { getImageFileName } from '../../src/construct3/png-generator.js';
-import { currentToolCall, fileKey, runInToolCall, statFileState } from '../../src/construct3/disk-state.js';
+import { currentToolCall, fileKey, runInToolCall, StaleFileError, statFileState } from '../../src/construct3/disk-state.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
@@ -133,6 +133,45 @@ describe('deleteFile', () => {
       return currentToolCall()?.reads.get(fileKey(file));
     });
     expect(left).toBeNull();
+  });
+
+  describe('with the expected state', () => {
+    const file = () => join(dir, 'timelines', 'T.json');
+    beforeEach(async () => {
+      await mkdir(join(dir, 'timelines'), { recursive: true });
+    });
+
+    it('D1 deletes and backs up a file that is in the expected state', async () => {
+      await writeFile(file(), '{"v":1}');
+      const expected = await statFileState(file());
+      expect(await runInToolCall(() => writer.deleteFile(file(), { expected }))).toBe(file() + '.bak');
+      expect(existsSync(file())).toBe(false);
+      expect(await readFile(file() + '.bak', 'utf-8')).toBe('{"v":1}');
+    });
+
+    it('D2 refuses a file whose size differs from the expected state, and leaves it without a backup', async () => {
+      await writeFile(file(), '{"v":1}');
+      const expected = await statFileState(file());
+      await writeFile(file(), '{"v":1,"other":true}');
+      await expect(runInToolCall(() => writer.deleteFile(file(), { expected }))).rejects.toBeInstanceOf(StaleFileError);
+      expect(await readFile(file(), 'utf-8')).toBe('{"v":1,"other":true}');
+      expect(existsSync(file() + '.bak')).toBe(false);
+    });
+
+    it('D3 refuses a file that is present when null (absent) was expected', async () => {
+      const expected = await statFileState(file());
+      expect(expected).toBeNull();
+      await writeFile(file(), '{"v":1}');
+      await expect(runInToolCall(() => writer.deleteFile(file(), { expected }))).rejects.toBeInstanceOf(StaleFileError);
+      expect(await readFile(file(), 'utf-8')).toBe('{"v":1}');
+      expect(existsSync(file() + '.bak')).toBe(false);
+    });
+
+    it('D4 returns undefined and deletes nothing when null was expected and the file is absent', async () => {
+      expect(await runInToolCall(() => writer.deleteFile(file(), { expected: null }))).toBeUndefined();
+      expect(existsSync(file())).toBe(false);
+      expect(existsSync(file() + '.bak')).toBe(false);
+    });
   });
 });
 
