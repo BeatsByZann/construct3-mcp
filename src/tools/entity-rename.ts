@@ -29,7 +29,7 @@ import type { MutationToolDeps } from './shared.js';
 import type { EventSheet, Layout } from '../construct3/types.js';
 import { validateName, toolResult, toolError, notFoundError, caseClashError } from './shared.js';
 import { findNameClash, nameKey } from '../construct3/names.js';
-import { classifyReadError } from '../construct3/project-reader.js';
+import { ProjectReadError, classifyReadError } from '../construct3/project-reader.js';
 import {
   blocksWithoutForce,
   checkUnscannedFiles,
@@ -200,6 +200,11 @@ function viewStateMoves(category: Category, subfolder: string | undefined, oldNa
  */
 function withoutAbsolutePath(writer: Writer, error: unknown): unknown {
   if (error instanceof StaleFileError || error instanceof EntityWriteError) return error;
+  if (error instanceof ProjectReadError) {
+    // Its message spells the absolute path of the file; the cause names it by code and project path
+    const head = /^Failed to read [^"]*"[^"]*"/.exec(error.message)?.[0] ?? 'Failed to read a file';
+    return new Error(`${head}: ${reasonOf(error.cause ?? error, file => writer.projectRelative(file))}`);
+  }
   const { code, path } = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; path?: unknown };
   return typeof code === 'string' && typeof path === 'string' ? new Error(reasonOf(error, file => writer.projectRelative(file))) : error;
 }

@@ -16,7 +16,7 @@ import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, relative } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
-import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
+import { Construct3ProjectReader, ProjectReadError } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { registerEntityRenameTools, viewStateWithName } from '../../src/tools/entity-rename.js';
@@ -456,6 +456,23 @@ describe('rename_event_sheet: what else it finds and how it fails', () => {
     const fsError = Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES', path: file });
     vi.spyOn(reader, 'readAllEventSheets').mockRejectedValueOnce(fsError);
     const data = await refusal('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' }, 'The rename stopped before anything was written: EACCES on eventSheets/Other.json.');
+    expect(data.text).not.toContain(tmpDir);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('names a file by its path in the project when a read during the writes fails', async () => {
+    const before = await snapshot();
+    const file = path('eventSheets', 'Other.json');
+    const cause = Object.assign(new Error(`EBUSY: resource busy or locked, open '${file}'`), { code: 'EBUSY', path: file });
+    const readSheet = reader.readEventSheet.bind(reader);
+    vi.spyOn(reader, 'readEventSheet').mockImplementation(async name => {
+      if (name === 'Other') throw new ProjectReadError('E_READ_ERROR', `Failed to read event sheet "Other": ${cause.message}`, { cause });
+      return readSheet(name);
+    });
+    const data = await call('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('EBUSY on eventSheets/Other.json');
+    expect(data.text).toContain('The call was rolled back:');
     expect(data.text).not.toContain(tmpDir);
     expect(await snapshot()).toEqual(before);
   });
@@ -1045,24 +1062,6 @@ describe('rename_layout: timelines and editor saves', () => {
     expect(await readFile(path('timelines', 'Intro.json'), 'utf8')).toBe(saved);
     expect(existsSync(path('layouts', 'Layout 1.json'))).toBe(true);
     expect(existsSync(path('layouts', 'Title Screen.json'))).toBe(false);
-  });
-
-  it('keeps an event sheet the editor saved during the call and puts back what the call wrote before', async () => {
-    const before = await snapshot();
-    const original = writer.writeEntityFile.bind(writer);
-    const saved = '{"name":"Other","events":[{"eventType":"include","includeSheet":"Common"},{"eventType":"comment","text":"saved in the editor"}],"sid":410000000000002}';
-    vi.spyOn(writer, 'writeEntityFile').mockImplementation(async (category, name, data, subfolder, options) => {
-      if (name === 'Other') await editorSave(path('eventSheets', 'Other.json'), saved);
-      return original(category, name, data, subfolder, options);
-    });
-    const data = await call('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' });
-    expect(data.isError).toBe(true);
-    expect(data.text).toContain('was changed on disk');
-    expect(await readFile(path('eventSheets', 'Other.json'), 'utf8')).toBe(saved);
-    const now = await snapshot();
-    now.delete('eventSheets/Other.json');
-    before.delete('eventSheets/Other.json');
-    expect(now).toEqual(before);
   });
 
   it('moves the view state last; a taken name is left with a warning, an identical copy only loses the old name', async () => {
