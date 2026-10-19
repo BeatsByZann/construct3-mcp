@@ -17,8 +17,11 @@ import { registerMutationTools } from './tools/mutations.js';
 import { Construct3ProjectWriter } from './construct3/project-writer.js';
 import { IdGenerator } from './construct3/id-generator.js';
 import { registerRuntimeTools } from './tools/runtime-tools.js';
+import { startC3pSession } from './construct3/project-source.js';
+import { findLeftWorkFolders } from './construct3/c3p-archive.js';
+import { describeArchiveClose, withArchiveSync } from './tools/archive-sync.js';
 
-// Use explicit path if given, otherwise auto-detect .c3proj in current working directory
+// The project: a folder, its .c3proj file, or a single-file .c3p (served through a working folder); else the working directory
 const projectPath: string = process.argv[2] || process.env.C3_PROJECT_PATH || process.cwd();
 
 const server = new McpServer(
@@ -52,30 +55,55 @@ async function main() {
     console.error('Construct3 MCP Server starting...');
     console.error(`Project path: ${projectPath}`);
 
-    const reader = await initializeProject(projectPath);
+    await startC3pSession(projectPath, async (sourcePath, archive) => {
+      const reader = await initializeProject(sourcePath);
+      let served = server;
+      let closeArchive: () => Promise<void> = async () => {};
+      if (archive) {
+        console.error(`Opened ${archive.archivePath} in the working folder ${archive.workDir}`);
+        const left = await findLeftWorkFolders();
+        const startupNote = left.length > 0
+          ? `Working folder(s) left by a session that stopped without closing (they may hold changes never written back): `
+            + `${left.map(l => `${l.sessionDir} (from ${l.archivePath}${l.leftovers.length ? `; also ${l.leftovers.join(', ')}` : ''})`).join('; ')}.`
+          : undefined;
+        if (startupNote) console.error(startupNote);
+        // A .c3p is refreshed before the calls and written back after them
+        const wrapped = withArchiveSync(server, archive, { startupNote });
+        served = wrapped.server;
+        closeArchive = async () => {
+          const message = describeArchiveClose(archive, await wrapped.close());
+          if (message) console.error(message);
+        };
+      }
 
-    // Register all modular handlers
-    registerProjectResources(server, reader);
-    registerDocsResources(server);
-    registerQueryTools(server, reader);
-    registerWorkflowPrompts(server, reader);
-    registerAnalysisTools(server, reader);
+      // Register all modular handlers
+      registerProjectResources(served, reader);
+      registerDocsResources(served);
+      registerQueryTools(served, reader);
+      registerWorkflowPrompts(served, reader);
+      registerAnalysisTools(served, reader);
 
-    // Phase 3: Safe Modifications
-    const idGen = new IdGenerator();
-    const writer = new Construct3ProjectWriter(reader, idGen);
-    registerMutationTools(server, reader, writer, idGen);
+      // Phase 3: Safe Modifications
+      const idGen = new IdGenerator();
+      const writer = new Construct3ProjectWriter(reader, idGen);
+      registerMutationTools(served, reader, writer, idGen);
 
-    // Runtime Control (for live game testing via browser automation)
-    const runtimeTools = registerRuntimeTools({ server, reader, writer });
-    const stop = () => { void runtimeTools.close().finally(() => process.exit(0)); };
-    process.once('SIGINT', stop);
-    process.once('SIGTERM', stop);
-    process.stdin.once('end', () => { void runtimeTools.close(); });
+      // Runtime Control (for live game testing via browser automation)
+      const runtimeTools = registerRuntimeTools({ server: served, reader, writer });
 
-    // Start transport
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
+      // Start transport
+      const transport = new StdioServerTransport();
+      await server.connect(transport);
+
+      /** Close the runtime tools, then the archive through its gate; once, whatever fails. */
+      let stopping: Promise<void> | undefined;
+      const shutdown = () => (stopping ??= runtimeTools.close()
+        .catch(error => { console.error('Closing the runtime tools failed:', error); })
+        .finally(() => closeArchive().catch(error => { console.error('Closing the archive failed:', error); })));
+      process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
+      process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
+      process.stdin.once('end', () => { void shutdown(); });
+    });
 
     console.error('Construct3 MCP Server ready');
   } catch (error) {
