@@ -18,7 +18,7 @@ import { tmpdir } from 'os';
 import { join, relative } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
 import { gate, letOthersRun, track } from '../helpers/barrier.js';
-import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
+import { Construct3ProjectReader, ProjectReadError } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { registerObjectRenameTools, planObjectImageRenames } from '../../src/tools/object-rename.js';
@@ -33,6 +33,7 @@ interface Folder { name?: string; items: string[]; subfolders: Folder[] }
 interface ProjectFile {
   objectTypes: Folder;
   families: Folder;
+  layouts: Folder;
   eventSheets: Folder;
   timelines: Folder;
   containers?: Array<{ members: string[] }>;
@@ -363,6 +364,90 @@ describe('rename_object_type', () => {
     }
   });
 
+  it('names a file by its path in the project when a read during the writes fails', async () => {
+    const before = await snapshot();
+    const file = path('layouts', 'Layout 1.json');
+    const cause = Object.assign(new Error(`EBUSY: resource busy or locked, open '${file}'`), { code: 'EBUSY', path: file });
+    vi.spyOn(reader, 'readLayout').mockRejectedValueOnce(new ProjectReadError('E_READ_ERROR', `Failed to read layout "Layout 1": ${cause.message}`, { cause }));
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('EBUSY on layouts/Layout 1.json');
+    expect(data.text).toContain('The call was rolled back:');
+    expect(data.text).not.toContain(tmpDir);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('renames a single-image object type and its image file', async () => {
+    const data = await rename_('Floor', 'Ground');
+    expect(data.success).toBe(true);
+    expect(data.imageRenames).toEqual([{ from: 'images/floor.png', to: 'images/ground.png' }]);
+    expect(await readFile(path('images', 'ground.png'), 'utf8')).toBe('floor image');
+    expect(existsSync(path('images', 'floor.png'))).toBe(false);
+    expect(data.filesWritten).toEqual(['objectTypes/Ground.json', 'project.c3proj', 'images/ground.png']);
+    expect((await readJson<ObjectFile>(path('objectTypes', 'Ground.json'))).name).toBe('Ground');
+  });
+
+  it('points a non-world instance at the new name', async () => {
+    const layout = await readJson<LayoutFile>(path('layouts', 'Layout 1.json'));
+    layout['nonworld-instances'] = [{ type: 'Alpha', uid: 9, sid: 500000000000020, properties: {} }];
+    await writeJson(path('layouts', 'Layout 1.json'), layout);
+    await reader.loadProject();
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.success).toBe(true);
+    const renamed = await readJson<LayoutFile>(path('layouts', 'Layout 1.json'));
+    expect((renamed['nonworld-instances'] as InstanceJson[])[0].type).toBe('Gamma');
+    expect(warningsOf(data)).toContain('Pointed 3 layout instance(s)');
+  });
+
+  it('refuses without force when a layout that could not be parsed names the object, and renames with force', async () => {
+    const project = await readJson<ProjectFile>(path('project.c3proj'));
+    project.layouts.items.push('Broken');
+    await writeJson(path('project.c3proj'), project);
+    await writeFile(path('layouts', 'Broken.json'), '{"name":"Broken","layers":[{"instances":[{"type":"Alpha"} broken');
+    await reader.loadProject();
+    const before = await snapshot();
+    const blocked = await rename_('Alpha', 'Gamma');
+    expect(blocked.action).toBe('rename_blocked');
+    expect(blocked.message).toContain('layouts/Broken');
+    expect(blocked.message).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(before);
+    const forced = await rename_('Alpha', 'Gamma', { force: true });
+    expect(forced.success).toBe(true);
+    expect(warningsOf(forced)).toContain('Renamed with force=true');
+    expect(await readFile(path('layouts', 'Broken.json'), 'utf8')).toBe('{"name":"Broken","layers":[{"instances":[{"type":"Alpha"} broken');
+  });
+
+  it('refuses without force when a family that could not be parsed names the object, and renames with force', async () => {
+    const project = await readJson<ProjectFile>(path('project.c3proj'));
+    project.families.items.push('Gang');
+    await writeJson(path('project.c3proj'), project);
+    await writeFile(path('families', 'Gang.json'), '{"name":"Gang","members":["Alpha"] broken');
+    await reader.loadProject();
+    const before = await snapshot();
+    const blocked = await rename_('Alpha', 'Gamma');
+    expect(blocked.action).toBe('rename_blocked');
+    expect(blocked.message).toContain('families/Gang');
+    expect(blocked.message).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(before);
+    const forced = await rename_('Alpha', 'Gamma', { force: true });
+    expect(forced.success).toBe(true);
+    expect(warningsOf(forced)).toContain('Renamed with force=true');
+    expect(await readFile(path('families', 'Gang.json'), 'utf8')).toBe('{"name":"Gang","members":["Alpha"] broken');
+  });
+
+  it('refuses without force when a timeline has more values than the search reads', async () => {
+    const project = await readJson<ProjectFile>(path('project.c3proj'));
+    project.timelines.items.push('Big');
+    await writeJson(path('project.c3proj'), project);
+    await writeJson(path('timelines', 'Big.json'), { name: 'Big', totalTime: 5, tracks: [], values: Array.from({ length: 200_001 }, () => 'x') });
+    await reader.loadProject();
+    const before = await snapshot();
+    const blocked = await rename_('Alpha', 'Gamma');
+    expect(blocked.action).toBe('rename_blocked');
+    expect(blocked.message).toContain('timelines/Big.json (more than 200000 values, not searched to the end)');
+    expect(await snapshot()).toEqual(before);
+  });
+
   it('answers not found when the same rename is run again after it finished, and writes nothing', async () => {
     expect((await rename_('Alpha', 'Gamma')).success).toBe(true);
     const before = await snapshot();
@@ -460,6 +545,7 @@ describe('rename_object_type', () => {
     const before = await snapshot();
     const cases: Array<[Args, ...string[]]> = [
       [{ name: 'Nope', newName: 'Gamma' }, 'Object type "Nope" not found.'],
+      [{ name: 'Alph', newName: 'Gamma' }, 'Did you mean: Alpha'],
       [{ name: 'alpha', newName: 'Gamma' }, 'named "Alpha"'],
       [{ name: 'Alpha', newName: 'Alpha' }, 'already has this name'],
       [{ name: 'Alpha', newName: 'ALPHA' }, 'only the letter case'],
@@ -469,7 +555,7 @@ describe('rename_object_type', () => {
       [{ name: 'Alpha', newName: 'System' }],
       [{ name: 'Alpha', newName: 'system' }],
       [{ name: 'Alpha', newName: 'functions' }, 'Functions'],
-      [{ name: 'Alpha', newName: 'Bad/Name' }],
+      [{ name: 'Alpha', newName: 'Bad/Name' }, 'letters, digits and underscores'],
       [{ name: 'Alpha', newName: 'Big Alpha' }, 'expressions cannot name', '"BigAlpha"'],
       [{ name: 'Alpha', newName: ' Gamma' }, 'starts or ends with a space', '"Gamma"'],
       [{ name: 'Alpha', newName: 'Gamma ' }, 'starts or ends with a space', '"Gamma"'],
@@ -849,6 +935,65 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(now).toEqual(before);
   });
 
+  it('refuses a brush file under the new name that no run of this rename left, naming it', async () => {
+    await rm(oldBrush());
+    await writeFile(newBrush(), '{"brushes":["a removed object type\'s"]}');
+    const before = await snapshot();
+    await refusal('rename_object_type', { name: 'Alpha', newName: 'Gamma' }, 'tilemapBrushes/objectTypes/Gamma.brush.json', 'no brush file of "Alpha"');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('moves a brush file that is in another folder than the object type\'s, within that folder, and says so', async () => {
+    await mkdir(path(...brushDir, 'Maps'), { recursive: true });
+    await rename(oldBrush(), path(...brushDir, 'Maps', 'Alpha.brush.json'));
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.success).toBe(true);
+    expect(await readFile(path(...brushDir, 'Maps', 'Gamma.brush.json'), 'utf8')).toBe('{"brushes":["alpha"]}');
+    expect(existsSync(path(...brushDir, 'Maps', 'Alpha.brush.json'))).toBe(false);
+    expect(data.brushMoved).toEqual({ from: 'tilemapBrushes/objectTypes/Maps/Alpha.brush.json', to: 'tilemapBrushes/objectTypes/Maps/Gamma.brush.json' });
+    expect(warningsOf(data)).toContain('not in the folder of the object type');
+  });
+
+  it('refuses when two folders hold a brush file of the object type', async () => {
+    await mkdir(path(...brushDir, 'Maps'), { recursive: true });
+    await mkdir(path(...brushDir, 'Old'), { recursive: true });
+    await rename(oldBrush(), path(...brushDir, 'Maps', 'Alpha.brush.json'));
+    await writeFile(path(...brushDir, 'Old', 'Alpha.brush.json'), '{}');
+    const before = await snapshot();
+    await refusal('rename_object_type', { name: 'Alpha', newName: 'Gamma' }, 'More than one brush file is named after "Alpha"');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('reports a Tilemap whose brush file was not found', async () => {
+    await rm(oldBrush());
+    const file = await readJson<ObjectFile>(path('objectTypes', 'Alpha.json'));
+    file['plugin-id'] = 'Tilemap';
+    await writeJson(path('objectTypes', 'Alpha.json'), file);
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.success).toBe(true);
+    expect(data.brushFileFound).toBe(false);
+    expect(warningsOf(data)).toContain('is a Tilemap, and no brush file named after it was found');
+  });
+
+  it('puts back the old brush file when its delete fails after it was removed, finishing a stopped run', async () => {
+    expect((await rename_('Alpha', 'Gamma')).success).toBe(true);
+    await stopAfterProjectUpdate();
+    await writeFile(oldBrush(), '{"brushes":["alpha"]}');
+    const before = await snapshot();
+    const deleteFile = writer.deleteFile.bind(writer);
+    vi.spyOn(writer, 'deleteFile').mockImplementation(async (file, options) => {
+      const result = await deleteFile(file, options);
+      if (file.endsWith('Alpha.brush.json')) throw Object.assign(new Error('EIO after the delete'), { code: 'EIO' });
+      return result;
+    });
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('The call was rolled back');
+    expect(data.text).not.toContain(tmpDir);
+    expect(await readFile(oldBrush(), 'utf8')).toBe('{"brushes":["alpha"]}');
+    expect(await snapshot()).toEqual(before);
+  });
+
   it('finishes a run that stopped after the new brush file was written, deleting only the old brush file', async () => {
     expect((await rename_('Alpha', 'Gamma')).success).toBe(true);
     await stopAfterProjectUpdate();
@@ -863,6 +1008,7 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(existsSync(oldBrush())).toBe(false);
     expect(await readFile(newBrush(), 'utf8')).toBe('{"brushes":["alpha"]}');
     expect(existsSync(path(...brushDir, 'Other.brush.json'))).toBe(true);
+    expect(data.filesWritten).toContain('tilemapBrushes/objectTypes/Gamma.brush.json');
   });
 
   it('finishes a run that stopped after the old brush file was deleted, reporting it as moved already', async () => {

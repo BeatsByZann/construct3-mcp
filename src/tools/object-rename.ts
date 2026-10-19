@@ -31,16 +31,18 @@
  * A run that stopped midway is finished by the same call, as for
  * rename_event_sheet: a leftover new file holding the object's SID is
  * written over, and an object type or family registered under the new name
- * already, whose old file itself still holds the same SID, gets the steps
+ * already, whose old file itself still holds the same SID, gets the writes
  * after the project update (stoppedRun in the result).
  */
 
 import { z } from 'zod';
+import { readdir, readFile } from 'fs/promises';
+import { dirname, join, relative, sep } from 'path';
 import type { MutationToolDeps } from './shared.js';
 import type { EventSheet, Layout } from '../construct3/types.js';
 import { validateName, toolResult, toolError, notFoundError } from './shared.js';
 import { findNameClash, nameKey } from '../construct3/names.js';
-import { classifyReadError } from '../construct3/project-reader.js';
+import { ProjectReadError, classifyReadError } from '../construct3/project-reader.js';
 import { functionsObjectName } from '../construct3/event-shapes.js';
 import {
   builtinObjectClassClashMessage,
@@ -81,7 +83,7 @@ import {
 import { jsonTextStyleOf, parseJsonText, serializeJson } from '../construct3/json-format.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
-import { StaleFileError } from '../construct3/disk-state.js';
+import { StaleFileError, fileKey, noteFileWritten, statFileState } from '../construct3/disk-state.js';
 import { EntityWriteError } from '../construct3/project-writer.js';
 import { readRegisteredTimelines, type RegisteredTimeline } from './timeline-tools.js';
 import {
@@ -140,15 +142,22 @@ type Start =
  */
 const INSTANCE_VARIABLE_OBJECTS: InstanceVariableObjects = 'rewrite';
 
-/** Every string value in a parsed JSON value (keys left out), depth first; at most 200,000 values. */
-function stringValuesOf(value: unknown): string[] {
+/** The most string values of one file the timeline search reads. */
+const MAX_SEARCHED_VALUES = 200_000;
+
+/** Every string value in a parsed JSON value (keys left out), depth first; undefined when there are more than MAX_SEARCHED_VALUES (the search would be incomplete). */
+function stringValuesOf(value: unknown): string[] | undefined {
   const out: string[] = [];
   const stack: unknown[] = [value];
-  while (stack.length > 0 && out.length < 200_000) {
+  while (stack.length > 0) {
     const node = stack.pop();
-    if (typeof node === 'string') out.push(node);
-    else if (Array.isArray(node)) stack.push(...node);
-    else if (typeof node === 'object' && node !== null) stack.push(...Object.values(node));
+    if (typeof node === 'string') {
+      if (out.push(node) > MAX_SEARCHED_VALUES) return undefined;
+    } else if (Array.isArray(node)) {
+      for (const item of node) stack.push(item);
+    } else if (typeof node === 'object' && node !== null) {
+      for (const item of Object.values(node)) stack.push(item);
+    }
   }
   return out;
 }
@@ -230,6 +239,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function withoutAbsolutePath(writer: Writer, error: unknown): unknown {
   if (error instanceof StaleFileError || error instanceof EntityWriteError) return error;
+  if (error instanceof ProjectReadError) {
+    // Its message spells the absolute path of the file; the cause names it by code and project path
+    const head = /^Failed to read [^"]*"[^"]*"/.exec(error.message)?.[0] ?? 'Failed to read a file';
+    return new Error(`${head}: ${reasonOf(error.cause ?? error, file => writer.projectRelative(file))}`);
+  }
   const { code, path } = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; path?: unknown };
   return typeof code === 'string' && typeof path === 'string' ? new Error(reasonOf(error, file => writer.projectRelative(file))) : error;
 }
@@ -327,34 +341,88 @@ function useEntry(use: ObjectNameUse, fileOf: (use: ObjectNameUse) => string): R
   };
 }
 
+/** What planBrush found: the move to make, or why not. */
+interface BrushPlan {
+  brush?: BrushMove;
+  /** Label of a brush file under the new name that a run of this rename left */
+  alreadyMoved?: string;
+  refusal?: string;
+  /** Project-relative path of the brush file when it is not in the object type's own folder */
+  foundAt?: string;
+  /** More brush files than the search reads: the search may have missed some */
+  capped?: boolean;
+}
+
+/** Brush files named `<name>.brush.json` (ignoring case) anywhere below tilemapBrushes/: absolute paths, and whether the search stopped at its limit. */
+async function findBrushFiles(projectDir: string, names: readonly string[]): Promise<{ found: Map<string, string[]>; capped: boolean }> {
+  const keys = new Map(names.map(name => [nameKey(`${name}.brush.json`), name] as const));
+  const found = new Map<string, string[]>(names.map(name => [name, []]));
+  let seen = 0;
+  let capped = false;
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (++seen > 20_000 || depth > 8) {
+        capped = true;
+        return;
+      }
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full, depth + 1);
+      else if (keys.has(nameKey(entry.name))) found.get(keys.get(nameKey(entry.name)) as string)?.push(full);
+    }
+  };
+  await walk(resolveProjectPath(projectDir, 'tilemapBrushes'), 0);
+  return { found, capped };
+}
+
 /**
- * The tilemap brush file of an object type (tilemapBrushes/objectTypes/
- * <folders>/<name>.brush.json), in whatever state a run of this rename that
- * stopped left it: not moved yet, moved already, or written under the new
- * name with the old name still there. A refusal when the new name holds
- * other content.
+ * The tilemap brush file of an object type: found by its name below
+ * tilemapBrushes/ (the object type's own folder is tilemapBrushes/objectTypes/
+ * <folders>/), in whatever state a run of this rename that stopped left it:
+ * not moved yet, moved already, or written under the new name with the old
+ * name still there. A brush file under the old name in another folder moves
+ * within that folder (foundAt says so); several of them, a file under the new
+ * name that no stopped run left, and a new name that holds other content are
+ * refusals.
  */
-async function planBrush(reader: Reader, subfolder: string | undefined, oldName: string, newName: string, finishing: boolean):
-  Promise<{ brush?: BrushMove; alreadyMoved?: string; refusal?: string }> {
-  const folders = subfolder ? subfolder.split('/') : [];
-  const brushFrom = ['tilemapBrushes', 'objectTypes', ...folders, `${oldName}.brush.json`];
-  const brushTo = ['tilemapBrushes', 'objectTypes', ...folders, `${newName}.brush.json`];
-  const read = await readForRename(resolveProjectPath(reader.getProjectDir(), ...brushFrom));
-  const toPath = resolveProjectPath(reader.getProjectDir(), ...brushTo);
+async function planBrush(reader: Reader, subfolder: string | undefined, oldName: string, newName: string, finishing: boolean): Promise<BrushPlan> {
+  const projectDir = reader.getProjectDir();
+  const relativeLabel = (full: string) => relative(projectDir, full).split(sep).join('/');
+  const ownDir = resolveProjectPath(projectDir, 'tilemapBrushes', 'objectTypes', ...(subfolder ? subfolder.split('/') : []));
+  const { found, capped } = await findBrushFiles(projectDir, [oldName, newName]);
+  const olds = found.get(oldName) ?? [];
+  const news = found.get(newName) ?? [];
+  const inOwnDir = olds.find(file => dirname(file) === ownDir);
+  if (inOwnDir === undefined && olds.length > 1) {
+    return { refusal: `More than one brush file is named after "${oldName}": ${listSome(olds.map(relativeLabel))}. Check which one belongs to it, or rename the object type in the Construct 3 editor.`, capped };
+  }
+  const source = inOwnDir ?? olds[0];
+  if (source === undefined) {
+    if (news.length === 0) return { capped };
+    if (finishing) return { alreadyMoved: relativeLabel(news[0]), capped };
+    return { refusal: `A brush file named after the new name already exists (${listSome(news.map(relativeLabel))}), and no brush file of "${oldName}" is there to take its place. `
+      + 'It would belong to the renamed object type. Move or delete it, or choose another name.', capped };
+  }
+  const read = await readForRename(source);
+  const toPath = join(dirname(source), `${newName}.brush.json`);
   const taken = await findFileIgnoringCase(toPath);
   const toRead = taken !== undefined ? await readForRename(taken) : undefined;
-  const from = brushFrom.join('/');
-  const label = brushTo.join('/');
-  if (read.bytes !== null && toRead?.bytes) {
+  const from = relativeLabel(source);
+  const label = relativeLabel(toPath);
+  const foundAt = source === inOwnDir ? {} : { foundAt: from };
+  if (toRead?.bytes) {
     // Both names: a run that stopped after writing the new name, when it holds exactly the old bytes
-    if (taken !== toPath || !toRead.bytes.equals(read.bytes)) {
-      return { refusal: `The brush file of "${oldName}" would be renamed to ${label}, which already exists with other content.` };
+    if (taken !== toPath || !read.bytes?.equals(toRead.bytes)) {
+      return { refusal: `The brush file of "${oldName}" would be renamed to ${label}, which already exists with other content.`, capped };
     }
-    return { brush: { read, to: toPath, from, label, state: 'finish-delete' } };
+    return { brush: { read, to: toPath, from, label, state: 'finish-delete' }, ...foundAt, capped };
   }
-  if (read.bytes !== null) return { brush: { read, to: toPath, from, label, state: 'move' } };
-  if (toRead?.bytes && finishing) return { alreadyMoved: label };
-  return {};
+  return { brush: { read, to: toPath, from, label, state: 'move' }, ...foundAt, capped };
 }
 
 /**
@@ -370,7 +438,9 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   try {
     validateName(newName);
   } catch (error) {
-    return refuse(`${error instanceof Error ? error.message : String(error)}.${punctuationSuggestion(newName)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    const shown = message.startsWith('Name must start') ? 'Name must start with a letter or underscore and contain only letters, digits and underscores' : message;
+    return refuse(`${shown}.${punctuationSuggestion(newName)}`);
   }
   if (newName === oldName) return refuse(`${kind.title} "${oldName}" already has this name.`);
   if (nameKey(newName) === nameKey(oldName)) {
@@ -447,6 +517,9 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   let containers: Array<{ index: number; members: string[] }> = [];
   let brush: BrushMove | undefined;
   let brushMoved: string | undefined;
+  let brushFoundAt: string | undefined;
+  let brushSearchCapped = false;
+  let brushMissing = false;
   let singleGlobal = false;
   if (category === 'objectTypes') {
     const layouts = await reader.readAllLayouts();
@@ -459,12 +532,18 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     singleGlobal = start.mode === 'rename' && isRecord(ownData['singleglobal-inst'])
       && typeof ownData['singleglobal-inst'].type === 'string' && nameKey(ownData['singleglobal-inst'].type) === nameKey(oldName);
     const scan = await readRegisteredTimelines(reader.getProjectDir(), project.timelines);
+    const unsearched = [...scan.unreadable];
     for (const timeline of scan.timelines) {
+      const values = stringValuesOf(timeline.data);
+      if (values === undefined) {
+        unsearched.push(`${timeline.file} (more than ${MAX_SEARCHED_VALUES} values, not searched to the end)`);
+        continue;
+      }
       timelinesChecked.push(timeline);
-      if (stringValuesOf(timeline.data).some(value => nameKey(value) === nameKey(oldName))) trackLists.push(timeline);
+      if (values.some(value => nameKey(value) === nameKey(oldName))) trackLists.push(timeline);
     }
-    if (scan.unreadable.length > 0) {
-      timelinesUnread = `Timeline file(s) that could not be read, parsed or searched may have tracks of this object type: ${listSome(scan.unreadable)}.`;
+    if (unsearched.length > 0) {
+      timelinesUnread = `Timeline file(s) that could not be read, parsed or searched may have tracks of this object type: ${listSome(unsearched)}.`;
     }
     const objectTypeFiles = await reader.readAllObjectTypes();
     const others = new Map([...objectTypeFiles].filter(([name]) => name !== oldName && name !== newName));
@@ -476,6 +555,9 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     if (brushPlan.refusal !== undefined) return refuse(brushPlan.refusal);
     brush = brushPlan.brush;
     brushMoved = brushPlan.alreadyMoved;
+    brushFoundAt = brushPlan.foundAt;
+    brushSearchCapped = brushPlan.capped === true;
+    brushMissing = brush === undefined && brushMoved === undefined && ownData['plugin-id'] === 'Tilemap';
   }
   const unscanned = await checkUnscannedFiles(reader, skipped, [
     { categories: category === 'objectTypes' ? ['eventSheets', 'layouts', 'families'] : ['eventSheets'], allOf: [[nameTerm(oldName)]] },
@@ -543,6 +625,15 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   if (brush !== undefined) {
     warnings.push(`${args.dryRun ? 'Would move' : 'Moved'} the tilemap brush file ${brush.from} to ${brush.label}.`);
   }
+  if (brush !== undefined && brushFoundAt !== undefined) {
+    warnings.push(`The brush file of "${oldName}" is ${brushFoundAt}, not in the folder of the object type; it ${args.dryRun ? 'would stay' : 'stays'} in the folder it is in.`);
+  }
+  if (brushMissing) {
+    warnings.push(`"${oldName}" is a Tilemap, and no brush file named after it was found below tilemapBrushes/, so none ${args.dryRun ? 'would be' : 'was'} renamed.`);
+  }
+  if (brushSearchCapped) {
+    warnings.push('The search below tilemapBrushes/ stopped at its limit of entries, so a brush file of this object type may have been missed.');
+  }
   if (brushMoved !== undefined) {
     warnings.push(`The tilemap brush file was moved to ${brushMoved} already (brush file already moved by the earlier run).`);
   }
@@ -577,6 +668,7 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     ...possibleReferences,
     ...(images.length > 0 ? { imageRenames: images.map(r => ({ from: `images/${r.from}`, to: `images/${r.to}` })) } : {}),
     ...(start.mode === 'finish' ? { stoppedRun: true } : {}),
+    ...(brushMissing ? { brushFileFound: false } : {}),
     ...unscannedFields(unscanned),
   };
   if (args.dryRun) {
@@ -605,6 +697,27 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     result: { ...common, fileDeleted: oldFile },
     warnings,
   };
+}
+
+/**
+ * After the writer's delete of a file read for the call threw something other
+ * than a stale-file error: record what the call demonstrably changed. The
+ * file is gone: put back from the bytes read. It holds its bytes from before:
+ * nothing to record. It holds other bytes, or cannot be read: named as left.
+ */
+async function recordFailedDelete(side: ReturnType<typeof newSideWrites>, read: ReadForRename): Promise<void> {
+  try {
+    const state = await statFileState(read.path);
+    if (state === null) {
+      noteFileWritten(fileKey(read.path), state);
+      side.files.push({ path: read.path, before: read.bytes });
+      return;
+    }
+    const now = await readFile(read.path);
+    if (read.bytes === null || !now.equals(read.bytes)) side.unresolved.push({ path: read.path, before: read.bytes });
+  } catch {
+    side.unresolved.push({ path: read.path, before: read.bytes });
+  }
 }
 
 /** Apply a decided rename (see the module comment for the order); a failure is rolled back and thrown with what is on disk. */
@@ -661,10 +774,16 @@ async function applyRename(reader: Reader, writer: Writer, plan: RenamePlan) {
       filesWritten.push(plan.brush.label);
     } else if (plan.brush?.state === 'finish-delete') {
       // The new name holds these bytes already; only the old name goes, while it is as read (checked under the writer's lock)
-      await writer.deleteFile(plan.brush.read.path, { expected: plan.brush.read.state });
+      try {
+        await writer.deleteFile(plan.brush.read.path, { expected: plan.brush.read.state });
+      } catch (error) {
+        if (!(error instanceof StaleFileError)) await recordFailedDelete(side, plan.brush.read);
+        throw error;
+      }
       side.files.push({ path: plan.brush.read.path, before: plan.brush.read.bytes });
+      filesWritten.push(plan.brush.label);
     }
-    // The old file last of the writes that matter: a rename that stops before this step
+    // The old file last of the writes that matter: a rename that stops before this delete
     // leaves the old file beside the new name, which the same call recognises
     if (start.mode === 'finish') await assertUnchangedSinceRead(writer, start.oldRead);
     backupPath = await writer.deleteEntityFile(category, oldName, subfolder);
