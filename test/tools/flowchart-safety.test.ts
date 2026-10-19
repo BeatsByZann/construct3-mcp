@@ -673,7 +673,11 @@ describe('delete_flowchart', () => {
     await createGraph();
     const statePath = flowchartFile(project.dir, 'Graph').replace(/\.json$/, '.uistate.json');
     await writeFile(statePath, '{}');
-    vi.spyOn(project.writer, 'deleteFile').mockRejectedValue(new Error('disk full'));
+    const original = project.writer.deleteFile.bind(project.writer);
+    vi.spyOn(project.writer, 'deleteFile').mockImplementation(async (path, options) => {
+      if (path.endsWith('Graph.json')) throw new Error('disk full');
+      return original(path, options);
+    });
     await call('delete_flowchart', { name: 'Graph' });
     expect(await readFile(statePath, 'utf-8')).toBe('{}');
   });

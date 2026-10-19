@@ -108,7 +108,6 @@ const deleteShape = {
 
 // ─── Registration ──────────────────────────────────────────
 
-/** Register the flowchart tools on the server. */
 export function registerFlowchartTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
   const server = withProjectSync(mcpServer, reader);
 

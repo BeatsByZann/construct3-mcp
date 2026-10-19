@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { rename, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
+import { rename, readFile, readdir, stat, writeFile } from 'fs/promises';
 import { join } from 'path';
 import type { Flowchart } from '../../src/construct3/flowchart-model.js';
 import { isCaseInsensitiveFs } from '../helpers/fs-case.js';
