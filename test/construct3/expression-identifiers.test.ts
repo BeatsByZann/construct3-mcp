@@ -31,7 +31,7 @@ describe('expressionIdentifierSpans', () => {
 describe('isEventVariableNameCharacter', () => {
   it('accepts the characters a name may hold and refuses whitespace, punctuation and control characters', () => {
     expect(['a', 'Z', '0', '_', 'ö', 'ß', '．'].every(isEventVariableNameCharacter)).toBe(true);
-    expect([' ', ' ', '.', '-', '`', '$', '{', '。', '（', '“', '\u0001'].some(isEventVariableNameCharacter)).toBe(false);
+    expect([' ', ' ', '.', '-', '`', '$', '{', '。', '（', '“', '\u0001', '\u007F'].some(isEventVariableNameCharacter)).toBe(false);
   });
 });
 
@@ -45,6 +45,8 @@ describe('renameExpressionIdentifier', () => {
     ['Scores + aScore + Score2', 'Scores + aScore + Score2', 0],
     ['Score . X', 'Score . X', 0],
     ['scoreé + score', 'scoreé + Points', 1],
+    ['Sprite. Score + Score', 'Sprite. Score + Points', 1],
+    ['Score .X + Score', 'Score .X + Points', 1],
   ])('%s', (expr, renamed, count) => {
     expect(renameExpressionIdentifier(expr, 'Score', 'Points')).toEqual({ text: renamed, count });
   });

@@ -152,6 +152,15 @@ describe('findVariableUses', () => {
     expect(found.notUpdated.map(u => u.reason)).toEqual(['number-like-name']);
   });
 
+  it('lists a plugin name parameter whose expression names a variable that starts with a digit', () => {
+    const digit = v('2x', 7);
+    const addon = { id: 'x', objectClass: 'Sprite', parameters: { object: '2x & 1' } };
+    const sheets = new Map<string, unknown>([['Main', [digit, block([addon])]]]);
+    const found = findVariableUses(sheets, digit, 'Two');
+    expect(found.uses).toEqual([]);
+    expect(found.notUpdated.map(u => `${String(u.parameter)} ${u.reason}`)).toEqual(['object name-parameter']);
+  });
+
   it('lists the call arguments when the new name starts with a digit, and does not rewrite them', () => {
     const { sheets, global } = project();
     const found = findVariableUses(sheets, global, '2x');

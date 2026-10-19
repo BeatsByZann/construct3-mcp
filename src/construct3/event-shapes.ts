@@ -257,7 +257,7 @@ export function expressionIdentifierSpans(expr: string): Array<{ start: number; 
       previous = '"';
       continue;
     }
-    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+    if (/\s/.test(ch)) {
       i++;
       continue;
     }
