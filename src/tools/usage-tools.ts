@@ -6,17 +6,21 @@
  */
 
 import { z } from 'zod';
+import { Script, createContext } from 'node:vm';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { Construct3ProjectReader, EntityCategory } from '../construct3/project-reader.js';
+import { classifyReadError, type Construct3ProjectReader, type EntityCategory, type ReadFailure } from '../construct3/project-reader.js';
 import { getProjectIndex, type ProjectIndex } from '../construct3/analyzers/index-builder.js';
 import {
   checkUnscannedFiles,
   unscannedFields,
+  unscannedFilesOf,
   type UnscannedFile,
   type UnscannedFileReport,
 } from '../construct3/analyzers/unscanned-uses.js';
-import type { RawTextTerm } from '../construct3/raw-text-search.js';
+import { nameTerm, type RawTextTerm } from '../construct3/raw-text-search.js';
 import { nameKey } from '../construct3/names.js';
+import { forEachLayoutInstance } from '../construct3/layers.js';
+import { registeredScriptFiles } from '../construct3/script-files.js';
 import { notFoundError, toolError, toolResult } from './shared.js';
 import { withProjectSync } from './project-sync.js';
 
@@ -93,6 +97,232 @@ function nothingReturned(result: ReturnType<typeof toolError>) {
 function registeredName(registered: readonly string[], name: string): string | undefined {
   const key = nameKey(name);
   return registered.find(r => nameKey(r) === key);
+}
+
+/** Limits of one search, and the clock they are read from; tests replace them. */
+export const SEARCH_LIMITS = {
+  perCallMs: 1000,
+  budgetMs: 10_000,
+  maxMatchesPerText: 100,
+  /** Nodes of one file's JSON the string walk visits before it gives up. */
+  maxNodes: 2_000_000,
+  now: (): number => performance.now(),
+};
+
+/** A search ran past a limit: one call (`call`) or the whole search (`budget`). */
+export class SearchTimeout extends Error {
+  constructor(readonly limit: 'call' | 'budget') {
+    super(limit === 'call' ? 'A regular expression ran past its time limit' : 'The search ran past its time budget');
+  }
+}
+
+/** The time one search may take in all. */
+export interface SearchBudget {
+  /** Throws SearchTimeout('budget') once the budget is used up. */
+  check(): void;
+  /** Milliseconds left, never below 0. */
+  remaining(): number;
+}
+
+/** A budget that starts now; `>=` so a budget of 0 refuses at the first check on any clock. */
+export function newBudget(): SearchBudget {
+  const deadline = SEARCH_LIMITS.now() + SEARCH_LIMITS.budgetMs;
+  return {
+    check() {
+      if (SEARCH_LIMITS.now() >= deadline) throw new SearchTimeout('budget');
+    },
+    remaining: () => Math.max(0, deadline - SEARCH_LIMITS.now()),
+  };
+}
+
+/** One match: the position of its text in the array searched, and where in that text. */
+export interface Hit { text: number; index: number; length: number }
+
+/**
+ * What a matcher found in a file's texts: the first `keep` matches (`hits`),
+ * every match counted (`count`, each text stopping at maxMatchesPerText) and
+ * whether some text held more than that (`capped`: `count` is then a lower bound).
+ */
+export interface MatchResult { hits: Hit[]; count: number; capped: boolean }
+
+/** Matches of one pattern in a file's texts; at most `keep` match objects are held, whatever the texts hold. */
+export type Matcher = (texts: readonly string[], keep: number) => MatchResult;
+
+/**
+ * The loop both matchers run. A function expression called at once, so the
+ * script declares nothing at the context's top level and can run again in
+ * the same context. The native copy below must stay the same code.
+ */
+const MATCH_LOOP = `(function (pattern, texts, cap, keep) {
+  const hits = [];
+  let count = 0;
+  let capped = false;
+  for (let t = 0; t < texts.length; t++) {
+    const text = texts[t];
+    let n = 0;
+    let m;
+    pattern.lastIndex = 0;
+    while ((m = pattern.exec(text)) !== null) {
+      if (n === cap) { capped = true; break; }
+      n++;
+      count++;
+      if (hits.length < keep) hits.push({ text: t, index: m.index, length: m[0].length });
+      if (m[0].length === 0) pattern.lastIndex++;
+    }
+  }
+  return { hits, count, capped };
+})`;
+
+/** How many texts the native loop reads between two looks at the budget. */
+const CHECK_EVERY = 256;
+
+/** MATCH_LOOP on this thread, for escaped literal queries (they cannot backtrack); looks at the budget as it goes. */
+function nativeLoop(pattern: RegExp, texts: readonly string[], cap: number, keep: number, budget: SearchBudget): MatchResult {
+  const hits: Hit[] = [];
+  let count = 0;
+  let capped = false;
+  for (let t = 0; t < texts.length; t++) {
+    if (t > 0 && t % CHECK_EVERY === 0) budget.check();
+    const text = texts[t];
+    let n = 0;
+    let m: RegExpExecArray | null;
+    pattern.lastIndex = 0;
+    while ((m = pattern.exec(text)) !== null) {
+      if (n === cap) { capped = true; break; }
+      n++;
+      count++;
+      if (hits.length < keep) hits.push({ text: t, index: m.index, length: m[0].length });
+      if (m[0].length === 0) pattern.lastIndex++;
+    }
+  }
+  return { hits, count, capped };
+}
+
+/** Refuse a pattern whose exec loop would never advance. */
+function requireGlobal(pattern: RegExp): void {
+  if (!pattern.global) throw new Error('A search pattern needs the g flag');
+}
+
+/** Matcher for an escaped literal query, run natively; the budget is checked before, during (every CHECK_EVERY texts) and after each call. */
+export function literalMatcher(pattern: RegExp, budget: SearchBudget = newBudget()): Matcher {
+  requireGlobal(pattern);
+  return (texts, keep) => {
+    budget.check();
+    const result = nativeLoop(pattern, texts, SEARCH_LIMITS.maxMatchesPerText, keep, budget);
+    budget.check();
+    return result;
+  };
+}
+
+/**
+ * Matcher for a regex query: one vm call per file, each under the smaller of
+ * SEARCH_LIMITS.perCallMs and what is left of the budget; the budget is
+ * also checked before and after each call.
+ */
+export function regexMatcher(pattern: RegExp, budget: SearchBudget = newBudget()): Matcher {
+  requireGlobal(pattern);
+  const sandbox: { pattern: RegExp; texts: readonly string[]; cap: number; keep: number } =
+    { pattern, texts: [], cap: SEARCH_LIMITS.maxMatchesPerText, keep: 0 };
+  const context = createContext(sandbox);
+  const script = new Script(`${MATCH_LOOP}(pattern, texts, cap, keep)`);
+  return (texts, keep) => {
+    budget.check();
+    sandbox.texts = texts;
+    sandbox.keep = keep;
+    try {
+      const timeout = Math.max(1, Math.ceil(Math.min(SEARCH_LIMITS.perCallMs, budget.remaining())));
+      const found = script.runInContext(context, { timeout }) as MatchResult;
+      budget.check();
+      // Copy out of the vm's realm: plain arrays and objects of this one.
+      return {
+        hits: found.hits.map(hit => ({ text: hit.text, index: hit.index, length: hit.length })),
+        count: found.count,
+        capped: found.capped,
+      };
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+        budget.check();
+        throw new SearchTimeout('call');
+      }
+      throw error;
+    }
+  };
+}
+
+const MAX_SEARCH_RESULTS = 1000;
+
+/** The string walk visited more nodes than SEARCH_LIMITS.maxNodes. */
+class NodeLimitExceeded extends Error {}
+
+/** One hit of search_project. */
+interface SearchHit {
+  where: 'event-sheet' | 'script' | 'layout';
+  /** The file's path in the project. */
+  file: string;
+  /** Nearest enclosing event SID, when the hit is inside an event sheet. */
+  eventSid?: number;
+  /** Path inside the file, or the line number in a script. */
+  path: string;
+  field: string;
+  /** The matched text with up to 60 characters on each side. */
+  text: string;
+}
+
+/** A string found by the walk, with where it was. */
+interface FoundString {
+  text: string;
+  path: string;
+  field: string;
+  sid: number | undefined;
+}
+
+/** `text` around a match, with "..." where it was cut. */
+function snippet(text: string, index: number, length: number): string {
+  const start = Math.max(0, index - 60);
+  const end = Math.min(text.length, index + length + 60);
+  return `${start > 0 ? '...' : ''}${text.slice(start, end)}${end < text.length ? '...' : ''}`;
+}
+
+/** Event fields that name a kind or a language, not content a person wrote. */
+const KIND_FIELDS = new Set(['eventType', 'type', 'language']);
+
+/**
+ * Add every string of a JSON value to `out`, with its path (prefixed by
+ * `prefix`), the key it sits under and the nearest enclosing event SID.
+ * Iterative; `state.nodes` counts the nodes visited over all calls for one
+ * file, and the budget is looked at every 10,000 of them.
+ */
+function collectStrings(
+  value: unknown,
+  prefix: string,
+  skipKinds: boolean,
+  state: { nodes: number },
+  budget: SearchBudget,
+  out: FoundString[],
+): void {
+  const stack: Array<{ node: unknown; path: string; field: string; sid: number | undefined }> = [
+    { node: value, path: '', field: '', sid: undefined },
+  ];
+  while (stack.length > 0) {
+    if (++state.nodes > SEARCH_LIMITS.maxNodes) throw new NodeLimitExceeded();
+    if (state.nodes % 10_000 === 0) budget.check();
+    const { node, path, field, sid } = stack.pop()!;
+    if (typeof node === 'string') {
+      if (!(skipKinds && KIND_FIELDS.has(field))) out.push({ text: node, path: prefix + path, field, sid });
+    } else if (Array.isArray(node)) {
+      for (let i = node.length - 1; i >= 0; i--) {
+        stack.push({ node: node[i], path: `${path}[${i}]`, field, sid });
+      }
+    } else if (node && typeof node === 'object') {
+      const record = node as Record<string, unknown>;
+      const ownSid = typeof record.eventType === 'string' && typeof record.sid === 'number' ? record.sid : sid;
+      const entries = Object.entries(record);
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const [key, child] = entries[i];
+        stack.push({ node: child, path: path ? `${path}.${key}` : key, field: key, sid: ownSid });
+      }
+    }
+  }
 }
 
 /** Register the read-only usage and inventory tools. */
@@ -181,6 +411,176 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
         });
       } catch (error) {
         return toolError(`Error counting instances: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  );
+
+  server.tool(
+    'search_project',
+    `Find text across the project like the editor's Find: event-sheet content (parameters and expressions, comments, names, titles, script actions and blocks), registered script files, and with scopes layouts the instance property, instance variable and tag values on layouts. Returns each hit with its file (its path in the project), nearest event SID and field. A literal query is matched directly; a regular expression runs under a time limit of one second per file and ten seconds for the whole search, with at most ${SEARCH_LIMITS.maxMatchesPerText} matches counted per string, and the call is refused naming the limit when it runs past one. A string with more matches than that makes truncated true and totalHits a lower bound (totalHitsIsLowerBound). A file that could not be parsed, a registered script that could not be read and script folders nested too deep to be walked are named and make the result complete false.`,
+    {
+      query: z.string().min(1).max(500).describe('Text to find, or a regular expression when regex is true'),
+      regex: z.boolean().optional().default(false).describe('Treat query as a JavaScript regular expression'),
+      caseSensitive: z.boolean().optional().default(false).describe('Match case'),
+      wholeWord: z.boolean().optional().default(false).describe('Match whole words only'),
+      scopes: z.array(z.enum(['events', 'scripts', 'layouts'])).min(1).optional().default(['events', 'scripts'])
+        .describe('Where to search (default: events and scripts)'),
+      sheets: z.array(z.string().max(200)).max(500).optional().describe('Limit the event search to these sheets (any letter case)'),
+      maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).optional().default(200).describe(`Maximum hits returned (max ${MAX_SEARCH_RESULTS})`),
+    },
+    async (args) => {
+      /** The file being searched, for the message of a timeout. */
+      let current = '';
+      try {
+        let pattern: RegExp;
+        try {
+          const source = args.regex ? args.query : args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          pattern = new RegExp(args.wholeWord ? `\\b(?:${source})\\b` : source, args.caseSensitive ? 'g' : 'gi');
+        } catch (error) {
+          const message = (error instanceof Error ? error.message : String(error)).replace(/^Invalid regular expression: /, '');
+          return toolError(`Invalid regular expression: ${message}. Nothing was returned.`);
+        }
+
+        const wantEvents = args.scopes.includes('events');
+        const wantScripts = args.scopes.includes('scripts');
+        const wantLayouts = args.scopes.includes('layouts');
+
+        let namedSheets: string[] | undefined;
+        if (args.sheets !== undefined) {
+          const registered = await reader.listEventSheets();
+          namedSheets = [];
+          for (const name of args.sheets) {
+            const found = registeredName(registered, name);
+            if (found === undefined) {
+              return nothingReturned(notFoundError('Event sheet', name, reader.findNearestName(name, 'eventsheets'), 'list_eventsheets'));
+            }
+            if (!namedSheets.includes(found)) namedSheets.push(found);
+          }
+        }
+
+        const budget = newBudget();
+        const match = args.regex ? regexMatcher(pattern, budget) : literalMatcher(pattern, budget);
+        const hits: SearchHit[] = [];
+        let totalHits = 0;
+        let capped = false;
+        const skipped: UnscannedFile[] = [];
+        const categories: EntityCategory[] = [];
+
+        /** One matcher call for a file's strings; its hits are made by `locate`. */
+        const searchFile = (file: string, texts: string[], locate: (index: number, at: Hit) => SearchHit): void => {
+          current = file;
+          const found = match(texts, args.maxResults - hits.length);
+          totalHits += found.count;
+          capped ||= found.capped;
+          for (const hit of found.hits) hits.push(locate(hit.text, hit));
+        };
+        /** The strings of a JSON file as `texts`, and a locator for their hits. */
+        const searchStrings = (file: string, where: SearchHit['where'], strings: FoundString[]): void => {
+          searchFile(file, strings.map(s => s.text), (index, hit) => {
+            const found = strings[index];
+            return {
+              where, file, eventSid: found.sid, path: found.path, field: found.field, text: snippet(found.text, hit.index, hit.length),
+            };
+          });
+        };
+
+        if (wantEvents) {
+          categories.push('eventSheets');
+          let sheets: Map<string, unknown>;
+          let failures: ReadonlyMap<string, ReadFailure>;
+          let registered: string[];
+          if (namedSheets === undefined) {
+            registered = await reader.listEventSheets();
+            sheets = await reader.readAllEventSheets();
+            failures = reader.getReadFailures('eventSheets');
+          } else {
+            registered = namedSheets;
+            sheets = new Map();
+            const failed = new Map<string, ReadFailure>();
+            for (const name of namedSheets) {
+              try {
+                sheets.set(name, await reader.readEventSheet(name));
+              } catch (error) {
+                failed.set(name, { code: classifyReadError(error), message: error instanceof Error ? error.message : String(error) });
+              }
+            }
+            failures = failed;
+          }
+          skipped.push(...unscannedFilesOf('eventSheets', registered, sheets, failures));
+          for (const [name, sheet] of sheets) {
+            const file = reader.getEntityRelativePath('eventSheets', name);
+            current = file;
+            const strings: FoundString[] = [];
+            collectStrings((sheet as { events?: unknown }).events, 'events', true, { nodes: 0 }, budget, strings);
+            searchStrings(file, 'event-sheet', strings);
+          }
+        }
+
+        const unreadableScripts: string[] = [];
+        let scriptsNotWalked: string[] = [];
+        if (wantScripts) {
+          const registry = registeredScriptFiles(reader.getProject().rootFileFolders?.script);
+          scriptsNotWalked = registry.notWalked;
+          for (const { path } of registry.files) {
+            const file = `scripts/${path}`;
+            let content: string;
+            try {
+              content = await reader.readScriptFile(path);
+            } catch {
+              unreadableScripts.push(file);
+              continue;
+            }
+            const lines = content.split(/\r?\n/);
+            searchFile(file, lines, (index, hit) =>
+              ({ where: 'script', file, path: `line ${index + 1}`, field: 'code', text: snippet(lines[index], hit.index, hit.length) }));
+          }
+        }
+
+        if (wantLayouts) {
+          categories.push('layouts');
+          const layouts = await reader.readAllLayouts();
+          skipped.push(...unscannedFilesOf('layouts', await reader.listLayouts(), layouts, reader.getReadFailures('layouts')));
+          for (const [name, layout] of layouts) {
+            const file = reader.getEntityRelativePath('layouts', name);
+            current = file;
+            const strings: FoundString[] = [];
+            const state = { nodes: 0 };
+            forEachLayoutInstance(layout, instance => {
+              collectStrings(
+                { properties: instance.properties, instanceVariables: instance.instanceVariables, tags: instance.tags },
+                `instance uid ${instance.uid} (${instance.type}) `, false, state, budget, strings,
+              );
+            });
+            searchStrings(file, 'layout', strings);
+          }
+        }
+        budget.check();
+
+        const wordQuery = /^\w/.test(args.query) && /\w$/.test(args.query);
+        const status = await completeness(
+          reader, skipped, categories,
+          !args.regex && args.wholeWord && wordQuery ? [[nameTerm(args.query)]] : [],
+          { scriptsNotWalked, unreadableScripts },
+        );
+        return toolResult({
+          query: args.query,
+          totalHits,
+          returned: hits.length,
+          truncated: capped || totalHits > hits.length,
+          ...(capped ? { totalHitsIsLowerBound: true } : {}),
+          hits,
+          ...status,
+        });
+      } catch (error) {
+        if (error instanceof SearchTimeout) {
+          return error.limit === 'call'
+            ? toolError(`The regular expression took too long to run in ${current}. Make the pattern simpler or narrow the scope. Nothing was returned.`)
+            : toolError(`The search ran past its time budget of ${SEARCH_LIMITS.budgetMs / 1000} seconds. Narrow the scope or the sheets searched. Nothing was returned.`);
+        }
+        if (error instanceof NodeLimitExceeded) {
+          return toolError('The search exceeded the node limit. Nothing was returned.');
+        }
+        return toolError(`Error searching the project: ${error instanceof Error ? error.message : String(error)}. Nothing was returned.`);
       }
     },
   );
