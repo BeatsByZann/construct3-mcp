@@ -53,6 +53,7 @@ describe('decodeTileData on editor samples', () => {
   it('reads the editor\'s rotations as flipX+flipDiagonal (90), flipX+flipY (180) and flipY+flipDiagonal (270)', () => {
     const [width, height] = sample.sizes.editor;
     const rows = cellsToRows(decodeTileData(sample.strings.editor, width, height), width, height);
+    // The editor painted row 0 as: plain, mirrored, rotated 90, rotated 180; row 1 starts with 270.
     expect(rows[0][1]).toEqual({ tile: 0, flipX: true });
     expect(rows[0][2]).toEqual({ tile: 0, flipX: true, flipDiagonal: true });
     expect(rows[0][3]).toEqual({ tile: 0, flipX: true, flipY: true });
@@ -89,8 +90,20 @@ describe('decodeTileData errors', () => {
     expect(() => decodeTileData('1', 1, 1.5)).toThrow(/invalid size 1x1.5/);
   });
 
+  it('refuses every size that is not a non-negative whole number', () => {
+    expect(() => decodeTileData('', 2, -1)).toThrow(/invalid size 2x-1/);
+    expect(() => decodeTileData('', 1.5, 2)).toThrow(/invalid size 1.5x2/);
+    expect(() => decodeTileData('', NaN, 2)).toThrow(/invalid size NaNx2/);
+    expect(() => decodeTileData('', Infinity, 2)).toThrow(/invalid size Infinityx2/);
+    expect(() => decodeTileData('', 2, Infinity)).toThrow(/invalid size 2xInfinity/);
+  });
+
   it('refuses a map over the cell limit', () => {
     expect(() => decodeTileData('', 2001, 2001)).toThrow(/exceeds the 4000000-cell limit/);
+  });
+
+  it('allows a map of exactly the cell limit', () => {
+    expect(decodeTileData('4000000x0', 2000, 2000)).toHaveLength(4_000_000);
   });
 
   it('a run that would pass the declared size is refused before it is expanded', () => {
@@ -112,6 +125,13 @@ describe('row helpers and validation', () => {
     expect(cellsToRows(cells, 3, 2)).toEqual(rows);
   });
 
+  it('refuses an object cell whose tile is missing, negative or not a whole number', () => {
+    expect(validateTileValue({ tile: -1 }, 'c')).toBe('c.tile: must be a non-negative integer, got -1.');
+    expect(validateTileValue({ tile: 1.5 }, 'c')).toBe('c.tile: must be a non-negative integer, got 1.5.');
+    expect(validateTileValue({}, 'c')).toBe('c.tile: must be a non-negative integer, got undefined.');
+    expect(validateTileValue({ tile: 0 }, 'c')).toBeNull();
+  });
+
   it('validates and normalizes cells', () => {
     expect(validateTileValue(null, 'c')).toBeNull();
     expect(validateTileValue(3, 'c')).toBeNull();
@@ -121,6 +141,7 @@ describe('row helpers and validation', () => {
     expect(validateTileValue({ tile: 3, rotate: 90 }, 'c')).toMatch(/unknown key "rotate"/);
     expect(validateTileValue({ tile: 3, flipX: 1 }, 'c')).toMatch(/true or false/);
     expect(validateTileValue('3h', 'c')).toMatch(/expected null/);
+    expect(validateTileValue([1], 'c')).toMatch(/expected null/);
     expect(normalizeTileValue({ tile: 2, flipX: false })).toBe(2);
     expect(normalizeTileValue({ tile: 2, flipX: false, flipY: true })).toEqual({ tile: 2, flipY: true });
   });

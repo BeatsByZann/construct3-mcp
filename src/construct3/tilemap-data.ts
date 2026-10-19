@@ -1,11 +1,11 @@
 /**
  * Codec for a Tilemap instance's tile data.
  *
- * Construct 3 (r495.2) stores the painted tiles of a placed Tilemap in the
- * instance's `ownData.tilemapData`:
+ * The painted tiles of a placed Tilemap are stored in the instance's
+ * `ownData.tilemapData`, for example (r506-2):
  *
- *   "tilemapData": { "width": 20, "height": 17, "max-width": 20, "max-height": 17,
- *                    "data": "37,13,5x0,39,...,2x1hv,..." }
+ *   "tilemapData": { "width": 4, "height": 2, "max-width": 4, "max-height": 2,
+ *                    "data": "1,0,2,4h,2,4v,3,4hd" }
  *
  * test/fixtures/tilemap-sample/tiles-r506.json records two 4x2 strings from
  * Construct 3 r506-2 (Free edition): one this codec wrote, which the editor
@@ -23,9 +23,10 @@
  *   90 degrees `hd` (flipX and flipDiagonal), 180 degrees `hv` (flipX and
  *   flipY) and 270 degrees `vd` (flipY and flipDiagonal). Rotating
  *   anticlockwise was not observed.
- * - `Nx<cell>` repeats a cell N times (N >= 2), flagged cells included. The
- *   editor wrote `3600x0` for an untouched 60x60 instance; the fixture holds no
- *   run.
+ * - `Nx<cell>` repeats a cell N times. The editor wrote `3600x0` for an
+ *   untouched 60x60 instance; the fixture holds no run. Runs of flagged cells
+ *   and runs shorter than two were not observed; the decoder accepts them and
+ *   the encoder writes a run only for two or more equal cells.
  */
 
 export interface TileCell {
@@ -48,7 +49,7 @@ export interface TilemapDataBlock {
   [key: string]: unknown;
 }
 
-/** Upper bound on cells decoded or encoded in one call, to keep a bad string from exhausting memory. */
+/** Upper bound on the cells one decode may build (width * height), to keep a bad string from exhausting memory. */
 export const MAX_TILEMAP_CELLS = 4_000_000;
 
 const TOKEN = /^(?:(\d+)x)?(\d+)(h?)(v?)(d?)$/;

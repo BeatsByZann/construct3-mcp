@@ -12,6 +12,7 @@ import { runInToolCall } from '../construct3/disk-state.js';
 /** A write tool's refusal: its message, ending once with "Nothing was changed.". */
 export function refusal(message: string) {
   const core = message.replace(/\s*Nothing was changed\.\s*$/, '').trimEnd();
+  if (core === '') return toolError('Nothing was changed.');
   return toolError(`${core}${/[.!?]$/.test(core) ? '' : '.'} Nothing was changed.`);
 }
 
@@ -31,11 +32,22 @@ export function unregisteredName(
   return `${kind} "${given}" not found.${hint}`;
 }
 
-/** An error's message with the project folder replaced by ".", in both slash forms; its ending is kept. */
+/**
+ * An error's message with the project folder replaced by ".", in both slash
+ * forms and whatever the letter case of the drive; its ending is kept. A
+ * longer folder name that starts with the project folder (a sibling) is left
+ * as it is.
+ */
 export function messageWithoutPaths(error: unknown, projectDir: string): string {
   const message = error instanceof Error ? error.message : String(error);
-  const forward = projectDir.replace(/\\/g, '/');
-  return message.split(projectDir).join('.').split(forward).join('.').split(forward.replace(/\//g, '\\')).join('.');
+  const forward = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (forward === '') return message;
+  let result = message;
+  for (const form of new Set([forward, forward.replace(/\//g, '\\')])) {
+    const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    result = result.replace(new RegExp(`${escaped}(?![^\\\\/\\s.,:;'")\\]])`, 'gi'), '.');
+  }
+  return result;
 }
 
 /** An error's message without the project folder and without its final full stop, to be placed inside a sentence. */
@@ -55,7 +67,10 @@ export function stoppedBeforeWrite(error: unknown, projectDir: string) {
  * own policy: `writeTool` returns `stoppedBeforeWrite` (no project folder in
  * the text, "Nothing was changed."), `readTool` returns a plain tool error
  * without the project folder. `withProjectSync` returns the reader's message
- * as it is, which can hold the project folder and has no such ending.
+ * as it is, which can hold the project folder and has no such ending. The
+ * handler receives the arguments only, not the SDK's second argument. Pass the
+ * server itself, not a `withProjectSync` view of it, or that wrapper's check
+ * and wording run first.
  */
 export function syncedTools(server: MutationToolDeps['server'], reader: MutationToolDeps['reader']) {
   const register = (onSyncError: (error: unknown) => ReturnType<typeof toolError>) =>

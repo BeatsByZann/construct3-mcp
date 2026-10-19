@@ -26,6 +26,11 @@ describe('refusal', () => {
     expect(text(refusal('Layout is missing'))).toBe('Layout is missing. Nothing was changed.');
     expect(refusal('x').isError).toBe(true);
   });
+
+  it('a message that is only the ending stays that ending', () => {
+    expect(text(refusal('Nothing was changed.'))).toBe('Nothing was changed.');
+    expect(text(refusal(''))).toBe('Nothing was changed.');
+  });
 });
 
 describe('unregisteredName', () => {
@@ -51,6 +56,20 @@ describe('messageWithoutPaths', () => {
     expect(messageWithoutPaths(new Error('The file is as before the call.'), backslash)).toBe('The file is as before the call.');
     expect(messageWithoutPaths(new Error('Stopped. Nothing was changed.'), backslash)).toBe('Stopped. Nothing was changed.');
     expect(messageWithoutPaths('plain text', backslash)).toBe('plain text');
+  });
+});
+
+describe('messageWithoutPaths edge cases', () => {
+  it('leaves the message alone for an empty folder', () => {
+    expect(messageWithoutPaths(new Error('a/b'), '')).toBe('a/b');
+  });
+
+  it('leaves a sibling folder that starts with the project folder alone', () => {
+    expect(messageWithoutPaths(new Error('In C:\\Proj2\\x and C:\\Proj\\y.'), 'C:\\Proj')).toBe('In C:\\Proj2\\x and .\\y.');
+  });
+
+  it('replaces the folder whatever the letter case of the drive, and with a trailing separator', () => {
+    expect(messageWithoutPaths(new Error('In c:\\users\\x\\Proj\\a.json'), 'C:\\Users\\x\\Proj\\')).toBe('In .\\a.json');
   });
 });
 
