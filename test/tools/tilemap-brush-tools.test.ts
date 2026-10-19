@@ -130,6 +130,13 @@ describe('list_tilemap_brushes', () => {
     expect((result.brushes as Array<{ size: string }>).map(b => b.size)).toEqual(['3x2', 'unknown', 'unknown']);
   });
 
+  it('gives an auto47 brush its size as columns x rows', async () => {
+    const grid = Array.from({ length: 6 }, (_, r) => Array.from({ length: 8 }, (_, c) => r * 8 + c));
+    await ok('add_tilemap_brush', { objectName: 'Tiles', name: 'Auto 47', type: 'auto47', data: grid });
+    const result = await ok('list_tilemap_brushes', { objectName: 'Tiles' });
+    expect((result.brushes as Array<{ name: string; size: string }>).find(b => b.name === 'Auto 47')?.size).toBe('8x6');
+  });
+
   it('reports an object type without a brush file as an empty list', async () => {
     const result = await ok('list_tilemap_brushes', { objectName: 'Walls' });
     expect(result.fileExists).toBe(false);
