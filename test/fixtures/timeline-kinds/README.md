@@ -6,5 +6,6 @@
   `transitionsData` and the project's timelines container.
 - `Legacy.json` is synthetic: written by hand with values chosen for tests, not
   saved by any editor and not taken from any other project. It has one untyped
-  (legacy) track, and its keys follow `legacyTimelineKeys` and `legacyTrack`
-  of `shapes-r495.json`, in the same order and with the same leaf types.
+  (legacy) track. The top-level keys of the timeline and of that track follow
+  `legacyTimelineKeys` and `legacyTrack` of `shapes-r495.json`, in the same
+  order (a test checks that order).

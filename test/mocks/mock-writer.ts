@@ -64,7 +64,7 @@ export class MockWriter {
     return `${path}.bak`;
   }
 
-  async deleteFile(path: string): Promise<string | undefined> {
+  async deleteFile(path: string, _options?: { expected?: unknown }): Promise<string | undefined> {
     this.calls.push({ method: 'deleteFile', args: [path] });
     return `${path}.bak`;
   }
