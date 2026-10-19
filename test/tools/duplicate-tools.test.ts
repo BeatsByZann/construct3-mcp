@@ -409,6 +409,19 @@ describe('duplicate_layout', () => {
     expect(undoToolCall).toHaveBeenCalledTimes(1);
   });
 
+  it('says the writes could not be undone, naming the files, when the rollback itself fails', async () => {
+    vi.spyOn(writer, 'updateProject').mockRejectedValueOnce(new Error('boom'));
+    const failure = Object.assign(new Error(`EACCES: permission denied, open '${path('project.c3proj')}'`), { code: 'EACCES', path: path('project.c3proj') });
+    vi.spyOn(writer, 'undoToolCall').mockRejectedValueOnce(failure);
+    const data = await call('duplicate_layout', { layoutName: 'Level 1', newName: 'Level 1 Copy' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe("boom. The call's writes could not be undone (EACCES on project.c3proj), "
+      + 'so these files may be left as the call wrote them: project.c3proj, layouts/Level 1 Copy.json. '
+      + 'Check the project (validate_project, git diff) before you run the tool again.');
+    expect(data.text).not.toContain('Nothing was changed');
+    expect(data.text).not.toContain(tmpDir);
+  });
+
   it('names the new file when its own create fails after it wrote the file', async () => {
     const replaceFile = writer.replaceFile.bind(writer);
     vi.spyOn(writer, 'replaceFile').mockImplementation(async (file, content, options) => {

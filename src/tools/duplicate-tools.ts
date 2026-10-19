@@ -92,14 +92,23 @@ async function writeAndRegisterCopy(
  * and any entity file the call rewrote first, then the files `side` records
  * (the copy's entity file) once the copy is no longer registered, else kept
  * and named. Every duplicate tool that creates a registered file calls it
- * from its one `catch`.
+ * from its one `catch`. It never throws: a rollback that itself fails is
+ * reported as writes that could not be undone, naming the files the call
+ * wrote (project-relative), because the call did write before it failed.
  */
-function rollBackCopy(
+async function rollBackCopy(
   writer: Writer, reader: Reader, error: unknown, side: RenameSideWrites, category: CopyCategory, name: string,
 ): Promise<string> {
-  return rollBackStructureCall(writer, error, side, {
-    writing: reader.getProjectPath(), projectIsBack: () => copyNotRegistered(reader, category, name),
-  });
+  try {
+    return await rollBackStructureCall(writer, error, side, {
+      writing: reader.getProjectPath(), projectIsBack: () => copyNotRegistered(reader, category, name),
+    });
+  } catch (rollbackError) {
+    const relative = (file: string) => writer.projectRelative(file);
+    const files = [...new Set([reader.getProjectPath(), ...side.files.map(f => f.path), ...side.unresolved.map(f => f.path)].map(relative))];
+    return `${reasonOf(error, relative)}. The call's writes could not be undone (${reasonOf(rollbackError, relative)}), `
+      + `so these files may be left as the call wrote them: ${files.join(', ')}. Check the project (validate_project, git diff) before you run the tool again.`;
+  }
 }
 
 /** The object types among the instances that are global, and the types whose file could not be read. */
