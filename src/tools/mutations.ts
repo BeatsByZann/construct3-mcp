@@ -14,6 +14,7 @@ import { registerProjectTools } from './project-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 import { registerObjectRenameTools } from './object-rename.js';
+import { registerReplaceTools } from './replace-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -29,4 +30,5 @@ export function registerMutationTools(
   registerAnimationTools(deps);
   registerTimelineTools(deps);
   registerObjectRenameTools(deps);
+  registerReplaceTools(deps);
 }
