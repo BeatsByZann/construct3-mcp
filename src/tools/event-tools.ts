@@ -98,6 +98,16 @@ import {
   type DeleteReferenceKind,
   type DeleteReferenceReport,
 } from '../construct3/analyzers/delete-references.js';
+import {
+  describeUsesNotUpdated,
+  notUpdatedEntry,
+  planVariableRename,
+  readRenameSheets,
+  renameWarnings,
+  useEntry,
+  type RenameSheets,
+  type VariableRenamePlan,
+} from '../construct3/analyzers/variable-renames.js';
 import { scanLegacyEventShapes, type LegacyEventShapeHit } from '../construct3/analyzers/legacy-event-shapes.js';
 import type { ObjectRef, SidMatch } from './event-helpers.js';
 import { getProjectIndex, resetProjectIndex } from '../construct3/analyzers/index-builder.js';
@@ -112,6 +122,7 @@ import {
   type UnscannedFileReport,
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
+import { writeEntityOrRollBack } from './call-rollback.js';
 import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-keys.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
@@ -2002,16 +2013,18 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   server.tool(
     'update_event_variable',
-    'Update an existing event variable declaration (rename, change type, change initial value). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one.',
+    'Update an existing event variable declaration (rename, change type, change initial value, static and constant flags). A rename points uses of the variable at the new name where the server can tell what the parameter holds: the "variable" parameter of System variable conditions and actions and the arguments of function and custom action calls, in every event sheet that sees the variable (a global variable: every sheet; a local one: the events beside it and below them); uses of the same name that find another variable (a local of that name in another group or one that hides a global, a function parameter) are left as they are. Any other parameter that names the variable (expressions of plugin, behavior and System actions, combo choices, group names), script lines that read it, event sheets that could not be parsed, or a search cut short at its limit, refuse the rename without force; with force those uses keep the old name. A failure midway puts back what was written. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Use dryRun first to see the uses.',
     {
       sheetName: z.string().max(200).describe('Event sheet containing the variable, as registered (letter case included)'),
       sid: z.number().int().describe('SID of the variable event to update'),
       eventPath: eventPathSchema,
-      newName: z.string().max(200).optional().describe('New variable name. Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in the variable\'s scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+      newName: z.string().max(200).optional().describe('New variable name. Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in the variable\'s scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore. Uses of the variable are pointed at the new name where the server can (see the tool description)'),
       newType: z.enum(['number', 'string', 'boolean']).optional().describe('New variable type'),
       newInitialValue: z.string().max(1000).optional().describe('New initial value (as string — use "0", "false", or "" for defaults)'),
       isStatic: z.boolean().optional().describe('Mark as static (value persists between calls)'),
       isConstant: z.boolean().optional().describe('Mark as constant (cannot be changed at runtime)'),
+      dryRun: z.boolean().optional().default(false).describe('Report what the update would change, the uses a rename points at the new name included, and write nothing'),
+      force: z.boolean().optional().default(false).describe('Rename even when uses would keep the old name or a clash cannot be ruled out: parameters the server cannot update, script lines, event sheets that could not be parsed and possibly use a renamed global or declare the new name, or uses past the limit of the search (those uses are NOT updated)'),
     },
     async (args) => {
       try {
@@ -2044,25 +2057,104 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
 
         const varEvent = findResult.event as unknown as import('../construct3/types.js').VariableEvent;
+        const oldName = varEvent.name;
+        const renaming = args.newName !== undefined && args.newName !== oldName;
+        const parents = findEnclosingEvents(sheet.events, findResult.event as C3Event) ?? [];
+        const isGlobal = parents.length === 0;
+        const stoppedBeforeWrite = (error: unknown) => toolError(nothingChanged(
+          `The change was stopped before anything was written: ${(error instanceof Error ? error.message : String(error)).replace(/\.$/, '')}.`));
 
-        // Check the new name against the variable's scope, as the editor does;
-        // changing the case of this variable's own name is fine
-        if (args.newName !== undefined && args.newName !== varEvent.name) {
-          const parents = findEnclosingEvents(sheet.events, findResult.event as C3Event) ?? [];
-          const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
-          const nameError = eventVariableNameError(
-            sheets, args.sheetName, parents, args.newName, findResult.event as C3Event);
+        // Every check before any change: the name, the sheets that see the variable, its uses
+        let read: RenameSheets | undefined;
+        let plan: VariableRenamePlan | undefined;
+        if (renaming) {
+          try {
+            read = await readRenameSheets(reader, args.sheetName, sheet);
+          } catch (error) {
+            return stoppedBeforeWrite(error);
+          }
+          // Check the new name against the variable's scope, as the editor does;
+          // changing the case of this variable's own name is fine
+          const nameSheets = new Map<string, C3Event[]>();
+          for (const [name, data] of read.sheets) if (Array.isArray(data.events)) nameSheets.set(name, data.events);
+          const nameError = eventVariableNameError(nameSheets, args.sheetName, parents, args.newName!, findResult.event as C3Event);
           if (nameError) return toolError(nameError);
-          varEvent.name = args.newName;
+          try {
+            plan = await planVariableRename(reader, read, args.sheetName, findResult.event, isGlobal, args.newName!);
+          } catch (error) {
+            return stoppedBeforeWrite(error);
+          }
+          const reasons = [
+            ...(blocksWithoutForce(plan.unscanned)
+              ? [`${unscannedRefusal(plan.unscanned)} Such a sheet may ${isGlobal ? `use "${oldName}" or ` : ''}declare a variable named "${args.newName}", which the name check cannot see.`]
+              : []),
+            ...(plan.complete ? [] : [traversalLimitReason(`the uses of "${oldName}"`, plan.limit)]),
+            ...(plan.notUpdated.length > 0 ? [describeUsesNotUpdated(plan.notUpdated, oldName)] : []),
+          ];
+          if (reasons.length > 0 && !args.force) {
+            return toolResult({
+              success: false,
+              entity: args.sheetName,
+              category: 'eventsheet',
+              action: 'rename_blocked',
+              message: `${reasons.join(' ')} Use force=true to rename anyway; those uses keep the old name. Nothing was changed.`,
+              uses: plan.found.uses.map(useEntry),
+              usesNotUpdated: plan.notUpdated.map(notUpdatedEntry),
+              ...unscannedFields(plan.unscanned),
+            });
+          }
         }
 
+        const warnings: string[] = [];
+        if (plan) {
+          warnings.push(...renameWarnings(plan, oldName, args.newName!, args.dryRun));
+          if (!plan.complete) {
+            warnings.push(`${args.dryRun ? 'Would rename' : 'Renamed'} with force=true: ${traversalLimitReason(`the uses of "${oldName}"`, plan.limit)} `
+              + 'Uses there were NOT updated.');
+          }
+          warnings.push(...unscannedWarnings(plan.unscanned, args.dryRun ? 'Would rename' : 'Renamed'));
+        }
+        const renameFields = plan ? {
+          uses: plan.found.uses.map(useEntry),
+          ...(plan.notUpdated.length > 0 ? { usesNotUpdated: plan.notUpdated.map(notUpdatedEntry) } : {}),
+          ...(plan.found.captured.length > 0 ? { captured: plan.found.captured.map(c => ({ sheet: c.sheet, path: c.path, kind: c.kind })) } : {}),
+          ...unscannedFields(plan.unscanned),
+        } : {};
+        // The other sheets with a use, in registration order, then the variable's own sheet
+        const otherSheets = read && plan ? [...read.sheets].filter(([name]) => name !== args.sheetName && plan!.changedSheets.has(name)) : [];
+
+        if (args.dryRun) {
+          return toolResult({
+            success: true,
+            dryRun: true,
+            entity: args.sheetName,
+            category: 'eventsheet',
+            action: 'would_update',
+            eventPath: findResult.path,
+            sheetsToWrite: [...otherSheets.map(([name]) => name), args.sheetName].map(n => reader.getEntityRelativePath('eventSheets', n)),
+            ...renameFields,
+            warnings: warnings.length > 0 ? warnings : undefined,
+          });
+        }
+
+        // The changes, after every check
+        if (plan) {
+          for (const use of plan.found.uses) use.apply(args.newName!);
+          varEvent.name = args.newName!;
+        }
         if (args.newType !== undefined) varEvent.type = args.newType;
         if (args.newInitialValue !== undefined) varEvent.initialValue = args.newInitialValue;
         if (args.isStatic !== undefined) varEvent.isStatic = args.isStatic;
         if (args.isConstant !== undefined) varEvent.isConstant = args.isConstant;
 
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
+        // A failed write rolls the call back (writeEntityOrRollBack)
+        const sheetsWritten: string[] = [];
+        for (const [name, data] of otherSheets) {
+          await writeEntityOrRollBack(writer, 'eventSheets', name, data);
+          sheetsWritten.push(reader.getEntityRelativePath('eventSheets', name));
+        }
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        sheetsWritten.push(reader.getEntityRelativePath('eventSheets', args.sheetName));
         resetProjectIndex(reader);
 
         const result: WriteResult = {
@@ -2071,8 +2163,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           category: 'eventsheet',
           action: 'updated',
           backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
-        return toolResult({ ...result, eventPath: findResult.path });
+        return toolResult({ ...result, eventPath: findResult.path, sheetsWritten, ...renameFields });
       } catch (error) {
         console.error('[update_event_variable] failed:', error);
         return toolError(`Error updating event variable: ${error instanceof Error ? error.message : String(error)}`);

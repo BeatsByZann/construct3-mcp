@@ -52,6 +52,10 @@ import {
   type ReferenceCheckLimit,
 } from './delete-references.js';
 import { c3StringEnd, findExpressionIdentifiers, renameExpressionIdentifier, toScriptLines } from '../event-shapes.js';
+import { checkUnscannedFiles, describeReadFailure, type UnscannedFile, type UnscannedFileReport } from './unscanned-uses.js';
+import { classifyReadError, type Construct3ProjectReader } from '../project-reader.js';
+import { nameTerm } from '../raw-text-search.js';
+import type { EventSheet } from '../types.js';
 
 // ─── Parameters ──────────────────────────────────────────────
 
@@ -362,4 +366,157 @@ export function variableScriptReads(
     }
   }
   return result;
+}
+
+// ─── Planning a rename ───────────────────────────────────────
+
+/** Every registered event sheet, read once for a rename. */
+export interface RenameSheets {
+  /** The sheets that could be read, by registered name in registration order; the variable's own sheet is the object the caller read */
+  sheets: Map<string, EventSheet>;
+  /** Registered sheets that exist but could not be read or parsed */
+  unreadable: UnscannedFile[];
+}
+
+/**
+ * Read every registered event sheet once, from disk (each read is the
+ * state the writer's stale-file check starts from). `sheet` stands for
+ * `sheetName`. A registered sheet that cannot be read or parsed is listed in
+ * `unreadable`; one without a file holds no uses, and the text search of
+ * unreadable sheets (unscanned-uses.ts) leaves it out.
+ */
+export async function readRenameSheets(
+  reader: Pick<Construct3ProjectReader, 'listEventSheets' | 'readEventSheet'>,
+  sheetName: string,
+  sheet: EventSheet,
+): Promise<RenameSheets> {
+  const read: RenameSheets = { sheets: new Map(), unreadable: [] };
+  for (const name of await reader.listEventSheets()) {
+    if (name === sheetName) {
+      read.sheets.set(name, sheet);
+      continue;
+    }
+    try {
+      read.sheets.set(name, await reader.readEventSheet(name));
+    } catch (error) {
+      const code = classifyReadError(error);
+      read.unreadable.push({ category: 'eventSheets', name, file: `eventSheets/${name}`, reason: describeReadFailure(code) });
+    }
+  }
+  return read;
+}
+
+/** What renaming one variable changes, decided before any change. */
+export interface VariableRenamePlan {
+  found: VariableUseReport;
+  /** Uses the rename leaves naming the old name: parameters it cannot update and script lines */
+  notUpdated: UseNotUpdated[];
+  /** The event sheets that could not be read, searched as text for the new name (and, for a global, its name) */
+  unscanned: UnscannedFileReport[];
+  /** Sheets with a use to update, by registered name */
+  changedSheets: Set<string>;
+  /** False when a traversal limit stopped the search for the uses or the script lines */
+  complete: boolean;
+  limit?: ReferenceCheckLimit;
+}
+
+/**
+ * What renaming `variable` (a variable event of `sheetName`) to `newName`
+ * changes: its uses in the sheets that see it (a global: every sheet read;
+ * a local: its own sheet), those it leaves, the script lines that read it,
+ * and the sheets that could not be read whose text names the new name or,
+ * for a global, the old one (a declaration of the new name there is a
+ * clash the name check cannot see). Changes nothing.
+ */
+export async function planVariableRename(
+  reader: Pick<Construct3ProjectReader, 'searchEntityTextRaw'>,
+  read: RenameSheets,
+  sheetName: string,
+  variable: object,
+  isGlobal: boolean,
+  newName: string,
+): Promise<VariableRenamePlan> {
+  const oldName = String((variable as { name?: unknown }).name);
+  const events = new Map<string, unknown>(isGlobal
+    ? [...read.sheets].map(([name, s]) => [name, s.events] as const)
+    : [[sheetName, read.sheets.get(sheetName)?.events]]);
+  const found = findVariableUses(events, variable, newName);
+  const scripts = variableScriptReads(events, variable, isGlobal);
+  // A sheet that could not be read may use a renamed global, and may declare a
+  // global of the new name (which a local's new name would clash with too);
+  // a local's uses are in its own sheet only
+  const searched = isGlobal ? [nameTerm(oldName), nameTerm(newName)] : [nameTerm(newName)];
+  const unscanned = await checkUnscannedFiles(reader, read.unreadable, [{ categories: ['eventSheets'], allOf: [searched] }]);
+  const notUpdated: UseNotUpdated[] = [
+    ...found.notUpdated,
+    ...scripts.reads.map((r): UseNotUpdated => ({ sheet: r.sheet, path: r.path, ...(r.sid !== undefined ? { sid: r.sid } : {}), value: r.line, reason: 'script' })),
+  ];
+  const limit = found.limit ?? scripts.limit;
+  return {
+    found,
+    notUpdated,
+    unscanned,
+    changedSheets: new Set(found.uses.map(u => u.sheet)),
+    complete: found.complete && scripts.complete,
+    ...(limit ? { limit } : {}),
+  };
+}
+
+/** A use as tool results list it. */
+export function useEntry(use: VariableUse): Record<string, unknown> {
+  return { sheet: use.sheet, path: use.path, kind: use.kind, parameter: use.parameter, ...(use.sid !== undefined ? { sid: use.sid } : {}), value: use.value };
+}
+
+/** A use left with the old name, as tool results list it. */
+export function notUpdatedEntry(use: UseNotUpdated): Record<string, unknown> {
+  return {
+    sheet: use.sheet,
+    path: use.path,
+    ...(use.parameter !== undefined ? { parameter: use.parameter } : {}),
+    ...(use.sid !== undefined ? { sid: use.sid } : {}),
+    reason: use.reason,
+    value: use.value,
+  };
+}
+
+/** Why the uses left with the old name are left, in one or two sentences. */
+export function describeUsesNotUpdated(list: readonly UseNotUpdated[], oldName: string): string {
+  const scripts = list.filter(u => u.reason === 'script').length;
+  const newNumberLike = list.filter(u => u.reason === 'number-like-new-name').length;
+  const parameters = list.length - scripts - newNumberLike;
+  return [
+    parameters > 0
+      ? `${parameters} parameter(s) name "${oldName}" in a way the rename cannot update: the server does not know what the parameter holds `
+        + '(an expression, a choice or another kind of name), or the text has a backtick or reads the name as a number.'
+      : '',
+    newNumberLike > 0
+      ? `${newNumberLike} call argument(s) use "${oldName}", and the new name starts with a digit, which an expression reads as a number.`
+      : '',
+    scripts > 0 ? `${scripts} script line(s) read "${oldName}" by name; script text is never changed.` : '',
+  ].filter(Boolean).join(' ') + ' They are listed in usesNotUpdated.';
+}
+
+/** The first few items and how many more there are. */
+function listSome(items: string[], max = 5): string {
+  const shown = items.slice(0, max).join(', ');
+  return items.length > max ? `${shown} and ${items.length - max} more` : shown;
+}
+
+/** The warnings of a rename that goes ahead (or would, with dryRun) about its uses. */
+export function renameWarnings(plan: VariableRenamePlan, oldName: string, newName: string, dryRun: boolean): string[] {
+  const warnings: string[] = [];
+  const { uses, captured } = plan.found;
+  if (uses.length > 0) {
+    warnings.push(`${dryRun ? 'Would point' : 'Pointed'} ${uses.length} use(s) of "${oldName}" at "${newName}" in event sheet(s) `
+      + `${[...new Set(uses.map(u => `"${u.sheet}"`))].join(', ')}.`);
+  }
+  if (captured.length > 0) {
+    warnings.push(`${captured.length} use(s) of "${newName}" found no event variable or function parameter before, `
+      + `and find this variable ${dryRun ? 'once it is renamed' : 'now'}: ${listSome(captured.map(c => `"${c.sheet}" ${c.path}`))}.`);
+  }
+  if (plan.notUpdated.length > 0) {
+    warnings.push(`${dryRun ? 'Would rename' : 'Renamed'} with force=true: ${describeUsesNotUpdated(plan.notUpdated, oldName)} `
+      + `They still name "${oldName}".`);
+  }
+  return warnings;
 }

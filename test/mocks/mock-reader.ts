@@ -4,7 +4,7 @@
  */
 
 import type { Construct3Project, EventSheet, ObjectType, Layout, FileItem } from '../../src/construct3/types.js';
-import { scanIdsInText, type EntityCategory, type ReadFailure } from '../../src/construct3/project-reader.js';
+import { scanIdsInText, ProjectReadError, type EntityCategory, type ReadFailure } from '../../src/construct3/project-reader.js';
 import { searchText, type RawTextTerm } from '../../src/construct3/raw-text-search.js';
 
 export interface MockReaderData {
@@ -65,6 +65,8 @@ export class MockReader {
   private registeredOnly: { objects: string[]; eventSheets: string[]; layouts: string[] } = {
     objects: [], eventSheets: [], layouts: [],
   };
+  // Event sheets that are registered and exist but cannot be read (listed, and their read throws the registered failure)
+  private unreadableEventSheets: string[] = [];
   // Simulated bulk-read failures: category → name → typed failure (for unscanned-file testing)
   private readFailures: Map<string, Map<string, ReadFailure>> = new Map();
   // Raw text served by scanEntityIdsRaw for unreadable entities, keyed "category/name"
@@ -102,7 +104,7 @@ export class MockReader {
   }
 
   async listEventSheets(): Promise<string[]> {
-    return Array.from(this.eventSheets.keys());
+    return [...this.eventSheets.keys(), ...this.unreadableEventSheets];
   }
 
   async listLayouts(): Promise<string[]> {
@@ -120,6 +122,10 @@ export class MockReader {
   }
 
   async readEventSheet(name: string): Promise<EventSheet> {
+    if (this.unreadableEventSheets.includes(name)) {
+      const failure = this.readFailures.get('eventSheets')?.get(name);
+      if (failure) throw new ProjectReadError(failure.code, failure.message);
+    }
     const sheet = this.eventSheets.get(name);
     if (!sheet) throw new Error(`Event sheet "${name}" not found`);
     return sheet as unknown as EventSheet;
@@ -174,7 +180,7 @@ export class MockReader {
       objectTypes: { items: [...Array.from(this.objects.keys()), ...this.registeredOnly.objects], subfolders: [] },
       families: { items: Array.from(this.families.keys()), subfolders: [] },
       layouts: { items: [...Array.from(this.layouts.keys()), ...this.registeredOnly.layouts], subfolders: [] },
-      eventSheets: { items: [...Array.from(this.eventSheets.keys()), ...this.registeredOnly.eventSheets], subfolders: [] },
+      eventSheets: { items: [...Array.from(this.eventSheets.keys()), ...this.unreadableEventSheets, ...this.registeredOnly.eventSheets], subfolders: [] },
       rootFileFolders: {
         script: this.scriptFolder(),
         sound: this.mediaFolder('sound'),
@@ -416,12 +422,13 @@ export class MockReader {
    * for high-water UID recovery.
    */
   registerUnreadableEntity(
-    category: 'objectTypes' | 'layouts',
+    category: 'objectTypes' | 'layouts' | 'eventSheets',
     name: string,
     failure: ReadFailure,
     rawText?: string
   ): void {
-    this.registeredOnly[category === 'objectTypes' ? 'objects' : 'layouts'].push(name);
+    if (category === 'eventSheets') this.unreadableEventSheets.push(name);
+    else this.registeredOnly[category === 'objectTypes' ? 'objects' : 'layouts'].push(name);
     let failures = this.readFailures.get(category);
     if (!failures) {
       failures = new Map<string, ReadFailure>();
