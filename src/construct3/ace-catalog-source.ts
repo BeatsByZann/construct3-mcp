@@ -2,8 +2,8 @@
  * Turn the ACE definitions a Construct release serves to its own editor into
  * the catalogue ACE validation uses.
  *
- * Three files of the editor are read (this module only parses them; it
- * fetches nothing):
+ * Three files of the editor are read, from editor.construct.net or from a local
+ * copy, and stored as a per-user cache file:
  *   plugins/allAces.json    every built-in plugin's own conditions and actions
  *   behaviors/allAces.json  every built-in behavior's conditions and actions
  *   main.js                 the common ACEs the editor adds to plugins by
@@ -17,6 +17,9 @@
  * variable number of arguments.
  */
 
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { AceCatalog, AceParam, AceSet, ExpressionDef } from './ace-types.js';
 
 /** The three files of one release, already read. */
@@ -395,4 +398,362 @@ export function isAceCatalog(value: unknown): value is AceCatalog {
     && Object.keys(system.conditions).length > 0
     && Object.keys(system.actions).length > 0
     && Object.keys(system.expressions).length > 0;
+}
+
+/** The one host the catalogue sources are fetched from, always over HTTPS. */
+export const ACE_SOURCE_HOST = 'editor.construct.net';
+/** The three files, fetched in this order; the first decides whether a release is served. */
+export const ACE_SOURCE_FILES = ['plugins/allAces.json', 'behaviors/allAces.json', 'main.js'] as const;
+/** The release used when the project's own is not served or not recorded. */
+export const FALLBACK_RELEASE = 'r495-2';
+/** The most bytes read from one source file. */
+export const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
+/** The most bytes read from one cache file. */
+export const MAX_CACHE_BYTES = 16 * 1024 * 1024;
+/** How long one request may take, in milliseconds. */
+export const FETCH_TIMEOUT_MS = 20_000;
+/** The most redirects followed for one file. */
+export const MAX_REDIRECTS = 3;
+/** The layout of a cache file; raised whenever the transform's output changes. */
+export const CACHE_FORMAT = 2;
+
+/** The part of fetch the catalogue needs; redirects are never followed by the platform. */
+export type FetchLike = (url: string, init: { redirect: 'manual'; signal: AbortSignal }) => Promise<Response>;
+/** The limits of one fetch, replaceable for tests. */
+export interface SourceLimits { timeoutMs: number; maxBytes: number }
+/** Why no sources were obtained: the host could not be reached, answered unusably, or does not serve the release. */
+export type SourceFailure = { ok: false; reason: 'offline' | 'refused' | 'not-served'; detail: string };
+/** The three files of a release with each file's size in bytes, or why there are none. */
+export type SourceResult = { ok: true; sources: CatalogSources; bytes: number[] } | SourceFailure;
+/** What a cache file holds. */
+export interface CacheEntry { format: typeof CACHE_FORMAT; sourceRelease: string; digest: string; catalog: AceCatalog }
+/** Whether a cache file was written. */
+export type CacheWriteOutcome = { written: true; path: string } | { written: false; reason: string };
+/** A catalogue, or why none could be made. */
+export type CatalogBuild = { ok: true; catalog: AceCatalog } | SourceFailure;
+
+/** A failed result with a fixed detail. */
+function failure(reason: SourceFailure['reason'], detail: string): SourceFailure {
+  return { ok: false, reason, detail };
+}
+
+/** The URL of one source file of a release. Throws when the release is not a release name. */
+export function sourceUrl(release: string, file: (typeof ACE_SOURCE_FILES)[number]): string {
+  if (!RELEASE_PATTERN.test(release)) throw new Error('not a release name');
+  return `https://${ACE_SOURCE_HOST}/${release}/${file}`;
+}
+
+/** The failure for an error thrown while requesting or reading: offline for a timeout or a network error, else refused. Only the error's code or name is kept. */
+function failureFromError(error: unknown): SourceFailure {
+  const name = error instanceof Error ? error.name : 'Error';
+  const cause = error instanceof Error ? (error as { cause?: unknown }).cause : undefined;
+  const code = isRecord(cause) && typeof cause.code === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(cause.code) ? cause.code : name;
+  if (error instanceof TypeError || name === 'AbortError' || name === 'TimeoutError') return failure('offline', code);
+  return failure('refused', `unexpected error (${name})`);
+}
+
+/** Cancel a response body that will not be read. */
+async function discard(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The body is not wanted either way.
+  }
+}
+
+/** Read a body through a counting reader, stopping once it is past `maxBytes`. */
+async function readBody(response: Response, maxBytes: number): Promise<{ ok: true; text: string; size: number } | SourceFailure> {
+  if (!response.body) return { ok: true, text: '', size: 0 };
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return failure('refused', 'the file is too large');
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    return failureFromError(error);
+  }
+  return { ok: true, text: Buffer.concat(chunks).toString('utf8'), size };
+}
+
+/** Request one file, following redirects only to the same file of the same release on the one host. */
+async function fetchOne(
+  release: string,
+  file: (typeof ACE_SOURCE_FILES)[number],
+  first: boolean,
+  fetchImpl: FetchLike,
+  limits: SourceLimits,
+): Promise<{ ok: true; text: string; size: number } | SourceFailure> {
+  const expectedPath = `/${release}/${file}`;
+  let url = sourceUrl(release, file);
+  for (let hops = 0; ; hops++) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(limits.timeoutMs) });
+    } catch (error) {
+      return failureFromError(error);
+    }
+    const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null;
+    if (location !== null) {
+      await discard(response);
+      if (hops >= MAX_REDIRECTS) return failure('refused', 'too many redirects');
+      let next: URL;
+      try {
+        next = new URL(location, url);
+      } catch {
+        return failure('refused', 'redirected to another host');
+      }
+      if (next.protocol !== 'https:' || next.host !== ACE_SOURCE_HOST || next.username !== '' || next.password !== '') {
+        return failure('refused', 'redirected to another host');
+      }
+      if (next.pathname !== expectedPath) return failure('refused', 'redirected to another release or file');
+      url = next.href;
+      continue;
+    }
+    if (!response.ok) {
+      await discard(response);
+      if (response.status === 404 || response.status === 403) {
+        return first ? failure('not-served', `${file} is not served`) : failure('refused', 'the release is only partly served');
+      }
+      return failure('refused', `HTTP ${response.status}`);
+    }
+    const length = Number(response.headers.get('content-length'));
+    if (Number.isFinite(length) && length > limits.maxBytes) {
+      await discard(response);
+      return failure('refused', 'the file is too large');
+    }
+    return readBody(response, limits.maxBytes);
+  }
+}
+
+/** Parse the text of a source file that holds JSON. */
+function parseSourceJson(text: string, file: string): { ok: true; value: unknown } | SourceFailure {
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch {
+    return failure('refused', `${file} is not valid JSON`);
+  }
+}
+
+/**
+ * Fetch the three files of a release one after another from the one host. The
+ * first failure ends the attempt. `detail` of a failure is a fixed text plus a
+ * file name, status or error code, never response text or a path.
+ */
+export async function fetchCatalogSources(release: string, fetchImpl: FetchLike, limits: Partial<SourceLimits> = {}): Promise<SourceResult> {
+  if (!RELEASE_PATTERN.test(release)) return failure('refused', 'not a release name');
+  const effective: SourceLimits = { timeoutMs: limits.timeoutMs ?? FETCH_TIMEOUT_MS, maxBytes: limits.maxBytes ?? MAX_SOURCE_BYTES };
+  const texts: string[] = [];
+  const bytes: number[] = [];
+  const parsed: unknown[] = [];
+  for (const [index, file] of ACE_SOURCE_FILES.entries()) {
+    const got = await fetchOne(release, file, index === 0, fetchImpl, effective);
+    if (!got.ok) return got;
+    texts.push(got.text);
+    bytes.push(got.size);
+    if (file !== 'main.js') {
+      const json = parseSourceJson(got.text, file);
+      if (!json.ok) return json;
+      parsed.push(json.value);
+    }
+  }
+  return { ok: true, sources: { release, plugins: parsed[0], behaviors: parsed[1], mainJs: texts[2] }, bytes };
+}
+
+/** Read the three files of a release from `<folder>/<release>/`. */
+export async function readLocalSources(folder: string, release: string, maxBytes: number = MAX_SOURCE_BYTES): Promise<SourceResult> {
+  if (!RELEASE_PATTERN.test(release)) return failure('refused', 'not a release name');
+  const texts: string[] = [];
+  const bytes: number[] = [];
+  for (const [index, file] of ACE_SOURCE_FILES.entries()) {
+    const where = path.join(folder, release, file);
+    try {
+      const size = (await stat(where)).size;
+      if (size > maxBytes) return failure('refused', `${file} is too large`);
+      texts.push(await readFile(where, 'utf8'));
+      bytes.push(size);
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return index === 0 ? failure('not-served', 'no local copy') : failure('refused', 'incomplete local copy');
+      }
+      return failure('refused', `${file} could not be read (${typeof code === 'string' ? code : 'error'})`);
+    }
+  }
+  const plugins = parseSourceJson(texts[0], ACE_SOURCE_FILES[0]);
+  if (!plugins.ok) return plugins;
+  const behaviors = parseSourceJson(texts[1], ACE_SOURCE_FILES[1]);
+  if (!behaviors.ok) return behaviors;
+  return { ok: true, sources: { release, plugins: plugins.value, behaviors: behaviors.value, mainJs: texts[2] }, bytes };
+}
+
+/**
+ * The one way a catalogue is made from source files, for fetched files, a
+ * local folder and the build script alike: a failed result is returned as it
+ * is, otherwise the sources are transformed and the result must have the shape
+ * of a whole catalogue.
+ */
+export function catalogFromSources(result: SourceResult): CatalogBuild {
+  if (!result.ok) return result;
+  let catalog: AceCatalog;
+  try {
+    catalog = buildCatalog(result.sources);
+  } catch (error) {
+    console.error(`ACE catalogue: ${error instanceof Error ? error.message : String(error)}`);
+    return failure('refused', 'the editor\'s files could not be read');
+  }
+  if (!isAceCatalog(catalog)) return failure('refused', 'the editor\'s files did not give a complete catalogue');
+  return { ok: true, catalog };
+}
+
+/** The SHA-256 of a catalogue's JSON, in hex. It shows a cache file is what this server wrote; it does not resist a deliberate edit that recomputes it. */
+export function catalogDigest(catalog: AceCatalog): string {
+  return createHash('sha256').update(JSON.stringify(catalog)).digest('hex');
+}
+
+/** The cache file of a release in `cacheDir`. Throws when the release is not a release name. */
+export function cacheFilePath(cacheDir: string, release: string): string {
+  if (!RELEASE_PATTERN.test(release)) throw new Error('not a release name');
+  return path.join(cacheDir, `${release}.json`);
+}
+
+/**
+ * The catalogue a cache file holds, or undefined when the file is absent or
+ * cannot be trusted; a file that exists and fails a check is named on stderr
+ * and is replaced by the next successful build. Nothing of it is partly used.
+ */
+export async function readCacheFile(cacheDir: string, release: string): Promise<AceCatalog | undefined> {
+  const file = cacheFilePath(cacheDir, release);
+  let text: string;
+  try {
+    const size = (await stat(file)).size;
+    if (size > MAX_CACHE_BYTES) return rejectCache(file);
+    text = await readFile(file, 'utf8');
+  } catch (error) {
+    return (error as { code?: unknown }).code === 'ENOENT' ? undefined : rejectCache(file);
+  }
+  let entry: unknown;
+  try {
+    entry = JSON.parse(text) as unknown;
+  } catch {
+    return rejectCache(file);
+  }
+  if (!isRecord(entry) || entry.format !== CACHE_FORMAT || entry.sourceRelease !== release) return rejectCache(file);
+  const catalog = entry.catalog;
+  if (!isAceCatalog(catalog) || catalog.release !== release) return rejectCache(file);
+  if (entry.digest !== catalogDigest(catalog)) return rejectCache(file);
+  return catalog;
+}
+
+/** Name an untrusted cache file on stderr; always undefined. */
+function rejectCache(file: string): undefined {
+  console.error(`${path.basename(file)} is not a valid ACE catalogue; rebuilding`);
+  return undefined;
+}
+
+/**
+ * Write a catalogue to its cache file through a temporary file in the same
+ * folder and a rename, so another process sees the old file or the new one.
+ * Never throws; the reason of a failure is a fixed text plus the error code.
+ */
+export async function writeCacheFile(cacheDir: string, release: string, catalog: AceCatalog): Promise<CacheWriteOutcome> {
+  const file = cacheFilePath(cacheDir, release);
+  const temp = path.join(cacheDir, `${release}.json.${process.pid}-${randomBytes(4).toString('hex')}.tmp`);
+  const entry: CacheEntry = { format: CACHE_FORMAT, sourceRelease: release, digest: catalogDigest(catalog), catalog };
+  try {
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(temp, JSON.stringify(entry), 'utf8');
+    await rename(temp, file);
+    return { written: true, path: file };
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    const code = (error as { code?: unknown }).code;
+    return { written: false, reason: `the cache file could not be written (${typeof code === 'string' ? code : 'error'})` };
+  }
+}
+
+/**
+ * The per-user folder of the cache files: C3_ACE_CACHE_DIR when it is set and
+ * absolute (a relative value is ignored, with one stderr line), else the
+ * platform's cache folder, then construct3-mcp/ace-catalog.
+ */
+export function defaultAceCacheDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const override = env.C3_ACE_CACHE_DIR;
+  if (override) {
+    if (p.isAbsolute(override)) return override;
+    console.error('C3_ACE_CACHE_DIR is not an absolute path; ignoring it');
+  }
+  let base: string;
+  if (platform === 'win32') base = env.LOCALAPPDATA && p.isAbsolute(env.LOCALAPPDATA) ? env.LOCALAPPDATA : p.join(home, 'AppData', 'Local');
+  else if (platform === 'darwin') base = p.join(home, 'Library', 'Caches');
+  else base = env.XDG_CACHE_HOME && p.isAbsolute(env.XDG_CACHE_HOME) ? env.XDG_CACHE_HOME : p.join(home, '.cache');
+  return p.join(base, 'construct3-mcp', 'ace-catalog');
+}
+
+/** What runBuildCatalog needs from its caller. */
+export interface BuildCatalogDeps {
+  fetch: FetchLike;
+  env: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  home: string;
+  out(line: string): void;
+  err(line: string): void;
+}
+
+const BUILD_USAGE = 'Usage: build-ace-catalog <release> [--from <folder>] [--out <file>]';
+
+/**
+ * The build script: make the cache file of one release from the editor's
+ * files (fetched, or read from `--from`). Returns 0 when the file was
+ * written, 1 for a source failure or a failed write, 2 for a usage error.
+ * It prints nothing taken from the files.
+ */
+export async function runBuildCatalog(args: readonly string[], deps: BuildCatalogDeps): Promise<0 | 1 | 2> {
+  const [release, ...rest] = args;
+  let from: string | undefined;
+  let out: string | undefined;
+  for (let i = 0; i < rest.length; i += 2) {
+    const value = rest[i + 1];
+    if (rest[i] === '--from' && value !== undefined && from === undefined) from = value;
+    else if (rest[i] === '--out' && value !== undefined && out === undefined) out = value;
+    else {
+      deps.err(BUILD_USAGE);
+      return 2;
+    }
+  }
+  if (release === undefined || !RELEASE_PATTERN.test(release)) {
+    deps.err(`${release === undefined ? 'No release given' : 'Not a release name'}. ${BUILD_USAGE}`);
+    return 2;
+  }
+  if (out !== undefined && path.basename(out) !== `${release}.json`) {
+    deps.err(`--out must name a file called ${release}.json. ${BUILD_USAGE}`);
+    return 2;
+  }
+  const started = Date.now();
+  const result = from !== undefined ? await readLocalSources(from, release) : await fetchCatalogSources(release, deps.fetch);
+  const built = catalogFromSources(result);
+  if (!built.ok || !result.ok) {
+    deps.err(built.ok ? 'No sources.' : `${built.reason}: ${built.detail}`);
+    return 1;
+  }
+  const cacheDir = out !== undefined ? path.dirname(out) : defaultAceCacheDir(deps.env, deps.platform, deps.home);
+  const written = await writeCacheFile(cacheDir, release, built.catalog);
+  if (!written.written) {
+    deps.err(written.reason);
+    return 1;
+  }
+  deps.out(`Wrote ${written.path}`);
+  ACE_SOURCE_FILES.forEach((file, index) => deps.out(`${file}: ${result.bytes[index]} bytes`));
+  for (const [name, count] of Object.entries(catalogCounts(built.catalog))) deps.out(`${name}: ${count}`);
+  deps.out(`built in ${Date.now() - started} ms`);
+  return 0;
 }
