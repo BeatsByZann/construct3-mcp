@@ -1,0 +1,231 @@
+{
+	"name": "Main",
+	"events": [
+		{
+			"eventType": "variable",
+			"name": "score",
+			"type": "number",
+			"initialValue": "0",
+			"comment": "Global: Player score",
+			"isStatic": false,
+			"isConstant": false,
+			"sid": 610000000000001
+		},
+		{
+			"eventType": "comment",
+			"text": "Player setup. This mentions Player on purpose."
+		},
+		{
+			"eventType": "block",
+			"conditions": [
+				{
+					"id": "on-start-of-layout",
+					"objectClass": "System",
+					"sid": 610000000000002
+				},
+				{
+					"id": "pick-by-evaluate",
+					"objectClass": "System",
+					"sid": 610000000000003,
+					"parameters": {
+						"object": "Player",
+						"expression": "Player.X > Hostiles.health"
+					}
+				}
+			],
+			"actions": [
+				{
+					"id": "set-position",
+					"objectClass": "Player",
+					"sid": 610000000000004,
+					"parameters": {
+						"x": "Player.X + PlayerShip.X",
+						"y": "Enemy.Player + 10"
+					}
+				},
+				{
+					"id": "create-object",
+					"objectClass": "System",
+					"sid": 610000000000005,
+					"parameters": {
+						"object-to-create": "Player",
+						"layer": "\"UI\"",
+						"x": "0",
+						"y": "0",
+						"create-hierarchy": false,
+						"template-name": "\"Default\""
+					}
+				},
+				{
+					"id": "add-child",
+					"objectClass": "System",
+					"sid": 610000000000006,
+					"parameters": {
+						"parent": "Player",
+						"child": "Enemy",
+						"transform-x": true
+					}
+				},
+				{
+					"id": "set-text",
+					"objectClass": "Player",
+					"sid": 610000000000007,
+					"parameters": {
+						"text": "\"Player wins\" & Player.AnimationName & \" PlayerShip\""
+					}
+				},
+				{
+					"id": "set-eventvar-value",
+					"objectClass": "System",
+					"sid": 610000000000008,
+					"parameters": {
+						"variable": "score",
+						"value": "score + Player.X"
+					}
+				},
+				{
+					"id": "set-instvar-value",
+					"objectClass": "Player",
+					"sid": 610000000000009,
+					"parameters": {
+						"instance-variable": "score",
+						"value": "1"
+					}
+				},
+				{
+					"id": "go-to-layout",
+					"objectClass": "System",
+					"sid": 610000000000010,
+					"parameters": {
+						"layout": "Level 2"
+					}
+				},
+				{
+					"id": "go-to-layout-by-name",
+					"objectClass": "System",
+					"sid": 610000000000011,
+					"parameters": {
+						"layout": "\"Level 2\""
+					}
+				},
+				{
+					"id": "set-layer-scale",
+					"objectClass": "System",
+					"sid": 610000000000012,
+					"parameters": {
+						"layer": "\"UI\"",
+						"scale": "LayerScale(\"UI\") + 0.1"
+					}
+				},
+				{
+					"id": "move-to-layer",
+					"objectClass": "Player",
+					"sid": 610000000000013,
+					"parameters": {
+						"layer": "UI"
+					}
+				},
+				{
+					"id": "set-layer-visible",
+					"objectClass": "System",
+					"sid": 610000000000014,
+					"parameters": {
+						"layer": "Self.LayerName",
+						"visibility": true
+					}
+				},
+				{
+					"type": "script",
+					"language": "javascript",
+					"script": [
+						"// Player is mentioned here and must stay as it is",
+						"runtime.objects.Player.getFirstInstance();"
+					]
+				}
+			],
+			"sid": 610000000000015,
+			"children": [
+				{
+					"eventType": "variable",
+					"name": "localTally",
+					"type": "number",
+					"initialValue": "0",
+					"isStatic": true,
+					"isConstant": false,
+					"sid": 610000000000016
+				},
+				{
+					"eventType": "block",
+					"conditions": [
+						{
+							"id": "compare-eventvar",
+							"objectClass": "System",
+							"sid": 610000000000017,
+							"parameters": {
+								"variable": "localTally",
+								"comparison": 0,
+								"value": "localTally + score"
+							}
+						}
+					],
+					"actions": [
+						{
+							"id": "destroy",
+							"objectClass": "Enemy",
+							"sid": 610000000000018
+						}
+					],
+					"sid": 610000000000019
+				}
+			]
+		},
+		{
+			"eventType": "group",
+			"disabled": false,
+			"title": "Hostile handling",
+			"description": "",
+			"isActiveOnStart": true,
+			"sid": 610000000000020,
+			"children": [
+				{
+					"eventType": "custom-ace-block",
+					"aceType": "action",
+					"aceName": "Alert",
+					"objectClass": "Hostiles",
+					"functionDescription": "",
+					"functionCategory": "AI",
+					"functionReturnType": "none",
+					"functionCopyPicked": false,
+					"functionIsAsync": false,
+					"functionParameters": [],
+					"conditions": [
+						{
+							"id": "compare-instance-variable",
+							"objectClass": "Hostiles",
+							"sid": 610000000000021,
+							"parameters": {
+								"instance-variable": "health",
+								"comparison": 0,
+								"value": "Hostiles.health"
+							}
+						}
+					],
+					"actions": [
+						{
+							"customAction": "Alert",
+							"objectClass": "Hostiles",
+							"sid": 610000000000022,
+							"parameters": [
+								"Player.UID",
+								"\"Player\"",
+								"score"
+							]
+						}
+					],
+					"sid": 610000000000023
+				}
+			]
+		}
+	],
+	"sid": 610000000000024
+}

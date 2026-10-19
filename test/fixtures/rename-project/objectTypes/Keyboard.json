@@ -1,0 +1,9 @@
+{
+	"name": "Keyboard",
+	"plugin-id": "Keyboard",
+	"sid": 660000000000005,
+	"isGlobal": true,
+	"instanceVariables": [],
+	"behaviorTypes": [],
+	"effectTypes": []
+}
