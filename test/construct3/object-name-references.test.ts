@@ -48,11 +48,11 @@ describe('event sheet uses', () => {
     const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(events())]]), 'Alpha', 'list');
     const definite = uses.filter(u => u.definite).map(u => `${u.kind}:${u.parameter ?? '-'}`).sort();
     expect(definite).toEqual([
-      'custom action family:-', 'custom action owner:-', 'expression:layout', 'expression:x',
+      'custom action family:-', 'custom action owner:-', 'expression:x',
       'object parameter:0', 'object parameter:object-to-create', 'objectClass:-',
     ].sort());
     const possible = uses.filter(u => !u.definite).map(u => u.kind).sort();
-    expect(possible).toEqual(['instance-variable object', 'script', 'script', 'string literal', 'string literal', 'variable value', 'variable value'].sort());
+    expect(possible).toEqual(['instance-variable object', 'possible expression', 'script', 'script', 'string literal', 'string literal', 'variable value', 'variable value'].sort());
     // A whole value under a key that holds another kind of name is no use of the object
     expect(uses.some(u => u.parameter === 'audio-file' || (u.parameter === 'layout' && u.value === 'Alpha'))).toBe(false);
   });
@@ -66,7 +66,7 @@ describe('event sheet uses', () => {
 
   it('rewrites only the definite uses of one sheet, with the new name as given', () => {
     const data = sheet(events());
-    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(events()), 'list')).toBe(7);
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(events()), 'list')).toBe(6);
     const text = JSON.stringify(data);
     expect(text).toContain('"objectClass":"Gamma","functionParameters"');
     expect(text).toContain('{"id":"is-visible","objectClass":"Gamma"}');
@@ -74,7 +74,7 @@ describe('event sheet uses', () => {
     expect(text).toContain('"object-to-create":"Gamma"');
     expect(text).toContain('"instance-variable":{"name":"hp","objectClass":"Alpha"}');
     expect(text).toContain('"customActionObjectClass":"Gamma","parameters":["Gamma"]');
-    expect(text).toContain('"layout":"Gamma.NextLevel"');
+    expect(text).toContain('"layout":"Alpha.NextLevel"');
     expect(text).toContain('"layout":"Alpha"');
     expect(text).toContain('"layer":"\\"Alpha\\""');
     expect(text).toContain('"audio-file":"Alpha"');
@@ -98,23 +98,62 @@ describe('event sheet uses', () => {
   });
 
   it('rewrites the object-valued parameters an editor save holds under parent, child, obstacle and array, unless a variable has the name', () => {
-    const census = () => [{ eventType: 'block', conditions: [], actions: [
+    const savedParameters = () => [{ eventType: 'block', conditions: [], actions: [
       { id: 'pin', objectClass: 'Beta', parameters: { child: 'Alpha', parent: 'Alpha', obstacle: 'Alpha', array: 'Alpha' } },
     ] }];
     const kinds = (events: unknown[]) => findObjectNameUsesInSheets(new Map([['Main', sheet(events)]]), 'Alpha', 'list')
       .map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort();
-    expect(kinds(census())).toEqual([
+    expect(kinds(savedParameters())).toEqual([
       'array:object parameter:true', 'child:object parameter:true', 'obstacle:object parameter:true', 'parent:object parameter:true',
     ]);
-    const data = sheet(census());
-    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(census()), 'list')).toBe(4);
+    const data = sheet(savedParameters());
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(savedParameters()), 'list')).toBe(4);
     expect((data.events[0] as unknown as { actions: Array<{ parameters: unknown }> }).actions[0].parameters)
       .toEqual({ child: 'Gamma', parent: 'Gamma', obstacle: 'Gamma', array: 'Gamma' });
     // An event variable with the name: the keys the reference index does not know as object keys are only possible uses
-    const shared = [{ eventType: 'variable', name: 'Alpha', type: 'number', initialValue: '0' }, ...census()];
+    const shared = [{ eventType: 'variable', name: 'Alpha', type: 'number', initialValue: '0' }, ...savedParameters()];
     expect(kinds(shared)).toEqual([
       'array:possible expression:false', 'child:object parameter:true', 'obstacle:possible expression:false', 'parent:possible expression:false',
     ]);
+  });
+
+  it('lists a whole value that differs from the name only in letter case, and never changes it', () => {
+    const mouse = () => [{ eventType: 'block', conditions: [
+      { id: 'on-click', objectClass: 'Mouse', parameters: { 'mouse-button': 'left', 'click-type': 'clicked' } },
+    ], actions: [{ id: 'pin', objectClass: 'Beta', parameters: { child: 'Left' } }] }];
+    const data = sheet(mouse());
+    const uses = findObjectNameUsesInSheets(new Map([['Main', data]]), 'Left', 'rewrite');
+    expect(uses.map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort()).toEqual(['child:object parameter:true', 'mouse-button:possible expression:false']);
+    expect(renameObjectInSheet(data, 'Left', 'LeftButton', names(mouse()), 'rewrite')).toBe(1);
+    expect(JSON.stringify(data)).toContain('"mouse-button":"left"');
+    expect(JSON.stringify(data)).toContain('"child":"LeftButton"');
+  });
+
+  it('lets an event variable that has the name in another letter case shadow a whole value', () => {
+    const events = [{ eventType: 'variable', name: 'alpha', type: 'number', initialValue: '0' },
+      { eventType: 'block', conditions: [], actions: [{ id: 'set', objectClass: 'Beta', parameters: { value: 'Alpha' } }] }];
+    const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(events)]]), 'Alpha', 'list');
+    expect(uses.filter(u => u.parameter === 'value').map(u => [u.kind, u.definite])).toEqual([['possible expression', false]]);
+  });
+
+  it('finds an object whose name starts with a digit in expressions, as the editor writes it', () => {
+    expect(objectNameInExpression('2Alpha.X + 12Alpha.Y + Sprite.2Alpha + 2AlphaB.X', '2Alpha', 'Alpha2'))
+      .toEqual({ text: 'Alpha2.X + 12Alpha.Y + Sprite.2Alpha + 2AlphaB.X', definite: 1, possible: 0 });
+    const data = sheet([{ eventType: 'block', conditions: [], actions: [{ id: 'set-x', objectClass: '2Alpha', parameters: { x: '2Alpha.X + 1' } }] }]);
+    expect(renameObjectInSheet(data, '2Alpha', 'Alpha2', new Set(), 'list')).toBe(2);
+    expect(JSON.stringify(data)).toContain('"x":"Alpha2.X + 1"');
+  });
+
+  it('lists Name.member under a key that holds a layout or sound name, and never changes it', () => {
+    const data = sheet([{ eventType: 'block', conditions: [], actions: [
+      { id: 'go-to-layout-by-name', objectClass: 'System', parameters: { layout: 'Alpha.NextLevel' } },
+      { id: 'play', objectClass: 'Audio', parameters: { 'audio-file': 'Alpha.Boom' } },
+    ] }]);
+    const uses = findObjectNameUsesInSheets(new Map([['Main', data]]), 'Alpha', 'rewrite');
+    expect(uses.map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort()).toEqual(['audio-file:possible expression:false', 'layout:possible expression:false']);
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', new Set(), 'rewrite')).toBe(0);
+    expect(JSON.stringify(data)).toContain('"layout":"Alpha.NextLevel"');
+    expect(JSON.stringify(data)).toContain('"audio-file":"Alpha.Boom"');
   });
 
   it('leaves a parameter whose key holds another kind of name alone, on any object', () => {
@@ -183,6 +222,12 @@ describe('layouts, families, scripts and timelines', () => {
     expect(timelineTrackUses({ tracks: 'none' }, 'Alpha', undefined, path)).toEqual({ count: 0, complete: false });
     // Without a recorded path nothing is counted
     expect(timelineTrackUses(timeline, 'Gamma')).toEqual({ count: 0, complete: true });
+  });
+
+  it('rewrites every kind of event sheet use by default, as the editor did on a rename', () => {
+    expect(OBJECT_REWRITE_POLICY).toEqual({
+      'custom action owner': true, objectClass: true, 'custom action family': true, 'instance-variable object': true, 'object parameter': true, expression: true,
+    });
   });
 
   it('has no recorded key path for a timeline track, since no editor save has shown one', () => {

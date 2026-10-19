@@ -149,7 +149,8 @@ export function removeContainerMember(
  * (renameInProject's alsoChange, so the registration and the members
  * change in one write). Entries that are not containers, and members that
  * are not names, stay as they are. Returns the containers that changed,
- * with their member names after the change.
+ * with their member names after the change. A container that lists the
+ * name twice (in two letter cases) gets `newName` twice.
  */
 export function renameContainerMember(project: { containers?: unknown }, objectName: string, newName: string): ContainerEntry[] {
   const changed: ContainerEntry[] = [];

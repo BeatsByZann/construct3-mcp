@@ -7,12 +7,15 @@
  * - in event sheets: the "objectClass" of conditions and actions and of
  *   custom action blocks (their owner), the "customActionObjectClass" of a
  *   call to a family's custom action, a parameter whose whole value is the
- *   name where the reference index counts it as the object
+ *   name exactly as registered (another letter case, such as an enumerated
+ *   choice "left" for an object "Left", is only listed) where the reference
+ *   index counts it as the object
  *   (isObjectParameterValue: object keys always, the keys that hold other
  *   names never, any other key or call argument unless an event variable
  *   or function parameter has the name), and expressions that use it as
- *   an object ("Name.member", "Name(index).member") under every key, as
- *   the index scans them;
+ *   an object ("Name.member", "Name(index).member") under every key except
+ *   the keys that hold a layout, sound or other name, where it is only
+ *   listed;
  * - an object type also by the "type" of layout instances (layers,
  *   sub-layers, non-world instances), the "type" of its own single-global
  *   instance, the "members" of families and of project.c3proj's containers
@@ -91,6 +94,9 @@ export const OBJECT_REWRITE_POLICY: Readonly<Record<RewritableObjectUseKind, boo
   expression: true,
 };
 const IDENTIFIER = /[\p{L}_][\p{L}\p{N}_]*/uy;
+/** Names that start with a digit (the editor accepts them) are read as runs of letters, digits and underscores. */
+const DIGIT_FIRST_IDENTIFIER = /[\p{L}\p{N}_]+/uy;
+const STARTS_WITH_DIGIT = /^\p{N}/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_$]/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -131,6 +137,7 @@ function skipSpaces(text: string, from: number): number {
  */
 export function objectNameInExpression(expression: string, objectName: string, newName?: string): { text: string; definite: number; possible: number } {
   const key = nameKey(objectName);
+  const identifier = STARTS_WITH_DIGIT.test(objectName) ? DIGIT_FIRST_IDENTIFIER : IDENTIFIER;
   let out = '';
   let definite = 0;
   let possible = 0;
@@ -149,8 +156,8 @@ export function objectNameInExpression(expression: string, objectName: string, n
       previous = '"';
       continue;
     }
-    IDENTIFIER.lastIndex = i;
-    const word = IDENTIFIER.exec(expression);
+    identifier.lastIndex = i;
+    const word = identifier.exec(expression);
     if (!word) {
       out += ch;
       if (!/\s/.test(ch)) previous = ch;
@@ -198,6 +205,18 @@ interface WalkContext {
 /** The walk's policy: OBJECT_REWRITE_POLICY, with the instance-variable kind as the caller's setting says. */
 function policyOf(instanceVariableObjects: InstanceVariableObjects): Readonly<Record<RewritableObjectUseKind, boolean>> {
   return { ...OBJECT_REWRITE_POLICY, 'instance-variable object': instanceVariableObjects === 'rewrite' };
+}
+
+const variableKeyCache = new WeakMap<ReadonlySet<string>, Set<string>>();
+
+/** The variable names with letter case ignored (nameKey), for the check that a variable shadows the name. */
+function variableKeysOf(names: ReadonlySet<string>): Set<string> {
+  let keys = variableKeyCache.get(names);
+  if (!keys) {
+    keys = new Set([...names].map(nameKey));
+    variableKeyCache.set(names, keys);
+  }
+  return keys;
 }
 
 /** The event variable and function parameter names of the sheets, as the reference index collects them. */
@@ -257,10 +276,17 @@ function walkSheet(sheet: EventSheet, file: string, objectName: string, context:
     parameter({ eventPath, ace }, { key: parameter, value, named, set }) {
       const at = { ...base, eventPath, ace, parameter };
       const whole = value.trim();
+      const nameKeyed = named && NON_OBJECT_PARAMETER_KEYS.has(parameter);
       if (same(whole)) {
         // The index's rule for a whole value that is the name (isObjectParameterValue)
-        if (named && NON_OBJECT_PARAMETER_KEYS.has(parameter)) return;
-        if (isObjectParameterValue(named ? parameter : undefined, context.variableNames.has(whole))) {
+        if (nameKeyed) return;
+        // The index counts a whole value only when it is the name as registered; another letter case
+        // (an enumerated choice such as "left") is listed and never changed
+        if (whole !== objectName) {
+          uses.push({ ...at, kind: 'possible expression', value, definite: false });
+          return;
+        }
+        if (isObjectParameterValue(named ? parameter : undefined, variableKeysOf(context.variableNames).has(key))) {
           uses.push({ ...at, kind: 'object parameter', value, definite: rewrites('object parameter') });
           change('object parameter', () => set(newName!));
         } else {
@@ -269,11 +295,14 @@ function walkSheet(sheet: EventSheet, file: string, objectName: string, context:
         return;
       }
       const found = objectNameInExpression(value, objectName, newName);
-      if (found.definite > 0) {
+      if (found.definite > 0 && nameKeyed) {
+        // A layout or sound name is not an expression, so Name.member under such a key is only a possible use
+        uses.push({ ...at, kind: 'possible expression', value, definite: false });
+      } else if (found.definite > 0) {
         uses.push({ ...at, kind: 'expression', value, definite: rewrites('expression') });
         change('expression', () => set(found.text));
       }
-      if (found.possible > 0) uses.push({ ...at, kind: 'possible expression', value, definite: false });
+      if (found.possible > 0 && !(found.definite > 0 && nameKeyed)) uses.push({ ...at, kind: 'possible expression', value, definite: false });
       if (expressionStringLiterals(value).some(l => nameKey(l.text) === key)) uses.push({ ...at, kind: 'string literal', value, definite: false });
     },
     scriptLine(site, line) {
