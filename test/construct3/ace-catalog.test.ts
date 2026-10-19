@@ -166,6 +166,17 @@ describe('checkAce', () => {
     catalog.plugins.Sprite.actions.opaque = [{ id: '', type: 'unknown' }];
     expect(checkAce('actions', { id: 'opaque' }, SPRITE, undefined, catalog)).toEqual([]);
   });
+
+  it('still checks names when an unreadable parameter kept its id', () => {
+    const catalog = clone(TEST_CATALOG);
+    catalog.plugins.Sprite.actions.named = [{ id: 'a', type: 'string' }, { id: 'b', type: 'unknown' }];
+    const check = (parameters: unknown) => checkAce('actions', { id: 'named', parameters }, SPRITE, undefined, catalog);
+    expect(check({ a: '1', b: '2' })).toEqual([]);
+    expect(check({ a: '1' })).toEqual([]);
+    const problems = check({ a: '1', zz: '3' });
+    expect(problems.map(p => p.code)).toEqual(['unknown-parameter']);
+    expect(problems[0].message).toContain('Its parameters are "a", "b".');
+  });
 });
 
 describe('ids that are names on Object.prototype', () => {
@@ -320,6 +331,40 @@ describe('checkEventAces', () => {
     expect(describeEventAceProblem(problems[0], 'r495-2')).toBe('Action "teleport" on "Player" (SID 3): Construct r495.2 defines no action "teleport" for the Sprite plugin.');
   });
 
+  it('skips a function call and a custom action call by its shape, also when it carries an id and an object class', () => {
+    const calls = [{
+      actions: [
+        { id: 'call-function', objectClass: 'System', callFunction: 'fn1', sid: 20, parameters: { 0: '1' } },
+        { id: 'call-function', objectClass: 'System', callFunction: 'fn1', sid: 21, parameters: { p1: '2' } },
+        { id: 'do-it', objectClass: 'Player', customAction: 'Heal', sid: 22, parameters: { 0: '1' } },
+        { id: 'call-function', objectClass: 'System', sid: 23, parameters: { 0: '1' } },
+      ],
+    }];
+    expect(checkEventAces(calls, context, undefined, TEST_CATALOG).map(p => [p.sid, p.code])).toEqual([[23, 'unknown-ace']]);
+  });
+
+  it('stops below 64 levels of children, for the check and for the snapshot', () => {
+    const nest = (levels: number): unknown[] => {
+      let events: unknown[] = [{ actions: [{ id: 'deep', objectClass: 'Player', sid: 1000 + levels }] }];
+      for (let i = levels - 1; i >= 0; i--) events = [{ actions: [{ id: 'deep', objectClass: 'Player', sid: 1000 + i }], children: events }];
+      return events;
+    };
+    const tree = nest(70);
+    const sids = checkEventAces(tree, context, undefined, TEST_CATALOG).map(p => p.sid);
+    expect(sids).toContain(1064);
+    expect(sids).not.toContain(1065);
+    expect(sids).not.toContain(1070);
+    const snapshot = aceTreeSnapshot(tree);
+    expect(snapshot.has(1064)).toBe(true);
+    expect(snapshot.has(1065)).toBe(false);
+  });
+
+  it('checks no ACE without a SID when it is limited to SIDs', () => {
+    const noSid = [{ actions: [{ id: 'teleport', objectClass: 'Player' }] }];
+    expect(checkEventAces(noSid, context, undefined, TEST_CATALOG)).toHaveLength(1);
+    expect(checkEventAces(noSid, context, undefined, TEST_CATALOG, new Set([1]))).toEqual([]);
+  });
+
   it('limits the check to the SIDs it is given', () => {
     expect(checkEventAces(events, context, undefined, TEST_CATALOG, new Set([9])).map(p => p.sid)).toEqual([9]);
     expect(checkEventAces(events, context, undefined, TEST_CATALOG, new Set([2]))).toEqual([]);
@@ -414,7 +459,7 @@ function delegating(reader: Construct3ProjectReader, overrides: Partial<ProjectR
   };
 }
 
-const GOOD_PLAYER =JSON.stringify(objectType('Player', 'Sprite', [['Platform', 'Platform']]));
+const GOOD_PLAYER = JSON.stringify(objectType('Player', 'Sprite', [['Platform', 'Platform']]));
 
 describe('readProjectData and buildAceContext', () => {
   const sheet = (action: Record<string, unknown>): string => JSON.stringify({

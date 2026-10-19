@@ -73,7 +73,8 @@ function ownerLabel(owner: AceOwner): string {
  * Check one condition or action against the catalogue: its ID, and, when its
  * parameters are stored as a keyed object, their names and combo choices.
  * Parameters whose definition could not be read (type `unknown`) are not
- * checked, and while the owner has one the names are not either.
+ * checked for presence or choices, and their ids still count as names; when
+ * one has no id at all, the names of the call are not checked.
  */
 export function checkAce(
   kind: AceKind,
@@ -93,7 +94,8 @@ export function checkAce(
   }
 
   const known = params.filter(p => p.type !== UNKNOWN_PARAM_TYPE);
-  const allKnown = known.length === params.length;
+  // Only a parameter with no readable id makes the list of names unknowable.
+  const namesKnown = params.every(p => p.id !== '');
   const problems: AceProblem[] = [];
   const given = ace.parameters;
   if (given === undefined || given === null) {
@@ -108,12 +110,12 @@ export function checkAce(
   if (typeof given !== 'object' || Array.isArray(given)) return problems;
 
   const values = given as Record<string, unknown>;
-  const byId = new Set(known.map(p => p.id));
-  const unknown = allKnown ? Object.keys(values).filter(k => !byId.has(k)) : [];
+  const byId = new Set(params.map(p => p.id));
+  const unknown = namesKnown ? Object.keys(values).filter(k => !byId.has(k)) : [];
   if (unknown.length > 0) {
     problems.push({
       code: 'unknown-parameter',
-      message: `The ${noun} "${ace.id}" of ${ownerLabel(owner)} has no parameter(s) ${unknown.map(k => `"${k}"`).join(', ')}. Its parameters are ${known.map(p => `"${p.id}"`).join(', ') || '(none)'}.`,
+      message: `The ${noun} "${ace.id}" of ${ownerLabel(owner)} has no parameter(s) ${unknown.map(k => `"${k}"`).join(', ')}. Its parameters are ${params.map(p => `"${p.id}"`).join(', ') || '(none)'}.`,
     });
   }
   const missing = known.filter(p => !Object.hasOwn(values, p.id));
@@ -180,14 +182,17 @@ export async function readProjectData(
   options: { sheets?: boolean } = {},
 ): Promise<ProjectData> {
   const objects = await reader.readAllObjectTypes();
-  const objectFailures = unscannedFilesOf('objectTypes', await reader.listObjectTypes(), objects, reader.getReadFailures('objectTypes'));
+  const objectReadFailures = reader.getReadFailures('objectTypes');
+  const objectFailures = unscannedFilesOf('objectTypes', await reader.listObjectTypes(), objects, objectReadFailures);
   const families = await reader.readAllFamilies();
-  const familyFailures = unscannedFilesOf('families', await reader.listFamilies(), families, reader.getReadFailures('families'));
+  const familyReadFailures = reader.getReadFailures('families');
+  const familyFailures = unscannedFilesOf('families', await reader.listFamilies(), families, familyReadFailures);
   let sheets: ProjectData['sheets'] = new Map();
   let sheetFailures: Array<{ file: string }> = [];
   if (options.sheets !== false) {
     sheets = await reader.readAllEventSheets();
-    sheetFailures = unscannedFilesOf('eventSheets', await reader.listEventSheets(), sheets, reader.getReadFailures('eventSheets'));
+    const sheetReadFailures = reader.getReadFailures('eventSheets');
+    sheetFailures = unscannedFilesOf('eventSheets', await reader.listEventSheets(), sheets, sheetReadFailures);
   }
   return {
     objects,
@@ -205,6 +210,8 @@ export async function readProjectData(
  * Build the objectClass and behavior resolution from the maps of a project.
  * It reads nothing. `unreadable` lists the object types and families that
  * could not be parsed (their ACEs are skipped); `complete` is false then.
+ * Event sheets do not take part in resolving owners, so unparsable sheets
+ * are not counted here: they are in `data.unreadable.eventSheets`.
  */
 export function buildAceContext(data: ProjectData): AceContext & { complete: boolean; unreadable: string[] } {
   const types = new Map<string, Declared>();
@@ -262,7 +269,8 @@ export interface EventAceProblem extends AceProblem {
  * Function calls, custom action calls, scripts and comments are not ACEs of
  * the catalogue and are skipped, as is an ACE that names its behavior only
  * under the legacy key (another check reports it). `only`, when given, limits
- * the check to ACEs whose SID it holds.
+ * the check to ACEs whose SID it holds. Events nested deeper than 64 levels
+ * are not checked.
  */
 export function checkEventAces(
   events: unknown,
@@ -281,6 +289,8 @@ export function checkEventAces(
         if (!Array.isArray(items)) continue;
         for (const ace of items as Array<Record<string, unknown>>) {
           if (!ace || typeof ace.id !== 'string' || typeof ace.objectClass !== 'string') continue;
+          // A function call or a custom action call is not an ACE of the catalogue, whatever else it carries.
+          if (typeof ace.callFunction === 'string' || typeof ace.customAction === 'string') continue;
           const sid = typeof ace.sid === 'number' ? ace.sid : undefined;
           if (only && (sid === undefined || !only.has(sid))) continue;
           if (isBehaviorName(ace[LEGACY_BEHAVIOR_TYPE_KEY]) && !isBehaviorName(ace.behaviorType)) continue;
