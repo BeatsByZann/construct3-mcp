@@ -92,6 +92,15 @@ describe('event sheet uses', () => {
     expect(ofKind('list')).toEqual([false]);
   });
 
+  it('lists a parameter whose key is the name as a possible use and never renames the key', () => {
+    const keyed = () => [{ eventType: 'block', conditions: [], actions: [{ id: 'set-text', objectClass: 'Beta', parameters: { alpha: 'a value', text: '"x"' } }] }];
+    const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(keyed())]]), 'Alpha', 'list');
+    expect(uses.map(u => `${u.kind}:${u.parameter}:${u.value}:${u.definite}`)).toEqual(['possible expression:alpha:alpha:false']);
+    const data = sheet(keyed());
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(keyed()), 'list')).toBe(0);
+    expect(JSON.stringify(data)).toContain('"parameters":{"alpha":"a value","text":"\\"x\\""}');
+  });
+
   it('says where a use is', () => {
     const [use] = findObjectNameUsesInSheets(new Map([['Main', sheet(events())]]), 'Alpha', 'list').filter(u => u.kind === 'expression' && u.parameter === 'x');
     expect(objectNameUseLocation(use)).toBe('"Main" events[2] action 0 "x"');

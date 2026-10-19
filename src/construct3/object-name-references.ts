@@ -29,7 +29,8 @@
  * variable may share the name), a whole value that is the name where an
  * event variable or function parameter has it too, the name as a string
  * literal (System "Create object (by name)", which the runtime looks up
- * ignoring case), runtime.objects.Name in a script, the initial value of
+ * ignoring case), runtime.objects.Name in a script, a parameter whose key is
+ * the name (its value is not looked at as a reference), the initial value of
  * an event variable or function parameter that is the name, the "c" value
  * of a flowchart node that is the name (what "c" holds is not known), and
  * the "objectClass" of an object-valued "instance-variable" parameter
@@ -277,6 +278,8 @@ function walkSheet(sheet: EventSheet, file: string, objectName: string, context:
       const at = { ...base, eventPath, ace, parameter };
       const whole = value.trim();
       const nameKeyed = named && NON_OBJECT_PARAMETER_KEYS.has(parameter);
+      // A parameter whose key is the name: what it means is not known, so it is listed and its key never changed
+      if (named && same(parameter)) uses.push({ ...at, kind: 'possible expression', value: parameter, definite: false });
       if (same(whole)) {
         // The index's rule for a whole value that is the name (isObjectParameterValue)
         if (nameKeyed) return;
