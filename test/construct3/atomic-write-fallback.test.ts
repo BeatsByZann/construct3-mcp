@@ -151,10 +151,9 @@ describe('atomicReplace when the rename onto the file fails with EEXIST', () => 
   /** The first rename's temp file, and the name the file was moved aside to. */
   const temp = () => calls(rename)[0][0];
   const aside = () => calls(rename).find(([from]) => from === file)?.[1] ?? '';
-  /** A failed install: EEXIST from the first rename, then `code` from the next call that installs the temp file, a rename or a link. */
+  /** A failed install: EEXIST from the first rename, then `code` from the link that installs the temp file. */
   const installFails = (code: string, extra: Partial<Fault> = {}): Fault[] => [
     { op: 'rename', matches: tempOntoFile, code: 'EEXIST' },
-    { op: 'rename', matches: tempOntoFile, code },
     { op: 'link', matches: tempOntoFile, code, ...extra },
   ];
   const leftWith = (lead: string, a: string, t: string, cause: string) =>
@@ -568,12 +567,11 @@ describe('the writer when a replacement fails after EEXIST', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  /** A failed install of a temp file onto `target`: EEXIST from the first rename, then EPERM from the next call that installs it, a rename or a link. */
+  /** A failed install of a temp file onto `target`: EEXIST from the first rename, then EPERM from the link that installs it. */
   const installFailsOnto = (target: string): Fault[] => {
     const tempOntoTarget = (from: string, to?: string) => isTempFor(from, target) && to === target;
     return [
       { op: 'rename', matches: tempOntoTarget, code: 'EEXIST' },
-      { op: 'rename', matches: tempOntoTarget, code: 'EPERM' },
       { op: 'link', matches: tempOntoTarget, code: 'EPERM' },
     ];
   };
@@ -609,7 +607,6 @@ describe('the writer when a replacement fails after EEXIST', () => {
       'It was put back, so this write did not change it.');
 
     // The file is the one the first write left, so the stale check lets this write through
-    faults = [];
     await writer.writeEntityFile('eventSheets', 'Fallback',
       { name: 'Fallback', events: [{ eventType: 'comment', text: 'second' }] });
     expect(JSON.parse(await readFile(sheetPath, 'utf-8')).events[0].text).toBe('second');
