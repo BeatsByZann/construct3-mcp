@@ -390,6 +390,20 @@ describe('move_event_block', () => {
     }
   });
 
+  it('moves a group that holds a custom action block from inside another group to the top level', async () => {
+    const { server, reader, writer } = setup();
+    const events = await sheetOf(reader);
+    addCustomActionShapes(events);
+    // Group "H" (50), which holds custom action 83, moves from the top level into group "G"
+    const [inner] = events.splice(4, 1);
+    (events[0].children as Ev[]).push(inner);
+    const data = parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 50 }));
+    expect(data.success).toBe(true);
+    const saved = (writer.callsFor('writeEntityFile').at(-1)!.args[2] as { events: Ev[] }).events;
+    expect(saved.some(e => e.sid === 50 && (e.children as Ev[]).some(c => c.sid === 83))).toBe(true);
+    expect((saved[0].children as Ev[]).some(c => c.sid === 50)).toBe(false);
+  });
+
   it('puts the sheet in memory back when a scan after the move throws, and says nothing was changed', async () => {
     // With force the move gets past the check of the uses, then the else-block scan refuses events nested deeper than 50
     const { server, reader, writer } = setup();
