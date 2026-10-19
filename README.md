@@ -217,6 +217,17 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `register_addon` | Add a plugin, behavior or effect to `usedAddons` |
 | `unregister_addon` | Remove an addon from `usedAddons` (built-ins need `force`) |
 
+**Scripts and Project Files**
+
+| Tool | Description |
+|------|-------------|
+| `register_script_file` | Register a script in `rootFileFolders.script` with `script-info` metadata and a collision-safe SID; repairs an older registration |
+| `deregister_script_file` | Remove a script registration; the script file is kept |
+| `set_main_script` | Mark one registered script as the main script and clear `main` from the others |
+| `register_project_file` | Copy a file into its family's directory (`files/`, `sounds/`, `music/`, `videos/`, `fonts/`) and register it |
+| `deregister_project_file` | Remove a Project File registration and delete its file; a `.bak` copy is kept |
+| `create_data_file` | Create an Array, Dictionary, JSON or text data file under `files/` and register it |
+
 ### Runtime Tools (Live Game Control)
 
 | Tool | Description |
@@ -440,7 +451,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 89.
 
 ### Standalone Testing
 
@@ -509,6 +520,8 @@ construct3-mcp/
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
+│   │   ├── file-registration.ts    # rootFileFolders entries of scripts and Project Files
+│   │   ├── data-file-body.ts       # Data file bodies and Project File MIME types
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
@@ -555,6 +568,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── file-tools.ts           # Script and Project File tools (6)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/

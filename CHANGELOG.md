@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `register_script_file`, `deregister_script_file`, `set_main_script`, `register_project_file`, `deregister_project_file` and `create_data_file` register, remove and create scripts and Project Files in `rootFileFolders`. Each call updates `project.c3proj` once through the project writer; a file is written after its registration and a failed write puts the registration back (the error names what could not be put back); a file already at the destination is refused; names and subfolders that differ only in case from a registered one, and names Windows cannot store as one plain file, are refused; an entry that is registered already keeps its purpose unless one is given; `deregister_project_file` keeps a `.bak` copy of the file it deletes; `register_project_file` copies files up to 100 MB; `create_data_file` builds arrays of up to 1,000,000 cells and writes JSON content as given.
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).

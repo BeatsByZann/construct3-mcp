@@ -66,6 +66,8 @@ construct3-mcp/
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
+│   │   ├── file-registration.ts    # rootFileFolders entries of scripts and Project Files
+│   │   ├── data-file-body.ts       # Data file bodies and Project File MIME types
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
@@ -112,6 +114,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── file-tools.ts           # Script and Project File tools (6)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers
@@ -176,7 +179,7 @@ server.tool(
 
 ### Adding a New Mutation Tool
 
-1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `animation-tools.ts`, `timeline-tools.ts` or `project-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
+1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `animation-tools.ts`, `timeline-tools.ts`, `project-tools.ts` or `file-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
 2. Follow the safety pattern:
    - Validate inputs (use `validateName()`, `validateSubfolder()`)
    - For new object type or family names, check `findObjectClassNameClash()` (names clash ignoring case)
