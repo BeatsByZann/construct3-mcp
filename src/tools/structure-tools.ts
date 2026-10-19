@@ -135,8 +135,8 @@ async function readSource(path: string, label: string): Promise<ReadForRename | 
 /** The refusal of a destination folder spelled in another case than an existing one, naming this tool's argument. */
 function folderCaseClash(requested: string, existing: string): string {
   return `Folder "${requested}" differs only in case from the existing Project Bar folder "${existing}". `
-    + 'Construct 3 treats sibling folder names that differ only in case as the same name, and on Windows and macOS '
-    + `they are the same directory. Use folder "${existing}".`;
+    + 'This tool compares sibling folder names without regard to letter case, and on Windows and macOS '
+    + `they would be the same directory. Use folder "${existing}".`;
 }
 
 /** Near names for a name that is not registered; only objects, sheets and layouts have a name index. */

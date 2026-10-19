@@ -1,8 +1,9 @@
 /**
  * Project Bar trees. project.c3proj stores each tree as `{ items, subfolders }`,
- * and a folder as `{ items, subfolders, name }`. Construct keeps the file path
- * in step with the folder, so a folder name is also a directory name. Item and
- * folder order is the user's own: a new folder is appended after its siblings.
+ * and a folder as `{ items, subfolders, name }`. The tools keep an item's file
+ * path in step with its folder, so a folder name is also a directory name in
+ * the paths they write. Item and folder order is the user's own: a new folder
+ * is appended after its siblings.
  */
 
 /** A Project Bar tree or folder. Entity trees hold names; file trees hold `{ name, ... }` items. */

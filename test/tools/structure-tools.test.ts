@@ -294,8 +294,8 @@ describe('move_project_item', () => {
     await refusal(
       { category: 'objectType', name: 'Tiles', folder: 'actors' },
       'Folder "actors" differs only in case from the existing Project Bar folder "Actors". '
-        + 'Construct 3 treats sibling folder names that differ only in case as the same name, and on Windows and macOS '
-        + 'they are the same directory. Use folder "Actors". Nothing was changed.',
+        + 'This tool compares sibling folder names without regard to letter case, and on Windows and macOS '
+        + 'they would be the same directory. Use folder "Actors". Nothing was changed.',
     );
     await refusal({ category: 'objectType', name: 'Tiles', folder: 'Bad:name' }, 'Folder name "Bad:name" contains a character Windows does not allow');
     await refusal({ category: 'objectType', name: 'Tiles', folder: 'Trailing.' }, 'must not start with a space or end with a space or a dot');

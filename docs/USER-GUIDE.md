@@ -281,7 +281,7 @@ Claude Code asks before it uses an MCP tool. In Claude Code the tools are named 
 }
 ```
 
-Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 26 read-only tools was checked against the server's tool list (91 tools, listed over stdio). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
+Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 26 read-only tools was checked against the server's tool list (MCP Inspector, 83 tools). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
 
 ### Claude Desktop
 

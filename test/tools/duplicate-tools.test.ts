@@ -265,6 +265,18 @@ describe('duplicate_layout', () => {
     expect((await project()).layouts.subfolders[0].items).toEqual(['Level 2', 'Level 3']);
   });
 
+  it('does not copy the editor view-state files of the source', async () => {
+    await writeFile(path('layouts', 'Level 1.uistate.json'), '{"a":1}');
+    await mkdir(path('layouts', 'uistate'), { recursive: true });
+    await writeFile(path('layouts', 'uistate', 'Level 1.instancesBar.json'), '{"b":2}');
+    const data = await call('duplicate_layout', { layoutName: 'Level 1', newName: 'Level 1 Copy' });
+    expect(data.isError).not.toBe(true);
+    expect(existsSync(path('layouts', 'Level 1 Copy.json'))).toBe(true);
+    expect(existsSync(path('layouts', 'Level 1 Copy.uistate.json'))).toBe(false);
+    expect(existsSync(path('layouts', 'uistate', 'Level 1 Copy.instancesBar.json'))).toBe(false);
+    expect(await text('layouts', 'Level 1.uistate.json')).toBe('{"a":1}');
+  });
+
   it('refuses a layout that cannot be copied, saying Nothing was changed. and leaving every file as it was', async () => {
     await refusal('duplicate_layout', { layoutName: 'Level 1', newName: 'level 2' }, 'A layout named "Level 2" already exists');
     await refusal('duplicate_layout', { layoutName: 'level 1', newName: 'Copy' }, 'names are matched with their letter case', 'Did you mean "Level 1"?');
