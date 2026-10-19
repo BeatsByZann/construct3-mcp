@@ -1316,12 +1316,14 @@ A flowchart is `flowcharts/<name>.json` (`flowcharts/<folder>/.../<name>.json` i
 - Arguments a tool does not take are refused, also inside the `outputs` entries of `add_flowchart_node`. Positions and sizes must be finite numbers.
 - A registration whose folder or name would put the file outside `flowcharts/` is not read, changed or deleted.
 - The file keeps its line endings, trailing whitespace and BOM; a new file follows `project.c3proj`. Keys the tools do not model are kept.
-- The tools never write the editor-state file `<name>.uistate.json`, except that `delete_flowchart` deletes it with the flowchart.
+- The tools never write the editor-state file `<name>.uistate.json`, except that `delete_flowchart` deletes it with the flowchart. In Construct 3 r506-2 (Free edition, guest) the editor wrote its own `<name>.uistate.json` for each flowchart when it saved.
 - A flowchart file that is not an object with a list of `nodes` is refused.
+
+Observed in Construct 3 r506-2 (Free edition, guest): the editor opened a project with two flowcharts made by these tools (one at the root, one in a Project Bar folder) without a dialog, listed both in the Project Bar, opened both, and saved them at the same paths with the values the tools wrote: node types, start and enabled flags, captions, outputs and their connections, `pnSIDs`, `poSIDs`, `nodeSIDs`, and the comment node's text and formatting. A comment body with one run of two spaces inside a line and one line break was kept byte for byte. Runs of three or more spaces, spaces at a line start or end and blank lines were not seen. The order in which Construct 3 runs the outputs of a node was not observed.
 
 #### File format
 
-The fields the tools read and write:
+The fields the tools read and write. In the same r506-2 (Free edition, guest) save, the nodes had the same set of keys, and the flowchart the same top-level keys, as the files the tools wrote:
 
 | Field | Meaning |
 |-------|---------|
@@ -1341,7 +1343,7 @@ The fields the tools read and write:
 
 #### `create_flowchart`
 
-Create an empty flowchart and register it in the same folder of `project.c3proj`, creating the `flowcharts` entry and the folders when they are missing. The file is written first and the registration second. The checks on the name and the folder are made again on the `project.c3proj` the registration is made in, so a name or folder saved in the editor after the first check is refused and nothing is registered. When the write of the file fails after the file was written, or the registration fails, the registration this call made is taken out again (a change saved in the editor meanwhile is kept) and the file is removed again once `project.c3proj` on disk does not register it; the error says so. A file that cannot be removed is named; a file that `project.c3proj` still registers, or whose registration cannot be checked, is kept and named. A folder the write made stays, empty, and the error names it. Refused before anything is written: an unsafe name or folder, a name that is registered already (a name registered in a folder without a name is refused with its own message), a name that differs only in case from a registered one, a folder that differs only in case from an existing one, a file already on disk at the path (also one whose name differs only in case), and a `project.c3proj` that changed on disk after the call read the version its checks used. When the Flowchart plugin is not in `usedAddons` the result carries a warning that a Flowchart object has to be added in the editor before the flowchart is used at run time. This tool does not register plugins.
+Create an empty flowchart and register it in the same folder of `project.c3proj`, creating the `flowcharts` entry and the folders when they are missing. The file is written first and the registration second. The checks on the name and the folder are made again on the `project.c3proj` the registration is made in, so a name or folder saved in the editor after the first check is refused and nothing is registered. When the write of the file fails after the file was written, or the registration fails, the registration this call made is taken out again (a change saved in the editor meanwhile is kept) and the file is removed again once `project.c3proj` on disk does not register it; the error says so. A file that cannot be removed is named; a file that `project.c3proj` still registers, or whose registration cannot be checked, is kept and named. A folder the write made stays, empty, and the error names it. Refused before anything is written: an unsafe name or folder, a name that is registered already (a name registered in a folder without a name is refused with its own message), a name that differs only in case from a registered one, a folder that differs only in case from an existing one, a file already on disk at the path (also one whose name differs only in case), and a `project.c3proj` that changed on disk after the call read the version its checks used. When the Flowchart plugin is not in `usedAddons` the result carries a warning that a Flowchart object has to be added in the editor before the flowchart is used at run time. This tool does not register plugins. In Construct 3 r506-2 (Free edition, guest) the editor opened a project whose `usedAddons` held no Flowchart plugin and drew the nodes of both flowcharts; the project it saved listed no addons at all, so this does not show what it does with a Flowchart plugin entry.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1360,7 +1362,8 @@ Delete a flowchart: remove its registration from `project.c3proj`, then its file
 
 Add a node. Outputs are created unconnected; wire them with
 `connect_flowchart_nodes`. When `isStart` is true the flag is cleared on every
-other node, because Construct 3 keeps exactly one start node per flowchart. The
+other node, so that a flowchart has one start node (each flowchart the editor of
+r506-2, Free edition, guest, saved had exactly one). The
 result carries `generatedSid` for the node and `outputSids` for its pins, plus a
 warning when the flowchart is left without a start node.
 
@@ -1377,7 +1380,7 @@ warning when the flowchart is left without a start node.
 | `outputs` | array | No | `{ name, value?, enabled?, isDefault? }` pins to create |
 | `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption). Runs of spaces become alternating `&nbsp;` and spaces starting with `&nbsp;`, ending in `&nbsp;` at a line end, and a lone space at a line start or end becomes `&nbsp;` |
 | `commentHtml` | string | No | Comment body as HTML, stored unchanged; give this or `commentText` |
-| `font`, `fontSize`, `bold`, `italic`, `fontColor` | string, number, boolean, boolean, `#rrggbb` | No | Comment formatting (`fo`, `fs`, `fb`, `fi`, `fc`). Missing values take the values most common in editor-saved flowcharts (Calibri, 36, bold, not italic, `#39b530`) with a warning; Construct's own defaults were not observed |
+| `font`, `fontSize`, `bold`, `italic`, `fontColor` | string, number, boolean, boolean, `#rrggbb` | No | Comment formatting (`fo`, `fs`, `fb`, `fi`, `fc`). Missing values take the values most common in editor-saved flowcharts (Calibri, 36, bold, not italic, `#39b530`) with a warning; Construct's own defaults were not observed (in r506-2, Free edition, guest, the editor kept a size of 24, bold, and these common values for the other three unchanged when it saved) |
 
 The comment fields are refused on a dictionary node, and a comment node
 cannot be the start node.

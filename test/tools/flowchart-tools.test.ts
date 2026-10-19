@@ -68,7 +68,7 @@ describe('the arguments and descriptions of the fork', () => {
   it('create_flowchart', () => { expect(pin('create_flowchart')).toMatchInlineSnapshot(`
     [
       "create_flowchart",
-      "Create a new, empty flowchart file and register it in project.c3proj. Warns when the Flowchart plugin is not in the project: the editor loads the flowchart anyway, but a Flowchart object is needed to use it at runtime.",
+      "Create a new, empty flowchart file and register it in project.c3proj. Warns when the Flowchart plugin is not in the project: in Construct 3 r506-2 (Free edition, guest) the editor loaded the flowchart anyway, but a Flowchart object is needed to use it at runtime.",
       [
         [
           "name",

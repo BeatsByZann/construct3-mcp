@@ -293,7 +293,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
   server.registerTool(
     'create_flowchart',
     {
-      description: 'Create a new, empty flowchart file and register it in project.c3proj. Warns when the Flowchart plugin is not in the project: the editor loads the flowchart anyway, but a Flowchart object is needed to use it at runtime.',
+      description: 'Create a new, empty flowchart file and register it in project.c3proj. Warns when the Flowchart plugin is not in the project: in Construct 3 r506-2 (Free edition, guest) the editor loaded the flowchart anyway, but a Flowchart object is needed to use it at runtime.',
       inputSchema: strictArguments('create_flowchart', createShape),
     },
     async (args) => {
@@ -327,10 +327,10 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         const hasPlugin = Array.isArray(addons) && addons.some(a => typeof a === 'object' && a !== null
           && (a as { type?: unknown }).type === 'plugin' && (a as { id?: unknown }).id === FLOWCHART_PLUGIN_ID);
         if (!hasPlugin) {
-          // A load check on r495.2 showed the editor opens a project whose flowchart has no
-          // Flowchart plugin (it even prunes the unused plugin), so this is advisory.
+          // Construct 3 r506-2 (Free edition, guest) opened and drew the flowcharts of a project
+          // whose usedAddons had no Flowchart plugin, so this is advisory.
           warnings.push(
-            `The Flowchart plugin is not listed in this project's usedAddons. The editor loads the flowchart, ` +
+            `The Flowchart plugin is not listed in this project's usedAddons. In Construct 3 r506-2 (Free edition, guest) the editor loaded the flowchart, ` +
             `but add a Flowchart object in the Construct 3 editor before using it at runtime; this tool does not register plugins.`
           );
         }
