@@ -1112,6 +1112,20 @@ Move a placed instance to another layer or sub-layer of its layout, to another p
 
 When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
 
+### `move_instances`
+
+Move many placed instances of one layout in one call and one write (#ISSUE). Each move takes a `uid` and the other arguments of [`move_instance`](#move_instance) and is applied as that tool applies it, in list order: a `position` or an anchor counts the instances as the moves before it left them, and an anchor may be an instance an earlier move put on the destination layer. Every move is checked and applied to the layout in memory first. When one is refused, for any reason `move_instance` refuses a call or because its arguments are (two placements, nothing to do, a place next to itself), or when applying it throws, nothing is changed and the message names the move by its 0-based index and ends with "Nothing was changed." (for example `Item 1: Instance 5 is not on the destination layer "Main": ... Nothing was changed.`); the first refusal in list order is the one reported. The layout name must be given as registered, in that letter case; a layout file that cannot be read is refused too. Hierarchy links stay as they are.
+
+When the moves leave the layout as it was, nothing is written and the result is `action: "unchanged"` (with `dryRun: true` when `dryRun` was given). Otherwise the layout is written once, with one backup, and the result is `{ ..., action: "updated", count, results, backupFile }`, where `results` has one entry per move: `{ index, uid, fromLayer, fromIndex, toLayer, toIndex, layerInstanceCount }`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name, as registered, in that letter case |
+| `moves` | array | Yes | 1 to 500 moves, applied in order; each has `uid` and the optional `toLayer`, `position`, `afterUid` and `beforeUid` of `move_instance` |
+| `dryRun` | boolean | No | Check every move and apply it to the layout in memory, report the results, and write nothing (default: false) |
+
+A dry run of moves that change the layout returns `action: "dry-run"` and `dryRun: true`. It checks the moves; the write's own checks run only when the layout is written. More than 500 moves are refused when the arguments are parsed. When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`. `move_instance` rolls back a failed write in the same way.
+
 ### `delete_instance_from_layout`
 
 Remove a placed instance by UID from the layout's layers and sub-layers or its non-world instances.

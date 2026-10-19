@@ -189,6 +189,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `add_instance_to_layout` | Place an object instance on a layout layer or sub-layer with full property control; writes a value for every instance variable of the object and its families and refuses names they do not have |
 | `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, visibility, tags, instance variables of its object and families) |
 | `move_instance` | Move a placed instance to another layer or sub-layer, or to another place in its layer's instances |
+| `move_instances` | Move many placed instances of one layout in one write, each as `move_instance` moves one, in order; all refused when one move is |
 | `delete_instance_from_layout` | Remove a placed instance by UID (layers, sub-layers and non-world instances); its hierarchy children stay without a parent, and its parent no longer lists it |
 
 **Sprite animations**
@@ -443,7 +444,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 86.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 87.
 
 ### Standalone Testing
 
@@ -559,7 +560,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
-│   │   ├── layer-order.ts          # Layer and instance order tools (3)
+│   │   ├── layer-order.ts          # Layer and instance order tools (4)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/

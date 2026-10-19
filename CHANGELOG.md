@@ -6,6 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
+- `move_instances` moves up to 500 placed instances of one layout in one call and one write, each as `move_instance` moves one and in list order; when one move is refused nothing is changed and the message names it; a failed write is rolled back, and the error names any file that could not safely be put back; moves that leave the layout as it was write nothing (#ISSUE).
 - `reorder_layers`, `move_layer` and `move_instance`: put the layers of one level of a layout in a new order, move a layer with its sub-layers to another level (never into its own sub-layers), and move a placed instance to another layer or place in its layer's instances. Layers are found by name or sub-layer path as in `update_layer`; a UID several instances share is refused; a failed write puts the layout back (#ISSUE).
 
 ### Changed

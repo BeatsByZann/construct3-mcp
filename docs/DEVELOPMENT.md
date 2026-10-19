@@ -113,7 +113,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
-│   │   ├── layer-order.ts          # Layer and instance order tools (3)
+│   │   ├── layer-order.ts          # Layer and instance order tools (4)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers
