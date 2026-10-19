@@ -19,7 +19,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 │  ┌──────────▼───────────────────────────────────────────────┐  │
 │  │  Business Logic Layer                                    │  │
 │  │  ProjectReader · ProjectWriter · IdGenerator             │  │
-│  │  Templates · Analyzers (17) · Cross-Reference Index      │  │
+│  │  Templates · Analyzers (18) · Cross-Reference Index      │  │
 │  │  Runtime bridge · CDP client · Preview server            │  │
 │  │  ZIP writer · PNG generator                              │  │
 │  └──────────┬───────────────────────────────────────────────┘  │
@@ -270,7 +270,7 @@ Supporting modules next to the templates:
 
 ### 6. Analyzers (`src/construct3/analyzers/`)
 
-A shared cross-reference index and seventeen analysis modules, several of which build on the index:
+A shared cross-reference index and eighteen analysis modules, several of which build on the index:
 
 | Module | Purpose |
 |--------|---------|
