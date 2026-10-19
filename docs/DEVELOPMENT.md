@@ -108,6 +108,7 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── object-rename.ts        # Object type and family renames with their references (2)
+│   │   ├── replace-tools.ts        # Replace object and find-and-replace tools (2)
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), their rollback, script file search

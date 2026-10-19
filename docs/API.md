@@ -1359,6 +1359,53 @@ Delete a timeline: back up exactly the file that is deleted to `<file>.bak`, del
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Timeline name to delete |
 
+### Find and replace
+
+Two tools change the event sheets by name. `replace_object_in_events` swaps one object type or family for another, event by event, and leaves what the replacement cannot serve. `replace_in_expressions` finds and replaces text in the parameter values of conditions and actions. Both decide every change in memory first and write the changed sheets together; a refusal before the first write changes nothing and ends "Nothing was changed.", and a write that fails puts back the sheets the call had already written (the message says what is on disk). Event sheet names are taken as the project registers them, in that letter case. Layouts are not changed.
+
+#### `replace_object_in_events`
+
+Construct's event-sheet Replace object.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `fromObject` | string | Yes | Object type or family to replace, as registered (letter case included) |
+| `toObject` | string | Yes | Replacement of the same plugin, as registered |
+| `sheetName` | string | No | Limit the swap to this event sheet, as registered (default: every event sheet) |
+| `dryRun` | boolean | No | Report what would be swapped and skipped, and write nothing (default: `false`) |
+
+**What a swap rewrites.** The references the rename tools rewrite ([`rename_object_type`](#rename_object_type)): the `objectClass` of conditions and actions, the owner of custom action blocks, the family of a custom action call, the object parameters (`object`, `object-to-create`, `pin-to` and `child` always; any other parameter whose whole value is the name only when it is the name exactly as registered and the reference index counts it as the object), the `objectClass` of an object-valued `instance-variable` parameter, and expressions that use the name as an object (`Name.X`, `Name(0).X`). A whole value that differs from the name only in letter case, a string literal, a script line and the initial value of an event variable are never changed. They are counted in `notChanged` and named in one warning.
+
+**What it needs from the replacement.** The unit of a swap is a branch: an event that references the replaced object together with all its sub-events, which share its picked instances. A branch is swapped whole or not at all, and the reason of a sub-event is reported as `sub-event <path>: ...` on the branch's top event. A branch is left alone when a condition or action on the replaced object uses a behavior (`behaviorType`), an instance variable (`instance-variable`) or an effect (an `effect` parameter holding a quoted name) that the replacement lacks (an object type has the behaviors, instance variables and effects of its families too), when an expression reads `From.Member` (or `Self.Member` in a condition or action on the replaced object) for such a behavior or instance variable, when the replacement has a behavior of the same name but of another behavior type, and when a condition or action calls a custom action (whether the replacement has it is not checked). Behavior, instance variable and effect names are compared exactly, letter case included. A custom action definition owned by the replaced object is left whole with the events inside it. A branch nested deeper than 60 levels is left alone and listed. A named animation that the replacement lacks does not stop a swap; it draws a warning.
+
+**Sheets that cannot be parsed.** A registered event sheet over the 10MB read limit or not valid JSON is never read as events and never changed. In a call without `sheetName` it is listed in `unscannedFiles` (`{ file, reason, textSearch, names? }`) with `complete: false` and a warning; the file is searched as text for `fromObject`, and `textSearch` says what that found (`possible-use`, `no-match` or `unreadable`). A global variable declared in such a sheet is not known to the swap. A call that names such a sheet in `sheetName` is refused. A family file that cannot be parsed refuses the call, since what it gives its members is unknown.
+
+**Refused, changing nothing:** a name that is not registered, or is given in another letter case than registered (the message gives the registered one); the same object for both; objects of different plugins; an object type or family file that cannot be parsed; an unknown `sheetName`; and a `sheetName` whose file cannot be read.
+
+**Result.** `{ success, entity (toObject), category ("object" or "family", of fromObject), action ("replaced" or "dry-run"), fromObject, toObject, sheetsScanned, references, skippedEvents, notChanged, filesWritten, dryRun, complete?, warnings?, unscannedFiles? }`. `references` is `{ total, byKind, byFile }` with the swapped uses counted by kind (`objectClass`, `custom action owner`, `custom action family`, `object parameter`, `instance-variable object`, `expression`) and by file. `skippedEvents` is `[{ file, path, eventSid, references, reasons }]`. `notChanged` is `{ total, byKind }` over the kinds the swap never changes (`possible expression`, `string literal`, `script`, `variable value`). `filesWritten` lists the sheets written, which is empty for a dry run.
+
+#### `replace_in_expressions`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `find` | string | Yes | Text, or a regular expression when `regex` is true |
+| `replace` | string | Yes | Replacement; `$1`-style groups are expanded only with `regex`, and in plain text `$` is literal |
+| `regex` | boolean | No | Treat `find` as a JavaScript regular expression (default `false`) |
+| `caseSensitive` | boolean | No | Default `true` |
+| `wholeWord` | boolean | No | Match whole words only (default `false`) |
+| `sheets` | string[] | No | Limit to these event sheets, as registered (default: every event sheet) |
+| `parameterKeys` | string[] | No | Only parameters with these keys; positional custom action and function call arguments use `"0"`, `"1"`, ... |
+| `dryRun` | boolean | No | Report the changes and write nothing (default: `false`) |
+| `maxReported` | number | No | Individual changes listed in `changes` (default 100, at most 1000); the counts are always complete |
+
+Only the string values of condition and action parameters are visited, never comments, scripts or variable declarations. Parameters that hold a name are skipped unless `parameterKeys` names their key: `variable`, `instance-variable`, `object`, `object-to-create`, `parent`, `child`, `instance`, `layout`, `timeline`, `property`, `object-class`, `pin-to`, `target`, `function`, `file` and `audio-file`. So are combo choices (a bare lower-case ID such as `enabled` under keys like `state`, `mode`, `ease` or `visibility`). Matches in skipped parameters are counted in one warning that names the keys. Naming a key in `parameterKeys` makes it replaceable. A sheet named twice in `sheets` is scanned once.
+
+**Refused, changing nothing:** an invalid regular expression; a sheet that is not registered (a case variant is named in the message); a sheet in `sheets` that cannot be read; a pattern that matches zero characters anywhere (for example `a?`), since the replacement would be inserted between characters; and a pattern that does not finish in time. All matching of one call runs in a `vm` script limited to 2000 ms in total, and V8 enforces the limit inside regular expression execution, so a catastrophically backtracking pattern fails the call instead of hanging the server.
+
+**Sheets that cannot be parsed.** In a call without `sheets`, a registered event sheet that cannot be parsed is not changed. It is listed in `unscannedFiles` with `complete: false` and a warning. When `find` is a plain name (not `regex`, letters, digits and underscores, not starting with a digit) the file is searched as text for it, and `textSearch` says what that found. For any other `find` the file is not searched: `textSearch` is `not-searched`. A call that names such a sheet in `sheets` is refused.
+
+**Result.** `{ success, action ("replaced" or "dry-run"), find, replace, sheetsScanned, totalMatches, parametersChanged, bySheet, changes, changesTruncated, filesWritten, dryRun, complete?, warnings?, unscannedFiles? }`. `bySheet` is `[{ sheet, parameters, matches }]` for the sheets with changes. `changes` is `[{ sheet, eventSid, path, key, before, after }]`, up to `maxReported`, in the order of the sheet: the sheets in the order scanned, and within a sheet each event's conditions, then its actions, then its sub-events, each in index order (a positional argument by its index as a number, the parameters of one condition or action by key name). `path` is the JSON path of the parameter, such as `events[0].actions[1].parameters.value` or `events[3].conditions[0].parameters[0]`. `changesTruncated` is true when `changes` lists fewer parameters than `parametersChanged`.
+
 ---
 
 ## Runtime Tools

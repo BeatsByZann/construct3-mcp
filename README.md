@@ -176,6 +176,13 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 
 Event SIDs are not always unique in editor-saved sheets. The tools that find an event by SID refuse a SID shared by several events in the sheet and list the candidates; pass `eventPath` (the JSON path that `locate_event` returns, e.g. `events[3].children[1]`) to pick one. `move_events_between_sheets` keeps SIDs and warns when a copy leaves such a shared SID in the target sheet. See [API.md](docs/API.md#mutation-tools).
 
+**Find and replace**
+
+| Tool | Description |
+|------|-------------|
+| `replace_object_in_events` | Swap one object type or family for another of the same plugin in one event sheet or all of them, branch by branch, only where the replacement has the behaviors, instance variables and effects the events use; lists what it leaves (dry run, rollback of a failed write) |
+| `replace_in_expressions` | Find and replace text (or a regular expression) in condition and action parameters, leaving name and combo parameters alone unless `parameterKeys` names them (dry run, time limit, rollback of a failed write) |
+
 **Layouts, layers and instances**
 
 | Tool | Description |
@@ -442,7 +449,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 85.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 87.
 
 ### Standalone Testing
 
@@ -553,6 +560,7 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── object-rename.ts        # Object type and family renames with their references (2)
+│   │   ├── replace-tools.ts        # Replace object and find-and-replace tools (2)
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), their rollback, script file search
