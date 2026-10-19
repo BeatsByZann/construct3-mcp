@@ -47,6 +47,11 @@ class Refusal extends Error {}
  * writer's and the reader's own errors explain themselves).
  */
 function failureReason(error: unknown): string {
+  // The writer wraps a failed backup stat in an error whose message carries the absolute path; its cause has the code
+  const cause = error instanceof Error ? (error as { cause?: unknown }).cause : undefined;
+  if (cause instanceof Error && 'syscall' in cause && typeof (cause as NodeJS.ErrnoException).code === 'string') {
+    return (cause as NodeJS.ErrnoException).code as string;
+  }
   if (error instanceof Error && 'syscall' in error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (typeof code === 'string') return code;
@@ -208,6 +213,8 @@ async function writeBlocker(
   suffix: '.tmp' | '.bak',
 ): Promise<string | undefined> {
   return (await linkRefusal(reader.getProjectDir(), destination, relativePath))
+    // A delete backs the file up as <file>.bak, which is written through a link at that name
+    ?? (suffix === '.bak' ? await linkRefusal(reader.getProjectDir(), `${destination}${suffix}`, `${relativePath}${suffix}`) : undefined)
     ?? (await sidecarRefusal(reader.getProject(), folder, name, subfolder, destination, suffix));
 }
 
@@ -436,7 +443,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
 
   server.tool(
     'register_project_file',
-    'Copy a file into the directory its Project File family uses (files/, sounds/, music/, videos/, fonts/) and register it with file-info metadata and a collision-safe SID. The registration is written first; a failed copy puts it back. A file that is registered already needs no source (a source given then is not copied, and the result says so). A file at the destination is refused, checked again right before the copy; one another program creates in the moment between that check and the copy is replaced and kept as <file>.bak. A destination reached through a link or junction that leaves the project folder is refused, and so is a name whose <name>.tmp is a registered or existing file (the server writes through it). The server copies any file its process can read. Names are matched with their letter case.',
+    'Copy a file into the directory its Project File family uses (files/, sounds/, music/, videos/, fonts/) and register it with file-info metadata and a collision-safe SID. The registration is written first; a failed copy puts it back. A file that is registered already needs no source (a source given then is not copied, and the result says so). A file at the destination is refused, checked again after the registration, and a third time by the writer under the file lock right before it writes (the registration is then put back); a file another program creates in the moment between that last check and the write is replaced and kept as <file>.bak. A destination reached through a link or junction that leaves the project folder is refused, and so is a name whose <name>.tmp is a registered or existing file (the server writes through it). The server copies any file its process can read. Names are matched with their letter case.',
     {
       name: z.string().min(1).max(255).optional().describe('Destination file name; defaults to the source basename'),
       sourcePath: z.string().min(1).optional().describe('Path to the source file to copy (up to 100 MB)'),
@@ -506,7 +513,8 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
         const blockedNow = await writeBlocker(reader, folder, name, args.subfolder, destination, relativePath, '.tmp');
         if (blockedNow) return toolError(await failedAfterRegistration(writer, destination, relativePath, `Nothing was copied: ${blockedNow}`));
         try {
-          await writer.replaceFile(destination, source.bytes);
+          // expected null: a file that exists when the writer checks under its lock is refused, not replaced
+          await writer.replaceFile(destination, source.bytes, { expected: null });
         } catch (error) {
           return toolError(await failedAfterRegistration(writer, destination, relativePath, `Copying the file into ${relativePath} failed (${failureReason(error)})`));
         }
@@ -520,7 +528,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
 
   server.tool(
     'deregister_project_file',
-    'Deregister a Project File and delete its file from the directory its family uses; the file is backed up to <file>.bak first (a later delete of the same path replaces that copy; a registered <name>.bak is never replaced: the call is refused). Only the file that was registered when the call selected it is deleted: one replaced meanwhile is left in place and named. A file reached through a link or junction that leaves the project folder is not deleted. Names are matched with their letter case.',
+    'Deregister a Project File and delete its file from the directory its family uses; the file is backed up to <file>.bak first (a later delete of the same path replaces that copy; the call is refused, before anything is changed, when <name>.bak is a registered file or a link leaving the project). Only the file that was registered when the call selected it is deleted: one replaced meanwhile is left in place and named. A file reached through a link or junction that leaves the project folder is not deleted. Names are matched with their letter case.',
     {
       name: z.string().min(1).max(255).describe('Project File name'),
       folder: familyField.optional().describe('Project File family (default: general)'),
@@ -558,7 +566,8 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
         });
         if (removed === undefined) return refuse(`Project File "${args.name}" is no longer registered in ${folder}: project.c3proj changed on disk while this call ran`);
         // Checked again before the delete; a link swapped in after this check is not covered
-        const blockedNow = await linkRefusal(reader.getProjectDir(), filePath, relativePath);
+        const blockedNow = (await linkRefusal(reader.getProjectDir(), filePath, relativePath))
+          ?? (await linkRefusal(reader.getProjectDir(), `${filePath}.bak`, `${relativePath}.bak`));
         if (blockedNow) return toolError(`Deregistered "${args.name}" but ${blockedNow}. ${relativePath} was left in place.`);
         let backup: string | undefined;
         try {
@@ -582,7 +591,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
 
   server.tool(
     'create_data_file',
-    'Create a Construct 3 data file (Array, Dictionary, JSON or text) under files/ and register it as a general Project File. The registration is written first; a failed write puts it back. A file at the path is refused, checked again right before the write; one another program creates in the moment between that check and the write is replaced and kept as <file>.bak. A path through a link or junction that leaves the project folder is refused, and so is a name whose <name>.tmp is a registered or existing file. "array" and "dictionary" write the c2array / c2dictionary bodies the plugins load (an array of up to 1,000,000 cells, counting a depth of 0 as 1); "json" checks the content parses and writes it as given; "text" writes the content as given.',
+    'Create a Construct 3 data file (Array, Dictionary, JSON or text) under files/ and register it as a general Project File. The registration is written first; a failed write puts it back. A file at the path is refused, checked again after the registration, and a third time by the writer under the file lock right before it writes (the registration is then put back); a file another program creates in the moment between that last check and the write is replaced and kept as <file>.bak. A path through a link or junction that leaves the project folder is refused, and so is a name whose <name>.tmp is a registered or existing file. "array" and "dictionary" write the c2array / c2dictionary bodies the plugins load (an array of up to 1,000,000 cells, counting a depth of 0 as 1); "json" checks the content parses and writes it as given; "text" writes the content as given.',
     {
       name: z.string().min(1).max(255).describe('File name including its extension, for example "levels.json"'),
       kind: z.enum(['array', 'dictionary', 'json', 'text']).describe('Body format'),
@@ -633,7 +642,8 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
         const blockedNow = await writeBlocker(reader, 'general', args.name, args.subfolder, destination, relativePath, '.tmp');
         if (blockedNow) return toolError(await failedAfterRegistration(writer, destination, relativePath, `Nothing was written: ${blockedNow}`));
         try {
-          await writer.replaceFile(destination, built.body);
+          // expected null: a file that exists when the writer checks under its lock is refused, not replaced
+          await writer.replaceFile(destination, built.body, { expected: null });
         } catch (error) {
           return toolError(await failedAfterRegistration(writer, destination, relativePath, `Writing ${relativePath} failed (${failureReason(error)})`));
         }

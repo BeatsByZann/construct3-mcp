@@ -298,7 +298,7 @@ export class Construct3ProjectWriter {
         scope?.backups.set(key, { path: backupPath, existed: false, state: null });
         return backupPath;
       }
-      throw new Error(`Cannot access file for backup: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`Cannot access file for backup: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
     }
     // File exists — backup must succeed or we abort
     if (options.freeName) {

@@ -905,6 +905,44 @@ describe('Project File tools', () => {
     });
   }
 
+  for (const tool of ['register_project_file', 'create_data_file'] as const) {
+    it(`P23 ${tool} does not replace a file that appears after its last check`, async () => {
+      const args = tool === 'register_project_file' ? { sourcePath: await source() } : { name: 'source.json', kind: 'json' };
+      const original = writer.replaceFile.bind(writer);
+      const spy = vi.spyOn(writer, 'replaceFile').mockImplementationOnce(async (file, content, options) => {
+        await put('files/source.json', 'other bytes');
+        return original(file, content, options);
+      });
+      const result = await callError(tool, args);
+      expect(spy.mock.calls[0][2]).toEqual({ expected: null });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain('was changed on disk');
+      expect(result.text).toContain('The registration in project.c3proj was put back');
+      expect(result.text).not.toContain(dir);
+      expect(await readFile(path('files', 'source.json'), 'utf-8')).toBe('other bytes');
+      expect(existsSync(path('files', 'source.json.bak'))).toBe(false);
+      expect(await generalItems()).toEqual([]);
+    });
+  }
+
+  it('P24 reports a failed backup by the code of its cause, without the absolute path', async () => {
+    const wrapped = (file: string) => new Error(`Cannot access file for backup: EACCES: permission denied, stat '${file}'`, { cause: fsError('EACCES', file) });
+    const file = path('files', 'source.json');
+    vi.spyOn(writer, 'replaceFile').mockRejectedValueOnce(wrapped(file));
+    const registered = await callError('register_project_file', { sourcePath: await source() });
+    expect(registered.isError).toBe(true);
+    expect(registered.text).toContain('EACCES');
+    expect(registered.text).not.toContain(dir);
+
+    await call('register_project_file', { sourcePath: await source(), name: 'again.json' });
+    vi.spyOn(writer, 'deleteFile').mockRejectedValueOnce(wrapped(path('files', 'again.json')));
+    const deregistered = await callError('deregister_project_file', { name: 'again.json' });
+    expect(deregistered.isError).toBe(true);
+    expect(deregistered.text).toContain('orphaned');
+    expect(deregistered.text).toContain('EACCES');
+    expect(deregistered.text).not.toContain(dir);
+  });
+
   it('P11 does not copy over a registration another writer made during the call, and create_data_file refuses', async () => {
     const hookEntry = () => saveInEditor(project => { project.rootFileFolders.general = { items: [fileEntry('source.json', 777)], subfolders: [] }; });
     const replace = vi.spyOn(writer, 'replaceFile');
@@ -1180,10 +1218,14 @@ describe('Project File tools', () => {
       await seedFamily('general', { items: [fileEntry('DATA.JSON.tmp', 42)], subfolders: [] });
       await put('files/DATA.JSON.tmp', 'tmp bytes');
       const before = await projectBytes();
-      const result = await callError('create_data_file', { name: 'data.json', kind: 'json' });
-      expect(result.isError).toBe(true);
-      expect(result.text).toContain('"DATA.JSON.tmp" is a registered file');
-      nothingChanged(result.text);
+      const sourcePath = await source();
+      for (const [tool, args] of [['create_data_file', { name: 'data.json', kind: 'json' }], ['register_project_file', { name: 'data.json', sourcePath }]] as const) {
+        const result = await callError(tool, args);
+        expect(result.isError, tool).toBe(true);
+        expect(result.text, tool).toContain('"DATA.JSON.tmp" is a registered file');
+        nothingChanged(result.text);
+      }
+      expect(existsSync(path('files', 'data.json'))).toBe(false);
       expect(await readFile(path('files', 'DATA.JSON.tmp'), 'utf-8')).toBe('tmp bytes');
       expect((await projectBytes()).equals(before)).toBe(true);
     });
@@ -1281,15 +1323,63 @@ describe('Project File tools', () => {
         expect(result.text, tool).toContain('leads outside the project folder');
         nothingChanged(result.text);
       }
+      expect((await projectBytes()).equals(before)).toBe(true);
       await seedFamily('general', { items: [fileEntry('existing.json', 62)], subfolders: [] });
+      const seeded = await projectBytes();
       const deregistered = await callError('deregister_project_file', { name: 'existing.json' });
       expect(deregistered.isError).toBe(true);
       expect(deregistered.text).toContain('leads outside the project folder');
       nothingChanged(deregistered.text);
       expect((await readdir(outside)).sort()).toEqual(OUTSIDE_FILES);
       expect(await readFile(join(outside, 'existing.json'), 'utf-8')).toBe('{"outside":true}');
-      expect(before.length).toBeGreaterThan(0);
+      expect((await projectBytes()).equals(seeded)).toBe(true);
+      expect((await generalItems()).map(item => item.name)).toEqual(['existing.json']);
       expect(consoleError).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Make files/data.json.bak a link leaving the project: a file symlink to outside/marker.txt, or, where the OS
+     * does not let this user make a file symlink (Windows without Developer Mode), a junction to outside/.
+     */
+    async function linkBackupOut(): Promise<void> {
+      try {
+        await symlink(join(outside, 'marker.txt'), path('files', 'data.json.bak'), 'file');
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'EPERM' && code !== 'EACCES') throw error;
+        await symlink(outside, path('files', 'data.json.bak'), 'junction');
+      }
+    }
+
+    it('(f) refuses a delete whose .bak is a link leaving the project', async () => {
+      await seedFamily('general', { items: [fileEntry('data.json', 63)], subfolders: [] });
+      await put('files/data.json', 'main bytes');
+      const seeded = await projectBytes();
+      await linkBackupOut();
+      const result = await callError('deregister_project_file', { name: 'data.json' });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain('leads outside the project folder');
+      expect(result.text).toContain('files/data.json.bak');
+      nothingChanged(result.text);
+      expect(await readFile(join(outside, 'marker.txt'), 'utf-8')).toBe('marker');
+      expect(await readFile(path('files', 'data.json'), 'utf-8')).toBe('main bytes');
+      expect((await projectBytes()).equals(seeded)).toBe(true);
+      expect(consoleError).not.toHaveBeenCalled();
+    });
+
+    it('(g) leaves the file when its .bak became a link leaving the project during the call', async () => {
+      await seedFamily('general', { items: [fileEntry('data.json', 64)], subfolders: [] });
+      await put('files/data.json', 'main bytes');
+      afterNextProjectUpdate(linkBackupOut);
+      const remove = vi.spyOn(writer, 'deleteFile');
+      const result = await callError('deregister_project_file', { name: 'data.json' });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain('Deregistered');
+      expect(result.text).toContain('files/data.json.bak');
+      expect(result.text).toContain('was left in place');
+      expect(remove).not.toHaveBeenCalled();
+      expect(await readFile(join(outside, 'marker.txt'), 'utf-8')).toBe('marker');
+      expect(await readFile(path('files', 'data.json'), 'utf-8')).toBe('main bytes');
     });
 
     it('(d) accepts a link to a folder inside the project', async () => {
