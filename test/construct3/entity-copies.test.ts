@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
 import {
-  hierarchyEscapes, remapAllSids, remapInstanceUids, sidRemapper, templateInstances,
+  hierarchyEscapes, planImageCopies, remapAllSids, remapInstanceUids, sidRemapper, templateInstances,
   type CopyIdGenerator,
 } from '../../src/construct3/entity-copies.js';
 import type { Instance } from '../../src/construct3/types.js';
@@ -88,5 +88,69 @@ describe('templateInstances', () => {
       instance(3),
     ]);
     expect(found).toEqual([{ uid: 1, type: 'Sprite', templateName: 'Hero' }]);
+  });
+});
+
+describe('planImageCopies', () => {
+  const sprite = {
+    animations: {
+      items: [
+        { name: 'default', frames: [{}, {}] },
+        { name: 'Run', frames: [{ fileType: 'image/jpeg' }] },
+      ],
+      subfolders: [],
+    },
+  };
+  const oneFrame = { animations: { items: [{ name: 'default', frames: [{}] }], subfolders: [] } };
+
+  it('copies each frame file of every animation to the new name\'s lower-case frame name, keeping the extension', () => {
+    const plan = planImageCopies(
+      ['player-default-000.png', 'player-default-001.png', 'player-run-000.jpg', 'other-default-000.png'],
+      'Player', sprite, 'Hero',
+    );
+    expect(plan).toEqual({
+      copies: [
+        { from: 'player-default-000.png', to: 'hero-default-000.png' },
+        { from: 'player-default-001.png', to: 'hero-default-001.png' },
+        { from: 'player-run-000.jpg', to: 'hero-run-000.jpg' },
+      ],
+      missing: [],
+      clashes: [],
+    });
+  });
+
+  it('finds a JPEG frame by its fileType and keeps jpg', () => {
+    const plan = planImageCopies(['player-run-000.jpg', 'player-run-000.png'], 'Player',
+      { animations: { items: [{ name: 'Run', frames: [{ fileType: 'image/jpeg' }] }], subfolders: [] } }, 'Hero');
+    expect(plan.copies).toEqual([{ from: 'player-run-000.jpg', to: 'hero-run-000.jpg' }]);
+  });
+
+  it('copies the file of a single-image plugin as <name>.<ext>', () => {
+    const plan = planImageCopies(['Tiles.png', 'other.png'], 'Tiles', { image: { fileType: 'image/png' } }, 'Floor');
+    expect(plan).toEqual({ copies: [{ from: 'Tiles.png', to: 'floor.png' }], missing: [], clashes: [] });
+  });
+
+  it('lists the expected name of a frame without a file as missing and copies nothing for it', () => {
+    const plan = planImageCopies(['player-default-000.png'], 'Player', sprite, 'Hero');
+    expect(plan.copies).toEqual([{ from: 'player-default-000.png', to: 'hero-default-000.png' }]);
+    expect(plan.missing).toEqual(['player-default-001.png', 'player-run-000.jpg']);
+  });
+
+  it('treats a target that exists in images/ in any letter case as a clash and plans nothing for it', () => {
+    const plan = planImageCopies(['player-default-000.png', 'Hero-Default-000.PNG'], 'Player', oneFrame, 'Hero');
+    expect(plan.copies).toEqual([]);
+    expect(plan.clashes).toEqual(['hero-default-000.png']);
+  });
+
+  it('skips an animation without a name or a frames list', () => {
+    const plan = planImageCopies(['player-default-000.png'], 'Player',
+      { animations: { items: [{ frames: [{}] }, { name: 'default' }, { name: 'default', frames: [{}] }], subfolders: [] } }, 'Hero');
+    expect(plan).toEqual({ copies: [{ from: 'player-default-000.png', to: 'hero-default-000.png' }], missing: [], clashes: [] });
+  });
+
+  it('treats two frames that map to one target as a clash', () => {
+    const plan = planImageCopies(['player-default-000.png', 'player-default-000.PNG'], 'Player', oneFrame, 'Hero');
+    expect(plan.copies).toEqual([{ from: 'player-default-000.png', to: 'hero-default-000.png' }]);
+    expect(plan.clashes).toEqual(['hero-default-000.png']);
   });
 });

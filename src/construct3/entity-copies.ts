@@ -7,6 +7,8 @@
  * only once, a link leaves the copy) is found by the checks here.
  */
 
+import { everyAnimation, expectedFrameImageName, frameImageBaseName, indexImageFiles } from './animation-rename.js';
+import { nameKey } from './names.js';
 import type { Construct3ProjectReader } from './project-reader.js';
 import type { IdGenerator } from './id-generator.js';
 import type { Instance } from './types.js';
@@ -130,4 +132,51 @@ export async function remapInstanceUids(
     }
   }
   return uidMap;
+}
+
+/** The image files of an object type, copied under another object name. */
+export interface ImageCopyPlan {
+  /** File names in images/ */
+  copies: Array<{ from: string; to: string }>;
+  /** Expected names of frames that have no image file */
+  missing: string[];
+  /** Target names that exist already or are planned twice */
+  clashes: string[];
+}
+
+/**
+ * Plan the copies of an object type's image files for a copy of it named
+ * `newName`: each frame's file, found as the frame tools find it (the
+ * frame's fileType, letter case and normalisation ignored), gets the
+ * lower-case name of the same frame of the copy; a single image
+ * (`image` without animations) is `<name>.<ext>`. `files` lists images/.
+ */
+export function planImageCopies(files: readonly string[], objectName: string, objectType: unknown, newName: string): ImageCopyPlan {
+  const index = indexImageFiles(files);
+  const plan: ImageCopyPlan = { copies: [], missing: [], clashes: [] };
+  const add = (oldBase: string, newBase: string, fileType: unknown) => {
+    const sources = index.frameFiles(oldBase, fileType);
+    if (sources.length === 0) {
+      plan.missing.push(expectedFrameImageName(oldBase, fileType));
+      return;
+    }
+    for (const from of sources) {
+      const to = `${newBase}.${from.slice(from.lastIndexOf('.') + 1).toLowerCase()}`;
+      if (index.named(to).length > 0 || plan.copies.some(c => nameKey(c.to) === nameKey(to))) plan.clashes.push(to);
+      else plan.copies.push({ from, to });
+    }
+  };
+  const record = typeof objectType === 'object' && objectType !== null ? objectType as Record<string, unknown> : {};
+  if (record.animations !== undefined) {
+    for (const anim of everyAnimation<{ name?: unknown; frames?: unknown }>(record.animations)) {
+      if (typeof anim.name !== 'string' || !Array.isArray(anim.frames)) continue;
+      anim.frames.forEach((frame, i) => {
+        const fileType = typeof frame === 'object' && frame !== null ? (frame as { fileType?: unknown }).fileType : undefined;
+        add(frameImageBaseName(objectName, anim.name as string, i), frameImageBaseName(newName, anim.name as string, i), fileType);
+      });
+    }
+  } else if (typeof record.image === 'object' && record.image !== null) {
+    add(objectName.toLowerCase(), newName.toLowerCase(), (record.image as { fileType?: unknown }).fileType);
+  }
+  return plan;
 }
