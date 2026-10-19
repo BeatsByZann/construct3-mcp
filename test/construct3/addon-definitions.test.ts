@@ -432,6 +432,7 @@ describe('.c3addon archives', () => {
     const defs = await registryWith(project);
     const report = await defs.load(folder);
     expect(report.loaded.map(d => d.id)).toEqual(['GoodTimer']);
+    expect(report.skipped).toEqual([{ name: 'flaky.c3addon', reason: 'could not be read' }]);
     expect(JSON.stringify(report)).not.toContain(tmp);
   });
 });

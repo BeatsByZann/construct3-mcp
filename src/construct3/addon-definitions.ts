@@ -291,7 +291,11 @@ export class AddonDefinitions implements AddonLookup {
         report.skipped.push({ name: entry, reason: OUTSIDE });
         continue;
       }
-      if (isArchiveName(entry) && await this.isFile(childReal)) {
+      const entryKind = isArchiveName(entry) ? await this.kindOf(childReal) : 'other';
+      if (entryKind === 'unreadable') {
+        found++;
+        report.skipped.push({ name: entry, reason: 'could not be read' });
+      } else if (entryKind === 'file') {
         found++;
         await this.attemptArchive(entry, childReal, report);
       } else if (await this.isAddonFolder(childReal)) {
@@ -310,6 +314,15 @@ export class AddonDefinitions implements AddonLookup {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** Whether `path` is a regular file, something else, or cannot be examined. */
+  private async kindOf(path: string): Promise<'file' | 'other' | 'unreadable'> {
+    try {
+      return (await stat(path)).isFile() ? 'file' : 'other';
+    } catch {
+      return 'unreadable';
     }
   }
 
