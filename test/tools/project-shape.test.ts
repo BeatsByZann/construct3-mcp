@@ -15,6 +15,7 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { applyJsonTextStyle, jsonTextStyleOf, stripBom } from '../../src/construct3/json-format.js';
 import { registerProjectTools } from '../../src/tools/project-tools.js';
+import { registerRuntimeTools } from '../../src/tools/runtime-tools.js';
 import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
 import { expectShaped, shapeByHand, type ProjectJson } from '../helpers/project-shape.js';
 
@@ -205,6 +206,23 @@ describe('project.c3proj shape on write', () => {
     const expected = structuredClone(shaped);
     expected.name = 'Same Shape';
     expect(JSON.stringify(await onDisk())).toBe(JSON.stringify(expected));
+  });
+
+  it('B9w: inject_runtime_bridge writes project.c3proj with its own text and does not reshape it (characterization)', async () => {
+    // The fixture already registers the bridge script; take the entry out so the tool must write the file
+    const unregistered = structuredClone(before);
+    (unregistered.rootFileFolders as { script: { items: unknown[] } }).script.items = [];
+    await writeFile(projectPath, inFixtureStyle(unregistered), 'utf-8');
+    await openFolder();
+    const deps = { server, reader, writer } as unknown as Parameters<typeof registerRuntimeTools>[0];
+    registerRuntimeTools(deps);
+
+    await ok('inject_runtime_bridge');
+    const project = await onDisk();
+    expect(firstScript(project).name).toBe('c3-runtime-bridge.js');
+    expect('models3d' in project).toBe(false);
+    expect(Object.keys(project.properties as Record<string, unknown>)).toEqual(Object.keys(before.properties as Record<string, unknown>));
+    expect((project.properties as Record<string, unknown>).zAxisScale).toBe('normalized');
   });
 
   it('B8w: an update merged into a change saved meanwhile is shaped too', async () => {
