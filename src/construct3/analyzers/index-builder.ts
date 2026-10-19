@@ -261,18 +261,30 @@ export interface FunctionCallSite {
  * Parameter keys that hold an object type or family name (object parameters),
  * as found on editor-saved projects. Counted even when a variable has the name.
  */
-const OBJECT_PARAMETER_KEYS = new Set(['object', 'object-to-create', 'pin-to', 'child']);
+export const OBJECT_PARAMETER_KEYS = new Set(['object', 'object-to-create', 'pin-to', 'child']);
 /**
  * Parameter keys whose value names something else: a sound (Audio "audio-file"),
  * an instance variable, an event variable, a layout. Never object references.
  */
-const NON_OBJECT_PARAMETER_KEYS = new Set(['audio-file', 'instance-variable', 'variable', 'layout']);
+export const NON_OBJECT_PARAMETER_KEYS = new Set(['audio-file', 'instance-variable', 'variable', 'layout']);
 /**
  * Shaped like an object type or family name: letters, digits and underscores,
  * at least one of them not a digit (editor-saved object names can start with a
  * digit). Object parameter values in editor-saved projects are always such names.
  */
 const NAME_SHAPED = /^[\p{L}\p{N}_]*[\p{L}_][\p{L}\p{N}_]*$/u;
+/**
+ * Whether a parameter whose whole value is an object or family name refers
+ * to that object: always for object parameter keys, never for keys that
+ * hold other names, otherwise (other keys, call arguments: `key`
+ * undefined) unless an event variable or function parameter has the name.
+ * The rule of the cross-reference index, shared with the object rename.
+ */
+export function isObjectParameterValue(key: string | undefined, isVariableName: boolean): boolean {
+  if (key !== undefined && OBJECT_PARAMETER_KEYS.has(key)) return true;
+  if (key !== undefined && NON_OBJECT_PARAMETER_KEYS.has(key)) return false;
+  return !isVariableName;
+}
 /**
  * Instance properties known to hold the SID of an object type or family, per
  * plugin. Editor-saved projects store the Particles "object" property (the
@@ -400,21 +412,11 @@ export function scriptMemberAccesses(script: string): Array<{ kind: MemberRefere
   return [...found.values()];
 }
 
-/** The instance variables and behaviors the project script files (rootFileFolders.script) read by name. */
-async function readScriptFileMemberReads(
-  reader: Construct3ProjectReader,
-): Promise<{ reads: ScriptMemberRead[]; unreadable: string[] }> {
-  const reads: ScriptMemberRead[] = [];
-  const unreadable: string[] = [];
-  let folder: FileFolder | undefined;
-  try {
-    folder = typeof reader.getProject === 'function' ? reader.getProject().rootFileFolders?.script : undefined;
-  } catch {
-    return { reads, unreadable };
-  }
-  if (!folder || typeof reader.readScriptFile !== 'function') return { reads, unreadable };
-
+/** The paths, relative to scripts/, of the project script files rootFileFolders.script lists. */
+export function scriptFilePaths(project: unknown): string[] {
+  const folder = (project as { rootFileFolders?: { script?: FileFolder } } | undefined)?.rootFileFolders?.script;
   const paths: string[] = [];
+  if (!folder) return paths;
   const walk = (f: FileFolder | FileFolderSubfolder, prefix: string, depth: number) => {
     if (depth > MAX_DEPTH) return;
     for (const item of Array.isArray(f.items) ? f.items : []) {
@@ -425,6 +427,22 @@ async function readScriptFileMemberReads(
     }
   };
   walk(folder, '', 0);
+  return paths;
+}
+
+/** The instance variables and behaviors the project script files (rootFileFolders.script) read by name. */
+async function readScriptFileMemberReads(
+  reader: Construct3ProjectReader,
+): Promise<{ reads: ScriptMemberRead[]; unreadable: string[] }> {
+  const reads: ScriptMemberRead[] = [];
+  const unreadable: string[] = [];
+  let paths: string[];
+  try {
+    paths = typeof reader.getProject === 'function' ? scriptFilePaths(reader.getProject()) : [];
+  } catch {
+    return { reads, unreadable };
+  }
+  if (typeof reader.readScriptFile !== 'function') return { reads, unreadable };
 
   for (const path of paths) {
     let source: string;
@@ -468,7 +486,7 @@ function functionParameterNames(func: FunctionBlockEvent): string[] {
  * Names of the event variables (global and local) and function parameters
  * declared in a sheet's events, added to `into`.
  */
-function collectVariableNames(events: C3Event[], into: Set<string>): void {
+export function collectVariableNames(events: C3Event[], into: Set<string>): void {
   const stack: Array<{ event: C3Event; depth: number }> = events.map(event => ({ event, depth: 0 }));
   let nodeCount = 0;
   while (stack.length > 0 && nodeCount++ <= MAX_NODES) {
@@ -873,9 +891,7 @@ export class ProjectIndex {
    * other names, otherwise unless a variable or function parameter has the name.
    */
   private isObjectParameter(key: string | undefined, name: string): boolean {
-    if (key !== undefined && OBJECT_PARAMETER_KEYS.has(key)) return true;
-    if (key !== undefined && NON_OBJECT_PARAMETER_KEYS.has(key)) return false;
-    return !this.variableNames.has(name);
+    return isObjectParameterValue(key, this.variableNames.has(name));
   }
 
   /**
