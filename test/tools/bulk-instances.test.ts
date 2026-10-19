@@ -67,8 +67,6 @@ interface ToolData {
   results?: Array<{ index: number; objectType: string; uid: number; sid: number }>;
   warnings?: string[];
   unscannedFiles?: Array<{ file: string; textSearch: string; names?: string[] }>;
-  generatedUid?: number;
-  generatedSid?: number;
 }
 type Item = Record<string, unknown>;
 
@@ -386,6 +384,7 @@ describe('add_instances_to_layout', () => {
         expect(data.isError).toBe(true);
         expect(data.text).toContain('is too large');
         expect(data.text).toContain('over the');
+        expect(data.text).not.toContain('Nothing was written');
         expect(data.text!.endsWith(NOTHING_CHANGED)).toBe(true);
         expect(countOf(data.text!, NOTHING_CHANGED)).toBe(1);
         expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
@@ -818,6 +817,7 @@ describe('update_instances and delete_instances_from_layout', () => {
     expect(data.isError).toBe(true);
     expect(data.text).toContain('is too large');
     expect(data.text).toContain('over the');
+    expect(data.text).not.toContain('Nothing was written');
     expect(data.text!.endsWith(NOTHING_CHANGED)).toBe(true);
     expect(countOf(data.text!, NOTHING_CHANGED)).toBe(1);
     expect(Buffer.compare(await layoutBytes(), before)).toBe(0);

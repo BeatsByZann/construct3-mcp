@@ -166,6 +166,7 @@ export const placeInstanceShape = {
   showing: z.boolean().optional().describe('Whether instance is initially visible (default: true)'),
   locked: z.boolean().optional().describe('Whether instance is locked in the editor (default: false)'),
 };
+/** One instance placement: the arguments of add_instance_to_layout without layoutName. */
 export type PlaceInstanceArgs = z.infer<z.ZodObject<typeof placeInstanceShape>>;
 
 /** Arguments of one update: update_instance's without layoutName, shared with update_instances. */
@@ -183,6 +184,7 @@ export const updateInstanceShape = {
   tags: z.string().max(500).optional().describe('Comma-separated tags'),
   instanceVariables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().describe('Instance variable values to update (names of instance variables of the object type or its families; others are refused)'),
 };
+/** One instance update: the arguments of update_instance without layoutName. */
 export type UpdateInstanceArgs = z.infer<z.ZodObject<typeof updateInstanceShape>>;
 
 /** True when an update names no property to change: every key of updateInstanceShape but uid is unset. */

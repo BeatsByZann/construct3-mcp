@@ -32,8 +32,10 @@ type Reader = MutationToolDeps['reader'];
 
 /**
  * Most items one bulk call takes: a guard on the size of one request and
- * its result (each item may carry up to 50KB of property values and 50KB
- * of behavior values, and the result lists every item). The size of a
+ * its result, for every kind of item. An add item may carry up to 50KB of
+ * property values and 50KB of behavior values, an update item tags and
+ * instance variable values, a delete item a UID and a move item a UID
+ * with a few short fields, and the result lists every item. The size of a
  * layout is bounded by the writer instead: it refuses a file whose text
  * as written is over the file size limit, before anything is written.
  */
@@ -50,7 +52,8 @@ export function bulkItemRefusal(index: number, message: string): string {
 
 /** The refusal when a step outside the items throws before anything was written. */
 export function stoppedBeforeWrite(error: unknown): string {
-  return `The change was stopped before anything was written: ${messageOf(error)}. Nothing was changed.`;
+  const reason = messageOf(error).replace(/\.\s*Nothing was written$/, '');
+  return `The change was stopped before anything was written: ${reason}. Nothing was changed.`;
 }
 
 /**
@@ -126,8 +129,9 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
 
   /**
    * The result of a call whose items all applied: written once (rolled back
-   * on a failure), or, for a dry run, the write's own checks run
-   * (checkEntityWrite) and nothing written. A refusal of those checks is
+   * on a failure), or, for a dry run, the JSON, text-style and size checks
+   * of the new text run (checkEntityWrite) and nothing written. The check
+   * for a file changed on disk since it was read runs only when writing. A refusal of those checks is
    * returned as a refusal in both cases, before anything is written.
    */
   async function finishBulk(
