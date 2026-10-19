@@ -161,7 +161,7 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
 
   server.tool(
     'set_instance_template',
-    'Make a layout instance a template, a replica of a named template, or neither. The template block is built from the instance\'s own plugin properties, instance variables, behaviors and effects. The layout name must be given as registered, in that letter case. A failed write is rolled back.',
+    'Make a layout instance a template, a replica of a named template, or neither. The template block is built from the instance\'s own plugin properties, instance variables, behaviors and effects. The layout name must be given as registered, in that letter case. Template and replica are refused on a non-world instance, because the editor refused to open such a project on Construct 3 r506-2 (Free edition). A failed write is rolled back.',
     {
       layoutName: z.string().max(200).describe('Layout holding the instance (as registered, in that letter case)'),
       uid: z.number().int().describe('Instance UID'),
