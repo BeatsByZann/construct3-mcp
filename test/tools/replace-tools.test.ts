@@ -291,40 +291,41 @@ describe('replace_object_in_events', () => {
   describe('instance variables', () => {
     const SKIP = 700000000000100;
     const skippedSids = async (sheetName = 'Main') => parse(await swap({ sheetName, dryRun: true })).skippedEvents.map(s => s.eventSid);
-    const instvar = (objectClass: string, variable: unknown): Ace => ({ id: 'set-instvar-value', objectClass, parameters: { 'instance-variable': variable, value: '1' } });
+    // Construct 3 r506-2 (Free edition) opens the object form of the parameter on System Sort Z order; set-instvar-value takes the string form
+    const sortZ = (objectClass: string, variable: unknown): Ace => ({ id: 'sort-z-order', objectClass, parameters: { 'instance-variable': variable } });
 
     it('skips an event whose instance variable the replacement lacks, in the string form and the object form', async () => {
       await editObject('Enemy', o => { o.instanceVariables = []; });
       const data = parse(await swap({ sheetName: 'Main', dryRun: true }));
       expect(data.skippedEvents.find(s => s.eventSid === MAIN_BLOCK)!.reasons)
         .toContain('"set-instvar-value" uses instance variable "score", which Enemy does not have');
-      await addEvents(block(SKIP, [instvar('Player', { name: 'hp', objectClass: 'Player' })]));
+      await addEvents(block(SKIP, [sortZ('Player', { name: 'hp', objectClass: 'Player' })]));
       const recorded = parse(await swap({ sheetName: 'Main', dryRun: true })).skippedEvents.find(s => s.eventSid === SKIP)!;
-      expect(recorded.reasons).toEqual(['"set-instvar-value" uses instance variable "hp", which Enemy does not have']);
+      expect(recorded.reasons).toEqual(['"sort-z-order" uses instance variable "hp", which Enemy does not have']);
     });
 
     it('does not block on a record that names another owner, also when the action is on the replaced object', async () => {
       await addEvents(
-        block(SKIP, [{ id: 'destroy', objectClass: 'Player' }, instvar('Other', { name: 'hp', objectClass: 'Other' })]),
-        block(SKIP + 1, [instvar('Player', { name: 'hp', objectClass: 'Other' })]),
+        block(SKIP, [{ id: 'destroy', objectClass: 'Player' }, sortZ('Other', { name: 'hp', objectClass: 'Other' })]),
+        block(SKIP + 1, [sortZ('Player', { name: 'hp', objectClass: 'Other' })]),
       );
       expect(await skippedSids()).not.toContain(SKIP);
       expect(await skippedSids()).not.toContain(SKIP + 1);
       await swap({ sheetName: 'Main' });
       const second = await mainEvent(SKIP + 1);
       expect(second.actions![0].objectClass).toBe('Enemy');
-      expect(second.actions![0].parameters).toEqual({ 'instance-variable': { name: 'hp', objectClass: 'Other' }, value: '1' });
+      expect(second.actions![0].parameters).toEqual({ 'instance-variable': { name: 'hp', objectClass: 'Other' } });
     });
 
     it('blocks on a record that names the replaced object, whatever the action is on', async () => {
-      await addEvents(block(SKIP, [instvar('Other', { name: 'hp', objectClass: 'Player' })]));
+      await addEvents(block(SKIP, [sortZ('Other', { name: 'hp', objectClass: 'Player' })]));
       expect(await skippedSids()).toContain(SKIP);
     });
 
     it('lets a record without an objectClass follow the action\'s own object', async () => {
       await addEvents(
-        block(SKIP, [instvar('Player', { name: 'hp' })]),
-        block(SKIP + 1, [{ id: 'destroy', objectClass: 'Player' }, instvar('Other', { name: 'hp' })]),
+        block(SKIP, [sortZ('Player', { name: 'hp' })]),
+        block(SKIP + 1, [{ id: 'destroy', objectClass: 'Player' }, sortZ('Other', { name: 'hp' })]),
       );
       const skipped = await skippedSids();
       expect(skipped).toContain(SKIP);

@@ -36,7 +36,9 @@
  * of a flowchart node that is the name (what "c" holds is not known), and
  * the "objectClass" of an object-valued "instance-variable" parameter
  * ({ name, objectClass }) unless `instanceVariableObjects` is "rewrite"
- * (Construct 3 r506-2, Free edition, guest, rewrote it on a rename).
+ * (Construct 3 r506-2, Free edition, guest, rewrote it on a rename). The action
+ * observed to hold this form is System Sort Z order; set-instvar-value takes
+ * the string form (a project with the object form on it did not open).
  */
 
 import type { C3Event, EventSheet, Layout } from './types.js';
@@ -73,7 +75,10 @@ export interface ObjectNameUse {
   definite: boolean;
 }
 
-/** Whether the object-valued "instance-variable" parameter kind is rewritten (an editor save showed it) or only listed. */
+/**
+ * Whether the object-valued "instance-variable" parameter kind is rewritten (an editor save of System
+ * Sort Z order, Construct 3 r506-2, Free edition, showed it) or only listed.
+ */
 export type InstanceVariableObjects = 'rewrite' | 'list';
 
 /** The kinds of use a rename can rewrite; every other kind is only listed. */
