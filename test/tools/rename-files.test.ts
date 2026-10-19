@@ -293,6 +293,9 @@ describe('failed side writes, rolled back', () => {
     expect(await text(at('a.txt'))).toBe('AAA');
     expect(await text(sheetPath())).toBe(sheetBefore);
     expect(message).toContain('The call was rolled back');
+    expect(message).toContain('a.txt');
+    expect(message).toContain('b.txt (removed: the call had created it)');
+    expect(message).not.toContain('left as it is');
   });
 });
 
@@ -344,6 +347,22 @@ describe('moveViewStateFiles', () => {
     expect(result.warnings[0]).toContain('layouts/Layout 1.uistate.json could not be moved to layouts/Stage.uistate.json');
     expect(result.warnings[0]).toContain('layouts/Layout 1.uistate.json was changed on disk after this call read it');
     expect(await text(at(...from))).toBe('{"scroll":99,"saved":true}');
+  });
+
+  it('keeps an old name an editor saved between the early check and the writer\'s delete, with a warning that names it', async () => {
+    await writeFile(at(...to), '{"scroll":1}');
+    const deleteFile = writer.deleteFile.bind(writer);
+    vi.spyOn(writer, 'deleteFile').mockImplementation(async (path, options) => {
+      await editorSave(path, '{"scroll":99,"saved":true}');
+      return deleteFile(path, options);
+    });
+    const result = await runInToolCall(() => moveViewStateFiles(writer, dir, [{ from, to }]));
+    expect(result.moved).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('layouts/Layout 1.uistate.json could not be moved to layouts/Stage.uistate.json');
+    expect(result.warnings[0]).toContain('layouts/Layout 1.uistate.json');
+    expect(await text(at(...from))).toBe('{"scroll":99,"saved":true}');
+    expect(await text(at(...to))).toBe('{"scroll":1}');
   });
 
   it('applies the rewrite to the text of the moved file', async () => {
@@ -462,7 +481,7 @@ describe('rollBackRename', () => {
       return rollBackRename(writer, new Error('disk full'), side);
     });
     expect(renameImageFiles).toHaveBeenCalledWith(back);
-    expect(putBack).toBe('disk full. The call was rolled back: the 2 image file(s) it renamed in images/ (renamed back) is as before the call.');
+    expect(putBack).toBe('disk full. The call was rolled back: images/ (2 file(s) the call renamed, renamed back) is as before the call.');
 
     renameImageFiles.mockRejectedValue(new Error('Renaming failed.'));
     const left = await runInToolCall(async () => {

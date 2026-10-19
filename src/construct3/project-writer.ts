@@ -1090,7 +1090,7 @@ export class Construct3ProjectWriter {
   ): Promise<string> {
     const backupPath = await this.updateProjectFile(project => {
       type Folder = { items?: unknown; subfolders?: unknown; name?: unknown };
-      // The reader has checked the tree's shape when it loaded the project (entityFolderPaths)
+      // A project the reader loaded has this tree shape; the update parses the file fresh, so a file saved since could differ.
       const registered = (folder: Folder, path: string[], out: Array<{ name: string; path: string[] }>) => {
         if (Array.isArray(folder.items)) for (const item of folder.items) if (typeof item === 'string') out.push({ name: item, path });
         if (Array.isArray(folder.subfolders)) {
@@ -1108,6 +1108,7 @@ export class Construct3ProjectWriter {
       const renameIn = (folder: Folder, path: string[]): boolean => {
         const { items, subfolders } = folder;
         if (Array.isArray(items)) {
+          // Only the first registration of the name is renamed; the editor lists a name once
           const index = items.indexOf(name);
           if (index !== -1) {
             if (options.expectedFolder !== undefined && path.join('/') !== options.expectedFolder.join('/')) {

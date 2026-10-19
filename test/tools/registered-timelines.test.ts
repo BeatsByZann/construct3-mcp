@@ -69,6 +69,13 @@ describe('readRegisteredTimelines', () => {
     ]);
   });
 
+  it('names a timeline whose file cannot be read, such as a directory in its place', async () => {
+    await mkdir(at('timelines', 'Dir.json'));
+    const { timelines, unreadable } = await runInToolCall(() => readRegisteredTimelines(dir, { items: ['Dir', 'Intro'], subfolders: [] }));
+    expect(timelines.map(t => t.name)).toEqual(['Intro']);
+    expect(unreadable).toEqual(['timelines/Dir.json']);
+  });
+
   it('counts a timeline in a folder the tools cannot resolve as unreadable', async () => {
     const { timelines, unreadable } = await runInToolCall(() => readRegisteredTimelines(dir, { items: [], subfolders: [{ items: ['Ease'], subfolders: [] }, { items: ['Also'], subfolders: [] }] }));
     expect(timelines).toEqual([]);
