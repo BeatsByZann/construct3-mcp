@@ -622,3 +622,154 @@ describe('set_instance_template', () => {
     expect(write).not.toHaveBeenCalled();
   });
 });
+
+// ─── set_default_template ─────────────────────────────────
+
+const readPlayer = async (): Promise<Record<string, unknown>> => JSON.parse(await readFile(playerPath(), 'utf8')) as Record<string, unknown>;
+const defCall = async (args: Record<string, unknown>): Promise<ToolData> => {
+  const result = await server.callTool('set_default_template', args);
+  return result.isError ? { isError: true, text: result.content[0].text } : JSON.parse(result.content[0].text) as ToolData;
+};
+const NO_PLAYER_T = 'No instance of "Player" is a template named "PlayerT". Create one with set_instance_template first, or the editor will have nothing to copy.';
+
+/** The writer's read-back of Player.json fails once, with the text verifyWrittenFile itself throws for a failed read. */
+function failPlayerReadBack(): void {
+  const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<unknown> };
+  const verify = internals.verifyWrittenFile.bind(writer);
+  let failed = false;
+  internals.verifyWrittenFile = async (path, name, text) => {
+    if (!failed && path.endsWith('Player.json')) {
+      failed = true;
+      throw new Error(`Post-write verification failed for "${name}": file may be corrupted. A .bak backup exists. Error: EIO: i/o error, read`);
+    }
+    return verify(path, name, text);
+  };
+}
+
+describe('set_default_template', () => {
+  it('sets both editor fields, warns while the template does not exist, and not once it does', async () => {
+    const data = await defCall({ objectName: 'Player', templateName: 'PlayerT' });
+    expect(data.success).toBe(true);
+    expect(data.action).toBe('default template set');
+    expect(data.entity).toBe('Player');
+    expect(data.warnings).toEqual([NO_PLAYER_T]);
+    const saved = await readPlayer();
+    expect(saved.editorNewInstanceIsReplica).toBe(true);
+    expect(saved.editorNewInstanceTemplateName).toBe('PlayerT');
+
+    await set(1, 'template', { templateName: 'PlayerT' });
+    await reload();
+    const again = await defCall({ objectName: 'Player', templateName: 'PlayerT' });
+    expect(again.success).toBe(true);
+    expect(again.warnings).toBeUndefined();
+  });
+
+  it('clears the default template as the editor saves it', async () => {
+    await defCall({ objectName: 'Player', templateName: 'PlayerT' });
+    const data = await defCall({ objectName: 'Player', templateName: null });
+    expect(data.success).toBe(true);
+    expect(data.action).toBe('default template cleared');
+    expect(data.warnings).toBeUndefined();
+    const saved = await readPlayer();
+    expect(saved).not.toHaveProperty('editorNewInstanceTemplateName');
+    expect(saved.editorNewInstanceIsReplica).toBe(true);
+  });
+
+  it('refuses an unknown object type and a case variant', async () => {
+    const before = await snapshotProject(tmpDir);
+    const unknown = await defCall({ objectName: 'Nope', templateName: 'T' });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.text).toContain('Object "Nope" not found.');
+    expect(unknown.text?.endsWith(NOT_WRITTEN)).toBe(true);
+
+    const variant = await defCall({ objectName: 'player', templateName: null });
+    expect(variant.isError).toBe(true);
+    expect(variant.text).toContain('Did you mean "Player"?');
+    expect(variant.text?.endsWith(NOT_WRITTEN)).toBe(true);
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('refuses an object type file it cannot parse, with no path in the text', async () => {
+    await writeFile(playerPath(), '{ broken');
+    await reload();
+    const before = await snapshotProject(tmpDir);
+    const data = await defCall({ objectName: 'Player', templateName: 'T' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe(`Cannot read object type "Player" (not valid JSON). ${NOT_WRITTEN}`);
+    expect(data.text).not.toContain(tmpDir);
+    expect(data.text).not.toMatch(/[A-Za-z]:[\\/]/);
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('warns that layouts it could not parse were not checked for the template', async () => {
+    await writeFile(level2Path(), '{ broken');
+    await reload();
+    const data = await defCall({ objectName: 'Player', templateName: 'PlayerT' });
+    expect(data.success).toBe(true);
+    expect(data.warnings).toEqual([
+      NO_PLAYER_T,
+      'The template may be in a layout that could not be checked. Layouts that could not be parsed: layouts/Level 2 (not valid JSON).',
+    ]);
+  });
+
+  it('puts the object type back when its read-back fails', async () => {
+    const before = await snapshotProject(tmpDir);
+    failPlayerReadBack();
+    const data = await defCall({ objectName: 'Player', templateName: 'T' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('Post-write verification failed');
+    expect(data.text).toContain('The call was rolled back');
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('writes one file, the object type', async () => {
+    const write = vi.spyOn(writer, 'writeEntityFile');
+    const data = await defCall({ objectName: 'Player', templateName: 'T' });
+    expect(data.success).toBe(true);
+    expect(data.backupFile).toBeTruthy();
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0]).toBe('objectTypes');
+    expect(write.mock.calls[0][1]).toBe('Player');
+  });
+
+  it('rejects an empty template name before reading anything', async () => {
+    const listObjectTypes = vi.spyOn(reader, 'listObjectTypes');
+    const readObjectType = vi.spyOn(reader, 'readObjectType');
+    const write = vi.spyOn(writer, 'writeEntityFile');
+    await expect(server.callTool('set_default_template', { objectName: 'Player', templateName: '' })).rejects.toThrow(/templateName/);
+    expect(listObjectTypes).not.toHaveBeenCalled();
+    expect(readObjectType).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('refuses with no path in the text when an unexpected error is thrown, before any write', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(reader, 'listObjectTypes').mockRejectedValue(new Error("EACCES: permission denied, scandir 'C:\\Users\\Someone Else\\proj\\objectTypes'"));
+    const write = vi.spyOn(writer, 'writeEntityFile');
+    const data = await defCall({ objectName: 'Player', templateName: null });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe(`Error setting default template: EACCES: permission denied, scandir '(path removed)'. ${NOT_WRITTEN}`);
+    expect(write).not.toHaveBeenCalled();
+  });
+});
+
+describe('set_instance_template replica count of the edited layout', () => {
+  it('counts the replicas in the layout as the file is now, not as a cached copy was', async () => {
+    await set(1, 'template', { templateName: 'T' });
+    await set(3, 'replica', { sourceTemplateName: 'T' });
+    await reload();
+    // The cached layouts as they were, then the file changed with no reload. A change that keeps
+    // the file's size, modification time and file id is not seen by the reader, so its cache
+    // keeps the old layout; the stand-in below serves that cache.
+    const cached = new Map(structuredClone([...await reader.readAllLayouts()]));
+    expect(instanceWithUid(cached.get('Level 1') as unknown as LayoutFile, 3).template).toBeDefined();
+    const layout = await readLevel1();
+    delete instanceWithUid(layout, 3).template;
+    await writeLevel1(layout);
+    vi.spyOn(reader, 'readAllLayouts').mockResolvedValue(cached);
+
+    const data = await set(1, 'none');
+    expect(data.success).toBe(true);
+    expect(data.warnings).toBeUndefined();
+  });
+});

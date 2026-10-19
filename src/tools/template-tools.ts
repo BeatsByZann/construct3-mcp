@@ -1,13 +1,14 @@
 /**
- * Instance template tools: list_templates and set_instance_template. A
- * template is a layout instance the editor treats as the master copy of its
- * replicas; the state is the instance's `template` block
- * (construct3/instance-templates.ts).
+ * Instance template tools: list_templates, set_instance_template and
+ * set_default_template. A template is a layout instance the editor treats as
+ * the master copy of its replicas; the state is the instance's `template`
+ * block (construct3/instance-templates.ts). The default template of an object
+ * type is the object type's own pair of fields.
  */
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { Instance, Layout, WriteResult } from '../construct3/types.js';
+import type { Instance, Layout, ObjectType, WriteResult } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
 import { withProjectSync } from './project-sync.js';
 import { unregisteredNameMessage } from './registered-names.js';
@@ -87,7 +88,7 @@ async function endedTemplateWarnings(
   return warnings;
 }
 
-/** Register list_templates and set_instance_template. */
+/** Register list_templates, set_instance_template and set_default_template. */
 export function registerTemplateTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
   const server = withProjectSync(mcpServer, reader);
 
@@ -251,6 +252,61 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
       } catch (error) {
         console.error('[set_instance_template] failed:', error);
         return refuse(`Error setting instance template: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
+  );
+
+  // ─── set_default_template ─────────────────────────────────
+
+  server.tool(
+    'set_default_template',
+    'Set or clear the template a new instance of an object type is created from in the editor (editorNewInstanceIsReplica and editorNewInstanceTemplateName on the object type). The object type name must be given as registered, in that letter case. A failed write is rolled back.',
+    {
+      objectName: z.string().max(200).describe('Object type name (as registered, in that letter case)'),
+      templateName: z.string().min(1).max(200).nullable().describe('Template to create new instances from, or null to clear it'),
+    },
+    async (args) => {
+      const refuse = (message: string) => toolError(nothingChanged(message));
+      try {
+        const missing = unregisteredNameMessage('Object', args.objectName, await reader.listObjectTypes(),
+          () => reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        if (missing !== undefined) return refuse(missing);
+        let objectType: ObjectType;
+        try {
+          objectType = await reader.readObjectType(args.objectName);
+        } catch (error) {
+          return refuse(`Cannot read object type "${args.objectName}" (${describeReadFailure(classifyReadError(error))}).`);
+        }
+        const warnings: string[] = [];
+        if (args.templateName === null) {
+          // A cleared default as the editor saves it: no name, the flag true.
+          delete objectType.editorNewInstanceTemplateName;
+          objectType.editorNewInstanceIsReplica = true;
+        } else {
+          const search = await layoutsForSearch(reader);
+          if (!findTemplateInstance(search.layouts, args.objectName, args.templateName)) {
+            warnings.push(`No instance of "${args.objectName}" is a template named "${args.templateName}". `
+              + 'Create one with set_instance_template first, or the editor will have nothing to copy.');
+            warnings.push(...skippedWarnings(search.skipped, 'The template may be in a layout that could not be checked.'));
+          }
+          objectType.editorNewInstanceIsReplica = true;
+          objectType.editorNewInstanceTemplateName = args.templateName;
+        }
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'objectTypes', args.objectName, objectType);
+        } catch (error) {
+          return toolError(error instanceof Error ? error.message : String(error));
+        }
+        const result: WriteResult = {
+          success: true, entity: args.objectName, category: 'objecttype',
+          action: args.templateName === null ? 'default template cleared' : 'default template set',
+          warnings: warnings.length > 0 ? warnings : undefined, backupFile: backupPath,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[set_default_template] failed:', error);
+        return refuse(`Error setting default template: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error))}`);
       }
     }
   );
