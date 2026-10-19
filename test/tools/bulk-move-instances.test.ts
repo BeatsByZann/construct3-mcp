@@ -231,6 +231,23 @@ describe('move_instances', () => {
     expect(consoleError.mock.calls.some(args => String(args[0]).includes('[move_instances] failed'))).toBe(false);
   });
 
+  it('answers a throw outside the moves with the stopped-before-write refusal', async () => {
+    const spy = writeSpy();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const before = await layoutBytes();
+    // The call serializes the layout it read before the moves, outside the item loop
+    const real = await reader.readLayout('Layout 1');
+    const unserializable = { ...real, toJSON: () => { throw new Error('layout unserializable'); } };
+    vi.spyOn(reader, 'readLayout').mockResolvedValueOnce(unserializable as typeof real);
+
+    const data = await move([{ uid: 1, position: 0 }]);
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe(`The change was stopped before anything was written: layout unserializable. ${NOTHING_CHANGED}`);
+    expect(consoleError.mock.calls.some(args => String(args[0]).includes('[move_instances] failed'))).toBe(true);
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('writes nothing when the layout ends as it was', async () => {
     const spy = writeSpy();
     const before = await layoutBytes();
@@ -268,6 +285,7 @@ describe('move_instances', () => {
 
     const data = await move([{ uid: 1, toLayer: 'Top' }, { uid: 2, position: 'last' }]);
     expect(data.isError).toBe(true);
+    expect(data.text!.startsWith('Error writing layout "Layout 1": ')).toBe(true);
     expect(data.text).toContain('The call was rolled back: layouts/Layout 1.json is as before the call.');
     expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
   });

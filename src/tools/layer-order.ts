@@ -1,12 +1,13 @@
 /**
  * Layer and instance order tools (#ISSUE): reorder_layers, move_layer,
- * move_instance, move_instances. A layout's layers, each layer's sub-layers and each
- * layer's instances are arrays in the layout file; these tools change the
- * order of those arrays and move an entry from one to another, in one
- * layout. A bulk move applies each move as move_instance does and writes
- * the layout once. Layers are found as update_layer finds them (resolveLayer: the
- * exact name, or a sub-layer by its path, "Main > HUD"). Each tool writes
- * the layout once, and a failed write is rolled back (rollBackFailedCall).
+ * move_instance, move_instances. A layout's layers, each layer's
+ * sub-layers and each layer's instances are arrays in the layout file;
+ * these tools change the order of those arrays and move an entry from one
+ * to another, in one layout. A bulk move applies each move as
+ * move_instance does and writes the layout once. Layers are found as
+ * update_layer finds them (resolveLayer: the exact name, or a sub-layer
+ * by its path, "Main > HUD"). Each tool writes the layout once, and a
+ * failed write is rolled back (rollBackFailedCall).
  * A "layer" parameter can also name a layer by a number
  * (layer-references.ts), which may count layers by their position: a
  * change of the order lists such parameters and never changes them.
