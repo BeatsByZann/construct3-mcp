@@ -179,7 +179,7 @@ function hookedFs(): { hooks: Hooks; fs: Partial<C3pFs> } {
   return { hooks, fs };
 }
 
-const openArchive = (options: C3pArchiveOptions = {}) => C3pArchive.open(archivePath, { workRoot: work, ...options });
+const openArchive = (options: C3pArchiveOptions = {}) => C3pArchive.open(archivePath, { workRoot: work, retryDelayMs: 0, ...options });
 const mainPath = (archive: C3pArchive) => join(archive.workDir, 'eventSheets', 'Main.json');
 const CHANGED = '{"events":["changed in the folder"]}';
 const changeFolder = (archive: C3pArchive, text = CHANGED) => nodeFs.writeFile(mainPath(archive), text);
@@ -962,6 +962,64 @@ describe('placing the archive when the file system or a save interferes', () => 
     expect(second).toHaveLength(1);
     expect(await bytesAt(join(root, second[0]))).toEqual(original);
     expect((await rootNames()).filter(name => name.endsWith('.previous'))).toEqual([]);
+  });
+});
+
+describe('a session folder another program holds for a moment', () => {
+  const renamesOfSession = (hooks: Hooks, archive: C3pArchive) =>
+    hooks.calls.filter(call => call.op === 'rename' && call.a === archive.sessionDir).length;
+
+  it('is renamed again after a transient failure, and the refresh succeeds', async () => {
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await writeArchive(variant('replaced'));
+    let failures = 1;
+    hooks.before.rename = (from, to) => {
+      if (from === archive.sessionDir && String(to).endsWith('.previous') && failures-- > 0) throw fault('EPERM');
+    };
+    expect((await archive.refresh()).status).toBe('refreshed');
+    expect(renamesOfSession(hooks, archive)).toBe(2);
+    expect(await nodeFs.readFile(mainPath(archive), 'utf-8')).toBe('{"events":["replaced"]}');
+  });
+
+  it('is renamed again on EBUSY and EACCES for the folder moved in', async () => {
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await writeArchive(variant('replaced'));
+    const codes = ['EBUSY', 'EACCES'];
+    hooks.before.rename = (from, to) => {
+      if (to === archive.sessionDir && from.includes('.next-') && codes.length > 0) throw fault(codes.shift());
+    };
+    expect((await archive.refresh()).status).toBe('refreshed');
+    expect(archive.status().stopped).toBeUndefined();
+  });
+
+  it('gives the existing failure when the rename keeps failing, with the folder as it was', async () => {
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    const before = await snapshot(archive.workDir);
+    await writeArchive(variant('replaced'));
+    hooks.before.rename = (from, to) => {
+      if (from === archive.sessionDir && String(to).endsWith('.previous')) throw fault('EPERM');
+    };
+    const result = await archive.refresh();
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('EPERM');
+    expect(renamesOfSession(hooks, archive)).toBeGreaterThan(1);
+    expect(renamesOfSession(hooks, archive)).toBeLessThan(10);
+    expect(await snapshot(archive.workDir)).toEqual(before);
+    expect(archive.status().stopped).toBeUndefined();
+  });
+
+  it('does not try again on another code', async () => {
+    const { hooks, fs } = hookedFs();
+    const archive = await openArchive({ fs });
+    await writeArchive(variant('replaced'));
+    hooks.before.rename = (from, to) => {
+      if (from === archive.sessionDir && String(to).endsWith('.previous')) throw fault('EIO');
+    };
+    expect((await archive.refresh()).status).toBe('failed');
+    expect(renamesOfSession(hooks, archive)).toBe(1);
   });
 });
 

@@ -56,6 +56,11 @@ const SESSION_PREFIX = 'c3p-';
 const MARKER_SUFFIX = '.session.json';
 /** Default for `recentMs`: a file modified this recently is also compared by content (a write of the same size within one timestamp tick). */
 const RECENT_MS = 2000;
+/** Error codes of a folder another program holds for a moment (a scanner, an indexer); a rename is tried again on them. */
+const TRANSIENT_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+/** How many times a folder rename is tried, and the default wait before the next try (multiplied by the try number). */
+const RENAME_ATTEMPTS = 5;
+const RETRY_DELAY_MS = 50;
 
 /** What a write-back did: nothing to write, written, refused because the archive changed (the conflict), or failed. */
 export type ArchiveSyncStatus = 'unchanged' | 'saved' | 'conflict' | 'failed';
@@ -105,7 +110,7 @@ const NODE_FS: C3pFs = {
   link: (existing, path) => nodeFs.link(existing, path),
   copyFileExclusive: (from, to) => nodeFs.copyFile(from, to, constants.COPYFILE_EXCL),
   unlink: (path) => nodeFs.unlink(path),
-  rm: (path) => nodeFs.rm(path, { recursive: true, force: true }),
+  rm: (path) => nodeFs.rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }),
 };
 
 /** Options of C3pArchive.open. */
@@ -118,6 +123,8 @@ export interface C3pArchiveOptions {
   fs?: Partial<C3pFs>;
   /** Called after each read of the archive, before its second stat (tests act there) */
   afterRead?: (path: string) => Promise<void>;
+  /** Milliseconds to wait before the first new try of a folder rename that failed with EPERM, EBUSY or EACCES, growing with each try (default: 50) */
+  retryDelayMs?: number;
 }
 
 interface ArchiveStamp {
@@ -367,6 +374,25 @@ export class C3pArchive {
     return undefined;
   }
 
+  /**
+   * Rename a session folder. A folder another program holds for a moment
+   * (a virus scanner or indexer on files just written) fails with EPERM,
+   * EBUSY or EACCES on Windows; the rename is tried again a few times
+   * before the failure is returned.
+   */
+  private async renameFolder(from: string, to: string): Promise<void> {
+    const delay = this.options.retryDelayMs ?? RETRY_DELAY_MS;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.fs.rename(from, to);
+        return;
+      } catch (error) {
+        if (attempt >= RENAME_ATTEMPTS || !TRANSIENT_CODES.has(String(codeOf(error)))) throw error;
+        if (delay > 0) await new Promise<void>(resolveWait => setTimeout(resolveWait, delay * attempt));
+      }
+    }
+  }
+
   /** Unpack an archive's content into a session folder (a step of its own, so a test can fail it). */
   private async unpackInto(sessionDir: string, content: ArchiveContent): Promise<void> {
     await writeFiles(join(sessionDir, 'project'), content.project);
@@ -394,17 +420,17 @@ export class C3pArchive {
       throw error;
     }
     try {
-      await this.fs.rename(this.sessionDir, previous);
+      await this.renameFolder(this.sessionDir, previous);
     } catch (error) {
       await this.fs.rm(next).catch(() => undefined);
       await this.mark().catch(() => undefined);
       throw error;
     }
     try {
-      await this.fs.rename(next, this.sessionDir);
+      await this.renameFolder(next, this.sessionDir);
     } catch (error) {
       try {
-        await this.fs.rename(previous, this.sessionDir);
+        await this.renameFolder(previous, this.sessionDir);
       } catch (back) {
         this.stoppedReason = `the working folder could not be put back after a failed refresh (${messageOf(back)}); `
           + `this session's files are in "${previous}", and the archive was read into "${next}"`;

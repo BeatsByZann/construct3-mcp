@@ -299,6 +299,99 @@ describe('withArchiveSync', () => {
     expect((await archiveFiles()).has('files/held.txt')).toBe(true);
   });
 
+  it('closes after a write-back that is already running, not beside it', async () => {
+    await start();
+    const syncGate = gate();
+    const log: string[] = [];
+    const originalSync = archive.sync.bind(archive);
+    let calls = 0;
+    const syncSpy = vi.spyOn(archive, 'sync').mockImplementation(async () => {
+      const n = ++calls;
+      log.push(`sync-${n}-start`);
+      if (n === 1) await syncGate.opened;
+      const result = await originalSync();
+      log.push(`sync-${n}-end`);
+      return result;
+    });
+    const originalClose = archive.close.bind(archive);
+    const closeSpy = vi.spyOn(archive, 'close').mockImplementation(async () => {
+      log.push('close');
+      return originalClose();
+    });
+    served.tool('write_x', 'x', {}, async () => {
+      await touch('x.txt');
+      return okResult('x');
+    });
+    const tool = server.callTool('write_x');
+    await vi.waitFor(() => expect(syncSpy).toHaveBeenCalledTimes(1));
+    expect(syncSpy).toHaveBeenCalledTimes(1);
+    const closing = close();
+    await letOthersRun();
+    expect(closeSpy).not.toHaveBeenCalled();
+    syncGate.open();
+    const result = await tool;
+    expect(notesOf(result)[0]).toContain('Saved the project');
+    const closed = await closing;
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(closed.sync.status).toBe('unchanged');
+    expect(log).toEqual(['sync-1-start', 'sync-1-end', 'close', 'sync-2-start', 'sync-2-end']);
+    expect((await archiveFiles()).has('files/x.txt')).toBe(true);
+  });
+
+  it('keeps the call count right when refresh() rejects', async () => {
+    await start();
+    const refreshSpy = vi.spyOn(archive, 'refresh').mockRejectedValueOnce(new Error('disk gone'));
+    const refused = await server.callTool('list_eventsheets');
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain('disk gone');
+    expect(refused.content[0].text).toContain('Nothing was run.');
+    const next = await server.callTool('list_eventsheets');
+    expect(next.isError).toBeUndefined();
+    expect(refreshSpy).toHaveBeenCalledTimes(2);
+    await close();
+  });
+
+  it('keeps the call count right, and releases close(), when sync() rejects', async () => {
+    await start();
+    served.tool('write_y', 'y', {}, async () => {
+      await touch('y.txt');
+      return okResult('y');
+    });
+    const syncGate = gate();
+    const syncSpy = vi.spyOn(archive, 'sync').mockImplementationOnce(async () => {
+      await syncGate.opened;
+      throw new Error('sync broke');
+    });
+    const refreshSpy = vi.spyOn(archive, 'refresh');
+    const tool = server.callTool('write_y');
+    await vi.waitFor(() => expect(syncSpy).toHaveBeenCalledTimes(1));
+    const closing = close();
+    syncGate.open();
+    const result = await tool;
+    expect(notesOf(result)).toHaveLength(1);
+    expect(notesOf(result)[0]).toContain('NOT saved');
+    expect(notesOf(result)[0]).toContain('sync broke');
+    const closed = await closing;
+    expect(closed.sync.status).toBe('saved');
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect((await archiveFiles()).has('files/y.txt')).toBe(true);
+  });
+
+  it('refreshes at the next call after a sync() that rejected', async () => {
+    await start();
+    served.tool('write_z', 'z', {}, async () => {
+      await touch('z.txt');
+      return okResult('z');
+    });
+    vi.spyOn(archive, 'sync').mockRejectedValueOnce(new Error('sync broke'));
+    const refreshSpy = vi.spyOn(archive, 'refresh');
+    await server.callTool('write_z');
+    const next = await server.callTool('write_z');
+    expect(refreshSpy).toHaveBeenCalledTimes(2);
+    expect(notesOf(next)).toHaveLength(1);
+    expect(notesOf(next)[0]).toContain('Saved the project');
+  });
+
   it('names working folders a killed session left, once', async () => {
     await start({}, { startupNote: 'Working folder(s) left by a session that stopped without closing: x.' });
     const first = await server.callTool('list_eventsheets');
@@ -349,6 +442,7 @@ describe('withArchiveSync', () => {
     });
 
     it('does not repeat a conflict note that was deferred and still stands', async () => {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       await start();
       const held = gate();
       served.resource('held', 'test://held', async () => {
@@ -361,12 +455,15 @@ describe('withArchiveSync', () => {
       await server.callTool('clash');
       held.open();
       await read;
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0][0])).toContain('NOT saved');
       const next = await server.callTool('list_eventsheets');
       expect(notesOf(next)).toHaveLength(1);
       expect(notesOf(next)[0]).toContain('NOT saved');
     });
 
     it('carries a failure that ended after a resource read to the next tool result, with that call\'s own note', async () => {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       await start();
       const held = gate();
       served.resource('held', 'test://held', async () => {
@@ -390,6 +487,8 @@ describe('withArchiveSync', () => {
       const resource = await read;
       expect(resource).toEqual({ contents: [{ uri: 'test://held', text: 'held' }] });
       vi.spyOn(archive, 'sync').mockImplementation(originalSync);
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0][0])).toContain('EBUSY');
       const next = await server.callTool('write_next');
       const notes = notesOf(next);
       expect(notes).toHaveLength(2);
@@ -434,6 +533,22 @@ describe('describeArchiveClose', () => {
     expect(failed).toContain('EBUSY');
   });
 
+  it('keeps the notes of a conflict or failure, and of a folder that could not be removed when nothing needed writing', async () => {
+    await start();
+    const conflict = describeArchiveClose(archive, {
+      kept: archive.workDir,
+      sync: { status: 'conflict', reason: 'it was changed on disk', notes: ['a backup note'] },
+    });
+    expect(conflict).toContain('NOT saved');
+    expect(conflict).toContain('Also: a backup note.');
+    const unchanged = describeArchiveClose(archive, {
+      kept: archive.workDir,
+      sync: { status: 'unchanged', notes: [`the working folder "${archive.sessionDir}" could not be removed`] },
+    });
+    expect(unchanged).toContain(archive.sessionDir);
+    expect(unchanged).not.toContain('NOT saved');
+  });
+
   it('says saved, with the folder to delete, when the write went through and only the folder could not be removed', async () => {
     let sessionDir = '';
     await start({
@@ -452,7 +567,8 @@ describe('describeArchiveClose', () => {
     expect(result.kept).toBe(archive.workDir);
     const text = describeArchiveClose(archive, result);
     expect(text).toContain('Saved the project');
-    expect(text).toContain('could not be removed');
+    expect(text).toContain(`the working folder "${archive.sessionDir}" could not be removed`);
+    expect(text).not.toContain(`"${archive.workDir}"`);
     expect(text).not.toContain('NOT saved');
     expect(text).not.toContain('changes are in');
     expect((await archiveFiles()).has('files/late.txt')).toBe(true);

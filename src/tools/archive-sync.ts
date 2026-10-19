@@ -13,12 +13,18 @@
  * added to the next tool result. close() waits for the running calls,
  * refuses new ones, and closes the archive once.
  *
+ * One archive gets one gate: the server is wrapped once (index.ts does),
+ * and every registration goes through that view. Two views of the same
+ * archive would have two gates that do not know of each other, so a
+ * refresh could overlap a write-back; wrapping the same view again is safe
+ * (it returns the same gate), wrapping the server twice is a caller error.
+ *
  * Wraps the same registration methods as withProjectSync (project-sync.ts)
  * and is applied outside it, so the refresh comes before the project file
  * check of the call.
  */
 
-import type { ArchiveSyncResult, C3pArchive } from '../construct3/c3p-archive.js';
+import type { ArchiveRefreshResult, ArchiveSyncResult, C3pArchive } from '../construct3/c3p-archive.js';
 import { describeArchiveRefresh, describeArchiveSync } from '../construct3/c3p-archive.js';
 
 type Archive = Pick<C3pArchive, 'refresh' | 'sync' | 'close' | 'status' | 'archivePath' | 'workDir'>;
@@ -71,7 +77,13 @@ class ArchiveGate {
     this.running++;
     let refreshNote: string | undefined;
     if (this.running === 1) {
-      const refresh = await this.alone(() => this.archive.refresh());
+      let refresh: ArchiveRefreshResult;
+      try {
+        refresh = await this.alone(() => this.archive.refresh());
+      } catch (error) {
+        // refresh() returns its failures; if one escapes, the call count must still come out right
+        refresh = { status: 'failed', reason: error instanceof Error ? error.message : String(error) };
+      }
       refreshNote = describeArchiveRefresh(this.archive, refresh);
       if (refresh.status === 'failed') {
         this.running--;
@@ -91,7 +103,12 @@ class ArchiveGate {
     let sync: ArchiveSyncResult | undefined;
     if (this.running === 0 && this.dirty && !this.closing) {
       this.dirty = false;
-      sync = await this.alone(() => this.archive.sync());
+      try {
+        sync = await this.alone(() => this.archive.sync());
+      } catch (error) {
+        // sync() returns its failures; if one escapes, a waiting close() must still be released
+        sync = { status: 'failed', reason: error instanceof Error ? error.message : String(error) };
+      }
     }
     this.settleIdle();
     const syncNote = sync && describeArchiveSync(this.archive, sync);
@@ -177,12 +194,15 @@ export function describeArchiveClose(
   archive: Pick<C3pArchive, 'archivePath' | 'workDir'>, result: CloseResult,
 ): string | undefined {
   const { kept, sync } = result;
+  const also = sync.notes?.length ? ` Also: ${sync.notes.join('; ')}.` : '';
   if (sync.status === 'conflict' || sync.status === 'failed') {
-    return `The project was NOT saved to "${archive.archivePath}" (${sync.reason ?? sync.status}); this session's changes are in "${kept ?? archive.workDir}".`;
+    return `The project was NOT saved to "${archive.archivePath}" (${sync.reason ?? sync.status}); this session's changes are in "${kept ?? archive.workDir}".${also}`;
   }
   if (kept) {
-    const saved = sync.status === 'saved' ? describeArchiveSync(archive, sync) : undefined;
-    return `${saved ?? `"${archive.archivePath}" needed no write-back.`} The working folder "${kept}" is left on disk and can be deleted.`;
+    // The notes name the one folder that could not be removed
+    return sync.status === 'saved'
+      ? describeArchiveSync(archive, sync)
+      : `Nothing needed writing back to "${archive.archivePath}".${also}`;
   }
   return undefined;
 }
