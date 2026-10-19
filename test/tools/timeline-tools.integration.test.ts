@@ -701,6 +701,30 @@ describe('timeline track and keyframe tools (real project on disk)', () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it('refuses a registered layout whose file cannot be read, naming no absolute path', async () => {
+    await createTimeline();
+    const layoutPath = join(tmpDir, 'layouts', 'Layout 1.json');
+
+    await writeFile(layoutPath, '{ not json', 'utf-8');
+    reader.invalidateCaches();
+    const invalid = await snapshot();
+    const broken = await addTrack();
+    expect(broken.isError).toBe(true);
+    expect(broken.content[0].text).toContain('layouts/Layout 1.json could not be read');
+    expect(broken.content[0].text).not.toContain(tmpDir);
+    expect(broken.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(invalid);
+
+    await rm(layoutPath);
+    reader.invalidateCaches();
+    const removed = await snapshot();
+    const gone = await addTrack();
+    expect(gone.isError).toBe(true);
+    expect(gone.content[0].text).toContain('layouts/Layout 1.json could not be read (ENOENT)');
+    expect(gone.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(removed);
+  });
+
   // ─── a failing write ──────────────────────────────────────
 
   it('leaves the timeline as it was when the write fails, and words the error project-relative', async () => {
@@ -842,14 +866,27 @@ describe('update_track on value and audio tracks (real project on disk)', () => 
     project.rootFileFolders.sound.items.push(file('Voice.ogg', 'audio/ogg', 100000000000011), file('Both.ogg', 'audio/ogg', 100000000000012));
     project.rootFileFolders.music.items.push(file('Both.ogg', 'audio/ogg', 100000000000013));
     await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
+    await boot();
+  });
 
-    const reader = new Construct3ProjectReader(projectPath);
+  /** Load the project in `tmpDir` on a fresh server. */
+  async function boot() {
+    const reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
     await reader.loadProject();
     const idGen = new IdGenerator();
     const writer = new Construct3ProjectWriter(reader, idGen);
     server = new MockServer();
     registerTimelineTools({ server, reader, writer, idGen } as unknown as MutationToolDeps);
-  });
+  }
+
+  /** Rewrite project.c3proj, then load the project on a fresh server. */
+  async function patchAndBoot(patch: (project: Record<string, unknown>) => void) {
+    const projectPath = join(tmpDir, 'project.c3proj');
+    const project = JSON.parse(await readFile(projectPath, 'utf-8')) as Record<string, unknown>;
+    patch(project);
+    await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
+    await boot();
+  }
 
   afterEach(async () => {
     await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
@@ -886,6 +923,40 @@ describe('update_track on value and audio tracks (real project on disk)', () => 
     expect(both.content[0].text).toContain('audioFolder');
     expect(both.content[0].text).toMatch(/Nothing was changed\.$/);
     expect(await mixOnDisk()).toBe(before);
+  });
+
+  it('keeps the subfolder of a nested registration in audioProjectFilePath', async () => {
+    await patchAndBoot(project => {
+      const sound = (project.rootFileFolders as Record<string, { subfolders: unknown[] }>).sound;
+      sound.subfolders.push({
+        name: 'Voices',
+        items: [],
+        subfolders: [{ name: 'Intro', items: [{ name: 'Nested.ogg', type: 'audio/ogg', sid: 100000000000014 }], subfolders: [] }],
+      });
+    });
+    const result = await server.callTool('update_track', { timelineName: 'Mix', trackName: 'Voice', audioFile: 'Nested.ogg' });
+    expect(result.isError).not.toBe(true);
+    const data = JSON.parse(await mixOnDisk()) as Timeline;
+    const adapter = (data.tracks[1] as unknown as { propertyTracks: Array<{ sourceAdapter: Record<string, unknown> }> })
+      .propertyTracks[0].sourceAdapter;
+    expect(adapter.audioProjectFilePath).toBe('media/Voices/Intro/Nested.ogg');
+  });
+
+  it('warns about a file that is not an audio type, and about an export structure whose path is not known', async () => {
+    await patchAndBoot(project => {
+      const sound = (project.rootFileFolders as Record<string, { items: unknown[] }>).sound;
+      sound.items.push({ name: 'Notes.txt', type: 'text/plain', sid: 100000000000015 });
+      (project.properties as Record<string, unknown>).exportFileStructure = 'flat';
+    });
+    const result = parseResult(await server.callTool('update_track', { timelineName: 'Mix', trackName: 'Voice', audioFile: 'Notes.txt' }));
+    expect(result.success).toBe(true);
+    const warnings = result.warnings.join(' ');
+    expect(warnings).toContain('"Notes.txt" is registered with type "text/plain", not an audio type');
+    expect(warnings).toContain('export file structure is "flat"');
+    const data = JSON.parse(await mixOnDisk()) as Timeline;
+    const adapter = (data.tracks[1] as unknown as { propertyTracks: Array<{ sourceAdapter: Record<string, unknown> }> })
+      .propertyTracks[0].sourceAdapter;
+    expect(adapter).not.toHaveProperty('audioProjectFilePath');
   });
 
   it('points an audio track at a registered file', async () => {

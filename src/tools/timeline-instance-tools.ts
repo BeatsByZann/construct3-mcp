@@ -49,7 +49,7 @@ import {
   type AnyTrack,
 } from '../construct3/timeline-model.js';
 import { keyframeMode, refreshModeValues, folderModeError } from '../construct3/timeline-result-modes.js';
-import { refuse, invalidName, relativeMessage, caseHint } from './timeline-writes.js';
+import { refuse, invalidName, readFailure, relativeMessage, caseHint } from './timeline-writes.js';
 import { trackSelectorShape, type ErrorResult, type TimelineLookup, type TimelineToolkit } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
 
@@ -271,6 +271,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
     return { ok: true, instance: located.instance, objectType: await readObjectTypeSafe(located.instance.type) };
   }
 
+  /** The object type, or undefined when its file cannot be read (properties then count as unverified). */
   async function readObjectTypeSafe(name: string): Promise<ObjectType | undefined> {
     try {
       return await reader.readObjectType(name);
@@ -338,7 +339,14 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           const hint = caseHint(args.layoutName, layoutNames);
           return hint ? refuse(`Layout "${args.layoutName}" not found. ${hint}`) : layoutNotFound(args.layoutName);
         }
-        const layout: Layout = await reader.readLayout(args.layoutName);
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(args.layoutName);
+        } catch (readError) {
+          // The reader wraps the file system error; its cause names the code or the parse text, without a path
+          const cause = readError instanceof Error && readError.cause !== undefined ? readError.cause : readError;
+          return refuse(`Layout "${args.layoutName}" is registered but its file ${reader.getEntityRelativePath('layouts', args.layoutName)} could not be read (${readFailure(cause)}).`);
+        }
 
         const instance = findInstanceByUid(layout, args.instanceUid)?.instance;
         if (!instance) {
@@ -790,9 +798,8 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           if (keyframes.length <= 1) {
             return refuse(`Refusing to delete the last master keyframe of ${trackLabel.charAt(0).toLowerCase()}${trackLabel.slice(1)}: a track with no keyframes is not a valid track. Use remove_timeline_track to remove the whole track.`);
           }
-          // add_audio_track requires a keyframe at 0 because r495.2 moves a
-          // lone later keyframe back there on load; deleting it here would
-          // leave a track the editor silently rewrites.
+          // add_audio_track writes an audio track with a keyframe at 0; deleting
+          // it here would leave a track the editor may have to rewrite.
           if (found.kind === 'audio-track' && sameTime(args.time, 0)) {
             return refuse(`${trackLabel} is an audio track, which needs its keyframe at time 0 (Construct moves one there on load). Delete a later keyframe, or remove_timeline_track to remove the whole track.`);
           }

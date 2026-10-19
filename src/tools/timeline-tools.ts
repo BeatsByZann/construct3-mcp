@@ -462,6 +462,12 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
     return { ok: true, loc, kind: trackKind(loc.track) };
   }
 
+  /**
+   * A registered sound or music file by name, with the audioProjectFilePath
+   * Construct would store for it when the project's export structure is
+   * known. Refused when the name is not registered or is registered in both
+   * families and `folder` does not choose.
+   */
   function findAudioFile(name: string, folder?: 'sound' | 'music') {
     const project = reader.getProject();
     const folders: Array<'sound' | 'music'> = folder ? [folder] : ['sound', 'music'];
