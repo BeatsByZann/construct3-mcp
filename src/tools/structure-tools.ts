@@ -10,6 +10,13 @@
  * appended to the destination folder and a new folder is appended after its
  * siblings.
  *
+ * Construct 3 r506-2 (Free edition, guest) opened a project laid out this way
+ * after moves of a layout, an object type and an event sheet, and saved its
+ * own files at the same paths. Not checked: the editor moving an item
+ * itself, and flowcharts, families, scripts, imported files and brush files.
+ * A view-state file is moved as bytes, unread; r506-2 refused to open a
+ * project whose layout `.uistate.json` had no `grid` object.
+ *
  * Timelines are not movable here: the timelines tree's only observed
  * subfolder is the unnamed one that registers custom eases.
  *

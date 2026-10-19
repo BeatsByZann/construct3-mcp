@@ -58,7 +58,12 @@ async function remapNumbersUnderKey(value: unknown, name: string, fresh: (old: n
   return count;
 }
 
-/** Rewrite every numeric `sid` key under `value` through `fresh`; returns how many were rewritten. */
+/**
+ * Rewrite every numeric `sid` key under `value` through `fresh`; returns how
+ * many were rewritten. This reaches `instanceFolderItem.sid` and the
+ * `scene-graphs-folder-root` items too, where a layout has them; Construct 3
+ * r506-2 (Free edition, guest) saved neither key in a live check.
+ */
 export function remapAllSids(value: unknown, fresh: (old: number) => Promise<number>): Promise<number> {
   return remapNumbersUnderKey(value, 'sid', fresh);
 }

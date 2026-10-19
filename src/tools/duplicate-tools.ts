@@ -4,8 +4,10 @@
  *
  * A copy gets fresh IDs: every SID in it is new, a layout copy's instances get
  * UIDs above the project maximum, and the hierarchy links inside the copy
- * (`sceneGraphData.uid`, `parent-uid`, `children[].uid`) and the Layout View
- * entries that address an instance by SID are mapped consistently. A copy
+ * (`sceneGraphData.uid`, `parent-uid`, `children[].uid`) and any
+ * `instanceFolderItem` and `scene-graphs-folder-root` entries that address an
+ * instance by SID are mapped consistently (Construct 3 r506-2, Free edition,
+ * guest, saves neither key, so the layouts it saves have none). A copy
  * never contains editor state (`*.uistate.json`, `*.instancesBar.json`) and
  * never contains other instances of global object types. A copy that cannot
  * be made faithful is refused with the reason, before anything is written.
@@ -453,7 +455,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         copy.name = args.newName;
         location.siblings.splice(location.index + 1, 0, copy);
 
-        // Layout View entries that address a copied instance by SID.
+        // scene-graphs-folder-root entries that address a copied instance by SID (r506-2 saves none).
         let folderEntries = 0;
         const sceneRoot = layout['scene-graphs-folder-root'] as unknown;
         if (isTree(sceneRoot)) {
