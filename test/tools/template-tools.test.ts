@@ -442,7 +442,9 @@ describe('set_instance_template', () => {
 
     const nonWorld = await set(4, 'template', { templateName: 'K' });
     expect(nonWorld.success).toBe(true);
-    expect(nonWorld.warnings).toEqual(['UID 4 is a non-world instance; whether Construct 3 keeps a template block on a non-world instance was not checked.']);
+    expect(nonWorld.warnings).toEqual([
+      'UID 4 is a non-world instance. The block is written, but Construct 3 r506-2 (Free edition, guest) offered no template properties for the Array object type\'s non-world instance and saved it with no template key.',
+    ]);
     expect(await blockOf(4)).toMatchObject({ mode: 'template', templateName: 'K' });
   });
 

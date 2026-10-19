@@ -235,7 +235,8 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
           warnings.push(...await endedTemplateWarnings(reader, instance.type, previous.templateName, layoutName, layout));
         }
         if (mode !== 'none' && found.entry === undefined) {
-          warnings.push(`UID ${uid} is a non-world instance; whether Construct 3 keeps a template block on a non-world instance was not checked.`);
+          warnings.push(`UID ${uid} is a non-world instance. The block is written, but Construct 3 r506-2 (Free edition, guest) offered no template properties `
+            + 'for the Array object type\'s non-world instance and saved it with no template key.');
         }
 
         let backupPath: string;
