@@ -4,11 +4,15 @@
  * whose project file the server then loads.
  */
 
+import { stat } from 'node:fs/promises';
 import { C3pArchive, isC3pPath, type C3pArchiveOptions } from './c3p-archive.js';
+import { describeArchiveClose } from '../tools/archive-sync.js';
 
 /** The project path to load, and the archive it came from when it is a .c3p. */
 export async function openProjectSource(path: string, options?: C3pArchiveOptions): Promise<{ projectPath: string; archive?: C3pArchive }> {
-  if (!isC3pPath(path)) return { projectPath: path };
+  // A folder whose name ends in .c3p stays a folder project; only a file is an archive.
+  // A path that cannot be examined goes to the archive reader, which says why.
+  if (!isC3pPath(path) || (await stat(path).then(info => info.isDirectory(), () => false))) return { projectPath: path };
   const archive = await C3pArchive.open(path, options);
   return { projectPath: archive.projectFile, archive };
 }
@@ -27,7 +31,9 @@ export async function startC3pSession<T>(
   try {
     return await start(source.projectPath, source.archive);
   } catch (error) {
-    await source.archive?.close();
+    const closed = await source.archive?.close().catch(() => undefined);
+    const note = source.archive && closed ? describeArchiveClose(source.archive, closed) : undefined;
+    if (note) console.error(note);
     throw error;
   }
 }

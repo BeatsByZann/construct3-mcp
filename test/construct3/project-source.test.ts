@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as nodeFs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { C3pArchive } from '../../src/construct3/c3p-archive.js';
 import { openProjectSource, startC3pSession } from '../../src/construct3/project-source.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { zipBuffer, type ZipEntry } from '../../src/runtime/zip-writer.js';
@@ -67,7 +68,15 @@ describe('openProjectSource', () => {
   it('rejects a .c3p that is not an archive and leaves no session folder', async () => {
     const archivePath = join(root, 'broken.c3p');
     await nodeFs.writeFile(archivePath, Buffer.from('this is not a zip archive at all'));
-    await expect(openProjectSource(archivePath, { workRoot })).rejects.toThrow();
+    await expect(openProjectSource(archivePath, { workRoot })).rejects.toThrow(/as a \.c3p archive/);
+    expect(await sessionLeftovers()).toEqual([]);
+  });
+
+  it.each(['folder.c3p', 'FOLDER.C3P'])('keeps a directory named %s a folder project, with no archive', async (name) => {
+    const dir = join(root, name);
+    await nodeFs.mkdir(dir);
+    const source = await openProjectSource(dir, { workRoot });
+    expect(source).toEqual({ projectPath: dir });
     expect(await sessionLeftovers()).toEqual([]);
   });
 });
@@ -88,6 +97,27 @@ describe('startC3pSession', () => {
   it('passes a folder project with no archive', async () => {
     const seen = await startC3pSession(FIXTURE_DIR, async (projectPath, archive) => ({ projectPath, archive }), { workRoot });
     expect(seen).toEqual({ projectPath: FIXTURE_DIR, archive: undefined });
+  });
+
+  it('reports what close() says when the start fails, and still throws the start error', async () => {
+    const archivePath = join(root, 'game.c3p');
+    await nodeFs.writeFile(archivePath, zipBuffer(await fixtureEntries()));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let opened: C3pArchive | undefined;
+    try {
+      await expect(startC3pSession(archivePath, async (_projectPath, archive) => {
+        opened = archive;
+        vi.spyOn(archive!, 'close').mockResolvedValue({
+          kept: 'kept-folder', sync: { status: 'saved', notes: ['the working folder "kept-folder" could not be removed'] },
+        });
+        throw new Error('connect failed');
+      }, { workRoot })).rejects.toThrow('connect failed');
+      expect(spy.mock.calls.flat().join('\n')).toContain('could not be removed');
+    } finally {
+      spy.mockRestore();
+      vi.restoreAllMocks();
+      await opened?.close();
+    }
   });
 
   describe('removes the working folder when the start fails', () => {
