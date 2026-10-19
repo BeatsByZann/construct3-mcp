@@ -2,16 +2,13 @@
  * Structure tools: move_project_item.
  *
  * Project Bar folders. project.c3proj stores each tree as
- * `{ items, subfolders }`, and a folder as `{ items, subfolders, name }`. The
- * files of an item live at `<category>/<folder path>/<name>.json`, so moving
- * an item to another folder also moves its files: its editor-state files
- * (`<name>.uistate.json` next to a sheet, layout or flowchart, and
- * `layouts/uistate/<folder path>/<name>.instancesBar.json` for a layout), an
- * object type's tilemap brush file (`tilemapBrushes/objectTypes/<folder
- * path>/<name>.brush.json`), and a script or imported project file under
- * `scripts/` or `files/`. Item and folder order is the user's own, so a moved
- * item is appended to the destination folder and a new folder is appended
- * after its siblings.
+ * `{ items, subfolders }`, and a folder as `{ items, subfolders, name }`. A
+ * move registers the item in the destination folder and moves its files to
+ * the matching path under that folder: the entity file, its editor-state
+ * files, an object type's tilemap brush file, and a script or imported
+ * project file. Item and folder order is the user's own, so a moved item is
+ * appended to the destination folder and a new folder is appended after its
+ * siblings.
  *
  * Timelines are not movable here: the timelines tree's only observed
  * subfolder is the unnamed one that registers custom eases.
@@ -150,14 +147,14 @@ function suggestionsFor(reader: Reader, category: string, name: string): string[
   return [];
 }
 
-/** The tool that lists the names of a category. */
+/** Where to see the names of a category: a tool that lists them, or for flowcharts (no listing tool) the Project Bar. */
 function listToolFor(category: string): string {
   switch (category) {
     case 'objectType': return 'list_objects';
     case 'family': return 'list_families';
     case 'layout': return 'list_layouts';
     case 'eventSheet': return 'list_eventsheets';
-    default: return 'list_flowcharts';
+    default: return 'the Project Bar';
   }
 }
 

@@ -406,6 +406,16 @@ describe('move_project_item', () => {
     });
   });
 
+  it('refuses an unregistered flowchart name without naming a tool the server lacks', async () => {
+    await editProject(p => {
+      p.flowcharts = { items: ['Graph'], subfolders: [] };
+    });
+    const unknown = await refusal({ category: 'flowchart', name: 'Nope', folder: 'A' }, 'Flowchart "Nope" not found.', 'Use the Project Bar to see all available names.');
+    const variant = await refusal({ category: 'flowchart', name: 'graph', folder: 'A' }, 'names are matched with their letter case', 'Did you mean "Graph"?');
+    expect(unknown.text).not.toContain('list_');
+    expect(variant.text).not.toContain('list_');
+  });
+
   it('refuses a script move when the project has no script tree', async () => {
     await editProject(p => {
       delete (p.rootFileFolders as Partial<ProjectFile['rootFileFolders']>).script;
