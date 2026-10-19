@@ -4,14 +4,14 @@
  * is linked into its place, and the file is linked back when that fails. No
  * step replaces or removes a file another write put at the name meanwhile.
  *
- * Failures are injected through a pass-through mock of rename, unlink and
- * link that fails only the calls a test names, and random tokens can be
+ * Failures are injected through a pass-through mock of rename, unlink, link
+ * and lstat that fails only the calls a test names, and random tokens can be
  * forced. The files are synthetic, written to a temp directory; the writer
  * tests use a copy of the minimal fixture.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { cp, link, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'fs/promises';
+import { cp, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { basename, dirname, join } from 'path';
 import { atomicReplace } from '../../src/construct3/atomic-write.js';
@@ -22,10 +22,16 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 
 const forced = vi.hoisted(() => ({ tokens: [] as string[] }));
 
-// rename, unlink and link pass through unless a test queues a fault for the call
+// rename, unlink, link and lstat pass through unless a test queues a fault for the call
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
-  return { ...actual, rename: vi.fn(actual.rename), unlink: vi.fn(actual.unlink), link: vi.fn(actual.link) };
+  return {
+    ...actual,
+    rename: vi.fn(actual.rename),
+    unlink: vi.fn(actual.unlink),
+    link: vi.fn(actual.link),
+    lstat: vi.fn(actual.lstat),
+  };
 });
 
 // randomBytes passes through unless a test queues tokens (16 hex digits each)
@@ -42,7 +48,7 @@ vi.mock('crypto', async (importOriginal) => {
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
-type Op = 'rename' | 'unlink' | 'link';
+type Op = 'rename' | 'unlink' | 'link' | 'lstat';
 
 /** One injected fault: the first call of `op` whose paths match runs `before`, then fails with `code`, or with `pass` runs for real and then `after`. */
 interface Fault {
@@ -116,6 +122,12 @@ beforeEach(async () => {
     if (fault) throw injected(fault, String(path));
     return actual.unlink(path);
   });
+  vi.mocked(lstat).mockClear();
+  vi.mocked(lstat).mockImplementation((async (path: Parameters<typeof lstat>[0]) => {
+    const fault = takeFault('lstat', String(path));
+    if (fault) throw injected(fault, String(path));
+    return actual.lstat(path);
+  }) as typeof lstat);
 });
 
 describe('atomicReplace when the rename onto the file fails with EEXIST', () => {
@@ -139,7 +151,7 @@ describe('atomicReplace when the rename onto the file fails with EEXIST', () => 
   /** The first rename's temp file, and the name the file was moved aside to. */
   const temp = () => calls(rename)[0][0];
   const aside = () => calls(rename).find(([from]) => from === file)?.[1] ?? '';
-  /** The old code retries with a rename, the new one links: a failed install is queued for both. */
+  /** A failed install: EEXIST from the first rename, then `code` from the next call that installs the temp file, a rename or a link. */
   const installFails = (code: string, extra: Partial<Fault> = {}): Fault[] => [
     { op: 'rename', matches: tempOntoFile, code: 'EEXIST' },
     { op: 'rename', matches: tempOntoFile, code },
@@ -169,7 +181,7 @@ describe('atomicReplace when the rename onto the file fails with EEXIST', () => 
     expect(await readdir(dir)).toEqual([name]);
   });
 
-  it('replaces the file through an aside copy and a link when the first rename gives EEXIST', async () => {
+  it('replaces the file by moving it aside and linking the new content in when the first rename gives EEXIST', async () => {
     faults = [{ op: 'rename', matches: tempOntoFile, code: 'EEXIST' }];
 
     expect(await atomicReplace(file, '{"v":2}')).toBe(file);
@@ -242,7 +254,7 @@ describe('atomicReplace when the rename onto the file fails with EEXIST', () => 
     const message = (error as Error).message;
     const lead = `Could not replace ${name}: EPERM: injected failure, link '${t}' -> '${file}'`;
     expect(message.startsWith(`${lead}. ${name} was created again while this write had it moved aside (EEXIST`)).toBe(true);
-    const realCause = message.slice(message.indexOf('(') + 1, message.indexOf('), and that file'));
+    const realCause = message.slice(message.indexOf(' moved aside (') + ' moved aside ('.length, message.indexOf('), and that file'));
     expect(message).toBe(leftWith(lead, a, t, realCause));
     expect((error as NodeJS.ErrnoException).code).toBe('EPERM');
   });
@@ -262,7 +274,7 @@ describe('atomicReplace when the rename onto the file fails with EEXIST', () => 
     expect(await readFile(t, 'utf-8')).toBe('{"v":2}');
     const message = (error as Error).message;
     expect(message.startsWith(`Could not replace ${name}. ${name} was created again while this write had it moved aside (EEXIST`)).toBe(true);
-    const realCause = message.slice(message.indexOf('(') + 1, message.indexOf('), and that file'));
+    const realCause = message.slice(message.indexOf(' moved aside (') + ' moved aside ('.length, message.indexOf('), and that file'));
     expect(message).toBe(leftWith(`Could not replace ${name}`, a, t, realCause));
     expect((error as NodeJS.ErrnoException).code).toBe('EEXIST');
   });
@@ -300,7 +312,7 @@ describe('atomicReplace when the rename onto the file fails with EEXIST', () => 
     expect((await readdir(dir)).sort()).toEqual([name, basename(temp())].sort());
   });
 
-  it('keeps the replacement when the aside copy cannot be removed afterwards', async () => {
+  it('keeps the replacement when the aside file cannot be removed afterwards', async () => {
     faults = [
       { op: 'rename', matches: tempOntoFile, code: 'EEXIST' },
       { op: 'unlink', matches: (path) => isOwn(path, 'old'), code: 'EBUSY' },
@@ -467,6 +479,76 @@ describe('atomicReplace when the rename onto the file fails with EEXIST', () => 
     expect(await readFile(file, 'utf-8')).toBe('{"v":2}');
     expect(await readdir(dir)).toEqual([name]);
   });
+
+  it('still reports the failed hard link when the temp file cannot be removed', async () => {
+    const before = await statFileState(file);
+    faults = [
+      { op: 'rename', matches: tempOntoFile, code: 'EEXIST' },
+      { op: 'link', matches: (from, to) => isTempFor(from, file) && to !== undefined && isOwn(to, 'link'), code: 'EPERM' },
+      { op: 'unlink', matches: (path) => isTempFor(path, file), code: 'EBUSY' },
+    ];
+
+    const error = await atomicReplace(file, '{"v":2}').catch((e: unknown) => e);
+
+    const probe = calls(link)[0][1];
+    expect((error as Error).message).toBe(
+      `Could not replace ${name}: EEXIST: injected failure, rename '${temp()}' -> '${file}', and the way around that error ` +
+      `needs a hard link in this folder, which failed (EPERM: injected failure, link '${temp()}' -> '${probe}'). ` +
+      'This write did not change it.');
+    expect((error as NodeJS.ErrnoException).code).toBe('EEXIST');
+    expect(sameFileState(await statFileState(file), before)).toBe(true);
+    expect((await readdir(dir)).sort()).toEqual([name, basename(temp())].sort());
+    expect(await readFile(temp(), 'utf-8')).toBe('{"v":2}');
+  });
+
+  it('keeps the replacement when the temp file cannot be removed after the link in', async () => {
+    faults = [
+      { op: 'rename', matches: tempOntoFile, code: 'EEXIST' },
+      { op: 'unlink', matches: (path) => isTempFor(path, file), code: 'EBUSY' },
+    ];
+
+    expect(await atomicReplace(file, '{"v":2}')).toBe(file);
+
+    expect(await readFile(file, 'utf-8')).toBe('{"v":2}');
+    // The temp file is a second name of the new file
+    expect((await readdir(dir)).sort()).toEqual([name, basename(temp())].sort());
+    expect(await readFile(temp(), 'utf-8')).toBe('{"v":2}');
+  });
+
+  it('still reports the put back when the aside file cannot be removed afterwards', async () => {
+    const before = await statFileState(file);
+    faults = [...installFails('EPERM'), { op: 'unlink', matches: (path) => isOwn(path, 'old'), code: 'EBUSY' }];
+
+    const error = await atomicReplace(file, '{"v":2}').catch((e: unknown) => e);
+
+    expect((error as Error).message).toBe(
+      `Could not replace ${name}: EPERM: injected failure, link '${temp()}' -> '${file}'. ` +
+      'It was put back, so this write did not change it.');
+    expect((error as NodeJS.ErrnoException).code).toBe('EPERM');
+    expect(await readFile(file, 'utf-8')).toBe('{"v":1}');
+    expect(sameFileState(await statFileState(file), before)).toBe(true);
+    // The aside file is a second name of the file that was put back
+    expect((await readdir(dir)).sort()).toEqual([name, basename(aside())].sort());
+    expect(await readFile(aside(), 'utf-8')).toBe('{"v":1}');
+  });
+
+  it('leaves the file as it was when the aside name cannot be checked', async () => {
+    const before = await statFileState(file);
+    faults = [
+      { op: 'rename', matches: tempOntoFile, code: 'EEXIST' },
+      { op: 'lstat', matches: (path) => isOwn(path, 'old'), code: 'EACCES' },
+    ];
+
+    const error = await atomicReplace(file, '{"v":2}').catch((e: unknown) => e);
+
+    const checked = String(vi.mocked(lstat).mock.calls.map(([path]) => path).find(path => isOwn(String(path), 'old')));
+    expect((error as Error).message).toBe(
+      `Could not replace ${name}: EACCES: injected failure, lstat '${checked}'. This write did not change it.`);
+    expect((error as NodeJS.ErrnoException).code).toBe('EACCES');
+    expect(calls(rename).filter(([from]) => from === file)).toEqual([]);
+    expect(sameFileState(await statFileState(file), before)).toBe(true);
+    expect(await readdir(dir)).toEqual([name]);
+  });
 });
 
 describe('the writer when a replacement fails after EEXIST', () => {
@@ -486,7 +568,7 @@ describe('the writer when a replacement fails after EEXIST', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  /** A failed install of a temp file onto `target`, for the old code's rename and the new code's link. */
+  /** A failed install of a temp file onto `target`: EEXIST from the first rename, then EPERM from the next call that installs it, a rename or a link. */
   const installFailsOnto = (target: string): Fault[] => {
     const tempOntoTarget = (from: string, to?: string) => isTempFor(from, target) && to === target;
     return [

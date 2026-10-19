@@ -1,7 +1,8 @@
 /**
  * Atomic file replacement that keeps an existing file's name on disk.
  *
- * Files are replaced by writing a temp file beside them and renaming it onto <file>. On a
+ * Files are replaced by writing a temp file beside them and renaming it onto
+ * <file>. On a
  * case-insensitive file system (Windows, default macOS) the path can name an
  * existing file whose name differs in case — "layout1.json" finds
  * "Layout1.json" when project.c3proj spells the entity "layout1" — and the
@@ -84,8 +85,9 @@ const MAX_NAME_ATTEMPTS = 5;
  *
  * The files this function makes for itself are named
  * .c3mcp-<16 random hex digits>.<tmp|link|old>, the same length whatever the
- * file is called, and each is claimed exclusively: a name that already exists
- * is never written over, and another one is drawn.
+ * file is called. The temp and link-test names are claimed exclusively, and
+ * the aside name is checked before the file is moved to it; a name found to
+ * exist is never written over, and another one is drawn.
  *
  * When the rename fails with EEXIST and the path is a regular file, the
  * function first checks that the folder can make hard links, then renames the
@@ -99,7 +101,8 @@ const MAX_NAME_ATTEMPTS = 5;
  * temp file (the new content). When the path is not a regular file, the EEXIST
  * error is thrown as it is.
  *
- * The new errors have the named failure as `cause` and keep its `code`.
+ * The errors it throws for the fallback have the named failure as `cause` and
+ * keep its `code`.
  * Removing the function's own files afterwards is best effort: one that
  * cannot be removed stays next to the file.
  */
@@ -163,43 +166,46 @@ async function replaceThroughAside(target: string, tmpPath: string, first: unkno
     await removeIfPossible(tmpPath);
     throw replaceError(`Could not replace ${name}: ${messageOf(e)}. This write did not change it.`, e);
   }
+  const bothKept = (): string => `At that point what was at ${name} before this write was in ${basename(asidePath)} `
+    + `and this write's content in ${basename(tmpPath)}, both in the same folder, and neither was removed.`;
   const left = (lead: string | undefined, taken: unknown, cause: unknown): Error => replaceError(
     `Could not replace ${name}${lead === undefined ? '' : `: ${lead}`}. ${name} was created again while this write had it `
-    + `moved aside (${messageOf(taken)}), and that file was left as it is. At that point what was at ${name} before this `
-    + `write was in ${basename(asidePath)} and this write's content in ${basename(tmpPath)}, both in the same folder, `
-    + 'and neither was removed.', cause);
+    + `moved aside (${messageOf(taken)}), and that file was left as it is. ${bothKept()}`, cause);
 
   // Another program may have put something other than a file at the name after the check above
   const isRegular = await isFile(asidePath);
   let lead = `${messageOf(first)}, and ${name} is not a regular file`;
   let cause: unknown = first;
   if (isRegular) {
+    // Only the link is in the try, so its catch never sees anything but a failed link in
+    let linked = false;
     try {
       await link(tmpPath, target);
-      await removeIfPossible(tmpPath);
-      await removeIfPossible(asidePath);
-      return;
+      linked = true;
     } catch (e: unknown) {
       if (errorCode(e) === 'EEXIST') throw left(undefined, e, e);
       lead = messageOf(e);
       cause = e;
     }
+    if (linked) {
+      await removeIfPossible(tmpPath);
+      await removeIfPossible(asidePath);
+      return;
+    }
   }
   try {
     if (isRegular) {
       await link(asidePath, target);
-      await removeIfPossible(asidePath);
     } else {
       // A directory cannot be linked; a rename puts it back only onto a missing name or an empty directory
       await rename(asidePath, target);
     }
   } catch (e: unknown) {
     if (errorCode(e) === 'EEXIST') throw left(lead, e, cause);
-    throw replaceError(`Could not replace ${name}: ${lead}. Putting it back failed too (${messageOf(e)}). At that point `
-      + `what was at ${name} before this write was in ${basename(asidePath)} and this write's content in `
-      + `${basename(tmpPath)}, both in the same folder, and neither was removed. If ${name} is missing, rename `
-      + `${basename(asidePath)} to ${name} to put it back.`, cause);
+    throw replaceError(`Could not replace ${name}: ${lead}. Putting it back failed too (${messageOf(e)}). `
+      + `${bothKept()} If ${name} is missing, rename ${basename(asidePath)} to ${name} to put it back.`, cause);
   }
+  if (isRegular) await removeIfPossible(asidePath);
   await removeIfPossible(tmpPath);
   throw replaceError(`Could not replace ${name}: ${lead}. It was put back, so this write did not change it.`, cause);
 }
