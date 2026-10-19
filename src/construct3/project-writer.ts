@@ -790,8 +790,8 @@ export class Construct3ProjectWriter {
    * scan are renewed), the file is read right before the write, and when it
    * changes between that read and the write it is read and changed again.
    * Only when it keeps changing is the update refused (StaleFileError).
-   * The parsed file is brought to the shape the r495.2 editor saves
-   * (project-shape.ts) after `change` returned and before it is serialized,
+   * The parsed file is brought to the shape project-shape.ts describes
+   * after `change` returned and before it is serialized,
    * so a write follows that shape.
    * These updates run after the tool call wrote other files (registering a
    * new entity, removing a deleted one), so refusing them for a change they
