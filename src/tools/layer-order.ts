@@ -231,8 +231,10 @@ type Reader = Construct3ProjectReader;
 
 /**
  * Most items one bulk call takes: a guard on the size of one request and
- * its result (each item may carry up to 50KB of property values and 50KB
- * of behavior values, and the result lists every item). The size of a
+ * its result, for every kind of item. An add item may carry up to 50KB of
+ * property values and 50KB of behavior values, an update item tags and
+ * instance variable values, a delete item a UID and a move item a UID
+ * with a few short fields, and the result lists every item. The size of a
  * layout is bounded by the writer instead: it refuses a file whose text
  * as written is over the file size limit, before anything is written.
  */
@@ -249,7 +251,8 @@ function bulkItemRefusal(index: number, message: string): string {
 
 /** The refusal when a step outside the items throws before anything was written. */
 function stoppedBeforeWrite(error: unknown): string {
-  return `The change was stopped before anything was written: ${messageOf(error)}. Nothing was changed.`;
+  const reason = messageOf(error).replace(/\.\s*Nothing was written$/, '');
+  return `The change was stopped before anything was written: ${reason}. Nothing was changed.`;
 }
 
 /**
