@@ -7,7 +7,7 @@
  * the archive's entries the tools could overwrite (those the packer leaves
  * out, and *.tmp files) into its held/ folder, which no tool writes. The
  * archive and the folder are kept in step between tool calls
- * (archive-sync.ts):
+ * (withArchiveSync in src/tools/archive-sync.ts calls them around the calls):
  * - before a call (refresh), when the archive changed on disk since the
  *   server opened or last wrote it and the project folder holds no change
  *   of the session's that the archive lacks, the archive is unpacked into
@@ -38,7 +38,7 @@
  *
  * refresh, sync and close must not overlap on one instance: a refresh that
  * ran during a write-back would see the archive moved aside. The caller
- * serializes them (archive-sync.ts).
+ * serializes them (withArchiveSync holds a gate for it).
  */
 
 import { createHash } from 'node:crypto';
@@ -681,7 +681,9 @@ export class C3pArchive {
    * archive lacks (a conflict or a failed write) or the archive stopped,
    * in which case they are kept and the folder returned. A folder that
    * could not be removed after a write-back that went through is kept too,
-   * and named in the notes of the (still saved) result. Never throws.
+   * and named in the notes of the (still saved) result; `kept` then is only
+   * a folder to delete, so the caller tells it from kept changes by
+   * `sync.status` (describeArchiveClose does). Never throws.
    */
   async close(): Promise<{ kept?: string; sync: ArchiveSyncResult }> {
     if (this.stoppedReason) return { kept: `${this.sessionDir}.previous`, sync: { status: 'failed', reason: this.stoppedReason, stopped: true } };
