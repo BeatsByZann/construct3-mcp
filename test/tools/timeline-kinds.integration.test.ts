@@ -714,7 +714,21 @@ describe('timeline value and audio tracks, track folders and legacy tracks (real
       expect(await readFile(path, 'utf-8')).toBe(raw);
     });
 
-    it('still flags, moves and removes an untyped track without touching its values', async () => {
+    it('still deletes a keyframe, moves the track and removes a property track on an untyped track', async () => {
+      await withLegacy();
+      await ok('delete_keyframe', { timelineName: 'Legacy', instanceUid: 0, time: 1 });
+      await ok('add_timeline_folder', { timelineName: 'Legacy', name: 'Group' });
+      await ok('move_timeline_track', { timelineName: 'Legacy', instanceUid: 0, folder: 'Group' });
+      let listed = await ok('list_timeline_tracks', { timelineName: 'Legacy' });
+      expect(listed.tracks[0]).toMatchObject({ kind: 'legacy-instance-track', folder: 'Group', keyframeTimes: [0] });
+      expect(listed.tracks[0].propertyTracks).toEqual([{ property: 'offsetX', sourceType: 'world-instance', folder: '', keyframeCount: 1 }]);
+
+      await ok('remove_property_track', { timelineName: 'Legacy', instanceUid: 0, property: 'offsetX' });
+      listed = await ok('list_timeline_tracks', { timelineName: 'Legacy' });
+      expect(listed.tracks[0].propertyTracks).toEqual([]);
+    });
+
+    it('still flags and removes an untyped track without touching its values', async () => {
       const before = JSON.parse(await withLegacy());
       await ok('update_track', { timelineName: 'Legacy', instanceUid: 0, enabled: false });
       const after = await onDisk('Legacy');

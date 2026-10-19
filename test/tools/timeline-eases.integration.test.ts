@@ -649,6 +649,37 @@ describe('custom eases (real project on disk)', () => {
       expect(Object.keys(before)).not.toContain('timelines/transitions/Bouncy.json');
     });
 
+    it('list_eases names a timeline that cannot be opened and leaves it out of usedBy', async () => {
+      await ok('create_ease', { name: 'Bouncy', points: POINTS });
+      await createMove();
+      await ok('update_timeline', { name: 'Move', ease: 'Bouncy' });
+      const clean = await ok('list_eases', {});
+      expect(Object.keys(clean)).not.toContain('unreadableTimelines');
+
+      await writeFile(file('timelines/Broken.json'), '{ broken', 'utf-8');
+      await editProject(project => { project.timelines.items.push('Broken'); });
+      await boot();
+
+      const listed = await ok('list_eases', {});
+      expect(listed.unreadableTimelines).toEqual(['Broken']);
+      expect((listed.eases as Json[])[0].usedBy).toEqual(['Move']);
+    });
+
+    it('delete_ease removes the stored copy of the ease from a timeline that does not use it', async () => {
+      await ok('create_ease', { name: 'Bouncy', points: POINTS });
+      await createMove();
+      const data = await onDisk();
+      const copy = JSON.parse(await readText('timelines/transitions/Bouncy.json')) as Json;
+      data.transitionsData = [{ folders: [], json: copy }] as unknown as typeof data.transitionsData;
+      await writeFile(file('timelines/Move.json'), JSON.stringify(data, null, '\t'), 'utf-8');
+      await boot();
+
+      const deleted = await ok('delete_ease', { name: 'Bouncy' });
+      expect((deleted.warnings as string[]).join(' ')).toContain("Removed the ease's stored copy from timeline(s) Move");
+      expect((await onDisk()).transitionsData).toEqual([]);
+      expect(existsSync(file('timelines/transitions/Bouncy.json'))).toBe(false);
+    });
+
     it('update_ease puts back an error thrown after a confirmed write', async () => {
       await setupUsed();
       const before = await snapshot();
