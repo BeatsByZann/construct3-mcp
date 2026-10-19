@@ -272,6 +272,70 @@ function setupRegistered() {
   return { server, reader };
 }
 
+// ─── track and keyframe tools ─────────────────────────────
+// These pin the guards that fire before any file I/O. The on-disk outcome and
+// the stored track shape are proved in timeline-tools.integration.test.ts
+// against a real project directory.
+
+const TRACK_TOOLS = [
+  'add_timeline_track',
+  'remove_timeline_track',
+  'add_property_track',
+  'remove_property_track',
+  'set_keyframe',
+  'delete_keyframe',
+  'update_track',
+];
+
+/** Minimal valid arguments for each track tool, addressing "Timeline 1". */
+const TRACK_TOOL_ARGS: Record<string, Record<string, unknown>> = {
+  add_timeline_track: { timelineName: 'Timeline 1', layoutName: 'Layout 1', instanceUid: 0 },
+  remove_timeline_track: { timelineName: 'Timeline 1', instanceUid: 0 },
+  add_property_track: { timelineName: 'Timeline 1', instanceUid: 0, property: 'offsetX' },
+  remove_property_track: { timelineName: 'Timeline 1', instanceUid: 0, property: 'offsetX' },
+  set_keyframe: { timelineName: 'Timeline 1', instanceUid: 0, time: 0 },
+  delete_keyframe: { timelineName: 'Timeline 1', instanceUid: 0, time: 0 },
+  update_track: { timelineName: 'Timeline 1', instanceUid: 0, enabled: false },
+};
+
+describe('track and keyframe tools', () => {
+  it('registers every track tool', () => {
+    const { server } = setup();
+    for (const name of TRACK_TOOLS) {
+      expect(server.hasTool(name), name).toBe(true);
+    }
+  });
+
+  it('errors when the timeline is not in the project', async () => {
+    const { server } = setup();
+    for (const name of TRACK_TOOLS) {
+      const result = await server.callTool(name, { ...TRACK_TOOL_ARGS[name], timelineName: 'Ghost' });
+      expect(result.isError, name).toBe(true);
+      expect(result.content[0].text, name).toContain('"Ghost" not found');
+    }
+  });
+
+  it('errors when the timeline is registered but its file cannot be read', async () => {
+    const { server } = setupRegistered();
+    for (const name of TRACK_TOOLS) {
+      const result = await server.callTool(name, TRACK_TOOL_ARGS[name]);
+      expect(result.isError, name).toBe(true);
+      expect(result.content[0].text, name).toContain('could not be read');
+    }
+  });
+
+  it('update_track errors with no updates, before touching the file', async () => {
+    const { server } = setupRegistered();
+    const result = await server.callTool('update_track', {
+      timelineName: 'Timeline 1',
+      instanceUid: 0,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates');
+    expect(result.content[0].text).toContain('initialVisibility');
+  });
+});
+
 // ─── update_timeline playback fields ──────────────────────
 
 describe('update_timeline playback fields', () => {

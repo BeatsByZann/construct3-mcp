@@ -43,8 +43,10 @@ import {
   trackKind,
   syncTransitionsData,
   easeWarnings,
+  audioProjectFilePath,
   type CustomEase,
 } from '../construct3/timeline-model.js';
+import { listRegisteredFileEntries } from '../construct3/registered-file-entries.js';
 import { refreshModeValues, legacyTracksFollowingTimeline, folderModeError } from '../construct3/timeline-result-modes.js';
 import { loadCustomEases } from '../construct3/ease-params.js';
 import {
@@ -70,6 +72,7 @@ import {
   type TrackSelectorArgs,
 } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
+import { registerTimelineInstanceTools } from './timeline-instance-tools.js';
 
 export type { Timeline, TimelineFolder };
 
@@ -322,7 +325,7 @@ async function loadTimeline(projectDir: string, name: string, location: Timeline
 
 // ─── Registration ──────────────────────────────────────────
 
-export function registerTimelineTools({ server: mcpServer, reader, writer }: MutationToolDeps) {
+export function registerTimelineTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
   const server = withProjectSync(mcpServer, reader);
 
   const projectLabel = (filePath: string) => relative(reader.getProjectDir(), filePath).split(sep).join('/');
@@ -459,6 +462,41 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
     return { ok: true, loc, kind: trackKind(loc.track) };
   }
 
+  function findAudioFile(name: string, folder?: 'sound' | 'music') {
+    const project = reader.getProject();
+    const folders: Array<'sound' | 'music'> = folder ? [folder] : ['sound', 'music'];
+    const matches: Array<{ entry: Record<string, unknown>; audioType: 'sound' | 'music'; subfolder?: string }> = [];
+    for (const f of folders) {
+      for (const { entry, subfolder } of listRegisteredFileEntries(project, f)) {
+        if (entry.name === name) matches.push({ entry: entry as unknown as Record<string, unknown>, audioType: f, subfolder });
+      }
+    }
+    if (matches.length === 0) {
+      return {
+        ok: false as const,
+        error: refuse(`Audio file "${name}" is not registered in the project's ${folders.join(' or ')} files. Import it into Sounds or Music in the Construct 3 editor first.`),
+      };
+    }
+    if (matches.length > 1) {
+      const where = matches.map(m => `${m.audioType}${m.subfolder ? '/' + m.subfolder : ''}`).join(', ');
+      return {
+        ok: false as const,
+        error: refuse(`Audio file "${name}" is registered more than once (${where}); pass audioFolder to choose sound or music.`),
+      };
+    }
+    const warnings: string[] = [];
+    const type = matches[0].entry.type;
+    if (typeof type !== 'string' || !type.startsWith('audio/')) {
+      warnings.push(`"${name}" is registered with type "${String(type)}", not an audio type.`);
+    }
+    const structure = (project as unknown as { properties?: { exportFileStructure?: unknown } }).properties?.exportFileStructure;
+    const path = audioProjectFilePath(name, structure, matches[0].subfolder);
+    if (path === undefined) {
+      warnings.push(`The project's export file structure is ${structure === undefined ? 'not set' : `"${String(structure)}"`}, and the path Construct would store for an audio file in it is not known here, so no audioProjectFilePath was written; check the track in the Construct 3 editor.`);
+    }
+    return { ok: true as const, file: { entry: matches[0].entry, audioType: matches[0].audioType, path }, warnings };
+  }
+
   async function allTimelines() {
     const timelines: Array<{ name: string; filePath: string; data: Timeline; text: string; state: FileState }> = [];
     const unreadable: string[] = [];
@@ -482,6 +520,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
     timelineNames,
     easeFilePath,
     projectContainer: timelinesContainer,
+    findAudioFile,
   };
 
   // ─── list_timelines ───────────────────────────────────────
@@ -770,4 +809,6 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
       }
     }
   );
+
+  registerTimelineInstanceTools({ server, reader, writer, idGen }, kit);
 }

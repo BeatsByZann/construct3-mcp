@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { toolError } from './shared.js';
 import type { Timeline, WriteResult } from '../construct3/types.js';
-import type { CustomEase, TrackKind, TrackLocation } from '../construct3/timeline-model.js';
+import type { AudioFileRef, CustomEase, TrackKind, TrackLocation } from '../construct3/timeline-model.js';
 import type { FileState } from '../construct3/disk-state.js';
 
 /** The error result of a tool call. */
@@ -64,4 +64,6 @@ export interface TimelineToolkit {
   timelineNames(): string[];
   easeFilePath(name: string): string;
   projectContainer(): ContainerFolder | undefined;
+  /** A registered sound or music file by name; `folder` chooses when both hold it. */
+  findAudioFile(name: string, folder?: 'sound' | 'music'): { ok: true; file: AudioFileRef; warnings: string[] } | { ok: false; error: ErrorResult };
 }
