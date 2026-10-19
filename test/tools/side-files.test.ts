@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { cp, mkdtemp, readFile, rm } from 'fs/promises';
+import { cp, mkdtemp, readdir, readFile, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -27,6 +27,20 @@ let writer: Construct3ProjectWriter;
 const at = (...segments: string[]) => join(dir, ...segments);
 const text = (path: string) => readFile(path, 'utf-8');
 const back = async () => true;
+
+/** Every file of the project folder but the .bak files, path to bytes. */
+async function snapshotProject(root: string, prefix = ''): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const entry of await readdir(join(root, prefix), { withFileTypes: true })) {
+    const relative = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) {
+      for (const [path, bytes] of await snapshotProject(root, relative)) out.set(path, bytes);
+    } else if (!entry.name.endsWith('.bak')) {
+      out.set(relative, (await readFile(join(root, relative))).toString('base64'));
+    }
+  }
+  return out;
+}
 const notBack = async () => false;
 
 /** The call renames the project through updateProject, as a registration does. */
@@ -51,10 +65,14 @@ afterEach(async () => {
 
 describe('rollBackStructureCall', () => {
   it('says Nothing was changed. when nothing was written', async () => {
+    const before = await snapshotProject(dir);
+    const writes = [vi.spyOn(writer, 'replaceFile'), vi.spyOn(writer, 'deleteFile'), vi.spyOn(writer, 'updateProject'), vi.spyOn(writer, 'restoreForCall')];
     await runInToolCall(async () => {
       const message = await rollBackStructureCall(writer, new Error('boom'), newSideWrites(), { projectIsBack: back });
       expect(message).toBe('boom. Nothing was changed.');
     });
+    for (const spy of writes) expect(spy).not.toHaveBeenCalled();
+    expect(await snapshotProject(dir)).toEqual(before);
   });
 
   it('removes a created file once project.c3proj is back', async () => {
@@ -95,6 +113,7 @@ describe('rollBackStructureCall', () => {
       expect(existsSync(at('a.txt'))).toBe(false);
     });
     expect(await text(at('project.c3proj'))).toBe(projectBefore);
+    expect(await text(at('project.c3proj.bak'))).toBe(projectBefore);
   });
 
   it('keeps a created file while project.c3proj still registers what the call added', async () => {
@@ -120,6 +139,19 @@ describe('rollBackStructureCall', () => {
       expect(message).toBe('eventSheets/MainSheet.json was changed on disk after this call read it. The call was rolled back: eventSheets/MainSheet.json is as before the call.');
     });
     expect(await text(at('eventSheets', 'MainSheet.json'))).toBe(sheetBefore);
+    expect(await text(at('eventSheets', 'MainSheet.json.bak'))).toBe(sheetBefore);
+  });
+
+  it('passes on a stale refusal the writer worded after it undid the call, rolling nothing back again', async () => {
+    await runInToolCall(async () => {
+      const sheet = await reader.readEventSheet('MainSheet');
+      await writer.writeEntityFile('eventSheets', 'MainSheet', { ...sheet, touched: true });
+      const changed = await text(at('eventSheets', 'MainSheet.json'));
+      const worded = 'eventSheets/Other.json was changed on disk after this call read it. The call was undone.';
+      const message = await rollBackStructureCall(writer, new StaleFileError(worded, 'eventSheets/Other.json', true), newSideWrites(), { projectIsBack: back });
+      expect(message).toBe(worded);
+      expect(await text(at('eventSheets', 'MainSheet.json'))).toBe(changed);
+    });
   });
 
   it('counts a projectIsBack that throws as not back, keeping the file', async () => {

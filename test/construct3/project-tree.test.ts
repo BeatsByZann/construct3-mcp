@@ -44,6 +44,45 @@ describe('findTreeFolder', () => {
     expect(findTreeFolder(root, 'Actors/inner')).toBeUndefined();
     expect(findTreeFolder(root, '')).toBe(root);
   });
+
+  it('does not take an entry that is not a folder for one, and ensureTreeFolder creates the folder beside it', () => {
+    const wanted: TreeFolder = { items: [], subfolders: [], name: 'A' };
+    const malformed: TreeFolder = {
+      items: [],
+      subfolders: [null as unknown as TreeFolder, { name: 'B' } as unknown as TreeFolder, wanted],
+    };
+    expect(findTreeFolder(malformed, 'A')).toBe(wanted);
+    expect(findTreeFolder(malformed, 'B')).toBeUndefined();
+    const ensured = ensureTreeFolder(malformed, 'B');
+    expect(ensured.created).toEqual(['B']);
+    expect(ensured.folder.name).toBe('B');
+  });
+});
+
+/** A tree nested `levels` folders deep; the folder at depth i holds the item `item<i>`. */
+function nestedTree(levels: number): TreeFolder {
+  const root: TreeFolder = { items: ['item0'], subfolders: [] };
+  let current = root;
+  for (let i = 1; i <= levels; i++) {
+    const next: TreeFolder = { items: [`item${i}`], subfolders: [], name: `f${i}` };
+    current.subfolders.push(next);
+    current = next;
+  }
+  return root;
+}
+
+describe('tree depth', () => {
+  it('locateInTree reads 64 levels of folders and stops there', () => {
+    const root = nestedTree(70);
+    expect(locateInTree(root, 'item64')).toHaveLength(1);
+    expect(locateInTree(root, 'item65')).toEqual([]);
+  });
+
+  it('allTreeNames reads 64 levels of folders and stops there', () => {
+    const names = allTreeNames(nestedTree(70), false);
+    expect(names).toContain('item64');
+    expect(names).not.toContain('item65');
+  });
 });
 
 describe('ensureTreeFolder', () => {
