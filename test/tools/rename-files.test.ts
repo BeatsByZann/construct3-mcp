@@ -17,6 +17,7 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { currentToolCall, fileKey, runInToolCall, StaleFileError, statFileState } from '../../src/construct3/disk-state.js';
 import {
   assertUnchangedSinceRead,
+  createFileForCall,
   entityFileSegments,
   joinRollbackMessages,
   jsQuotedNamePattern,
@@ -24,6 +25,7 @@ import {
   moveViewStateFiles,
   newFileState,
   newSideWrites,
+  putBackSideWrites,
   readForRename,
   reasonOf,
   replaceForRename,
@@ -209,6 +211,46 @@ describe('moveFileForRename', () => {
     await runInToolCall(async () => {
       const from = await readForRename(at('missing.txt'));
       await expect(moveFileForRename(writer, newSideWrites(), from, at('b.txt'))).rejects.toThrow('missing.txt does not exist, so it cannot be moved.');
+    });
+  });
+});
+
+describe('createFileForCall', () => {
+  it('creates a file and records it for the rollback', async () => {
+    await runInToolCall(async () => {
+      const side = newSideWrites();
+      await createFileForCall(writer, side, at('new.txt'), 'NEW');
+      expect(await text(at('new.txt'))).toBe('NEW');
+      expect(side.files).toEqual([{ path: at('new.txt'), before: null }]);
+      expect(side.unresolved).toEqual([]);
+    });
+  });
+
+  it('refuses a file that is there and records nothing', async () => {
+    await writeFile(at('there.txt'), 'THERE');
+    await runInToolCall(async () => {
+      const side = newSideWrites();
+      await expect(createFileForCall(writer, side, at('there.txt'), 'NEW')).rejects.toThrow(StaleFileError);
+      expect(side.files).toEqual([]);
+      expect(side.unresolved).toEqual([]);
+      expect(await text(at('there.txt'))).toBe('THERE');
+    });
+  });
+
+  it('records a create whose write failed after it wrote the file, so the rollback removes it', async () => {
+    const replaceFile = writer.replaceFile.bind(writer);
+    vi.spyOn(writer, 'replaceFile').mockImplementation(async (path, content, options) => {
+      await replaceFile(path, content, options);
+      throw new Error('A check after the write failed.');
+    });
+    await runInToolCall(async () => {
+      const side = newSideWrites();
+      await expect(createFileForCall(writer, side, at('new.txt'), 'NEW')).rejects.toThrow('A check after the write failed.');
+      expect(side.files).toEqual([{ path: at('new.txt'), before: null }]);
+      const result = await putBackSideWrites(writer, side);
+      expect(existsSync(at('new.txt'))).toBe(false);
+      expect(result.left).toEqual([]);
+      expect(result.putBack).toEqual(['new.txt (removed: the call had created it)']);
     });
   });
 });

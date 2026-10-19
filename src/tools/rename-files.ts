@@ -235,6 +235,25 @@ export async function replaceForRename(
 }
 
 /**
+ * Create `path` with `content` through the writer, refused (StaleFileError)
+ * when a file is there. The file is recorded for the rollback once it holds
+ * what the call wrote, or, when the writer threw after it changed the file,
+ * as recordFailedSideWrite finds it; a refused create records nothing, so a
+ * rollback never touches a file this call did not make.
+ */
+export async function createFileForCall(
+  writer: RenameWriter, side: RenameSideWrites, path: string, content: string | Buffer,
+): Promise<void> {
+  try {
+    await writer.replaceFile(path, content, { expected: null });
+  } catch (error) {
+    if (!(error instanceof StaleFileError)) await recordFailedSideWrite(side, path, null, bytesOf(content));
+    throw error;
+  }
+  side.files.push({ path, before: null });
+}
+
+/**
  * Move a file to `to` through the writer: written there with `content`
  * (default: its bytes), refused when a file appeared there; then deleted
  * at its old path, refused (under the file's lock) when it changed since
@@ -247,13 +266,7 @@ export async function moveFileForRename(
   const label = writer.projectRelative(from.path);
   if (from.bytes === null) throw new Error(`${label} does not exist, so it cannot be moved.`);
   const moved = content ?? from.bytes;
-  try {
-    await writer.replaceFile(to, moved, { expected: null });
-  } catch (error) {
-    if (!(error instanceof StaleFileError)) await recordFailedSideWrite(side, to, null, bytesOf(moved));
-    throw error;
-  }
-  side.files.push({ path: to, before: null });
+  await createFileForCall(writer, side, to, moved);
   try {
     await writer.deleteFile(from.path, { expected: from.state });
   } catch (error) {
@@ -331,7 +344,7 @@ async function ownBackup(path: string): Promise<boolean> {
 }
 
 /** Put back the side writes, last first: the image names, then the files. */
-async function putBackSideWrites(writer: RenameWriter, side: RenameSideWrites): Promise<{ putBack: string[]; left: string[] }> {
+export async function putBackSideWrites(writer: RenameWriter, side: RenameSideWrites): Promise<{ putBack: string[]; left: string[] }> {
   const putBack: string[] = [];
   const left: string[] = [];
   const relative = (path: string) => writer.projectRelative(path);
