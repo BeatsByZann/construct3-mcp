@@ -32,22 +32,31 @@ export function unregisteredName(
   return `${kind} "${given}" not found.${hint}`;
 }
 
+/** Placeholder for an absolute path outside the project folder. */
+const OUTSIDE_PATH = '<a path outside the project>';
+
+/** An absolute path (drive letter, UNC or POSIX root) up to the next space or quote, without trailing punctuation. */
+const ABSOLUTE_PATH = /(?:[A-Za-z]:[\\/]|\\\\|(?<![\w.:\\/~-])\/(?=[\w.~-]))(?:[^\s"'<>|?*]*[^\s"'<>|?*.,:;)\]])?/g;
+
 /**
  * An error's message with the project folder replaced by ".", in both slash
- * forms and whatever the letter case of the drive; its ending is kept. A
- * longer folder name that starts with the project folder (a sibling) is left
- * as it is.
+ * forms and whatever the letter case of the drive; its ending is kept. Any
+ * other absolute path left in the message (a sibling folder that starts with
+ * the project folder's name, a UNC path, an 8.3 short form, a POSIX root
+ * path) is replaced by a placeholder, so no absolute path reaches the text.
+ * A path that holds a space is cut at the space.
  */
 export function messageWithoutPaths(error: unknown, projectDir: string): string {
   const message = error instanceof Error ? error.message : String(error);
   const forward = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
-  if (forward === '') return message;
   let result = message;
-  for (const form of new Set([forward, forward.replace(/\//g, '\\')])) {
-    const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    result = result.replace(new RegExp(`${escaped}(?![^\\\\/\\s.,:;'")\\]])`, 'gi'), '.');
+  if (forward !== '') {
+    for (const form of new Set([forward, forward.replace(/\//g, '\\')])) {
+      const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(new RegExp(`${escaped}(?![^\\\\/\\s.,:;'")\\]])`, 'gi'), '.');
+    }
   }
-  return result;
+  return result.replace(ABSOLUTE_PATH, OUTSIDE_PATH);
 }
 
 /** An error's message without the project folder and without its final full stop, to be placed inside a sentence. */

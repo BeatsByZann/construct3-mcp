@@ -64,8 +64,25 @@ describe('messageWithoutPaths edge cases', () => {
     expect(messageWithoutPaths(new Error('a/b'), '')).toBe('a/b');
   });
 
-  it('leaves a sibling folder that starts with the project folder alone', () => {
-    expect(messageWithoutPaths(new Error('In C:\\Proj2\\x and C:\\Proj\\y.'), 'C:\\Proj')).toBe('In C:\\Proj2\\x and .\\y.');
+  const outside = '<a path outside the project>';
+
+  it('replaces a sibling folder that starts with the project folder name, without cutting its name', () => {
+    expect(messageWithoutPaths(new Error('In C:\\Proj2\\x and C:\\Proj\\y.'), 'C:\\Proj')).toBe(`In ${outside} and .\\y.`);
+    expect(messageWithoutPaths(new Error("open 'C:\\Proj-old\\x'"), 'C:\\Proj')).toBe(`open '${outside}'`);
+  });
+
+  it('replaces a UNC path and a POSIX root path', () => {
+    expect(messageWithoutPaths(new Error('Cannot read \\\\server\\share\\a.json: EACCES.'), 'C:\\Proj')).toBe(`Cannot read ${outside}: EACCES.`);
+    expect(messageWithoutPaths(new Error('Cannot read /home/u/a.json.'), 'C:\\Proj')).toBe(`Cannot read ${outside}.`);
+  });
+
+  it('replaces the 8.3 short form of the project folder, which is not the folder as given', () => {
+    expect(messageWithoutPaths(new Error('Cannot read C:\\PRIMAR~1\\Proj\\a.json.'), 'C:\\Users\\Primary User\\Proj')).toBe(`Cannot read ${outside}.`);
+  });
+
+  it('keeps relative paths and slashes inside words', () => {
+    expect(messageWithoutPaths(new Error('Wrote ./layouts/a.json and tilemapBrushes/objectTypes/T.json, and/or 1/2.'), 'C:\\Proj'))
+      .toBe('Wrote ./layouts/a.json and tilemapBrushes/objectTypes/T.json, and/or 1/2.');
   });
 
   it('replaces the folder whatever the letter case of the drive, and with a trailing separator', () => {
