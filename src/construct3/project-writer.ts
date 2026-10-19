@@ -758,6 +758,19 @@ export class Construct3ProjectWriter {
   }
 
   /**
+   * Run the checks writeEntityFile runs on an entity file's new text before
+   * it backs up or writes (valid JSON, the file's text style, the file size
+   * limit), and write nothing: what a dry run needs to report a write that
+   * would be refused. Throws with writeEntityFile's message.
+   */
+  async checkEntityWrite(category: EntityCategory, name: string, data: unknown, subfolder?: string): Promise<void> {
+    const json = this.validateJsonData(data, name);
+    const filePath = await existingSpelling(this.entityFilePath(category, name, subfolder));
+    const style = await resolveJsonTextStyle(filePath, this.reader.getProjectPath(), dirname(filePath));
+    this.assertWritableSize(applyJsonTextStyle(json, style), name);
+  }
+
+  /**
    * Post-write verification — read the file back, check it holds exactly the
    * text we wrote, and verify it parses. Different content that still parses
    * means another write to the same file landed in between (e.g. two tool
