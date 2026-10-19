@@ -2233,6 +2233,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (args.text === undefined && args.textColor === undefined && args.backgroundColor === undefined) {
           return toolError(nothingChanged('No update given. Give at least one of text, textColor, backgroundColor.'));
         }
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
@@ -2300,6 +2302,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (!args.remove && args.expectedText !== undefined) {
           return toolError(nothingChanged('expectedText is only used with remove.'));
         }
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);

@@ -359,6 +359,32 @@ describe('update_comment and update_script_event', () => {
       expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
     }
   });
+
+  /** A reader that opens a sheet whatever its letter case, as the project reader does on a file system that ignores case, and records each sheet it is asked to read. */
+  class CaseBlindReader extends MockReader {
+    readonly reads: string[] = [];
+    override async readEventSheet(name: string) {
+      this.reads.push(name);
+      const registered = (await this.listEventSheets()).find(n => n.toLowerCase() === name.toLowerCase());
+      return super.readEventSheet(registered ?? name);
+    }
+  }
+
+  it.each([
+    { tool: COMMENT_TOOL, args: { index: 0, text: 'changed' } },
+    { tool: SCRIPT_TOOL, args: { groupPath: 'G', index: 2, disabled: true } },
+    { tool: SCRIPT_TOOL, args: { groupPath: 'G', index: 2, remove: true, expectedText: 'a = 1;' } },
+  ])('$tool refuses a sheet name in another letter case than the registered one, without reading or writing the file', async ({ tool, args }) => {
+    const server = new MockServer();
+    const writer = new MockWriter();
+    const reader = new CaseBlindReader({ eventSheets: new Map([['Sheet1', { name: 'Sheet1', sid: 1, events: sheetEvents() }]]) });
+    registerEventTools({ server, reader, writer, idGen: new MockIdGenerator() } as unknown as MutationToolDeps);
+    const result = await server.callTool(tool, { sheetName: 'sheet1', ...args });
+    expect(result.isError).toBe(true);
+    expect(errorText(result)).toBe('Event sheet "sheet1" not found: names are matched with their letter case. Did you mean "Sheet1"? Nothing was changed.');
+    expect(reader.reads).toEqual([]);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
 });
 
 describe.each([
