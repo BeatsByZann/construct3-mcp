@@ -774,3 +774,119 @@ describe('create_flowchart refusals', () => {
     expect(await snapshotFiles(project.dir)).toEqual(before);
   });
 });
+
+describe('add_flowchart_node and update_flowchart_node', () => {
+  async function createGraph(): Promise<void> {
+    expect(parseResult((await call('create_flowchart', { name: 'Graph' })).result).success).toBe(true);
+  }
+
+  it('refuses to overwrite a flowchart the editor saved during the call, and keeps the editor file', async () => {
+    await createGraph();
+    const editorFile = JSON.stringify({ sid: 1, nodes: [], name: 'Graph', w: 1, h: 1, saved: 'in the editor' }, null, '\t');
+    const original = project.writer.replaceFile.bind(project.writer);
+    vi.spyOn(project.writer, 'replaceFile').mockImplementation(async (path, content, options) => {
+      await editorSave(path, editorFile);
+      return original(path, content, options);
+    });
+    const { text, isError } = await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0, isStart: true });
+    expect(isError).toBe(true);
+    expect(text).toBe(staleText('flowcharts/Graph.json'));
+    expect(await readFile(flowchartFile(project.dir, 'Graph'), 'utf-8')).toBe(editorFile);
+  });
+
+  it('says what is on disk when the write fails after it replaced the file', async () => {
+    await createGraph();
+    const original = project.writer.replaceFile.bind(project.writer);
+    vi.spyOn(project.writer, 'replaceFile').mockImplementation(async (path, content, options) => {
+      await original(path, content, options);
+      throw new Error('the read-back failed');
+    });
+    const { text, isError } = await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0 });
+    expect(isError).toBe(true);
+    expect(text).toBe('the read-back failed. flowcharts/Graph.json may have been changed by this call. Its state from before the call is in flowcharts/Graph.json.bak. Check it before you run the tool again.');
+  });
+
+  it('says nothing was changed when the write fails before it touched the file, without a path in the text', async () => {
+    await createGraph();
+    const before = await snapshotFiles(project.dir);
+    vi.spyOn(project.writer, 'replaceFile').mockRejectedValue(new Error(`EACCES: permission denied, open '${flowchartFile(project.dir, 'Graph')}'`));
+    const { text } = await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0 });
+    expect(text).toBe('EACCES: permission denied. Nothing was changed.');
+    expect(await snapshotFiles(project.dir)).toEqual(before);
+  });
+
+  it('stops before anything is written when no SID can be generated', async () => {
+    await createGraph();
+    const before = await snapshotFiles(project.dir);
+    vi.spyOn(project.idGen, 'generateSid').mockRejectedValue(new Error('Cannot generate a safe SID'));
+    const { text, isError } = await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0, outputs: [{ name: 'Next' }] });
+    expect(isError).toBe(true);
+    expect(text).toBe('The change was stopped before anything was written: Cannot generate a safe SID. Nothing was changed.');
+    expect(await snapshotFiles(project.dir)).toEqual(before);
+  });
+
+  it('keeps the line endings and the byte order mark of the file it changes', async () => {
+    await createGraph();
+    const path = flowchartFile(project.dir, 'Graph');
+    const text = await readFile(path, 'utf-8');
+    await writeFile(path, String.fromCharCode(0xfeff) + text.replace(/\n/g, '\r\n') + '\r\n');
+    await project.reader.loadProject();
+    expect((await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0, isStart: true })).isError).toBe(false);
+    const raw = await readFile(path, 'utf-8');
+    expect(raw.charCodeAt(0)).toBe(0xfeff);
+    expect(raw.replace(/\r\n/g, '')).not.toContain('\n');
+    expect(raw.endsWith('\r\n')).toBe(true);
+    expect(JSON.parse(raw.slice(1)).nodes).toHaveLength(1);
+  });
+
+  // Every tool that edits a flowchart, one row each: one write of the flowchart file and nothing else written
+  interface Seeded { a: number; aOut1: number; aOut2: number; b: number; c: number }
+  const EDITING_CALLS: Array<[string, (ids: Seeded) => Record<string, unknown>]> = [
+    ['add_flowchart_node', () => ({ flowchartName: 'Graph', caption: 'N', x: 0, y: 0 })],
+    ['update_flowchart_node', ids => ({ flowchartName: 'Graph', nodeSid: ids.a, caption: 'A2' })],
+    ['delete_flowchart_node', ids => ({ flowchartName: 'Graph', nodeSid: ids.c })],
+  ];
+
+  /** Graph with a start node A (outputs Next and Other) and two more nodes, B and C, made through the tools. */
+  async function seedGraph(): Promise<Seeded> {
+    await createGraph();
+    const add = async (args: Record<string, unknown>) =>
+      parseResult((await call('add_flowchart_node', { flowchartName: 'Graph', x: 0, y: 0, ...args })).result);
+    const a = await add({ caption: 'A', isStart: true, outputs: [{ name: 'Next' }, { name: 'Other' }] });
+    const b = await add({ caption: 'B' });
+    const c = await add({ caption: 'C' });
+    return {
+      a: a.generatedSid, aOut1: a.outputSids[0], aOut2: a.outputSids[1],
+      b: b.generatedSid, c: c.generatedSid,
+    };
+  }
+
+  for (const [tool, args] of EDITING_CALLS) {
+    it(`${tool} writes the flowchart once and writes nothing else`, async () => {
+      const ids = await seedGraph();
+      const statePath = flowchartFile(project.dir, 'Graph').replace(/\.json$/, '.uistate.json');
+      await writeFile(statePath, '{"nodes":[]}');
+      const replaceFile = vi.spyOn(project.writer, 'replaceFile');
+      const deleteFile = vi.spyOn(project.writer, 'deleteFile');
+      const updateProject = vi.spyOn(project.writer, 'updateProject');
+      const done = await call(tool, args(ids));
+      expect(done.isError, done.text).toBe(false);
+      expect(replaceFile).toHaveBeenCalledTimes(1);
+      expect(String(replaceFile.mock.calls[0][0]).endsWith('Graph.json')).toBe(true);
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(updateProject).not.toHaveBeenCalled();
+      expect(await readFile(statePath, 'utf-8')).toBe('{"nodes":[]}');
+      expect(await exists(`${statePath}.bak`)).toBe(false);
+    });
+  }
+
+  it('refuses a flowchart file that is not a flowchart, naming it project-relative', async () => {
+    await createGraph();
+    await writeFile(flowchartFile(project.dir, 'Graph'), '[]');
+    const before = await snapshotFiles(project.dir);
+    const { text, isError } = await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0 });
+    expect(isError).toBe(true);
+    expect(text).toBe('Flowchart "Graph" is registered in the project but flowcharts/Graph.json does not hold a flowchart: it has no list of nodes. Nothing was changed.');
+    expect(await snapshotFiles(project.dir)).toEqual(before);
+  });
+});

@@ -28,7 +28,10 @@ const GRAPH = JSON.stringify(createFlowchartData(77, 'Graph'), null, '\t');
 
 describe('registerFlowchartTools', () => {
   it('registers the tools of this module', () => {
-    for (const name of ['list_flowcharts', 'get_flowchart_details', 'create_flowchart', 'delete_flowchart']) {
+    for (const name of [
+      'list_flowcharts', 'get_flowchart_details', 'create_flowchart', 'delete_flowchart',
+      'add_flowchart_node', 'update_flowchart_node', 'delete_flowchart_node',
+    ]) {
       expect(project.server.hasTool(name), `${name} should be registered`).toBe(true);
     }
   });
@@ -38,6 +41,9 @@ describe('strict arguments', () => {
   const cases: Array<[string, Record<string, unknown>, string]> = [
     ['create_flowchart', { name: 'Graph' }, 'name and subfolder'],
     ['delete_flowchart', { name: 'Graph' }, 'name'],
+    ['add_flowchart_node', { flowchartName: 'Graph', caption: 'N', x: 0, y: 0 }, 'flowchartName, caption, nodeType, x, y, width, height, isStart, enabled, valueType, outputs, commentText, commentHtml, font, fontSize, bold, italic and fontColor'],
+    ['update_flowchart_node', { flowchartName: 'Graph', nodeSid: 1, caption: 'N' }, 'flowchartName, nodeSid, caption, nodeType, tags, isStart, enabled, parentIndex, x, y, width, height, valueType, commentText, commentHtml, font, fontSize, bold, italic and fontColor'],
+    ['delete_flowchart_node', { flowchartName: 'Graph', nodeSid: 1 }, 'flowchartName and nodeSid'],
   ];
   for (const [tool, args, takes] of cases) {
     it(`${tool} refuses an argument it does not take`, async () => {
@@ -45,6 +51,50 @@ describe('strict arguments', () => {
         .rejects.toThrow(new RegExp(`Unknown key\\(s\\)[\\s\\S]*${tool} takes ${takes}\\.`));
     });
   }
+});
+
+describe('non-finite numbers', () => {
+  const fields = ['x', 'y', 'width', 'height'];
+  const cases: Array<[string, string, Record<string, unknown>]> = [
+    ...fields.map((field): [string, string, Record<string, unknown>] =>
+      ['add_flowchart_node', field, { flowchartName: 'Graph', caption: 'N', x: 0, y: 0, [field]: 1e999 }]),
+    ...fields.map((field): [string, string, Record<string, unknown>] =>
+      ['update_flowchart_node', field, { flowchartName: 'Graph', nodeSid: 1, [field]: 1e999 }]),
+  ];
+  for (const [tool, field, args] of cases) {
+    it(`${tool} refuses a ${field} that is not finite`, async () => {
+      await expect(project.server.callTool(tool, args)).rejects.toThrow(/finite/);
+    });
+  }
+});
+
+describe('output entries', () => {
+  it('add_flowchart_node refuses an output key it does not take', async () => {
+    await expect(project.server.callTool('add_flowchart_node', {
+      flowchartName: 'Graph', caption: 'N', x: 0, y: 0, outputs: [{ name: 'Next', isdefault: true }],
+    })).rejects.toThrow(/Unknown key\(s\) \\"isdefault\\" in an output of add_flowchart_node[\s\S]*An output has name, value, enabled and isDefault\./);
+  });
+});
+
+describe('node tools on an unknown flowchart', () => {
+  const ghostCalls: Array<[string, Record<string, unknown>]> = [
+    ['add_flowchart_node', { flowchartName: 'Ghost', caption: 'N', x: 0, y: 0 }],
+    ['update_flowchart_node', { flowchartName: 'Ghost', nodeSid: 1, caption: 'N' }],
+    ['delete_flowchart_node', { flowchartName: 'Ghost', nodeSid: 1 }],
+  ];
+  for (const [tool, args] of ghostCalls) {
+    it(`${tool} answers that the flowchart is not found and changes nothing`, async () => {
+      const result = await project.server.callTool(tool, args);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe('Flowchart "Ghost" not found. Use list_flowcharts to see all available names. Nothing was changed.');
+    });
+  }
+
+  it('update_flowchart_node with nothing to update says so before it looks the flowchart up', async () => {
+    const result = await project.server.callTool('update_flowchart_node', { flowchartName: 'Ghost', nodeSid: 1 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('No updates provided. Specify at least one of: caption, nodeType, tags, isStart, enabled, parentIndex, x, y, width, height, valueType, commentText, commentHtml, font, fontSize, bold, italic, fontColor. Nothing was changed.');
+  });
 });
 
 describe('list_flowcharts', () => {
