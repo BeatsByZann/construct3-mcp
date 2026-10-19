@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Six read-only usage tools: `get_project_properties`, `get_instance_counts`, `search_project`, `find_behavior_usage`, `find_effect_usage` and `find_instance_variable_references`. Each query says how complete its answer is: `complete` is false while a file could not be parsed (`unscannedFiles`, with what a text search of it found), an event sheet was only partly walked (`partlyIndexedSheets`), a registered script could not be read (`unreadableScripts`) or a script folder is nested too deep (`scriptsNotWalked`). `search_project` matches a literal query directly and runs a regular expression under a time limit per file and for the whole search, refusing past a limit and naming it.
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).

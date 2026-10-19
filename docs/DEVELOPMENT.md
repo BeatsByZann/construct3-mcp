@@ -70,6 +70,7 @@ construct3-mcp/
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
+│   │   ├── script-files.ts         # The script files a project registers, walked once for the index, the runtime-trap check and the usage queries
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/              # Analysis modules
@@ -103,6 +104,7 @@ construct3-mcp/
 │   ├── tools/                      # MCP tool handlers
 │   │   ├── query.ts                # Query tools (9)
 │   │   ├── analysis.ts             # Analysis tools (11)
+│   │   ├── usage-tools.ts          # Usage queries (6)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk

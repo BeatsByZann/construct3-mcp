@@ -226,6 +226,15 @@ describe('get_instance_counts', () => {
   });
 });
 
+describe('registration', () => {
+  it('registers the six usage tools', async () => {
+    await startServer();
+    for (const name of ['get_project_properties', 'get_instance_counts', 'search_project', 'find_behavior_usage', 'find_effect_usage', 'find_instance_variable_references']) {
+      expect(server.hasTool(name), name).toBe(true);
+    }
+  });
+});
+
 describe('completeness', () => {
   const file = (category: UnscannedFile['category'], name: string): UnscannedFile =>
     ({ category, name, file: `${category}/${name}`, reason: 'not valid JSON' });

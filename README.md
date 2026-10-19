@@ -137,6 +137,12 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `get_asset_usage` | Track sound, image, font, video and project file usage (used, unused or not analysed) |
 | `analyze_performance` | Heuristic performance audit with categorized issues |
 | `validate_project` | Integrity checks: missing files, required fields, duplicate SIDs/UIDs, repeated layer names, function names shared by several function blocks, broken references and includes, behaviors and instance variables that events use but their object lacks, missing addons, legacy `"behavior-type"` keys, layout instances without behavior entries, hierarchy links to missing instances or one-sided ones, event shapes older versions wrote that the editor never writes, scripts in the one-string shape of older Construct 3 releases, orphaned and backup files, image files named after no object type, plus the rules the C3 editor enforces at load (trigger and else placement, expression syntax limited to unterminated string literals and backslashes outside them, empty expressions, duplicate names/SIDs, family plugins). Rules verified only in part are reported as warnings (details in [API.md](docs/API.md#validate_project)). `valid` means no errors and every registered file was checked; `complete` (and so `valid`) is false when a registered file exists but was not checked (over the 10MB read limit, invalid JSON, unreadable; listed in `unscannedFiles`) |
+| `get_project_properties` | The project's property settings and its other top-level scalar settings (reads `project.c3proj` only) |
+| `get_instance_counts` | Instances each object type has on the layouts, per layout (sub-layers and non-world instances included), and the object types with none; names the files it could not parse and says the count is then incomplete |
+| `search_project` | Find text in event sheets, registered script files and, with `scopes`, layout instance values; a literal query or a regular expression (time-limited, refused past a limit); says which files could not be searched |
+| `find_behavior_usage` | Where a behavior is declared, used in events (also through family members and `Object.Behavior.Expression`) and set on placed instances; says what it could not see |
+| `find_effect_usage` | Where an effect is declared (object types, families, layouts, layers), its instance states and the events that name it; says what it could not see |
+| `find_instance_variable_references` | Event references to an instance variable, the values placed instances store, and scripts that may read it; says what it could not see |
 | `get_group_settings` | Event group settings (`isActiveOnStart`, disabled) across sheets, filterable by sheet and active state |
 | `locate_event` | Map an editor event number ("es_game, event 72, action 1") to its JSON path, sid, content and neighbouring events |
 | `get_eventsheet_outline` | Readable, paged event sheet outline with editor event numbers (IF/DO/CALL/SCRIPT/GROUP/FUNCTION/VAR) |
@@ -440,7 +446,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 89.
 
 ### Standalone Testing
 
@@ -513,6 +519,7 @@ construct3-mcp/
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
+│   │   ├── script-files.ts         # The script files a project registers, walked once for the index, the runtime-trap check and the usage queries
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
@@ -546,6 +553,7 @@ construct3-mcp/
 │   ├── tools/
 │   │   ├── query.ts                # Query tools (9)
 │   │   ├── analysis.ts             # Analysis tools (11)
+│   │   ├── usage-tools.ts          # Usage queries (6)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk

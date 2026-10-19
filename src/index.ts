@@ -13,6 +13,7 @@ import { registerDocsResources } from './resources/docs.js';
 import { registerQueryTools } from './tools/query.js';
 import { registerWorkflowPrompts } from './prompts/workflows.js';
 import { registerAnalysisTools } from './tools/analysis.js';
+import { registerUsageTools } from './tools/usage-tools.js';
 import { registerMutationTools } from './tools/mutations.js';
 import { Construct3ProjectWriter } from './construct3/project-writer.js';
 import { IdGenerator } from './construct3/id-generator.js';
@@ -60,6 +61,7 @@ async function main() {
     registerQueryTools(server, reader);
     registerWorkflowPrompts(server, reader);
     registerAnalysisTools(server, reader);
+    registerUsageTools(server, reader);
 
     // Phase 3: Safe Modifications
     const idGen = new IdGenerator();

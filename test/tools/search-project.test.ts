@@ -207,6 +207,21 @@ describe('search_project', () => {
     expect(refused.content[0].text.endsWith(' Nothing was returned.')).toBe(true);
   });
 
+  it('shows a hit with up to 60 characters on each side, marking the cut with "..."', async () => {
+    await addSheet('Long', [comment(`${'x'.repeat(100)}needle${'y'.repeat(100)}`)]);
+    await startServer();
+    const result = await search({ query: 'needle', scopes: ['events'], sheets: ['Long'] });
+    expect(result.hits.map(h => h.text)).toEqual([`...${'x'.repeat(60)}needle${'y'.repeat(60)}...`]);
+  });
+
+  it('accepts maxResults from 1 to 1000 and refuses others', async () => {
+    await startServer();
+    await expect(raw({ query: 'a', maxResults: 0 })).rejects.toThrow();
+    await expect(raw({ query: 'a', maxResults: 1001 })).rejects.toThrow();
+    expect((await raw({ query: 'a', maxResults: 1000 })).isError).toBeUndefined();
+    expect((await raw({ query: 'a', maxResults: 1 })).isError).toBeUndefined();
+  });
+
   it('matches a literal query with regular expression characters literally', async () => {
     await addSheet('Chars', [comment('call a.b( now'), comment('axb(')]);
     await startServer();
