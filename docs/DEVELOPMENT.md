@@ -71,6 +71,11 @@ construct3-mcp/
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
+│   │   ├── timeline-model.ts       # Track kinds, track folders and custom eases inside timeline files
+│   │   ├── timeline-properties.ts  # What a property track stores for each kind of property
+│   │   ├── timeline-result-modes.ts # Which result mode is in force for a keyframe, and how stored values follow a change
+│   │   ├── ease-params.ts          # Custom eases inside event sheet ease parameters
+│   │   ├── registered-file-entries.ts # Scripts, sounds and music files the project registers
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/              # Analysis modules
 │   │       ├── index-builder.ts    # Cross-reference index (cached per reader)
@@ -112,6 +117,11 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── timeline-instance-tools.ts  # Instance track and keyframe tools (7)
+│   │   ├── timeline-track-tools.ts  # Value and audio track and track folder tools (7)
+│   │   ├── timeline-ease-tools.ts  # Custom ease tools (4)
+│   │   ├── timeline-kit.ts         # Types the timeline tool modules share
+│   │   ├── timeline-writes.ts      # Refusals, relative paths and rollback for the timeline tools
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers

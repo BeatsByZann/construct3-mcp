@@ -13,7 +13,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │  MCP Protocol Layer                                      │  │
 │  │  Resources (9) · Query Tools (9) · Analysis (11)         │  │
-│  │  Mutations (44) · Runtime (19) · Prompts (7)             │  │
+│  │  Mutations (62) · Runtime (19) · Prompts (7)             │  │
 │  └──────────┬───────────────────────────────────────────────┘  │
 │             │                                                  │
 │  ┌──────────▼───────────────────────────────────────────────┐  │
@@ -43,7 +43,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 └────────────────────────────────┘
 ```
 
-The server registers 83 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_addons`, `list_timelines` and `get_timeline_details` count as mutations: they live in the project and timeline modules.
+The server registers 101 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_addons`, `list_timelines`, `get_timeline_details`, `list_timeline_tracks` and `list_eases` count as mutations: they live in the project and timeline modules.
 
 ## Core Components
 
@@ -262,6 +262,11 @@ Supporting modules next to the templates:
 | `construct3/png-generator.ts` | Zero-dependency placeholder PNGs and C3 image file names (all lowercase) |
 | `construct3/raw-text-search.ts` | Streamed text search in files the reader skips: whole-word names ignoring case (as JSON writes them in a string), whole numbers, bounded patterns; one alternation of literals, word boundaries checked where a literal matched. Also the streamed UID/SID scan of the ID generator (`RawIdScan`, `scanFileIds`) |
 | `construct3/timeline-folders.ts` | The editor's Transitions folder in the timelines container (first nameless first-level folder, files in `timelines/transitions/`), shared by the timeline tools and `validate_project` |
+| `construct3/timeline-model.ts` | Track kinds (instance, value, audio, and untyped tracks from older releases), track folders and custom eases inside timeline files: the shapes the fixtures show, builders for new tracks and keyframes, and the lookups the timeline tools share |
+| `construct3/timeline-properties.ts` | What a property track stores for each kind of property: the world properties, instance variables and plugin properties, the absolute and relative values of a keyframe, and the order of property tracks |
+| `construct3/timeline-result-modes.ts` | The result mode in force for a keyframe, how stored values follow a result mode change, and the tracks the tools must not recompute |
+| `construct3/ease-params.ts` | Custom eases inside event sheet ease parameters (the Tween ease parameter): loading the project's custom eases, reading the ease name of a parameter, building the object that embeds an ease, and walking the ease parameters of an event sheet |
+| `construct3/registered-file-entries.ts` | The scripts, sounds and music files the project registers in `rootFileFolders`, read only |
 | `construct3/types.ts` | TypeScript types for project files and analysis results |
 | `runtime/bridge.ts` | Generates the injectable runtime bridge script (`globalThis.__c3bridge`): command queue, results with cancel and a 60 s expiry, event subscriptions, layer coordinate conversion |
 | `runtime/cdp-client.ts` | Chrome DevTools Protocol client over Node's built-in WebSocket (Node.js 22+): connects to the game's page (trying the pages the browser lists, narrowed by `pageUrl`/`urlContains`, and refusing when more than one has a ready bridge), reaches a bridge on the page or in a dedicated worker (`Target.setAutoAttach`, flat sessions), marks the bridge's global scope so a reload closes the connection, runs bridge commands, conditions, input and screenshots |
@@ -302,7 +307,7 @@ The cross-reference index (`ProjectIndex`) is cached per reader, so projects ope
 | Resources | `resources/project.ts` (6), `resources/docs.ts` (3; the pitfalls text lives in `resources/pitfalls.ts`) | 9 | Read-only data access, Construct 3 docs, curated pitfalls |
 | Query Tools | `tools/query.ts` | 9 | List, search, get details |
 | Analysis Tools | `tools/analysis.ts` | 11 | Deep analysis, validation, event locating, runtime traps |
-| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (12), `layout-tools.ts` (9), `animation-tools.ts` (8), `timeline-tools.ts` (5), `project-tools.ts` (4) | 44 | Safe create, update, delete |
+| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (12), `layout-tools.ts` (9), `animation-tools.ts` (8), `timeline-tools.ts` (5), `timeline-instance-tools.ts` (7), `timeline-track-tools.ts` (7), `timeline-ease-tools.ts` (4), `project-tools.ts` (4) | 62 | Safe create, update, delete |
 | Runtime Tools | `tools/runtime-tools.ts` | 19 | Runtime bridge (inject, remove, commands), game connection, bridge calls, conditions, event buffers, input, canvas, screenshots, preview server, preview checks, project clone, `.c3p` packing |
 | Prompts | `prompts/workflows.ts` | 7 | Workflow templates |
 

@@ -1283,16 +1283,270 @@ Update the settings of an existing timeline, in whichever `project.c3proj` folde
 | `startOnLayout` | string | No | Auto-start layout (`""` = none) |
 | `ignoreSystemTimescale` | boolean | No | Ignore the system timescale |
 | `enabled` | boolean | No | Enable or disable the timeline |
+| `ease` | string | No | Timeline-level ease: one of Construct's ease names (e.g. `"noease"`) or a custom ease. A name that is neither is written with a warning |
+| `interpolationMode` | string | No | Timeline-level interpolation mode (e.g. `"default"`) |
+| `resultMode` | string | No | Timeline-level result mode (e.g. `"default"`). The stored values of the numeric keyframes of instance tracks are recomputed for the new mode |
+| `pathMode` | string | No | Timeline-level path mode (e.g. `"line"`) |
+| `transformWithSceneGraph` | boolean | No | Apply the timeline's values through scene-graph parents |
 
-At least one setting must be provided.
+At least one setting must be provided. A new `resultMode` is refused, changing nothing, in two cases: an untyped (older) instance track takes its result mode from the timeline, and changing it would leave the values stored in that track stale; or an instance track sits in a track folder, or has a property-track folder, with a result mode other than `default`, so the values the new mode would store are not known. The file is not written when it was saved on disk after the tool read it (see **Editing timelines and eases** below).
 
 ### `delete_timeline`
 
-Delete a timeline: back up exactly the file that is deleted to `<file>.bak`, delete it, and remove the timeline from its folder in `project.c3proj`. When the file is missing or cannot be deleted, the tool returns an error and `project.c3proj` is not changed. Transitions are refused.
+Delete a timeline: back up exactly the file that is deleted to `<file>.bak`, delete it, and remove the timeline from its folder in `project.c3proj`. Transitions are refused.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Timeline name to delete |
+
+Result: a `WriteResult` with `action: "deleted"` and `backupFile`, the path of the `.bak` file.
+
+**Behavior change.** `delete_timeline` of a registered timeline whose file is missing removes the registration (`action: 'deregistered'`) instead of refusing; the result has no `backupFile` and a warning says that no file was removed. A file that exists but cannot be read, or that holds no tracks (a custom ease file, for example), is not deleted: the call is refused and `project.c3proj` is left as it is. A timeline file saved on disk after the tool read it is not deleted either. When the file cannot be deleted, or the registration cannot be removed after the delete, the tool returns an error, `project.c3proj` is unchanged, and the file is put back (a file it could not put back is named in the error).
+
+**Editing timelines and eases.** The tools from `add_timeline_track` to `delete_ease` below edit timelines piece by piece. They share these rules.
+
+- **Refusals change nothing.** A tool checks every argument and every file it will touch, builds all the new text, and only then writes. A deliberate refusal is an error result whose message ends once with "Nothing was changed."; no file changes, `.bak` files included. A timeline or ease name in another letter case than the registered one is refused, and the message names the registered one (`Did you mean "Move"?`). The read-only tools (`get_timeline_details`, `list_timeline_tracks`) answer the same lookups with a plain error that does not say this. An unexpected failure is reported as `Error <doing>: <message>`.
+- **Messages name files relative to the project folder**, written with `/` (`timelines/Move.json`), never an absolute path. A file that cannot be read is named with the error code or the JSON parse text, not the file system's message.
+- **The writes.** A tool that changes a timeline reads its one file, builds the new text and writes that file, backed up once per call as `<file>.bak` (`backupFile`, the path of the backup). An existing file keeps its text style (line endings and BOM); a new file follows the project's. When a timeline is saved, its `transitionsData` gets a copy of each custom ease the timeline uses, refreshed when the ease changed, and loses the copy of a project ease it no longer uses. A timeline or ease file that changed on disk after the tool read it is neither written nor deleted: the call is refused and the file keeps the change. A file another program created meanwhile is not overwritten, and the message says so. Run the tool again. `create_timeline`, `delete_timeline`, `create_ease`, `update_ease` and `delete_ease` write several files (the timeline or ease file, `project.c3proj`, and for `update_ease` and `delete_ease` the event sheets and timelines that hold a copy of the ease). When a later step fails, they put the earlier files back, and the error names a file they could not put back.
+- **Results.** A write returns a `WriteResult` (`success`, `entity`, `category: "timeline"` or `"ease"`, `action`, `backupFile`, `warnings`) and the editor reload note.
+- **What the tools leave alone.** The values of an untyped instance track (an older track with no `type`) are never rewritten: `add_timeline_track` for its instance, `add_property_track`, `set_keyframe` and a result mode change refuse it, and `remove_timeline_track`, `remove_property_track`, `delete_keyframe`, `move_timeline_track` and `update_track` flags still work. Property-track folders are read (the tools find property tracks inside them) but never created, renamed or deleted. A track or property-track folder with a result mode other than `default` is never given values: the tools that would compute them refuse. The timeline tools never read, change or delete transitions (custom eases); the ease tools do.
+- **File shapes.** New tracks, keyframes, folders and eases are written in the key order of timelines saved by Construct 3 r495.2 (the shapes kept in the test fixtures).
+
+### `add_timeline_track`
+
+Add an instance track to a timeline: one world instance of a layout, with master keyframes at the given times and one property track per property. Each property track gets a keyframe at every master keyframe time, holding the instance's current value (a world property from the layout, an instance variable or plugin property from the instance). Value and audio tracks are added with [`add_value_track`](#add_value_track) and [`add_audio_track`](#add_audio_track).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `layoutName` | string | Yes | Layout that holds the instance |
+| `instanceUid` | integer | Yes | UID of the world instance to animate |
+| `properties` | string[] | No | Properties to animate, at most 32 (default: `["offsetX","offsetY"]`) |
+| `keyframeTimes` | number[] | No | Master keyframe times in seconds, each within `[0, totalTime]`, 1 to 200 of them (default: `[0]`). Duplicates count once and the times are sorted |
+
+`properties` takes the world properties `offsetX`, `offsetY`, `offsetZElevation`, `offsetWidth`, `offsetHeight`, `offsetScaleX`, `offsetScaleY`, `offsetAngle`, `offsetOpacity` and `offsetColor`, the names of the object type's instance variables, and the ids of the instance's plugin properties (such as `initial-animation`). Write `var:name` or `plugin:name` when a name is both. A name that matches none of them is accepted and written with a warning. The property tracks are stored in a fixed order (world properties, then instance variables, then plugin properties) whatever order they are given in.
+
+Result: `action: "track-added"`; `warnings` lists the names that matched no property.
+
+Refused, changing nothing: the layout is not registered (the message gives the registered spelling of a different letter case, or the nearest names) or its file cannot be read; the instance UID is not in the layout, or is not a world instance; the instance already has a track in the timeline (also an untyped track, or one in a track folder); the timeline's root track folder has a result mode other than `default`; a property is named twice, or a known property's current value cannot be read; a keyframe time lies outside `[0, totalTime]`.
+
+### `remove_timeline_track`
+
+Remove a track with all of its property tracks and keyframes: an instance track by `instanceUid` (an untyped track included) or a value or audio track by `trackName`, at the root or in a track folder.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | integer | One of the two | UID of the animated instance (instance tracks) |
+| `trackName` | string | One of the two | Name of a value or audio track |
+
+Result: `action: "track-removed"`. Refused: neither or both selectors given; no track for the UID (the message lists the tracked UIDs); no value or audio track of that name (the message lists the names).
+
+### `add_property_track`
+
+Add one property track to an existing instance track, with a keyframe holding the instance's current value at every master keyframe time.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | integer | Yes | UID of the animated instance |
+| `property` | string | Yes | Property to animate (names as for [`add_timeline_track`](#add_timeline_track)) |
+
+Result: `action: "property-track-added"`. Refused: no track for the UID; the track is an untyped (older) track; a track folder or property-track folder holding the track has a result mode other than `default`; the instance is in no layout (when a layout could not be read, the message names it), or is not a world instance; the property has a track already (also one in a property-track folder), or its current value cannot be read.
+
+### `remove_property_track`
+
+Remove one property track, and all of its keyframes, from an instance track (also from a property-track folder).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` | integer | Yes | UID of the animated instance |
+| `property` | string | Yes | Property track to remove; `var:` or `plugin:` selects between tracks that share a name |
+
+Result: `action: "property-track-removed"`. Refused: no track for the UID; no such property track (the message lists the ones present).
+
+### `set_keyframe`
+
+Create or update the master keyframe at a time on a track, and the per-property keyframes at that time. An instance track takes any animated property; a value track takes only `value`; an audio track has master keyframes only.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` / `trackName` | integer / string | One of the two | The track, as for [`remove_timeline_track`](#remove_timeline_track) |
+| `time` | number | Yes | Keyframe time in seconds, within `[0, totalTime]` |
+| `values` | object | No | Per-property values, at most 32, e.g. `{ "offsetX": { "absolute": 400 }, "offsetOpacity": { "relative": -0.5 }, "tag": { "absolute": "done" } }` |
+| `ease` | string | No | Master keyframe ease (a new keyframe gets `"default"`) |
+| `enabled` | boolean | No | Master keyframe enabled flag |
+| `tags` | string | No | Master keyframe tags |
+
+Each entry of `values` has `absolute`, `relative` and `ease`. A number property takes `absolute` (the value) or `relative` (an offset from the instance's own value in its layout); the stored values follow the result mode in force. A string or boolean property, or an instance variable or plugin property of that type, takes `absolute`; `offsetColor` takes `absolute` as `[r, g, b, a]`, each 0 to 1. A property without a track gets one, and a warning lists the tracks created: they hold a keyframe only at the times set so far. A name that matches no property needs both `absolute` and `relative` as numbers, and is stored as given with a warning. A value track takes `values.value.absolute` as a number and no `relative`; a keyframe is created only when `absolute` is given. A warning names an ease that is neither one of Construct's nor a custom ease of the project.
+
+Result: `action: "keyframe-created"` when the track had no master keyframe at that time, otherwise `"keyframe-updated"`. Refused: a time outside `[0, totalTime]`; more than 32 properties; an untyped (older) track; values given for an audio track; a value track given another property, a `relative` value or a value that is not a number; a value of the wrong kind, or a number property given neither `absolute` nor `relative`; the instance is in no layout (the message names a layout that could not be read); a folder with a non-default result mode.
+
+### `delete_keyframe`
+
+Delete the master keyframe at a time and every property keyframe at that time, or with `property` only that property's keyframe of an instance track.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` / `trackName` | integer / string | One of the two | The track, as for [`remove_timeline_track`](#remove_timeline_track) |
+| `time` | number | Yes | Time of the keyframe, in seconds |
+| `property` | string | No | Delete only this property track's keyframe of an instance track, leaving the master keyframe |
+
+Result: `action: "keyframe-deleted"`, or `"property-keyframe-deleted"` with `property`. Refused: no master keyframe at that time (the message lists the times); the last master keyframe of a track (use `remove_timeline_track`); the keyframe at time 0 of an audio track; `property` given for a value or audio track; no such property track, or no keyframe on it at that time.
+
+### `update_track`
+
+Update the playback properties of one track. A value or audio track can also be renamed, and an audio track pointed at another registered audio file.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` / `trackName` | integer / string | One of the two | The track, as for [`remove_timeline_track`](#remove_timeline_track) |
+| `enabled` | boolean | No | Enable or disable the track |
+| `ease` | string | No | Track ease name |
+| `interpolationMode` | string | No | Track interpolation mode |
+| `resultMode` | string | No | Track result mode (instance and audio tracks) |
+| `pathMode` | string | No | Track path mode (instance tracks) |
+| `initialVisibility` | boolean | No | Visibility when the timeline starts |
+| `name` | string | No | New name of a value or audio track |
+| `audioFile` | string | No | Audio track: registered sound or music file to play |
+| `audioFolder` | `"sound"` \| `"music"` | No | Audio track: which folder holds `audioFile`, needed only when both do |
+| `audioStartOffset` | number | No | Audio track: offset into the file, in seconds |
+| `audioTag` | string | No | Audio track: tag given to the playing audio |
+
+Result: `action: "track-updated"`. Refused: no update given; `resultMode` on a value track, or on an untyped (older) track, or under a folder with a non-default result mode; `pathMode` on a value or audio track; `name` on an instance track, or a name another value or audio track has, or a name Construct cannot use; an audio argument on a track that is not an audio track; an audio file that is not registered, or registered in both folders without `audioFolder`.
+
+### `list_timeline_tracks`
+
+Read-only. Summarize every track of a timeline.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+
+Result: `{ timeline, tracks, count }`. Each track has `kind` (`instance-track`, `value-track`, `audio-track`, or `legacy-instance-track` for an untyped track), `folder` (`""` at the root), `enabled`, `keyframeTimes` and `propertyTracks` (`property`, `sourceType`, `folder`, `keyframeCount`). An instance track has `instanceUid` and `objectType`, a value or audio track has `name`, an audio track has `audioFile`, `audioType`, `audioStartOffset` and `audioTag`, and an untyped track has a `note`. Lookup failures are plain errors.
+
+### `add_value_track`
+
+Add a value track (a named number animated over time) with one keyframe per given time.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `name` | string | Yes | Track name, unique among the timeline's value and audio tracks |
+| `keyframes` | object[] | No | `{ time, value, ease? }`, 1 to 200 (default: one keyframe of value 0 at time 0) |
+| `folder` | string | No | Track folder to put the track in (default: the root) |
+
+Result: `action: "value-track-added"`; `warnings` names an ease that is neither one of Construct's nor a custom ease. Refused: a name Construct cannot use; a name another value or audio track has (also in a folder); a time given twice; a time outside `[0, totalTime]`; a folder that does not exist (the message lists the folders).
+
+### `add_audio_track`
+
+Add an audio track that plays a sound or music file registered in the project. The track holds a copy of the file's registration entry; `audioProjectFilePath` is written only when the project's export file structure is one the tool knows, and otherwise a warning says so.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `audioFile` | string | Yes | File name of a registered sound or music file, e.g. `"Theme.webm"` |
+| `audioFolder` | `"sound"` \| `"music"` | No | Folder holding `audioFile`, needed only when both hold that name |
+| `name` | string | No | Track name (default: `"Audio Track N"`, the next free number) |
+| `audioStartOffset` | number | No | Offset into the file, in seconds (default: 0) |
+| `audioTag` | string | No | Tag given to the playing audio (default: empty) |
+| `keyframeTimes` | number[] | No | Master keyframe times in seconds (default: `[0]`) |
+| `folder` | string | No | Track folder to put the track in (default: the root) |
+
+Result: `action: "audio-track-added"` and `trackName`. Refused: the file is not registered in the project's sound or music files (import it in the editor first), or is registered in both without `audioFolder`; a name Construct cannot use, or one another value or audio track has; a time outside `[0, totalTime]`; keyframe times without 0; a folder that does not exist.
+
+### `add_timeline_folder`
+
+Create a track folder in a timeline.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `name` | string | Yes | Folder name, 1 to 200 characters, without `/` or control characters |
+| `parentFolder` | string | No | Slash-separated path of the folder to create it in (default: the root) |
+
+Result: `action: "folder-added"`. A folder inside another folder is written with a warning: how Construct stores a nested track folder is not known here. Refused: an invalid name; a parent folder that does not exist (the message lists the folders); a sibling folder of that name.
+
+### `rename_timeline_folder`
+
+Rename a track folder.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `folder` | string | Yes | Path of the folder to rename |
+| `newName` | string | Yes | New folder name (same rules as `name` of `add_timeline_folder`) |
+
+Result: `action: "folder-renamed"`. Refused: an invalid name; the root folder; a folder that does not exist; a sibling folder of the new name.
+
+### `delete_timeline_folder`
+
+Delete a track folder. Its tracks and subfolders move to the parent folder unless `deleteContents` is true.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `folder` | string | Yes | Path of the folder to delete |
+| `deleteContents` | boolean | No | Also delete the tracks and subfolders inside it (default: false) |
+
+Result: `action: "folder-deleted"`; a warning counts the items moved or deleted. Refused: the root folder; a folder that does not exist; without `deleteContents`, a subfolder whose name the parent folder already has, and a move that would change the result mode in force for an instance, audio or untyped track (a value track is exempt), as [`move_timeline_track`](#move_timeline_track) is. With `deleteContents` the result mode check does not apply, since the tracks are deleted with the folder.
+
+### `move_timeline_track`
+
+Move a track into a track folder, or back to the root with `folder: ""`. The track keeps all of its keyframes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `instanceUid` / `trackName` | integer / string | One of the two | The track, as for [`remove_timeline_track`](#remove_timeline_track) |
+| `folder` | string | Yes | Destination track folder |
+
+Result: `action: "track-moved"`. Refused: the track is already there; the destination folder does not exist; a folder the track leaves or enters has a result mode other than `default` (a value track is exempt).
+
+### `list_eases`
+
+Read-only. List the project's custom eases, the timelines that use them and the event sheets whose ease parameters (such as the Tween ease) name them.
+
+No parameters. Result: `{ eases, count, unreadableTimelines? }`. Each ease has `name`, `linear`, `purpose`, `points`, `usedBy` (timeline names) and `usedByEventSheets`. A registered ease whose file cannot be read has an `error` without a path instead of its points. `unreadableTimelines` names timelines that could not be opened, which are left out of `usedBy`.
+
+### `create_ease`
+
+Create a custom ease curve: a file in `timelines/transitions/` registered in the Transitions folder of `project.c3proj`. Timelines can then name it as an ease.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Ease name |
+| `points` | object[] | Yes | Curve points, 2 to 50: `{ x, y, startHandle?, endHandle? }`, from (0,0) to (1,1); `x` is 0 to 1, `y` and the handle offsets -10 to 10 |
+| `linear` | boolean | No | The `linear` flag (default: false) |
+
+Result: `action: "created"`, `category: "ease"`; no `backupFile`, since the file is new. A curve with points between the ends is written with a warning to check it in the editor. If the registration fails, the new file is removed again. Refused: a name Construct cannot use; one of Construct's own ease names (compared ignoring letter case); a name already registered, or one that differs from a registered ease only in letter case; the name of a timeline; points that do not run from (0,0) to (1,1) with strictly increasing `x`, or that give the first point an incoming handle or the last point an outgoing handle; a file of that name that already exists on disk but is not registered.
+
+### `update_ease`
+
+Change a custom ease's points or `linear` flag, and refresh the copy of it in every timeline that uses it and in every event-sheet ease parameter that embeds it. Timelines that do not use the ease are not touched.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Ease name |
+| `points` | object[] | No | New curve points, as for `create_ease` |
+| `linear` | boolean | No | New `linear` flag |
+
+Result: `action: "updated"`, `backupFile` (the ease file's backup), `timelinesRefreshed` and `eventSheetsRefreshed`. The event sheets are written first, then the timelines, and the ease file last. It is refused, changing nothing, while a registered timeline or an event sheet cannot be read, because the copy in it could not be refreshed. Also refused: no update given; an ease that is not registered, or whose file cannot be read; invalid points.
+
+### `delete_ease`
+
+Delete a custom ease that no timeline uses: its registration, its file (kept as a `.bak`) and its editor-state file (`<name>.uistate.json`, also kept as a `.bak`). A timeline's stored copy of the ease is removed from timelines that no longer use it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Ease name |
+| `force` | boolean | No | Delete although event sheets or script files mention the name, or cannot be read (default: false) |
+
+Result: `action: "deleted"` and `backupFile`. Refused: an ease that is not registered; a timeline that cannot be opened; a timeline that uses the ease; unless `force` is set, an event sheet or script file that mentions the name as a whole word (a lexical search, which can report a name that is not an ease), or that cannot be read. With `force`, a warning says so and names the event sheets that still embed a copy of the ease. Files saved on disk after the tool read them (the ease file, its editor-state file, a timeline) are not deleted. A failed step puts the earlier ones back.
 
 ---
 

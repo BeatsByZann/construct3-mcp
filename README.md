@@ -123,6 +123,8 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `get_eventsheet_details` | Get detailed info about an event sheet |
 | `get_layout_details` | Get detailed info about a layout |
 | `get_timeline_details` | Get a timeline's full JSON (tracks and settings) |
+| `list_timeline_tracks` | List the tracks of a timeline with their kind, folder and keyframe times |
+| `list_eases` | List the project's custom eases, the timelines and event sheets that use them |
 | `search_objects` | Search objects by name pattern |
 | `get_project_summary` | Get comprehensive project summary |
 
@@ -207,7 +209,23 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 |------|-------------|
 | `create_timeline` | Create a timeline (duration, loop, ping-pong, repeat count, start-on-layout); refuses a case variant of a timeline in the same folder |
 | `update_timeline` | Update timeline settings or enable/disable it |
-| `delete_timeline` | Delete a timeline (backs up exactly the file it deletes; errors and leaves `project.c3proj` unchanged when the file is missing) |
+| `delete_timeline` | Delete a timeline (backs up exactly the file it deletes; removes only the registration when its file is missing) |
+| `add_timeline_track` | Add an instance track for one world instance of a layout, with a property track per property holding its current value; refuses an instance that already has a track |
+| `remove_timeline_track` | Remove an instance track by instance UID, or a value or audio track by name, with its keyframes |
+| `add_property_track` | Add one property track to an instance track; refuses a property that already has one |
+| `remove_property_track` | Remove one property track from an instance track |
+| `set_keyframe` | Create or update the keyframe at a time on a track; refuses a time outside the timeline and a value of the wrong kind |
+| `delete_keyframe` | Delete the keyframe at a time (or only one property's keyframe); never the last master keyframe |
+| `update_track` | Update a track's playback properties; rename a value or audio track; point an audio track at another registered audio file |
+| `add_value_track` | Add a value track (a named number animated over time); refuses a name another value or audio track has |
+| `add_audio_track` | Add an audio track that plays a sound or music file registered in the project; refuses an unregistered file |
+| `add_timeline_folder` | Create a track folder; refuses a name its sibling folders already use |
+| `rename_timeline_folder` | Rename a track folder; refuses the root folder |
+| `delete_timeline_folder` | Delete a track folder, moving its contents up or deleting them with `deleteContents`; refuses a move that would change a track's result mode |
+| `move_timeline_track` | Move a track into a track folder or back to the root; refuses a move through a folder that has a result mode of its own |
+| `create_ease` | Create a custom ease curve and register it; refuses a name Construct already uses for an ease |
+| `update_ease` | Change a custom ease's points or linear flag, and refresh its copy in every timeline and event sheet that uses it; refuses while one of them cannot be read |
+| `delete_ease` | Delete a custom ease that no timeline uses; refuses while an event sheet or script mentions its name, unless `force` is set |
 
 **Project and addons**
 
@@ -278,7 +296,7 @@ Mutation tools follow a strict safety protocol (exceptions below):
 5. **Verify** — Files are read back, compared with what was written, and re-parsed to confirm integrity.
 6. **Cache Invalidation** — All reader caches and indexes are cleared so subsequent reads see fresh data.
 
-**Changes made outside the server are picked up.** Every tool call, resource read and prompt starts from the project as it is on disk: the server checks `project.c3proj`, and the files its caches hold the first time the call uses them, by modification time, size and file id, and reads again what changed, for example after `git restore` or a save in the Construct 3 editor. There is no need to reconnect. A write never replaces a change it did not read: when an event sheet, layout, object type or family file changed on disk after the tool call read it, the write is refused with a message that names the file, and the file keeps that change; run the tool again. A call refused this way after it had written other files puts back the entity files and `project.c3proj` it had changed first; an image, timeline or script file it wrote earlier in the call is not put back: it stays as written, and its `.bak` holds the state from before the call. The server's own updates of `project.c3proj` (registering or removing an entity, addon auto-registration, project metadata) read the file right before they write it and keep a change made there; the addon tools merge a `project.c3proj` changed during the call into their update; the timeline tools (`create_timeline`, `delete_timeline`) refuse one changed before their first write and merge into the update that follows; the runtime-bridge tools refuse one that changed since they read it, before they write anything and again right before they write `project.c3proj`, putting back what they wrote before. Of two parallel tool calls that change the same event sheet, layout, object type or family file, the second one is refused the same way; the animation tools and the `project.c3proj` updates above run one after the other. Changes that keep a file's size, modification time and file id (possible on file systems with coarse timestamps) are not seen. The check costs one file status per file the server has read when a call uses cached data: about 100 ms on a project of 3,000 files.
+**Changes made outside the server are picked up.** Every tool call, resource read and prompt starts from the project as it is on disk: the server checks `project.c3proj`, and the files its caches hold the first time the call uses them, by modification time, size and file id, and reads again what changed, for example after `git restore` or a save in the Construct 3 editor. There is no need to reconnect. A write never replaces a change it did not read: when an event sheet, layout, object type or family file changed on disk after the tool call read it, the write is refused with a message that names the file, and the file keeps that change; run the tool again. A call refused this way after it had written other files puts back the entity files and `project.c3proj` it had changed first; an image or script file it wrote earlier in the call is not put back: it stays as written, and its `.bak` holds the state from before the call. The timeline and ease tools that write several files (`create_timeline`, `delete_timeline`, `create_ease`, `update_ease`, `delete_ease`) do put back the files they wrote earlier in the call. The server's own updates of `project.c3proj` (registering or removing an entity, addon auto-registration, project metadata) read the file right before they write it and keep a change made there; the addon tools merge a `project.c3proj` changed during the call into their update; the timeline tools (`create_timeline`, `delete_timeline`) refuse one changed before their first write and merge into the update that follows; the runtime-bridge tools refuse one that changed since they read it, before they write anything and again right before they write `project.c3proj`, putting back what they wrote before. Of two parallel tool calls that change the same event sheet, layout, object type or family file, the second one is refused the same way; the animation tools and the `project.c3proj` updates above run one after the other. Changes that keep a file's size, modification time and file id (possible on file systems with coarse timestamps) are not seen. The check costs one file status per file the server has read when a call uses cached data: about 100 ms on a project of 3,000 files.
 
 Every project file a tool writes through the project writer is backed up once per call (step 2) and written through a temp file (step 4): objects, families, event sheets, layouts, animations, project metadata, addon registration, timelines, the runtime bridge files and images. Step 5 is a read-back compared byte for byte, and for entity files and `project.c3proj` updates made through `updateProject` it is also re-parsed. The JSON check before a write (`validateJsonData`) runs only for those files too. Each write, delete and restore of a file through the writer takes the file's one lock (the project lock for `project.c3proj`); renaming image files (`renameImageFiles`) and deleting one (`deleteImageFile`) take no file lock and make no backup, and every rename of image files runs under the animation lock instead (the animation tools hold it for their whole call; `delete_object` holds it around its renames, its delete and its rollback, and checks references outside it). The differences:
 - `register_addon` and `unregister_addon` update `project.c3proj` through the writer: it is backed up once per call, the result is read back, and a change saved in the editor during the call is merged in, not refused.
@@ -440,7 +458,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 101, so some tools must be disabled there.
 
 ### Standalone Testing
 
@@ -514,6 +532,11 @@ construct3-mcp/
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
+│   │   ├── timeline-model.ts       # Track kinds, track folders and custom eases inside timeline files
+│   │   ├── timeline-properties.ts  # What a property track stores for each kind of property
+│   │   ├── timeline-result-modes.ts # Which result mode is in force for a keyframe, and how stored values follow a change
+│   │   ├── ease-params.ts          # Custom eases inside event sheet ease parameters
+│   │   ├── registered-file-entries.ts # Scripts, sounds and music files the project registers
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
 │   │       ├── index-builder.ts    # Cross-reference index (cached per reader)
@@ -555,6 +578,11 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── timeline-instance-tools.ts  # Instance track and keyframe tools (7)
+│   │   ├── timeline-track-tools.ts  # Value and audio track and track folder tools (7)
+│   │   ├── timeline-ease-tools.ts  # Custom ease tools (4)
+│   │   ├── timeline-kit.ts         # Types the timeline tool modules share
+│   │   ├── timeline-writes.ts      # Refusals, relative paths and rollback for the timeline tools
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/

@@ -4,8 +4,18 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Timeline tools, 18 in all. Instance tracks and keyframes: `add_timeline_track`, `remove_timeline_track`, `add_property_track`, `remove_property_track`, `set_keyframe`, `delete_keyframe`, `update_track` and the read-only `list_timeline_tracks`. Value and audio tracks and track folders: `add_value_track`, `add_audio_track`, `add_timeline_folder`, `rename_timeline_folder`, `delete_timeline_folder` and `move_timeline_track`. Custom eases: `list_eases` (read-only), `create_ease`, `update_ease` and `delete_ease`.
+- `update_timeline` sets the timeline-level `ease`, `interpolationMode`, `resultMode`, `pathMode` and `transformWithSceneGraph`.
+- `create_timeline`, `delete_timeline`, `create_ease`, `update_ease` and `delete_ease` put back the files they had written when a later step fails, and name a file they could not put back.
+
 ### Changed
 
+- `delete_timeline` of a registered timeline whose file is missing removes the registration (`action: "deregistered"`) instead of refusing; a file that exists but cannot be read is not deleted.
+- `create_timeline` and `delete_timeline` put back their file when the registration step fails.
+- `update_timeline` refuses to overwrite a timeline file that was saved on disk after it read it.
+- The server now registers 101 tools, one more than Windsurf / Devin Desktop allows in total, so some must be disabled there.
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
 - `register_addon`, `unregister_addon`, `replace_sprite_image`, the timeline tools and the runtime bridge tools write project files through the project writer: each file is backed up once per tool call (`<file>.bak`), written through a temp file and read back. `register_addon` and `unregister_addon` merge a `project.c3proj` saved in the editor during the call instead of refusing it; the runtime bridge tools refuse to write over one (#ISSUE).
 - Images are backed up under the first free `.bak` name (`<file>.bak`, `<file>.1.bak`, ...), so placeholder writes and `replace_sprite_image` never replace an image the frame tools kept as `.bak`; a failed batch of placeholder images puts back an image it wrote over. Image backups accumulate, one more for each call that writes the image, and nothing removes them (#ISSUE).
