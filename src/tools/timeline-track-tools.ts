@@ -46,6 +46,7 @@ const folderPathSchema = z.string().max(500)
 function checkFolderName(name: string): string | null {
   if (name.length === 0 || name.length > 200) return 'Folder names must be 1 to 200 characters.';
   if (name.includes('/')) return 'Folder names cannot contain "/".';
+  if (/[\u0000-\u001f\u007f]/.test(name)) return 'Folder names cannot contain control characters.';
   return null;
 }
 

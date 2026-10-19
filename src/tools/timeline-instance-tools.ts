@@ -21,6 +21,7 @@ import type {
   TimelinePropertyTrack,
 } from '../construct3/types.js';
 import { findInstanceByUid } from '../construct3/layers.js';
+import { describeReadFailure } from '../construct3/analyzers/unscanned-uses.js';
 import {
   WORLD_PROPERTIES,
   resolveTimelineProperty,
@@ -243,6 +244,15 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
   > {
     const located = findInstanceAnywhere(await reader.readAllLayouts(), uid);
     if (!located) {
+      // The bulk read skips a layout it cannot read: the instance may be in it
+      const unreadable = [...reader.getReadFailures('layouts')].map(([name, failure]) =>
+        `layout "${name}" (${reader.getEntityRelativePath('layouts', name)}: ${describeReadFailure(failure.code)})`);
+      if (unreadable.length > 0) {
+        return {
+          ok: false,
+          error: refuse(`Instance UID ${uid} was not found in the layouts that could be read, and ${unreadable.join(', ')} could not be read, so its current property values cannot be read. Fix or restore ${unreadable.length === 1 ? 'it' : 'them'} first.`),
+        };
+      }
       return {
         ok: false,
         error: refuse(`Instance UID ${uid} was not found in any layout, so its current property values cannot be read. Remove the stale track with remove_timeline_track.`),
@@ -628,9 +638,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           return toolResult(kit.writeResult(args.timelineName, existed ? 'keyframe-updated' : 'keyframe-created', saved.backupPath, easeWarnings(easeNames, eases)));
         }
 
-        if (found.kind !== 'instance-track') {
-          return refuse(`${trackLabel} has type "${String(track.type)}", which these tools do not edit.`);
-        }
+        // selectTrack answers only instance, value and audio tracks here (an untyped track is refused there)
         const instanceTrack = track as unknown as TimelineInstanceTrack;
         const uid = instanceTrack.worldInstance;
         const folderProblem = folderModeError(data, found.loc);
@@ -761,7 +769,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         let action: string;
         if (args.property !== undefined) {
           if (found.kind === 'value-track' || found.kind === 'audio-track') {
-            return refuse(`${trackLabel} is a ${found.kind}; its property keyframes follow its master keyframes, so delete the master keyframe instead (omit "property").`);
+            return refuse(`${trackLabel} is ${found.kind === 'audio-track' ? 'an audio track' : 'a value track'}; its property keyframes follow its master keyframes, so delete the master keyframe instead (omit "property").`);
           }
           const located = findPropertyTrack(track, args.property);
           if (!located) {
@@ -859,7 +867,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           const folderProblem = folderModeError(data, found.loc);
           if (folderProblem) return refuse(folderProblem);
         }
-        if (args.pathMode !== undefined && named) return refuse(`A ${kind} has no path mode.`);
+        if (args.pathMode !== undefined && named) return refuse(`${kind === 'audio-track' ? 'An audio track' : 'A value track'} has no path mode.`);
         if (args.name !== undefined && !named) return refuse('Only value and audio tracks have a name.');
         const audioArgs = args.audioFile !== undefined || args.audioStartOffset !== undefined || args.audioTag !== undefined;
         if (audioArgs && kind !== 'audio-track') return refuse('audioFile, audioStartOffset and audioTag apply to audio tracks only.');
