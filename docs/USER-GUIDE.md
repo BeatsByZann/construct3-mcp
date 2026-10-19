@@ -631,7 +631,7 @@ Defaults to know:
   - On `delete_object`, `delete_family`, `delete_event_sheet`, `delete_event_from_sheet`, `delete_layout`, `update_object_properties` and `update_family` it skips the reference checks and leaves the references behind.
   - On `move_events_between_sheets` it moves an event variable out of the scope of events that still use it (e.g. a used global variable into a group) and lists those uses; without it such a move is refused.
   - On `delete_layer` it deletes the layer together with the instances on it.
-  - On `rename_event_sheet` and `rename_layout` it renames even when event sheets, layouts or timelines the server could not parse possibly name the entity; those files are not updated.
+  - On `rename_event_sheet` and `rename_layout` it renames even when event sheets or layouts (`rename_event_sheet`), or event sheets or timelines (`rename_layout`), that the server could not parse possibly name the entity; those files are not updated.
   - `unregister_addon` checks no references at all; `force` only allows removing a Scirra built-in addon. It also removes an addon that objects still use (it only adds the warning `If any objects/behaviors still reference it, C3 will error on load.`). Before you approve it, ask which objects use the addon. Afterwards `validate_project` reports leftover uses as `missing-addon` warnings, while the project still counts as `"valid": true`.
   - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_timeline`, `remove_event_from_sheet`) have no `force` option.
 

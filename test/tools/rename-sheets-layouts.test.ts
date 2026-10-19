@@ -758,6 +758,10 @@ describe('rename_event_sheet and rename_layout: arguments and refusals', () => {
       ['rename_layout', { name: 'Layout 1', newName: 'Level 2' }],
       ['rename_layout', { name: 'layout 1', newName: 'X' }],
       ['rename_layout', { name: 'Layout 1', newName: 'LAYOUT 1' }],
+      ['rename_layout', { name: 'Layout 1', newName: 'Layout 1' }],
+      ['rename_layout', { name: 'Layout 1', newName: 'Bad/Name' }],
+      ['rename_layout', { name: 'Layout 1', newName: 'Title ' }],
+      ['rename_layout', { name: 'Nope', newName: 'X' }],
     ];
     const before = await snapshot();
     for (const [tool, args] of cases) {
@@ -1118,6 +1122,61 @@ describe('rename_layout: timelines and editor saves', () => {
     expect(data.action).toBe('rename_blocked');
     expect(data.message).toContain('timelines/Lost (in a folder the timeline tools cannot resolve)');
     expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe('rename_layout: its own file and a file for the new name', () => {
+  it('refuses a layout whose own file is missing, saying nothing was changed', async () => {
+    await rm(path('layouts', 'Level 2.json'));
+    await reader.loadProject();
+    const before = await snapshot();
+    await refusal('rename_layout', { name: 'Level 2', newName: 'Boss' }, 'does not exist, so there is nothing to rename');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('refuses a layout whose own file could not be parsed', async () => {
+    await writeFile(path('layouts', 'Level 2.json'), '{ broken');
+    await reader.loadProject();
+    const before = await snapshot();
+    await refusal('rename_layout', { name: 'Level 2', newName: 'Boss' }, 'could not be parsed (not valid JSON)');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('refuses when a file for the new name is already on disk, and leaves it as it is', async () => {
+    await writeFile(path('layouts', 'Leftover.json'), '{"name":"Leftover"}');
+    const before = await snapshot();
+    await refusal('rename_layout', { name: 'Layout 1', newName: 'Leftover' }, 'already exists');
+    expect(await readFile(path('layouts', 'Leftover.json'), 'utf8')).toBe('{"name":"Leftover"}');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('writes over a file for the new name that holds its SID and the new name, and refuses one with another SID', async () => {
+    await writeJson(path('layouts', 'Title Screen.json'), { name: 'Title Screen', layers: [], sid: 999 });
+    await refusal('rename_layout', { name: 'Layout 1', newName: 'Title Screen' }, 'already exists');
+    await writeJson(path('layouts', 'Title Screen.json'), { name: 'Title Screen', layers: [], sid: 500000000000003 });
+    const data = await call('rename_layout', { name: 'Layout 1', newName: 'Title Screen' });
+    expect(data.success).toBe(true);
+    expect(existsSync(path('layouts', 'Layout 1.json'))).toBe(false);
+    const renamed = await readJson<LayoutFile>(path('layouts', 'Title Screen.json'));
+    expect(renamed.name).toBe('Title Screen');
+    expect(renamed.layers.length).toBeGreaterThan(0);
+    expect((await readJson<ProjectFile>(path('project.c3proj'))).layouts.items).toEqual(['Title Screen', 'Level 2']);
+  });
+});
+
+describe('rename_event_sheet: project script files', () => {
+  it('lists a project script file that names the sheet and names one it cannot read, without changing them or refusing', async () => {
+    const project = await readJson<ProjectFile>(path('project.c3proj'));
+    project.rootFileFolders = { ...(project.rootFileFolders ?? {}), script: { items: [{ name: 'main.js' }, { name: 'gone.js' }], subfolders: [] } };
+    await writeJson(path('project.c3proj'), project);
+    await mkdir(path('scripts'), { recursive: true });
+    await writeFile(path('scripts', 'main.js'), 'const sheet = "Common";\nconst other = "Common2";\n');
+    await reader.loadProject();
+    const data = await call('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' });
+    expect(data.success).toBe(true);
+    expect(data.possibleReferences).toEqual([{ in: 'scripts/main.js', kind: 'script file', value: 'const sheet = "Common";' }]);
+    expect(warningsOf(data)).toContain('Script file(s) that could not be read were not searched for "Common": scripts/gone.js.');
+    expect(await readFile(path('scripts', 'main.js'), 'utf8')).toContain('"Common"');
   });
 });
 
