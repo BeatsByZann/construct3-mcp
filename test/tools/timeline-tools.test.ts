@@ -13,7 +13,7 @@ import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js'
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { validateProjectIntegrity } from '../../src/construct3/analyzers/integrity.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
-import { EDITOR_RELOAD_NOTE } from '../../src/tools/shared.js';
+import { EDITOR_RELOAD_NOTE, type MutationToolDeps } from '../../src/tools/shared.js';
 import { isCaseInsensitiveFs } from '../helpers/fs-case.js';
 
 const caseInsensitive = isCaseInsensitiveFs();
@@ -130,6 +130,28 @@ describe('list_timelines', () => {
       expect(details.content[0].text).toContain('cannot resolve');
     }
   });
+
+  it('leaves out the custom eases listed in the nameless first subfolder', async () => {
+    const server = new MockServer();
+    const reader = new MockReader();
+    const origGetProject = reader.getProject.bind(reader);
+    (reader as unknown as { getProject: () => unknown }).getProject = () => ({
+      ...origGetProject(),
+      timelines: {
+        items: ['Timeline 1'],
+        subfolders: [{ items: ['LightOutBack'], subfolders: [] }, { name: 'Scenes', items: ['Intro'], subfolders: [] }],
+      },
+    });
+    registerTimelineTools({ server, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as unknown as MutationToolDeps);
+
+    const data = parseResult(await server.callTool('list_timelines', {}));
+    expect(data.timelines).toEqual(['Timeline 1', 'Intro']);
+    // A transition (custom ease) is refused by name rather than reported missing
+    const details = await server.callTool('get_timeline_details', { name: 'LightOutBack' });
+    expect(details.isError).toBe(true);
+    expect(details.content[0].text).toContain('not a timeline');
+    expect(details.content[0].text).toContain('list_eases');
+  });
 });
 
 // ─── get_timeline_details ─────────────────────────────────
@@ -171,6 +193,15 @@ describe('create_timeline', () => {
     const result = await server.callTool('create_timeline', { name: 'Timeline 1' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('already exists');
+  });
+
+  it('refuses a timeline subfolder that would sit among the ease files', async () => {
+    const { server } = setup();
+    for (const subfolder of ['transitions', 'TRANSITIONS/more']) {
+      const result = await server.callTool('create_timeline', { name: 'Intro', subfolder });
+      expect(result.isError, subfolder).toBe(true);
+      expect(result.content[0].text).toContain('custom eases');
+    }
   });
 });
 
@@ -223,6 +254,53 @@ describe('delete_timeline', () => {
     const result = await server.callTool('delete_timeline', { name: 'Ghost' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('"Ghost" not found');
+  });
+});
+
+/** A reader whose project registers `Timeline 1` but has no timeline file. */
+function setupRegistered() {
+  const server = new MockServer();
+  const reader = new MockReader();
+  const origGetProject = reader.getProject.bind(reader);
+  (reader as unknown as { getProject: () => unknown }).getProject = () => ({
+    ...origGetProject(),
+    timelines: { items: ['Timeline 1'], subfolders: [] },
+  });
+  const writer = new MockWriter();
+  const idGen = new MockIdGenerator();
+  registerTimelineTools({ server, reader, writer, idGen } as unknown as MutationToolDeps);
+  return { server, reader };
+}
+
+// ─── update_timeline playback fields ──────────────────────
+
+describe('update_timeline playback fields', () => {
+  it('counts each new field as an update', async () => {
+    const fields: Array<Record<string, unknown>> = [
+      { ease: 'noease' },
+      { interpolationMode: 'default' },
+      { resultMode: 'default' },
+      { pathMode: 'line' },
+      { transformWithSceneGraph: false },
+    ];
+    for (const field of fields) {
+      const { server } = setupRegistered();
+      const result = await server.callTool('update_timeline', { name: 'Timeline 1', ...field });
+      const label = Object.keys(field)[0];
+      expect(result.isError, label).toBe(true);
+      // Past the "no updates" guard: it fails on the missing file instead.
+      expect(result.content[0].text, label).not.toContain('No updates');
+      expect(result.content[0].text, label).toContain('could not be read');
+    }
+  });
+
+  it('lists the new fields in the no-updates error', async () => {
+    const { server } = setupRegistered();
+    const result = await server.callTool('update_timeline', { name: 'Timeline 1' });
+    expect(result.isError).toBe(true);
+    for (const field of ['ease', 'interpolationMode', 'resultMode', 'pathMode', 'transformWithSceneGraph']) {
+      expect(result.content[0].text, field).toContain(field);
+    }
   });
 });
 
@@ -469,14 +547,22 @@ describe('timeline tools on a project folder', () => {
     expect(await readFile(projPath, 'utf-8')).toBe(before);
   });
 
-  it('delete_timeline errors and leaves project.c3proj unchanged when the file is missing', async () => {
+  it('delete_timeline only removes the registration when the file is missing, and says no file was removed', async () => {
     await rm(file('timelines/Steel and Stone/Round Intro.json'));
-    const before = await readFile(projPath, 'utf-8');
+    const before = JSON.parse(await readFile(projPath, 'utf-8'));
 
     const result = await server.callTool('delete_timeline', { name: 'Round Intro' });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('not found');
-    expect(await readFile(projPath, 'utf-8')).toBe(before);
+    expect(result.isError).toBeUndefined();
+    const parsed = parseResult(result);
+    expect(parsed).toMatchObject({ success: true, entity: 'Round Intro', action: 'deregistered' });
+    expect(parsed.backupFile).toBeUndefined();
+    expect(parsed.warnings.join(' ')).toContain('timelines/Steel and Stone/Round Intro.json was not found, so no file was removed');
+    // Exactly that registration is gone; the other project trees are unchanged.
+    const expected = structuredClone(before.timelines);
+    expected.subfolders[1].items = ['KO', 'Fade'];
+    const after = JSON.parse(await readFile(projPath, 'utf-8'));
+    expect(after.timelines).toEqual(expected);
+    for (const tree of ['objectTypes', 'families', 'layouts', 'eventSheets']) expect(after[tree], tree).toEqual(before[tree]);
     expect(existsSync(file('timelines/Steel and Stone/Round Intro.json.bak'))).toBe(false);
     expect(existsSync(file('timelines/Round Intro.json.bak'))).toBe(false);
   });
@@ -559,13 +645,15 @@ describe('timeline tools on a project folder', () => {
     // Nothing written: file missing, or a transition
     await rm(file('timelines/Steel and Stone/Round Intro.json'));
     for (const [tool, args] of [
-      ['delete_timeline', { name: 'Round Intro' }],
+      ['update_timeline', { name: 'Round Intro', loop: true }],
       ['update_timeline', { name: 'Note', loop: true }],
     ] as const) {
       const result = await server.callTool(tool, args);
       expect(result.isError, tool).toBe(true);
       expect(result.content[0].text, tool).not.toContain(EDITOR_RELOAD_NOTE);
     }
+    // Removing the registration of a timeline whose file is missing writes project.c3proj.
+    expect(parseResult(await server.callTool('delete_timeline', { name: 'Round Intro' })).editorNote).toBe(EDITOR_RELOAD_NOTE);
   });
 
   it('update_timeline and delete_timeline keep the text style of the files they rewrite', async () => {
