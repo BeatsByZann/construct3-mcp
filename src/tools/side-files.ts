@@ -9,7 +9,7 @@
  */
 
 import { rollBackFailedCall } from './call-rollback.js';
-import { joinRollbackMessages, putBackSideWrites, type RenameSideWrites } from './rename-files.js';
+import { joinRollbackMessages, putBackSideWrites, reasonOf, type RenameSideWrites } from './rename-files.js';
 import { StaleFileError } from '../construct3/disk-state.js';
 import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
 
@@ -23,9 +23,28 @@ type StructureWriter = Pick<Construct3ProjectWriter,
  * tool's own that a source changed, is rolled back as an ordinary error, as
  * rollBackRename does. `projectIsBack` reads project.c3proj from disk and
  * says whether it no longer registers what the call added; when it is not
- * back, or cannot be read, the created files are kept and named.
+ * back, or cannot be read, the created files are kept and named. It never
+ * throws: a rollback that itself fails is reported as writes that could not
+ * be undone, naming project.c3proj (`writing`) and the files `side` records
+ * (project-relative), because the call did write before it failed.
  */
 export async function rollBackStructureCall(
+  writer: StructureWriter, error: unknown, side: RenameSideWrites,
+  options: { writing?: string; projectIsBack: () => Promise<boolean> },
+): Promise<string> {
+  try {
+    return await rollBack(writer, error, side, options);
+  } catch (rollbackError) {
+    const relative = (file: string) => writer.projectRelative(file);
+    const paths = [...(options.writing === undefined ? [] : [options.writing]), ...side.files.map(f => f.path), ...side.unresolved.map(f => f.path)];
+    return `${reasonOf(error, relative)}. The call's writes could not be undone (${reasonOf(rollbackError, relative)}), `
+      + `so these files may be left as the call wrote them: ${[...new Set(paths.map(relative))].join(', ')}. `
+      + 'Check the project (validate_project, git diff) before you run the tool again.';
+  }
+}
+
+/** The rollback itself; rollBackStructureCall catches what it throws. */
+async function rollBack(
   writer: StructureWriter, error: unknown, side: RenameSideWrites,
   options: { writing?: string; projectIsBack: () => Promise<boolean> },
 ): Promise<string> {

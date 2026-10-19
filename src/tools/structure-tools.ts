@@ -360,7 +360,7 @@ export function registerStructureTools({ server: mcpServer, reader, writer }: Mu
         });
       } catch (error) {
         console.error('[move_project_item] failed:', error);
-        // Reached only before the first write: every step after it is inside its own try or cannot throw
+        // Reached only before the first write: the copies and the project update are inside the inner try, whose catch rolls back and never throws; the steps after the update are guarded or cannot throw
         return refuse(`Error moving item: ${reasonOf(error, path => writer.projectRelative(path))}`);
       }
     },

@@ -100,23 +100,15 @@ async function writeAndRegisterCopy(
  * and any entity file the call rewrote first, then the files `side` records
  * (the copy's entity file) once the copy is no longer registered, else kept
  * and named. Every duplicate tool that creates a registered file calls it
- * from its one `catch`. It never throws: a rollback that itself fails is
- * reported as writes that could not be undone, naming the files the call
- * wrote (project-relative), because the call did write before it failed.
+ * from its one `catch`. It never throws (rollBackStructureCall reports a
+ * rollback that fails as writes that could not be undone).
  */
-async function rollBackCopy(
+function rollBackCopy(
   writer: Writer, reader: Reader, error: unknown, side: RenameSideWrites, category: CopyCategory, name: string,
 ): Promise<string> {
-  try {
-    return await rollBackStructureCall(writer, error, side, {
-      writing: reader.getProjectPath(), projectIsBack: () => copyNotRegistered(reader, category, name),
-    });
-  } catch (rollbackError) {
-    const relative = (file: string) => writer.projectRelative(file);
-    const files = [...new Set([reader.getProjectPath(), ...side.files.map(f => f.path), ...side.unresolved.map(f => f.path)].map(relative))];
-    return `${reasonOf(error, relative)}. The call's writes could not be undone (${reasonOf(rollbackError, relative)}), `
-      + `so these files may be left as the call wrote them: ${files.join(', ')}. Check the project (validate_project, git diff) before you run the tool again.`;
-  }
+  return rollBackStructureCall(writer, error, side, {
+    writing: reader.getProjectPath(), projectIsBack: () => copyNotRegistered(reader, category, name),
+  });
 }
 
 /** The object types among the instances that are global, and the types whose file could not be read. */
@@ -208,7 +200,10 @@ async function sheetsPickingUids(reader: Reader, uids: Set<number>): Promise<Uid
 function projectWideNames(events: readonly unknown[]): string[] {
   const unique: string[] = [];
   const walk = (list: readonly unknown[], depth: number) => {
-    if (depth > 64) return;
+    if (depth > 64) {
+      unique.push('events nested deeper than 64 levels, which were not checked');
+      return;
+    }
     for (const entry of list) {
       const event = entry as Json;
       if (event.eventType === 'function-block') unique.push(`function "${String(event.functionName)}"`);
@@ -632,7 +627,8 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         const projectDir = reader.getProjectDir();
         const images = planImageCopies(await writer.listImageFiles(), args.objectName, copy, args.newName);
         if (images.clashes.length > 0) {
-          return refuse(`images/${images.clashes[0]} already exists; the copy's files would overwrite it.`);
+          const listed = images.clashes.slice(0, 10).map(name => `images/${name}`).join(', ');
+          return refuse(`${listed}${images.clashes.length > 10 ? ', ...' : ''}: already in images/, or the target of more than one file; the copy's files would overwrite them.`);
         }
         const files: FileToCopy[] = [];
         for (const image of images.copies) {
@@ -682,7 +678,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         }
         if (typeof templateName === 'string' && templateName !== '') {
           warnings.push(`The copy creates new instances from the template "${templateName}", which belongs to "${source}"; `
-            + `no instance of "${args.newName}" is that template. Clear it with set_default_template.`);
+            + `no instance of "${args.newName}" is that template. Change or clear the default template of "${args.newName}" so that it does not name a template of another object type.`);
         }
 
         const side = newSideWrites();

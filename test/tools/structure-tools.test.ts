@@ -357,6 +357,19 @@ describe('move_project_item', () => {
     expect(await snapshotProject()).toEqual(before);
   });
 
+  it('says the writes could not be undone, naming the files, when the rollback itself fails', async () => {
+    vi.spyOn(writer, 'updateProject').mockRejectedValueOnce(new Error('boom'));
+    const failure = Object.assign(new Error(`EACCES: permission denied, open '${path('project.c3proj')}'`), { code: 'EACCES', path: path('project.c3proj') });
+    vi.spyOn(writer, 'undoToolCall').mockRejectedValueOnce(failure);
+    const data = await call({ category: 'objectType', name: 'Tiles', folder: 'Terrain' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe("boom. The call's writes could not be undone (EACCES on project.c3proj), so these files may be left as the call wrote them: "
+      + 'project.c3proj, objectTypes/Terrain/Tiles.json, tilemapBrushes/objectTypes/Terrain/Tiles.brush.json. '
+      + 'Check the project (validate_project, git diff) before you run the tool again.');
+    expect(data.text).not.toContain('Nothing was changed');
+    expect(data.text).not.toContain(tmpDir);
+  });
+
   it('names a copy it could not remove', async () => {
     vi.spyOn(writer, 'updateProject').mockRejectedValueOnce(new Error('boom'));
     const restoreForCall = writer.restoreForCall.bind(writer);

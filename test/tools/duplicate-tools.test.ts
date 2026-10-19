@@ -601,7 +601,10 @@ describe('duplicate_event_sheet', () => {
     expect(copy.name).toBe('Helpers Copy');
     expect(Object.keys(copy)).toEqual(Object.keys(source));
     expect(sidsOf(copy)).toHaveLength(sidsOf(source).length);
-    const used = new Set([...sidsOf(source), ...sidsOf(await readJson<Obj>('eventSheets', 'Main.json'))]);
+    const used = new Set(sidsOf(source));
+    for (const name of ['Main', 'Shared/Helpers']) sidsOf(await readJson<Obj>('eventSheets', ...`${name}.json`.split('/'))).forEach(sid => used.add(sid));
+    // Every registered sheet but the copy is covered
+    expect(treeFiles((await project()).eventSheets, 'eventSheets').filter(file => !file.endsWith('Helpers Copy.json'))).toEqual(['eventSheets/Main.json', 'eventSheets/Shared/Helpers.json']);
     expect(sidsOf(copy).some(sid => used.has(sid))).toBe(false);
     expect(new Set(sidsOf(copy)).size).toBe(sidsOf(copy).length);
     expect(data.reassignedSids).toBe(sidsOf(source).length);
@@ -641,6 +644,17 @@ describe('duplicate_event_sheet', () => {
     await refusal('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'bad/name' }, 'Name must start with a letter or underscore');
     await writeFile(path('eventSheets', 'Shared', 'helpers copy.json'), '{}');
     await refusal('duplicate_event_sheet', { sheetName: 'Helpers', newName: 'Helpers Copy' }, 'the file eventSheets/Shared/helpers copy.json already exists');
+  });
+
+  it('refuses a sheet whose events are nested deeper than the declared-name scan follows', async () => {
+    let event: Obj = { eventType: 'group', title: 'Deep', sid: 1 };
+    for (let i = 0; i < 70; i++) event = { eventType: 'block', children: [event], sid: i + 2 };
+    await writeJson(['eventSheets', 'Nested.json'], { name: 'Nested', events: [event], sid: 99 });
+    const registered = await project();
+    registered.eventSheets.items.push('Nested');
+    await writeJson(['project.c3proj'], registered);
+    await reader.reloadProject();
+    await refusal('duplicate_event_sheet', { sheetName: 'Nested', newName: 'Nested Copy' }, 'events nested deeper than 64 levels, which were not checked');
   });
 
   it('refuses a sheet file it cannot parse, without a path', async () => {
@@ -780,7 +794,10 @@ describe('duplicate_object_type', () => {
     await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'the file objectTypes/Actors/hero.json already exists');
     await rm(path('objectTypes', 'Actors', 'hero.json'));
     await writeFile(path('images', 'Hero-Default-001.PNG'), 'taken');
-    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'images/hero-default-001.png already exists; the copy\'s files would overwrite it.');
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'images/hero-default-001.png: already in images/, or the target of more than one file; the copy\'s files would overwrite them.');
+    await writeFile(path('images', 'Hero-Default-000.PNG'), 'taken');
+    await refusal('duplicate_object_type', { objectName: 'Player', newName: 'Hero' }, 'images/hero-default-000.png, images/hero-default-001.png: already in images/');
+    await rm(path('images', 'Hero-Default-000.PNG'));
     await mkdir(path('tilemapBrushes', 'objectTypes'), { recursive: true });
     await writeFile(path('tilemapBrushes', 'objectTypes', 'FLOOR.brush.json'), '[]');
     await refusal('duplicate_object_type', { objectName: 'Tiles', newName: 'Floor' }, 'tilemapBrushes/objectTypes/Floor.brush.json already exists; the copy\'s files would overwrite it.');
@@ -846,7 +863,8 @@ describe('duplicate_object_type', () => {
     const copy = await readJson<Obj>('objectTypes', 'Actors', 'Hero.json');
     expect(copy.editorNewInstanceIsReplica).toBe(true);
     expect(copy.editorNewInstanceTemplateName).toBe('PlayerT');
-    expect(warningsOf(data)).toContain('The copy creates new instances from the template "PlayerT", which belongs to "Player"; no instance of "Hero" is that template. Clear it with set_default_template.');
+    expect(warningsOf(data)).toContain('The copy creates new instances from the template "PlayerT", which belongs to "Player"; no instance of "Hero" is that template. Change or clear the default template of "Hero" so that it does not name a template of another object type.');
+    expect(warningsOf(data)).not.toContain('set_default_template');
   });
 
   it('removes the copy when the registration fails, rolling back once and creating no image first', async () => {
@@ -860,6 +878,16 @@ describe('duplicate_object_type', () => {
     expect(await snapshotProject()).toEqual(before);
     expect(existsSync(path('images', 'hero-default-000.png'))).toBe(false);
     expect(undoToolCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('names every file it wrote when the rollback itself fails', async () => {
+    await prepareSprite();
+    failCreateOf('images/hero-default-001.png', 'x');
+    const failure = Object.assign(new Error(`EACCES: permission denied, open '${path('project.c3proj')}'`), { code: 'EACCES', path: path('project.c3proj') });
+    vi.spyOn(writer, 'undoToolCall').mockRejectedValueOnce(failure);
+    const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
+    expect(data.text).toBe("x. The call's writes could not be undone (EACCES on project.c3proj), so these files may be left as the call wrote them: "
+      + 'project.c3proj, objectTypes/Actors/Hero.json, images/hero-default-000.png. Check the project (validate_project, git diff) before you run the tool again.');
   });
 
   it('names a copied file it could not remove', async () => {
