@@ -951,3 +951,157 @@ describe('update_instance', () => {
     expect(result.content[0].text).toContain('not found');
   });
 });
+
+describe('single instance tools keep their arguments', () => {
+  // An array of [key, description] pairs: the snapshot formatter sorts an object's keys, not an array's entries
+  const shape = (server: ReturnType<typeof setup>['server'], tool: string) =>
+    Object.entries(server.getTool(tool)!.schema).map(([key, value]) => [key, value.description]);
+
+  it('add_instance_to_layout, update_instance and delete_instance_from_layout take the same arguments, described the same', () => {
+    const { server } = setup();
+    expect(shape(server, 'add_instance_to_layout')).toMatchInlineSnapshot(`
+      [
+        [
+          "layoutName",
+          "Target layout",
+        ],
+        [
+          "layerName",
+          "Target layer within layout (any layer or sub-layer, by name; a sub-layer can also be given by its path, e.g. "Main > HUD")",
+        ],
+        [
+          "objectType",
+          "Object type name to place",
+        ],
+        [
+          "x",
+          "X position",
+        ],
+        [
+          "y",
+          "Y position",
+        ],
+        [
+          "width",
+          "Instance width",
+        ],
+        [
+          "height",
+          "Instance height",
+        ],
+        [
+          "properties",
+          "Plugin-specific instance properties — auto-filled for known plugins if omitted (max 100 keys, depth 6)",
+        ],
+        [
+          "angle",
+          "Rotation angle in radians (default: 0)",
+        ],
+        [
+          "color",
+          "RGBA tint as [r, g, b, a] with values 0-1 (default: [1,1,1,1])",
+        ],
+        [
+          "zElevation",
+          "Z elevation for 3D layering (default: 0), written as world.z",
+        ],
+        [
+          "originX",
+          "Horizontal origin 0-1 (default: 0.5 = center)",
+        ],
+        [
+          "originY",
+          "Vertical origin 0-1 (default: 0.5 = center)",
+        ],
+        [
+          "instanceVariables",
+          "Instance variable values as {varName: value}; every instance variable of the object and its families not given gets its default (0, "" or false); a name the object and its families have no variable of is refused",
+        ],
+        [
+          "behaviors",
+          "Behavior property values as {behaviorName: {properties: {prop: val}}} (the shape get_layout_details returns) or {behaviorName: {prop: val}}. Every behavior of the object and its families gets an entry with the built-in defaults; values given here override them. Use the property ids the editor writes (e.g. "max-speed"). Each behavior: max 100 keys, depth 6",
+        ],
+        [
+          "tags",
+          "Comma-separated instance tags (default: empty)",
+        ],
+        [
+          "showing",
+          "Whether instance is initially visible (default: true)",
+        ],
+        [
+          "locked",
+          "Whether instance is locked in the editor (default: false)",
+        ],
+      ]
+    `);
+    expect(shape(server, 'update_instance')).toMatchInlineSnapshot(`
+      [
+        [
+          "layoutName",
+          "Layout name",
+        ],
+        [
+          "uid",
+          "UID of the instance to update",
+        ],
+        [
+          "x",
+          "New X position",
+        ],
+        [
+          "y",
+          "New Y position",
+        ],
+        [
+          "width",
+          "New width",
+        ],
+        [
+          "height",
+          "New height",
+        ],
+        [
+          "angle",
+          "New rotation angle in radians",
+        ],
+        [
+          "zElevation",
+          "New Z elevation (written as world.z)",
+        ],
+        [
+          "color",
+          "New RGBA tint [r,g,b,a] values 0-1",
+        ],
+        [
+          "showing",
+          "Initial visibility",
+        ],
+        [
+          "locked",
+          "Locked in editor",
+        ],
+        [
+          "tags",
+          "Comma-separated tags",
+        ],
+        [
+          "instanceVariables",
+          "Instance variable values to update (names of instance variables of the object type or its families; others are refused)",
+        ],
+      ]
+    `);
+    expect(shape(server, 'delete_instance_from_layout')).toMatchInlineSnapshot(`
+      [
+        [
+          "layoutName",
+          "Layout name",
+        ],
+        [
+          "uid",
+          "UID of the instance to remove",
+        ],
+      ]
+    `);
+  });
+});
