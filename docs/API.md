@@ -1352,7 +1352,7 @@ Add one property track to an existing instance track, with a keyframe holding th
 | `instanceUid` | integer | Yes | UID of the animated instance |
 | `property` | string | Yes | Property to animate (names as for [`add_timeline_track`](#add_timeline_track)) |
 
-Result: `action: "property-track-added"`. Refused: no track for the UID; the track is an untyped (older) track; a track folder or property-track folder holding the track has a result mode other than `default`; the instance is in no layout (when a layout could not be read, the message names it), or is not a world instance; the property name matches no world property, instance variable or plugin property of the instance (as for `add_timeline_track`: the editor cannot open such a track); the property has a track already (also one in a property-track folder), or its current value cannot be read.
+Result: `action: "property-track-added"`. Refused: no track for the UID; the track is an untyped (older) track; a track folder or property-track folder holding the track has a result mode other than `default`; the instance is in no layout (when a layout could not be read, the message names it), or is not a world instance; the property name matches no world property, instance variable or plugin property of the instance (as for `add_timeline_track`); the property has a track already (also one in a property-track folder), or its current value cannot be read.
 
 ### `remove_property_track`
 
