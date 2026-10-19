@@ -1302,7 +1302,7 @@ Template names are compared exactly, with their letter case and Unicode form, an
 
 Layout and object type names must be given as registered in `project.c3proj`, in that letter case. A name that differs only in letter case is refused with the registered spelling named (`Layout "level 1" not found: names are matched with their letter case. Did you mean "Level 1"?`). The two write tools end every refusal that happens before a write with `Nothing was changed.` `list_templates` changes nothing and answers an unknown object type with the plain not-found text.
 
-**The `template` block.** `set_instance_template` writes the block in the shape Construct 3 r506-2 (Free edition, guest) saved for a template and for a replica: `mode`, `templateName`, `sourceTemplateName`, three hierarchy flags, `components` and `replicasUIDs`. The editor saved `replicasUIDs` as `null`, on a template that has a replica as well, and the tool writes `null`. `components` always holds the five ids `plugin`, `instance-variable`, `behavior`, `effect` and `world-instance`, in that order, built from the instance itself:
+**The `template` block.** `set_instance_template` writes the block in the shape Construct 3 r506-2 (Free edition, guest) saved for a template and for a replica on Text and Sprite instances (other plugins were not checked): `mode`, `templateName`, `sourceTemplateName`, three hierarchy flags, `components` and `replicasUIDs`. The editor saved `replicasUIDs` as `null`, on a template that has a replica as well, and the tool writes `null`. `components` always holds the five ids `plugin`, `instance-variable`, `behavior`, `effect` and `world-instance`, in that order, built from the instance itself:
 
 | Component | Derived from | Notes |
 |---|---|---|

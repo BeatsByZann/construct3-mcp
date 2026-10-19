@@ -190,8 +190,8 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
 
         if (mode !== 'none' && found.entry === undefined) {
           return refuse(`Instance UID ${uid} in layout "${layoutName}" is a non-world instance. A template or replica block on a non-world instance `
-            + 'made Construct 3 r506-2 (Free edition, guest) refuse to open the project: the editor refused to open the project ("Failed to open project") '
-            + 'in 2 of 2 attempts, checked with the Array object type only, so no block is written.');
+            + 'made Construct 3 r506-2 (Free edition, guest) refuse to open the project ("Failed to open project", '
+            + '2 of 2 attempts, checked with the Array object type only), so no block is written.');
         }
 
         const warnings: string[] = [];

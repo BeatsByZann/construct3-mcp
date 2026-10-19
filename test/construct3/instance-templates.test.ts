@@ -235,8 +235,8 @@ describe('findTemplateInstance', () => {
 });
 
 describe('sameTemplateName and templateKey', () => {
-  const composed = 'é';
-  const decomposed = 'é';
+  const composed = '\u00e9';
+  const decomposed = 'e\u0301';
 
   it('sameTemplateName compares names exactly', () => {
     expect(sameTemplateName('HeroT', 'HeroT')).toBe(true);

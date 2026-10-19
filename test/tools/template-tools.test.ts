@@ -429,8 +429,8 @@ describe('set_instance_template', () => {
   it('refuses a template or replica block on a non-world instance, naming what the editor did', async () => {
     const before = await snapshotProject(tmpDir);
     const refusal = `Instance UID 4 in layout "Level 1" is a non-world instance. A template or replica block on a non-world instance `
-      + 'made Construct 3 r506-2 (Free edition, guest) refuse to open the project: the editor refused to open the project ("Failed to open project") '
-      + `in 2 of 2 attempts, checked with the Array object type only, so no block is written. ${NOT_WRITTEN}`;
+      + 'made Construct 3 r506-2 (Free edition, guest) refuse to open the project ("Failed to open project", '
+      + `2 of 2 attempts, checked with the Array object type only), so no block is written. ${NOT_WRITTEN}`;
     const asTemplate = await set(4, 'template', { templateName: 'K' });
     expect(asTemplate.isError).toBe(true);
     expect(asTemplate.text).toBe(refusal);
@@ -439,6 +439,20 @@ describe('set_instance_template', () => {
     expect(asReplica.text).toBe(refusal);
     expect(await blockOf(4)).toBeUndefined();
     expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('removes a template block from a non-world instance with mode none', async () => {
+    const layout = await readLevel1();
+    const nonWorld = layout['nonworld-instances']!.find(i => i.uid === 4)!;
+    nonWorld.template = buildInstanceTemplate(nonWorld, 'template', 'K', '') as unknown as Record<string, unknown>;
+    await writeLevel1(layout);
+    await reload();
+    expect(await blockOf(4)).toBeDefined();
+
+    const removed = await set(4, 'none');
+    expect(removed.success).toBe(true);
+    expect(removed.action).toBe('template removed');
+    expect(await blockOf(4)).toBeUndefined();
   });
 
   it('warns when no template of that name exists for a replica', async () => {
