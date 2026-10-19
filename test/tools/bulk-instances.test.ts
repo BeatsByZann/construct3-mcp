@@ -1,11 +1,12 @@
 /**
- * add_instances_to_layout (#ISSUE): many instances placed on one layout in
- * one call and one write, each as add_instance_to_layout places it. Every
- * item is applied to the layout in memory first; a refused item, a step that
- * throws, or a layout that would pass the size limit refuses the whole call
- * before anything is written. Checked on a temp copy of the minimal fixture
- * (a Sprite with one instance, UID 0, on layer "Main" of "Layout 1") with
- * the real reader, writer and IdGenerator.
+ * The bulk instance tools (#ISSUE): add_instances_to_layout, update_instances
+ * and delete_instances_from_layout apply many items to one layout in one
+ * call and one write, each as the single tool does. Every item is applied to
+ * the layout in memory first; a refused item, a step that throws, or a layout
+ * that would pass the size limit refuses the whole call before anything is
+ * written, and a failed write is rolled back. Checked on a temp copy of the
+ * minimal fixture (a Sprite with one instance, UID 0, on layer "Main" of
+ * "Layout 1") with the real reader, writer and IdGenerator.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -21,6 +22,20 @@ import { registerObjectTools } from '../../src/tools/object-tools.js';
 import { registerLayoutTools } from '../../src/tools/layout-tools.js';
 import { registerBulkInstanceTools, MAX_BULK_INSTANCES } from '../../src/tools/bulk-instance-tools.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import type { UnscannedFileReport } from '../../src/construct3/analyzers/unscanned-uses.js';
+
+// Lets one test make the step after the item loop throw: the merge of the unscanned reports runs there
+const hooks = vi.hoisted(() => ({ failMerge: false }));
+vi.mock('../../src/construct3/analyzers/unscanned-uses.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/construct3/analyzers/unscanned-uses.js')>();
+  return {
+    ...actual,
+    mergeUnscannedReports: (...lists: Array<readonly UnscannedFileReport[]>) => {
+      if (hooks.failMerge) throw new Error('reports unreadable');
+      return actual.mergeUnscannedReports(...lists);
+    },
+  };
+});
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 const MB = 1024 * 1024;
@@ -143,6 +158,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  hooks.failMerge = false;
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await rm(tmpDir, { recursive: true, force: true });
@@ -443,6 +459,18 @@ describe('update_instances and delete_instances_from_layout', () => {
     await reader.loadProject();
   }
 
+  const flags = { x: true, y: true, z: false, w: true, h: true, a: false, o: false, v: false, d: true, sm: 'normal' };
+  const preview = {
+    transformX: 0, transformY: 0, transformZElevation: 0, transformW: 0, transformH: 0, transformA: 0,
+    transformSX: 0, transformSY: 0, transformO: 0, previewSceneGraph: false,
+  };
+  /** A sceneGraphData record, as the editor saves one. */
+  const record = (uid: number, parent: number | null, children: number[] = []) => ({
+    'parent-uid': parent, uid, ...(children.length > 0 ? { children: children.map(child => ({ uid: child, flags: { ...flags } })) } : {}),
+    flags: { ...flags }, preview: { ...preview },
+  });
+  const byUid = (layout: LayoutFile, uid: number) => layout.layers[0].instances.find(i => i.uid === uid)!;
+
   beforeEach(async () => {
     const placed = await add([sprite(1), sprite(2), sprite(3), sprite(4)]);
     [a, b, c, d] = placed.results!.map(r => r.uid);
@@ -535,20 +563,10 @@ describe('update_instances and delete_instances_from_layout', () => {
   });
 
   it('removes a parent and its child together, unlinking once', async () => {
-    const flags = { x: true, y: true, z: false, w: true, h: true, a: false, o: false, v: false, d: true, sm: 'normal' };
-    const preview = {
-      transformX: 0, transformY: 0, transformZElevation: 0, transformW: 0, transformH: 0, transformA: 0,
-      transformSX: 0, transformSY: 0, transformO: 0, previewSceneGraph: false,
-    };
-    const record = (uid: number, parent: number | null, children: number[] = []) => ({
-      'parent-uid': parent, uid, ...(children.length > 0 ? { children: children.map(child => ({ uid: child, flags: { ...flags } })) } : {}),
-      flags: { ...flags }, preview: { ...preview },
-    });
     await editLayout(layout => {
-      const byUid = (uid: number) => layout.layers[0].instances.find(i => i.uid === uid)!;
-      byUid(a).sceneGraphData = record(a, null, [b]);
-      byUid(b).sceneGraphData = record(b, a, [c]);
-      byUid(c).sceneGraphData = record(c, b);
+      byUid(layout, a).sceneGraphData = record(a, null, [b]);
+      byUid(layout, b).sceneGraphData = record(b, a, [c]);
+      byUid(layout, c).sceneGraphData = record(c, b);
     });
 
     const data = await remove([a, b]);
@@ -561,6 +579,82 @@ describe('update_instances and delete_instances_from_layout', () => {
     expect(detached[0].startsWith('Detached hierarchy children')).toBe(true);
     expect(detached[0]).toContain(`UID ${c} `);
     expect(detached[0]).not.toContain(`UID ${b}`);
+  });
+
+  it('says which links it removed from a parent that stays', async () => {
+    await editLayout(layout => {
+      byUid(layout, a).sceneGraphData = record(a, null, [c]);
+      byUid(layout, c).sceneGraphData = record(c, a);
+    });
+    const data = await remove([c]);
+    expect(data.success).toBe(true);
+    expect(data.warnings).toContain(`Removed the hierarchy links from UID ${a} to the removed instance(s).`);
+    expect(data.warnings!.some(w => w.includes('Detached hierarchy children'))).toBe(false);
+    expect(byUid(await readLayout(), a).sceneGraphData).not.toHaveProperty('children');
+  });
+
+  it('leaves the links to a removed UID that another instance of the layout still has, and says so', async () => {
+    await editLayout(layout => {
+      byUid(layout, d).uid = c;
+      byUid(layout, a).sceneGraphData = record(a, null, [c]);
+    });
+    const data = await remove([c]);
+    expect(data.success).toBe(true);
+    expect(data.warnings).toContain(`Another instance of the layout has UID ${c} too (duplicate-uid in validate_project), so `
+      + 'hierarchy links naming that UID were left as they are: check them in the Construct 3 editor.');
+    expect((await mainInstances()).filter(i => i.uid === c)).toHaveLength(1);
+    expect((byUid(await readLayout(), a).sceneGraphData as { children: unknown[] }).children).toHaveLength(1);
+  });
+
+  it('puts the layout back when the read-back of its write fails, for both tools', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const before = await layoutBytes();
+
+    failReadBackOf('Layout 1.json');
+    const updated = await update([{ uid: a, x: 9 }, { uid: b, x: 8 }]);
+    expect(updated.isError).toBe(true);
+    expect(updated.text).toContain('The call was rolled back: layouts/Layout 1.json is as before the call.');
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+
+    failReadBackOf('Layout 1.json');
+    const removed = await remove([a, b]);
+    expect(removed.isError).toBe(true);
+    expect(removed.text).toContain('The call was rolled back: layouts/Layout 1.json is as before the call.');
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+  });
+
+  it('answers a throw after the item loop with the stopped-before-write refusal, for both tools', async () => {
+    const spy = writeSpy();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const before = await layoutBytes();
+    const stopped = `The change was stopped before anything was written: reports unreadable. ${NOTHING_CHANGED}`;
+
+    // The merge of the unscanned reports runs after the loop, before the write's checks
+    hooks.failMerge = true;
+    for (const [tool, run] of [['update_instances', () => update([{ uid: a, x: 9 }])], ['delete_instances_from_layout', () => remove([a])]] as const) {
+      consoleError.mockClear();
+      const data = await run();
+      expect(data.isError).toBe(true);
+      expect(data.text).toBe(stopped);
+      expect(consoleError.mock.calls.some(args => String(args[0]).includes(`[${tool}] failed`))).toBe(true);
+    }
+    hooks.failMerge = false;
+
+    // The unlinking of the removed UIDs runs there too: an instance whose hierarchy record cannot be read
+    const real = await reader.readLayout('Layout 1');
+    const unreadable = structuredClone(real);
+    Object.defineProperty(unreadable.layers[0].instances[3], 'sceneGraphData', {
+      enumerable: true,
+      get: () => { throw new Error('links unreadable'); },
+    });
+    vi.spyOn(reader, 'readLayout').mockResolvedValueOnce(unreadable);
+    consoleError.mockClear();
+    const unlinking = await remove([a]);
+    expect(unlinking.text).toBe(`The change was stopped before anything was written: links unreadable. ${NOTHING_CHANGED}`);
+    expect(consoleError.mock.calls.some(args => String(args[0]).includes('[delete_instances_from_layout] failed'))).toBe(true);
+
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('a dry run writes nothing', async () => {
