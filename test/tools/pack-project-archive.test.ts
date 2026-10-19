@@ -83,10 +83,18 @@ describe('pack_project on a served .c3p', () => {
     ['its .bak', 'game.c3p.bak', 'a backup of the open archive'],
     ['its .bak in another letter case', 'Game.C3p.BAK', 'a backup of the open archive'],
     ['a numbered .bak', 'game.c3p.4242.7.bak', 'a backup of the open archive'],
+    ['its .previous', 'game.c3p.previous', 'a file the server keeps for the open archive'],
+    ['its .previous in another letter case', 'GAME.c3p.Previous', 'a file the server keeps for the open archive'],
+    ['a numbered .previous', 'game.c3p.4242.7.previous', 'a file the server keeps for the open archive'],
+    ['a staged .tmp', 'game.c3p.4242.7.tmp', 'a file the server keeps for the open archive'],
   ])('refuses %s before writing anything', async (_label, name, what) => {
     await nodeFs.mkdir(join(root, 'sub'));
     await nodeFs.writeFile(join(root, 'game.c3p.bak'), 'the earlier version');
     await nodeFs.writeFile(join(root, 'game.c3p.4242.7.bak'), 'a later backup');
+    await nodeFs.writeFile(join(root, 'game.c3p.previous'), 'a version a stopped write-back left');
+    await nodeFs.writeFile(join(root, 'GAME.c3p.Previous'), 'a version a stopped write-back left');
+    await nodeFs.writeFile(join(root, 'game.c3p.4242.7.previous'), 'a version a stopped write-back left');
+    await nodeFs.writeFile(join(root, 'game.c3p.4242.7.tmp'), 'a staged archive');
     await start(true);
     const archiveBefore = await nodeFs.readFile(archivePath);
     const rootBefore = await snapshot(root);
@@ -100,6 +108,30 @@ describe('pack_project on a served .c3p', () => {
     expect(await nodeFs.readFile(archivePath)).toEqual(archiveBefore);
     expect(await snapshot(root)).toEqual(rootBefore);
     expect(await snapshot(archive.sessionDir)).toEqual(folderBefore);
+  });
+
+  // A backslash separates names only on Windows, where the write normalizes "name\." to "name"
+  it.skipIf(process.platform !== 'win32')('refuses a backup or leftover whose path ends in a backslash and a dot, or goes through a parent segment (Windows only)', async () => {
+    await nodeFs.mkdir(join(root, 'sub'));
+    await start(true);
+    const rootBefore = await snapshot(root);
+    for (const name of ['game.c3p.bak', 'game.c3p.previous', 'game.c3p.4242.7.tmp', 'game.c3p']) {
+      for (const tail of ['\\.', '\\sub\\..']) {
+        const result = await pack(`${join(root, name)}${tail}`);
+        expect(result.isError, name + tail).toBe(true);
+        expect(result.content[0].text, name + tail).toContain('Nothing was written');
+      }
+    }
+    expect(await snapshot(root)).toEqual(rootBefore);
+  });
+
+  it('packs a file of the same name in another folder', async () => {
+    await nodeFs.mkdir(join(root, 'sub'));
+    await start(true);
+    for (const name of ['game.c3p.previous', 'game.c3p.bak', 'game.c3p.4242.7.tmp']) {
+      const result = await pack(join(root, 'sub', name), false);
+      expect(JSON.parse(result.content[0].text).success, name).toBe(true);
+    }
   });
 
   it('refuses a path inside the working folder or the held folder, and says what it is', async () => {

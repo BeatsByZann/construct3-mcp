@@ -256,8 +256,10 @@ export class C3pArchive {
 
   /**
    * What `path` is when a tool must not write a file there: the archive, a
-   * backup of it (<archive>.bak or <archive>.<anything>.bak), or a place in
-   * the session folder. Paths are compared as names.ts compares names
+   * backup of it (<archive>.bak or <archive>.<anything>.bak), a file a
+   * write-back stages or moves aside (<archive>.previous, or
+   * <archive>.<anything>.previous or .tmp), or a place in the session
+   * folder. Paths are compared as names.ts compares names
    * (NFC, ignoring case). Undefined for any other path.
    */
   protectedPath(path: string): string | undefined {
@@ -269,11 +271,14 @@ export class C3pArchive {
     if (key === sessionKey || key.startsWith(`${sessionKey}/`)) {
       return `inside the server's working folder "${this.sessionDir}" for the open archive "${this.archivePath}"`;
     }
+    // Name and folder come from the resolved path: a raw path ending in "\." or ".." has no name of its own
     const archiveName = pathKey(basename(this.resolved));
-    const name = pathKey(basename(path));
-    if (key.slice(0, key.length - name.length) === archiveKey.slice(0, archiveKey.length - archiveName.length)
-      && name.startsWith(`${archiveName}.`) && name.endsWith('.bak')) {
-      return `a backup of the open archive "${this.archivePath}"`;
+    const name = pathKey(basename(resolve(path)));
+    if (keyOf(dirname(resolve(path))) === keyOf(dirname(this.resolved)) && name.startsWith(`${archiveName}.`)) {
+      if (name.endsWith('.bak')) return `a backup of the open archive "${this.archivePath}"`;
+      if (name.endsWith('.previous') || name.endsWith('.tmp')) {
+        return `a file the server keeps for the open archive while it writes it back (its previous version or the new archive being put in place) "${this.archivePath}"`;
+      }
     }
     return undefined;
   }
