@@ -58,7 +58,7 @@ describe('remapInstanceUids', () => {
     const childGraph = child.sceneGraphData as unknown as { uid: number; 'parent-uid': number };
     expect(childGraph.uid).toBe(newChild);
     expect(childGraph['parent-uid']).toBe(newParent);
-    expect((newTemplate)).toBe(template.uid);
+    expect(newTemplate).toBe(template.uid);
     expect((template as unknown as { template: { replicasUIDs: number[] } }).template.replicasUIDs).toEqual([newParent, 99]);
   });
 });

@@ -416,6 +416,14 @@ describe('move_project_item', () => {
     expect(variant.text).not.toContain('list_');
   });
 
+  it('says Nothing was changed. when a step before the first write throws unexpectedly, without a path', async () => {
+    const failure = Object.assign(new Error(`EACCES: permission denied, open '${path('project.c3proj')}'`), { code: 'EACCES', path: path('project.c3proj') });
+    vi.spyOn(reader, 'getProjectDir').mockImplementationOnce(() => {
+      throw failure;
+    });
+    await refusal({ category: 'layout', name: 'Level 1', folder: 'A' }, 'Error moving item: EACCES on project.c3proj. Nothing was changed.');
+  });
+
   it('refuses a script move when the project has no script tree', async () => {
     await editProject(p => {
       delete (p.rootFileFolders as Partial<ProjectFile['rootFileFolders']>).script;

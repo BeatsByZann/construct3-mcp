@@ -294,6 +294,14 @@ describe('duplicate_layout', () => {
     await refusal('duplicate_layer', { layoutName: 'Level 1', layerName: 'UI', newName: 'UI2' }, 'Cannot generate a safe UID', 'layouts/Level 2');
   });
 
+  it('says Nothing was changed. when a step before the write throws unexpectedly, without a path', async () => {
+    const failure = Object.assign(new Error(`EACCES: permission denied, scandir '${path('timelines')}'`), { code: 'EACCES', path: path('timelines') });
+    vi.spyOn(reader, 'listDataFiles').mockRejectedValueOnce(failure);
+    await refusal('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy' }, 'Error duplicating layout: EACCES on timelines. Nothing was changed.');
+    vi.spyOn(reader, 'listLayouts').mockRejectedValueOnce(failure);
+    await refusal('duplicate_layer', { layoutName: 'Level 1', layerName: 'UI', newName: 'UI2' }, 'Error duplicating layer: EACCES on timelines. Nothing was changed.');
+  });
+
   it('copies replica instances', async () => {
     await editLayout(['layouts', 'Level 1.json'], layout => {
       layout.layers[0].instances[0].template = { mode: 'replica', templateName: '', sourceTemplateName: 'Hero', replicasUIDs: null };
@@ -363,6 +371,15 @@ describe('duplicate_layout', () => {
       const data = await call('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy' });
       expect(data.isError).not.toBe(true);
       expect(warningsOf(data)).not.toContain('Deep');
+    });
+
+    it('names an object type that could not be read instead of leaving it out', async () => {
+      await detachTimeline();
+      await writeFile(path('objectTypes', 'Actors', 'Enemy.json'), '{ broken');
+      const data = await call('duplicate_layout', { layoutName: 'Level 1', newName: 'Copy' });
+      expect(data.isError).not.toBe(true);
+      expect(warningsOf(data)).toContain('Object type(s) Enemy could not be read, so whether the copy places another instance of a global object type was not checked.');
+      expect(warningsOf(data)).not.toContain(tmpDir);
     });
 
     it('names a timeline file and an event sheet that could not be checked, without a path', async () => {
@@ -477,6 +494,21 @@ describe('duplicate_layer', () => {
     // The original layer is as it was: its name, SID, instances (UIDs, SIDs) and links
     expect(ui).toEqual(originalBefore);
     expect(data.backupFile).toBe('layouts/Level 1.json.bak');
+  });
+
+  it('warns about a global object type on the copied layer, and about a type that could not be read', async () => {
+    const player = await readJson<Obj>('objectTypes', 'Actors', 'Player.json');
+    player.isGlobal = true;
+    await writeJson(['objectTypes', 'Actors', 'Player.json'], player);
+    const data = await call('duplicate_layer', { layoutName: 'Level 1', layerName: 'UI', newName: 'UI2' });
+    expect(data.isError).not.toBe(true);
+    expect(data.warnings).toEqual(['The copy places another instance of global object type(s) Player.']);
+
+    await writeFile(path('objectTypes', 'Actors', 'Player.json'), '{ broken');
+    const unreadable = await call('duplicate_layer', { layoutName: 'Level 1', layerName: 'UI', newName: 'UI3' });
+    expect(unreadable.isError).not.toBe(true);
+    expect(unreadable.warnings).toEqual(['Object type(s) Player could not be read, so whether the copy places another instance of a global object type was not checked.']);
+    expect(unreadable.warnings?.join(' ')).not.toContain(tmpDir);
   });
 
   it('refuses a layer that cannot be copied, saying Nothing was changed. and leaving every file as it was', async () => {

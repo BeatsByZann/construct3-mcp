@@ -102,16 +102,31 @@ function rollBackCopy(
   });
 }
 
-/** The object types among the instances that are global. */
-async function globalTypeNames(reader: Reader, instances: Instance[]): Promise<string[]> {
-  const out = new Set<string>();
+/** The object types among the instances that are global, and the types whose file could not be read. */
+async function globalTypeScan(reader: Reader, instances: Instance[]): Promise<{ globals: string[]; unreadable: string[] }> {
+  const globals = new Set<string>();
+  const unreadable: string[] = [];
   for (const type of new Set(instances.map(i => i.type))) {
     try {
       const obj = await reader.readObjectType(type);
-      if (obj.isGlobal === true) out.add(type);
-    } catch { /* an unreadable type is not reported as global */ }
+      if (obj.isGlobal === true) globals.add(type);
+    } catch {
+      unreadable.push(type);
+    }
   }
-  return [...out];
+  return { globals: [...globals], unreadable };
+}
+
+/** The warnings for a copy that places instances again: global object types, and types that could not be checked. */
+function globalTypeWarnings(scan: { globals: string[]; unreadable: string[] }, persistNote: string): string[] {
+  const out: string[] = [];
+  if (scan.globals.length > 0) {
+    out.push(`The copy places another instance of global object type(s) ${scan.globals.join(', ')}.${persistNote}`);
+  }
+  if (scan.unreadable.length > 0) {
+    out.push(`Object type(s) ${scan.unreadable.join(', ')} could not be read, so whether the copy places another instance of a global object type was not checked.`);
+  }
+  return out;
 }
 
 /** What a scan for fixed UIDs found: the files that address them, and the files it could not check. */
@@ -238,10 +253,8 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         copy.name = args.newName;
 
         const warnings: string[] = [];
-        const globals = await globalTypeNames(reader, instances);
-        if (globals.length > 0) {
-          warnings.push(`The copy places another instance of global object type(s) ${globals.join(', ')}. Global instances persist across layouts, so running both layouts creates extra instances.`);
-        }
+        warnings.push(...globalTypeWarnings(await globalTypeScan(reader, instances),
+          ' Global instances persist across layouts, so running both layouts creates extra instances.'));
         const sourceUids = new Set(uidMap.keys());
         const timelines = await timelinesUsingUids(reader, sourceUids);
         if (timelines.using.length > 0) {
@@ -284,7 +297,8 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[duplicate_layout] failed:', error);
-        return toolError(`Error duplicating layout: ${reasonOf(error, path => writer.projectRelative(path))}`);
+        // Only the steps before the first write can throw out of the inner blocks; the copy's write and its rollback are inside them
+        return refuse(`Error duplicating layout: ${reasonOf(error, path => writer.projectRelative(path))}`);
       }
     },
   );
@@ -296,6 +310,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
     {
       description: 'Duplicate a layer inside its layout under a new name, placed directly above the source layer. Its instances are copied with fresh SIDs and new UIDs; '
         + 'hierarchy links inside the layer are remapped. Names are matched as registered. '
+        + 'Timelines and event sheets that address the original layer\'s instances by UID are not scanned: they keep addressing the originals. '
         + 'Refused for a layer with sub-layers, template instances, or hierarchy links to instances on other layers, and for a name another layer of the layout uses ignoring case.',
       inputSchema: {
         layoutName: z.string().max(200).describe('Layout that owns the layer (as registered)'),
@@ -386,10 +401,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         }
 
         const warnings: string[] = [];
-        const globals = await globalTypeNames(reader, instances);
-        if (globals.length > 0) {
-          warnings.push(`The copy places another instance of global object type(s) ${globals.join(', ')}.`);
-        }
+        warnings.push(...globalTypeWarnings(await globalTypeScan(reader, instances), ''));
 
         let backupPath: string;
         try {
@@ -414,7 +426,8 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[duplicate_layer] failed:', error);
-        return toolError(`Error duplicating layer: ${reasonOf(error, path => writer.projectRelative(path))}`);
+        // Only the steps before the layout write can throw out of the inner blocks; the write and its rollback are inside them
+        return refuse(`Error duplicating layer: ${reasonOf(error, path => writer.projectRelative(path))}`);
       }
     },
   );

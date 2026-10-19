@@ -360,7 +360,8 @@ export function registerStructureTools({ server: mcpServer, reader, writer }: Mu
         });
       } catch (error) {
         console.error('[move_project_item] failed:', error);
-        return toolError(`Error moving item: ${reasonOf(error, path => writer.projectRelative(path))}`);
+        // Reached only before the first write: every step after it is inside its own try or cannot throw
+        return refuse(`Error moving item: ${reasonOf(error, path => writer.projectRelative(path))}`);
       }
     },
   );
