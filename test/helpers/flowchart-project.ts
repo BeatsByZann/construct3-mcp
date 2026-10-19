@@ -13,6 +13,7 @@ import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js'
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { MockServer } from '../mocks/mock-server.js';
 import type { Flowchart } from '../../src/construct3/flowchart-model.js';
+import { registerFlowchartTools } from '../../src/tools/flowchart-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
@@ -45,6 +46,22 @@ export async function makeProject(options: { plugin?: boolean } = {}): Promise<F
   const idGen = new IdGenerator();
   const writer = new Construct3ProjectWriter(reader, idGen);
   return { dir, reader, writer, idGen, server: new MockServer() };
+}
+
+/** makeProject with the flowchart tools registered on its server. */
+export async function makeFlowchartProject(options: { plugin?: boolean } = {}): Promise<FlowchartProject> {
+  const project = await makeProject(options);
+  registerFlowchartTools({ server: project.server as never, reader: project.reader, writer: project.writer, idGen: project.idGen });
+  return project;
+}
+
+/** Replace the `flowcharts` entry of project.c3proj by hand and load the project again. */
+export async function setFlowchartContainer(project: FlowchartProject, container: unknown): Promise<void> {
+  const projectPath = join(project.dir, 'project.c3proj');
+  const json = JSON.parse(await readFile(projectPath, 'utf-8'));
+  json.flowcharts = container;
+  await writeFile(projectPath, JSON.stringify(json, null, '\t'));
+  await project.reader.loadProject();
 }
 
 /** Remove a project made by makeProject. */

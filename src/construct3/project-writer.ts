@@ -426,11 +426,16 @@ export class Construct3ProjectWriter {
    * bridge script), backed up once per tool call first, under the file's
    * one lock. A missing file is not an error. Returns the backup path, or
    * undefined when there was no file. project.c3proj cannot be deleted.
+   * Refused (StaleFileError) when `expected` is given and the file is no
+   * longer in that state.
    */
-  async deleteFile(path: string): Promise<string | undefined> {
+  async deleteFile(path: string, options: { expected?: FileState } = {}): Promise<string | undefined> {
     const filePath = await existingSpelling(path);
     if (fileKey(filePath) === fileKey(this.reader.getProjectPath())) throw new Error('project.c3proj cannot be deleted by a tool.');
     return this.underLockOf(filePath, async () => {
+      if (options.expected !== undefined && !sameFileState(await statFileState(filePath), options.expected)) {
+        throw new StaleFileError(staleFileMessage(this.projectRelative(filePath)), this.projectRelative(filePath));
+      }
       const backup = await this.backupForCall(filePath);
       try {
         await unlink(filePath);

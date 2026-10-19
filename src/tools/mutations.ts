@@ -13,6 +13,7 @@ import { registerLayoutTools } from './layout-tools.js';
 import { registerProjectTools } from './project-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
+import { registerFlowchartTools } from './flowchart-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -27,4 +28,5 @@ export function registerMutationTools(
   registerProjectTools(deps);
   registerAnimationTools(deps);
   registerTimelineTools(deps);
+  registerFlowchartTools(deps);
 }
