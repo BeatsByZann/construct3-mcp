@@ -4,6 +4,11 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `rename_object_type` renames an object type with what names it: the objects of conditions and actions, custom action owners, object parameters, instance variable parameter objects and expressions that use it as an object (`Name.X`, `Name(0).X`) in event sheets, its layout instances, the families and containers that list it (the containers in the same write as its project-bar entry), its frame image files under the animation lock and its tilemap brush file; the old file is kept as `.bak`. Timeline tracks, strings, scripts and other names that may name it are listed, never changed. Refused, changing nothing: a name an object type or family has ignoring case, `System` or the Functions object's name, a name with a space, a change of letter case only, and image files another object type shares; event sheets, layouts, families and timelines that could not be read and possibly name it refuse without `force`. A failure midway puts back what the call wrote, except a file another write changed since, which is named; running the same call again finishes a rename that stopped (#ISSUE).
+- `rename_family` renames a family with what names it in event sheets (also the family of a custom action call) and its project-bar entry; dry run, refusals, rollback and rerun as for `rename_object_type` (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
