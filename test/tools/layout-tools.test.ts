@@ -872,6 +872,14 @@ describe('update_instance', () => {
     expect(server.hasTool('update_instance')).toBe(true);
   });
 
+  it('refuses an update that names no property to change', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_instance', { layoutName: 'Level 1', uid: 42 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('No updates provided. Specify at least one property to update.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+  });
+
   it('updates position and angle', async () => {
     const { server, writer } = setup({
       layouts: new Map([['Level 1', {
