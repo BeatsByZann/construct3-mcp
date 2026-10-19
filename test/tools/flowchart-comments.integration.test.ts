@@ -15,7 +15,7 @@ import {
   removeFlowchartProject,
   type FlowchartProject,
 } from '../helpers/flowchart-project.js';
-import { commentTextToHtml, type FlowchartNode } from '../../src/construct3/flowchart-model.js';
+import { commentTextToHtml, type Flowchart, type FlowchartNode } from '../../src/construct3/flowchart-model.js';
 
 const DICTIONARY_KEYS = ['sid', 'pnSIDs', 'poSIDs', 'nodeSIDs', 'outputs', 'x', 'y', 'w', 'h', 't', 's', 'e', 'pi', 'c', 'ty', 'pr', 'prfsid', 'prfnsid'];
 const COMMENT_NODE_KEYS = [...DICTIONARY_KEYS, 'n', 'fo', 'fs', 'fb', 'fi', 'fc'];
@@ -106,11 +106,14 @@ describe('flowchart comment nodes and value types (real project on disk)', () =>
     expect(await nodes()).toEqual([]);
   });
 
-  it('refuses comment text and HTML together', async () => {
+  it('refuses comment text and HTML together when a node is added', async () => {
     const onAdd = await add({ valueType: 'comment', commentText: 'a', commentHtml: 'b' });
     expect(onAdd.isError).toBe(true);
     expect(onAdd.content[0].text).toBe('Give commentText or commentHtml, not both. Nothing was changed.');
+    expect(await nodes()).toEqual([]);
+  });
 
+  it('refuses comment text and HTML together when a node is updated', async () => {
     const note = parseResult(await add({ valueType: 'comment' }));
     const onUpdate = await update(note.generatedSid, { commentText: 'a', commentHtml: 'b' });
     expect(onUpdate.isError).toBe(true);
@@ -183,36 +186,38 @@ describe('flowchart comment nodes and value types (real project on disk)', () =>
     expect(parseResult(await update(start.generatedSid, { valueType: 'comment', isStart: false })).success).toBe(true);
   });
 
-  it('refuses outputs and connections on comment nodes', async () => {
+  it('gives a comment node no outputs or connections, and leaves a stray output alone when the node is updated', async () => {
     const note = parseResult(await add({ valueType: 'comment' }));
     const other = parseResult(await add({ caption: 'Other', outputs: [{ name: 'Out' }] }));
+    const [created] = await nodes();
+    expect(created).toMatchObject({ outputs: [], pnSIDs: [], poSIDs: [], nodeSIDs: [] });
 
-    const output = await server.callTool('add_flowchart_output', { flowchartName: 'Graph', nodeSid: note.generatedSid, name: 'Out' });
-    expect(output.isError).toBe(true);
-    expect(output.content[0].text).toContain('has no outputs');
-
-    const toComment = await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: other.outputSids[0], targetNodeSid: note.generatedSid });
-    expect(toComment.isError).toBe(true);
-    expect(toComment.content[0].text).toContain('to comment node');
-
-    // A comment that somehow carries an output still cannot be wired from.
     const path = flowchartFile(tmpDir, 'Graph');
     const data = JSON.parse(await readFile(path, 'utf-8'));
-    data.nodes[0].outputs = [{ sid: 123456789012345, cnSID: null, name: 'Stray', value: '', enable: true, default: false }];
+    const stray = { sid: 123456789012345, cnSID: null, name: 'Stray', value: '', enable: true, default: false };
+    data.nodes[0].outputs = [stray];
     await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
-    const fromComment = await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: 123456789012345, targetNodeSid: other.generatedSid });
-    expect(fromComment.isError).toBe(true);
-    expect(fromComment.content[0].text).toContain('from comment node');
 
+    expect(parseResult(await update(note.generatedSid, { fontSize: 50 })).success).toBe(true);
     const after = await nodes();
+    expect(after[0].outputs).toEqual([stray]);
+    expect(after[0].fs).toBe(50);
+    expect(after[1].sid).toBe(other.generatedSid);
     expect(after[1].outputs[0].cnSID).toBeNull();
-    expect(after[0].pnSIDs).toEqual([]);
   });
 
   it('refuses to make a node with outputs or connections a comment', async () => {
     const parent = parseResult(await add({ caption: 'A', outputs: [{ name: 'Next' }] }));
     const child = parseResult(await add({ caption: 'B' }));
-    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: child.generatedSid });
+
+    // Connect the output to the second node in the file, as the editor stores a connection
+    const path = flowchartFile(tmpDir, 'Graph');
+    const data = JSON.parse(await readFile(path, 'utf-8')) as Flowchart;
+    data.nodes[0].outputs[0].cnSID = child.generatedSid;
+    data.nodes[0].nodeSIDs.push(child.generatedSid);
+    data.nodes[1].pnSIDs.push(parent.generatedSid);
+    data.nodes[1].poSIDs.push(parent.outputSids[0]);
+    await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
 
     for (const sid of [parent.generatedSid, child.generatedSid]) {
       const result = await update(sid, { valueType: 'comment' });

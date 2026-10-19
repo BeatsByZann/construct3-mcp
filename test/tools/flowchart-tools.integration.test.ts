@@ -56,6 +56,19 @@ describe('flowchart tools (real project on disk)', () => {
     return { sid: result.generatedSid as number, outputSids: result.outputSids as number[] };
   }
 
+  /** Connect an output to a node by editing the file, the way an editor-saved flowchart holds a connection. */
+  async function wire(name: string, parentSid: number, outputSid: number, childSid: number): Promise<void> {
+    const path = join(tmpDir, 'flowcharts', `${name}.json`);
+    const data = JSON.parse(await readFile(path, 'utf-8')) as Flowchart;
+    const parent = data.nodes.find(n => n.sid === parentSid)!;
+    const child = data.nodes.find(n => n.sid === childSid)!;
+    parent.outputs.find(o => o.sid === outputSid)!.cnSID = childSid;
+    parent.nodeSIDs.push(childSid);
+    child.pnSIDs.push(parentSid);
+    child.poSIDs.push(outputSid);
+    await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
+  }
+
   async function createGraph() {
     const created = parseResult(await server.callTool('create_flowchart', { name: 'Graph' }));
     expect(created.success).toBe(true);
@@ -223,9 +236,7 @@ describe('flowchart tools (real project on disk)', () => {
     await createGraph();
     const parent = await addNode({ caption: 'Parent', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
     const child = await addNode({ caption: 'Child', x: 400, y: 0 });
-    await server.callTool('connect_flowchart_nodes', {
-      flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: child.sid,
-    });
+    await wire('Graph', parent.sid, parent.outputSids[0], child.sid);
 
     // Give the child the preset markers and an unmodelled key, as a real
     // preset-derived node would carry.
@@ -295,9 +306,9 @@ describe('flowchart tools (real project on disk)', () => {
     const sibling = await addNode({ caption: 'Sibling', x: 400, y: 300 });
     const grandchild = await addNode({ caption: 'Grandchild', x: 800, y: 0 });
 
-    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: doomed.sid });
-    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[1], targetNodeSid: sibling.sid });
-    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: doomed.outputSids[0], targetNodeSid: grandchild.sid });
+    await wire('Graph', parent.sid, parent.outputSids[0], doomed.sid);
+    await wire('Graph', parent.sid, parent.outputSids[1], sibling.sid);
+    await wire('Graph', doomed.sid, doomed.outputSids[0], grandchild.sid);
 
     const result = parseResult(await server.callTool('delete_flowchart_node', { flowchartName: 'Graph', nodeSid: doomed.sid }));
     expect(result.success).toBe(true);

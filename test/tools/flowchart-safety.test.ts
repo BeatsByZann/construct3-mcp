@@ -839,6 +839,22 @@ describe('add_flowchart_node and update_flowchart_node', () => {
     expect(JSON.parse(raw.slice(1)).nodes).toHaveLength(1);
   });
 
+  const THROWING_CALLS: Array<[string, Record<string, unknown>]> = [
+    ['update_flowchart_node', { flowchartName: 'Graph', nodeSid: 1, caption: 'A2' }],
+    ['delete_flowchart_node', { flowchartName: 'Graph', nodeSid: 1 }],
+  ];
+  for (const [tool, args] of THROWING_CALLS) {
+    it(`${tool} stops before anything is written when reading the file's state throws`, async () => {
+      await createGraph();
+      const before = await snapshotFiles(project.dir);
+      vi.spyOn(project.reader, 'stateAsRead').mockImplementation(() => { throw new Error('boom'); });
+      const { text, isError } = await call(tool, args);
+      expect(isError).toBe(true);
+      expect(text).toBe('The change was stopped before anything was written: boom. Nothing was changed.');
+      expect(await snapshotFiles(project.dir)).toEqual(before);
+    });
+  }
+
   // Every tool that edits a flowchart, one row each: one write of the flowchart file and nothing else written
   interface Seeded { a: number; aOut1: number; aOut2: number; b: number; c: number }
   const EDITING_CALLS: Array<[string, (ids: Seeded) => Record<string, unknown>]> = [
@@ -880,13 +896,15 @@ describe('add_flowchart_node and update_flowchart_node', () => {
     });
   }
 
-  it('refuses a flowchart file that is not a flowchart, naming it project-relative', async () => {
-    await createGraph();
-    await writeFile(flowchartFile(project.dir, 'Graph'), '[]');
-    const before = await snapshotFiles(project.dir);
-    const { text, isError } = await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0 });
-    expect(isError).toBe(true);
-    expect(text).toBe('Flowchart "Graph" is registered in the project but flowcharts/Graph.json does not hold a flowchart: it has no list of nodes. Nothing was changed.');
-    expect(await snapshotFiles(project.dir)).toEqual(before);
-  });
+  for (const [what, content] of [['a list', '[]'], ['an object without nodes', '{"sid":1}']]) {
+    it(`refuses a flowchart file that is ${what}, naming it project-relative`, async () => {
+      await createGraph();
+      await writeFile(flowchartFile(project.dir, 'Graph'), content);
+      const before = await snapshotFiles(project.dir);
+      const { text, isError } = await call('add_flowchart_node', { flowchartName: 'Graph', caption: 'A', x: 0, y: 0 });
+      expect(isError).toBe(true);
+      expect(text).toBe('Flowchart "Graph" is registered in the project but flowcharts/Graph.json does not hold a flowchart: it has no list of nodes. Nothing was changed.');
+      expect(await snapshotFiles(project.dir)).toEqual(before);
+    });
+  }
 });
