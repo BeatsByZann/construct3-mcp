@@ -1,0 +1,100 @@
+/**
+ * Custom eases inside event-sheet ACE parameters.
+ *
+ * A Tween action whose `ease` names a custom ease is stored by Construct with
+ * the parameter as an object that embeds the ease, like a timeline's
+ * `transitionsData` entry: `{ name, json: [{ folders: [], json: <ease file> }] }`
+ * (test/fixtures/timeline-kinds/shapes-r495.json, `easeParameterRoundtrip`).
+ * Built-in ease names stay plain strings.
+ */
+
+import { readFile } from 'fs/promises';
+import { resolveProjectPath } from './path-utils.js';
+import { parseJsonText } from './json-format.js';
+import { isBuiltinEaseName, type CustomEase } from './timeline-model.js';
+import { TRANSITIONS_DIR, transitionsFolder } from './timeline-folders.js';
+
+/** Parameter key that names an ease in an ACE (Tween actions). */
+export const EASE_PARAMETER_KEY = 'ease';
+
+export interface EmbeddedEaseParameter {
+  name: string;
+  json: Array<{ folders: unknown[]; json: CustomEase }>;
+}
+
+/** Custom eases registered in a project, read from timelines/transitions/. */
+export async function loadCustomEases(
+  projectDir: string,
+  timelinesContainer: { subfolders?: unknown[] } | undefined,
+): Promise<Map<string, CustomEase>> {
+  const eases = new Map<string, CustomEase>();
+  for (const name of transitionsFolder(timelinesContainer)?.items ?? []) {
+    try {
+      const ease = parseJsonText(await readFile(resolveProjectPath(projectDir, 'timelines', TRANSITIONS_DIR, `${name}.json`), 'utf-8')) as CustomEase;
+      if (ease && typeof ease === 'object' && Array.isArray(ease.transitionKeyframes)) eases.set(name, ease);
+    } catch { /* an unreadable ease file is reported by list_eases */ }
+  }
+  return eases;
+}
+
+/** The parameter value Construct stores for a custom ease. */
+export function easeParameterValue(ease: CustomEase): EmbeddedEaseParameter {
+  return { name: ease.name, json: [{ folders: [], json: structuredClone(ease) }] };
+}
+
+/** The ease a parameter value names: the string itself or the embedded object's name. */
+export function easeParameterName(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const name = (value as { name?: unknown }).name;
+    if (typeof name === 'string') return name;
+  }
+  return undefined;
+}
+
+/** True when a parameters object names a non-built-in ease as a bare string, so eases must be read. */
+export function needsEaseLookup(parameters: unknown): boolean {
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return false;
+  const value = (parameters as Record<string, unknown>)[EASE_PARAMETER_KEY];
+  return typeof value === 'string' && !isBuiltinEaseName(value);
+}
+
+/**
+ * Replace a bare custom ease name in `parameters.ease` with the embedded
+ * object, keeping the key's position. Returns the ease name when it did.
+ */
+export function embedCustomEase(parameters: unknown, eases: Map<string, CustomEase>): string | undefined {
+  if (!needsEaseLookup(parameters)) return undefined;
+  const record = parameters as Record<string, unknown>;
+  const ease = eases.get(record[EASE_PARAMETER_KEY] as string);
+  if (!ease) return undefined;
+  record[EASE_PARAMETER_KEY] = easeParameterValue(ease);
+  return ease.name;
+}
+
+/** Every ACE `parameters` object in a JSON tree that has an `ease` key. */
+export function forEachEaseParameter(
+  root: unknown,
+  visit: (parameters: Record<string, unknown>) => void,
+): void {
+  const stack: unknown[] = [root];
+  let guard = 0;
+  while (stack.length > 0) {
+    if (++guard > 2_000_000) throw new Error('Event sheet walk exceeded the node limit.');
+    const node = stack.pop();
+    if (Array.isArray(node)) {
+      for (const item of node) stack.push(item);
+      continue;
+    }
+    if (!node || typeof node !== 'object') continue;
+    const record = node as Record<string, unknown>;
+    const params = record.parameters;
+    if (params && typeof params === 'object' && !Array.isArray(params)
+      && Object.prototype.hasOwnProperty.call(params, EASE_PARAMETER_KEY)) {
+      visit(params as Record<string, unknown>);
+    }
+    for (const [key, value] of Object.entries(record)) {
+      if (key !== 'parameters' && value && typeof value === 'object') stack.push(value);
+    }
+  }
+}
