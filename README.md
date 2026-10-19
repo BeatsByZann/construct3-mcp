@@ -209,6 +209,18 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_timeline` | Update timeline settings or enable/disable it |
 | `delete_timeline` | Delete a timeline (backs up exactly the file it deletes; errors and leaves `project.c3proj` unchanged when the file is missing) |
 
+**Tilemaps**
+
+| Tool | Description |
+|------|-------------|
+| `get_tilemap_data` | Read the painted tiles of a placed Tilemap instance as rows[y][x] |
+| `set_tilemap_tiles` | Paint, flip or erase single cells or fill a rectangle; other cells are kept |
+| `set_tilemap_data` | Replace all tile data of a Tilemap instance from rows[y][x], resizing the instance by default |
+| `list_tilemap_brushes` | List a Tilemap object type's editor brushes (auto16, auto47, patch) in its brush file |
+| `add_tilemap_brush` | Add one of a Tilemap object type's editor brushes (auto16, auto47, patch) to its brush file |
+| `update_tilemap_brush` | Rename, retype or replace one of a Tilemap object type's editor brushes (auto16, auto47, patch) in its brush file |
+| `delete_tilemap_brush` | Delete one of a Tilemap object type's editor brushes (auto16, auto47, patch) from its brush file |
+
 **Project and addons**
 
 | Tool | Description |
@@ -440,7 +452,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 90.
 
 ### Standalone Testing
 
@@ -514,6 +526,7 @@ construct3-mcp/
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
+│   │   ├── tilemap-data.ts         # Codec for a Tilemap instance's tile data string
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
 │   │       ├── index-builder.ts    # Cross-reference index (cached per reader)
@@ -555,6 +568,9 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── tilemap-data-tools.ts   # Tilemap tile data tools (3)
+│   │   ├── tilemap-brush-tools.ts  # Tilemap brush tools (4)
+│   │   ├── tilemap-support.ts      # Refusals, name checks and path-free messages the tilemap tools share
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/

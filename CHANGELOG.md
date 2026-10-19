@@ -4,6 +4,11 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `get_tilemap_data`, `set_tilemap_tiles` and `set_tilemap_data` read and paint the tiles of a placed Tilemap instance, and `list_tilemap_brushes`, `add_tilemap_brush`, `update_tilemap_brush` and `delete_tilemap_brush` manage a Tilemap object type's editor brushes; a refused call changes nothing, a failed layout write is rolled back, and a brush file saved by another program since it was read is not replaced.
+- The server has 90 tools (83 before).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).

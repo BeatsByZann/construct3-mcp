@@ -1080,6 +1080,127 @@ Remove a placed instance by UID from the layout's layers and sub-layers or its n
 
 Hierarchy (scene graph) links to the instance are removed with it, since links name UIDs and a new instance can get the deleted one's UID: its children get `"parent-uid": null` and stay in the layout, on whatever layer they are (whether the editor deletes them with their parent is not verified, and detaching loses no instance), and its parent's `children` entry for it is removed (an emptied `children` array is removed, as the editor saves a parent without children). A warning names the UIDs of the instances changed. When another instance of the layout has the same UID (a duplicate UID, `duplicate-uid` in `validate_project`), the links naming it are left as they are, since they may mean that instance, and a warning says so; `delete_layer` does the same.
 
+### `get_tilemap_data`
+
+Read the painted tiles of a placed Tilemap instance, stored in the instance's `ownData.tilemapData`. A read tool: it changes nothing, so its refusals do not end with "Nothing was changed.".
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of the Tilemap instance |
+| `region` | object | No | Cell rectangle `{ x, y, width, height }` to return; required when the tilemap has more than 10,000 cells |
+
+The result holds `layoutName`, `uid`, `objectType`, `width` and `height` (the grid, in cells), `tileWidth` and `tileHeight`, `tilesetTileCount` (when the object type's image size is known: the tiles that fit in it after the tile offsets and spacing), `emptyCells` (empty cells of the whole map, not only of the region), `region`, `rows`, and `warnings`. `rows[y][x]` is `null` for an empty cell, a tile index (the first tile of the tileset is 0, as the Tilemap Bar numbers it) for a plain tile, or `{ tile, flipX, flipY, flipDiagonal }` for a flipped one. Tile width and height come from the instance's `properties` or `ownData` (default 32). An instance with no tile data shows an empty grid sized from the instance (instance size divided by tile size, rounded up), with a warning.
+
+Refused with an error:
+- a layout name that is not registered exactly (a name that differs only in letter case is answered with *Did you mean* and the registered spelling), or an unknown layout;
+- an instance that is not in the layout, a UID used by more than one instance of the layout (`duplicate-uid` in `validate_project`), or an instance of an object type whose plugin is not `Tilemap`; an object type file that cannot be read;
+- an instance whose `ownData` or `ownData.tilemapData` is present but not an object;
+- an invalid tile size, tile data that cannot be decoded (malformed token or a cell count that does not match the size), and a bare instance whose size gives a grid over the 4,000,000-cell limit of a tilemap;
+- a tilemap over 10,000 cells without a `region`, a `region` over 10,000 cells, or a `region` that extends past the map.
+
+### `set_tilemap_tiles`
+
+Paint, flip or erase single cells of a placed Tilemap instance, or fill a rectangle; all other cells are kept. The instance's size is not changed. The layout is written once.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of the Tilemap instance |
+| `tiles` | object[] | No | Up to 250,000 cells `{ x, y, value }`, applied in order |
+| `fill` | object | No | Rectangle `{ x, y, width, height, value }`, applied before `tiles` |
+
+At least one of `tiles` and `fill` must be given. `value` is `null` (erase), a tile index from 0, or `{ tile, flipX, flipY, flipDiagonal }` with the flags optional. Rotations are clockwise: 90 degrees is `flipX` + `flipDiagonal`, 180 degrees is `flipX` + `flipY`, 270 degrees is `flipY` + `flipDiagonal`. A cell with no flag set is stored as its plain index. A tile index is at most 9007199254740990 (the schema refuses a larger one in the request; a larger stored one, with a paint on the same map, is refused by the tool).
+
+An instance with no tile data gets a grid sized from the instance (instance size divided by tile size, rounded up), with a warning. A tile index past the end of the tileset (when its size is known) is written with a warning. The other keys of `ownData.tilemapData` are kept; its `width`, `height`, `max-width` and `max-height` are set to the grid size. `tile-width`, `tile-height`, `tile-x-offset`, `tile-y-offset`, `tile-x-spacing` and `tile-y-spacing` are copied from the instance's `properties` into `ownData` when `ownData` lacks them, and never replaced. On success the result is a `WriteResult` with `category: "layout"`, `action: "updated"`, `entity: "<layout>/<uid>"` and `backupFile`, the absolute path of the layout's `.bak`.
+
+Refused before anything is written, with the ending "Nothing was changed.":
+- neither `tiles` nor `fill`, a `fill` over 250,000 cells, a `fill` or a cell outside the map, and a map with no cells;
+- every refusal of [`get_tilemap_data`](#get_tilemap_data) that concerns the layout, the instance, `ownData`, `ownData.tilemapData`, the tile size, undecodable tile data and a grid over the cell limit;
+- a tile index over the limit anywhere in the resulting grid;
+- an error thrown by one of the checks, worded *The change was stopped before anything was written: ...*.
+
+A layout file that Construct 3 saved after the server read it is refused, not overwritten: the text says `layouts/<name>.json was changed on disk after this server read it ... It was not written, so that change is kept. Run the tool again: it reads the file as it is now.`. When the write fails after the layout was replaced (for example the read-back fails), the layout is rolled back and the error says *The call was rolled back: layouts/<name>.json is as before the call.*; if it cannot be put back, the error names the file and its `.bak`.
+
+### `set_tilemap_data`
+
+Replace all tile data of a placed Tilemap instance with `rows[y][x]`. The grid size becomes the size of `rows`. The layout is written once.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of the Tilemap instance |
+| `rows` | array | Yes | `rows[y][x]` of `null`, a tile index, or `{ tile, flipX, flipY, flipDiagonal }`; every row the same length, at most 250,000 cells |
+| `resizeInstance` | boolean | No | Set the instance size to columns x tile width by rows x tile height (default: true) |
+
+The previous tile data is replaced, also when it cannot be decoded. With `resizeInstance: false` the instance size is kept, and a warning names the cells the instance covers when they differ from the grid. A tile index past the end of the tileset (when its size is known) is written with a warning. Tile keys and `max-width` and `max-height` are written as for [`set_tilemap_tiles`](#set_tilemap_tiles), and the result is the same `WriteResult`.
+
+Refused before anything is written, with the ending "Nothing was changed.": an empty first row, a grid over 250,000 cells, a row of another length than the first, a cell that is not `null`, a non-negative integer or an object with `tile` and boolean flags (an unknown key is refused), a tile index over 9007199254740990, and the refusals of `set_tilemap_tiles` that concern the layout, the instance and its `ownData`. A stale layout and a failed write end as described for `set_tilemap_tiles`.
+
+**Editor behavior (Construct 3 r506-2, Free edition).** A layout written by these tools was opened in the editor: it drew every cell as written (plain, mirrored, flipped vertically, rotated), and the saved layout held the same `tilemapData.data` strings byte for byte. A cell written as `flipX` + `flipDiagonal` showed as a rotation of 90 degrees clockwise, the same picture as the cell the editor wrote when its Tilemap Bar rotated a tile clockwise once; the editor wrote 180 degrees as `flipX` + `flipY` and 270 degrees as `flipY` + `flipDiagonal`. Rotating anticlockwise was not tried. On an instance 64 x 32 with a 3 x 3 grid (`resizeInstance: false`) the editor drew only the 4 x 2 cells the instance covers, not the third row, and kept both the instance size and the 3 x 3 data when it saved. A Tilemap instance painted in the editor, and one the editor created itself, saved with `tile-width`, `tile-height`, `tile-x-offset`, `tile-y-offset`, `tile-x-spacing` and `tile-y-spacing` in `ownData` and `max-width` and `max-height` in `tilemapData`. The editor does not re-read a layout the server writes while the project is open (see the editor reload note).
+
+### `list_tilemap_brushes`
+
+List the editor brushes stored for a Tilemap object type. A read tool.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+
+The result holds `objectName`, `file` (the brush file's project-relative path), `fileExists`, `brushes` (each `{ index, name, type, size }`; `size` is columns x rows, `4x4` for `auto16`, `8x6` for `auto47`, and the brush's `width` x `height` for a `patch`, or `unknown`), `count` and `warnings`. An object type without a brush file lists no brushes. An object type whose plugin is not `Tilemap` is listed anyway, with a warning.
+
+**Where the brush file is.** A Tilemap object type's brushes are stored outside its object file, in `tilemapBrushes/objectTypes/<its project-bar folders>/<name>.brush.json`, one folder for each folder of the object type's path in the project bar (so `Tiles` is `tilemapBrushes/objectTypes/Tiles.brush.json` and `Walls` in the folders `Scenery/Inner` is `tilemapBrushes/objectTypes/Scenery/Inner/Walls.brush.json`). The tools use the file of that name, ignoring letter case, in the object type's own folder. A brush file named after the object type in another folder below `tilemapBrushes/` is not used: the read tool lists it in a warning, and a write tool refuses while the object type's own folder has none, since the object type would get two brush files. The search below `tilemapBrushes/` stops at 20,000 entries and 8 folder levels or when a folder cannot be read; while it is incomplete and the own folder has no file, the read tool warns that another file may exist and a write tool refuses.
+
+Refused with an error: an object name that is not registered exactly (a name that differs only in letter case is answered with *Did you mean* and the registered spelling), an object type file that cannot be read, and a brush file that cannot be read: not valid JSON, not an array, holding an entry that is not an object with a string `name`, unreadable, or over 10MB. The message names the file by its project-relative path.
+
+### `add_tilemap_brush`
+
+Add a brush to a Tilemap object type's brush file, creating the file (and its folders) when it does not exist yet.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Brush name, unique within the object type |
+| `type` | string | Yes | `auto16`, `auto47` or `patch` |
+| `data` | any | Yes | The brush grid for the type (below) |
+
+The grids the tools accept: `auto16`, 4 rows of 4 cells; `auto47`, 6 rows of 8 cells; `patch`, `{ width, height, data }` with `width` and `height` from 1 to 256 and `data` holding `height` rows of `width` cells. A cell is a tile index (a non-negative integer), `null` for an empty cell, or an array of weighted alternatives `[{ index, probability }]` with a probability above 0. A new file is written compact (one line); an existing file keeps its indentation, line endings, trailing whitespace and BOM. The result is a `WriteResult` with `category: "tilemapbrush"`, `action: "created"`, `entity: "<object>/<brush>"` and `backupFile`, the absolute path of the file's `.bak` (none for a new file).
+
+Brush names are compared exactly when a brush is looked up. A new name that differs from an existing one only in letter case is refused, and the error names the existing brush.
+
+Refused before anything is written, with the ending "Nothing was changed.": an invalid name, a grid of the wrong size or with a bad cell, a name already used (also in another letter case), every refusal of [`list_tilemap_brushes`](#list_tilemap_brushes), and a brush file named after the object type in another folder or an incomplete search for one (see above).
+
+A brush file that another program saved after the server read it is refused and left as it is: the text says `<file> was changed on disk after this server read it ... It was not written, so that change is kept. Run the tool again: it reads the file as it is now.`. When a write fails, the message says what the file holds: *Nothing was changed.* when it is as it was read; that it holds the new list although the write was not confirmed, that it is missing or cannot be read, or that it is not as it was before the call, each with where its state from before the call is (the file's own `.bak`, checked, "it did not exist before the call", or "the state from before the call is not known").
+
+### `update_tilemap_brush`
+
+Rename a brush, change its type, or replace its grid.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Current brush name |
+| `newName` | string | No | New brush name |
+| `type` | string | No | New type; requires `data` |
+| `data` | any | No | Replacement grid, checked against the brush's (new) type |
+
+At least one of `newName`, `type` and `data` must be given. A call that leaves the brush list as it was returns `action: "unchanged"` and writes nothing. Otherwise the result is a `WriteResult` with `action: "updated"`.
+
+Refused before anything is written, with the ending "Nothing was changed.": nothing to update, a `type` without `data`, an invalid `newName`, an object type without a brush file, an unknown brush (a name that differs only in letter case is answered with the registered spelling), a `newName` already used by another brush (also in another letter case), data that does not fit the type, and the refusals of `add_tilemap_brush`. A stale brush file and a failed write end as described there.
+
+### `delete_tilemap_brush`
+
+Delete a brush. The file is kept as an empty array when the last brush is removed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Brush name to delete |
+
+The result is a `WriteResult` with `action: "deleted"`. Refused before anything is written, with the ending "Nothing was changed.": an object type without a brush file, an unknown brush (a name that differs only in letter case is answered with the registered spelling), and the refusals of `add_tilemap_brush`. A stale brush file and a failed write end as described there.
+
+**Editor behavior (Construct 3 r506-2, Free edition).** The Tilemap Bar listed the brushes of the files these tools wrote at the paths above: `auto16` and `patch` brushes with tile indices written as bare integers, for `Tiles` and for `Walls` in the folders `Scenery/Inner`, and brushes the editor created were saved to the same files. When the editor saved after brush editing it rewrote every cell as a weighted alternative `{ "index": N, "probability": 1 }` and left empty cells as `null`. The `auto47` grid size (6 rows of 8) comes from a sample file; whether the editor reads an `auto47` brush written by these tools was not checked. The editor does not re-read a brush file the server writes while the project is open (see the editor reload note).
+
 ### `update_project_metadata`
 
 Update project-level metadata.
@@ -1565,8 +1686,8 @@ Mutation tools return this structure on success:
 interface WriteResult {
   success: boolean;
   entity: string;        // name of the entity
-  category: string;      // "object" | "family" | "eventsheet" | "layout" | "timeline" | "project" | "addon"
-  action: string;        // "created" | "updated" | "deleted" (also "delete_blocked", "update_blocked", "move_blocked", "would_delete", "already_registered")
+  category: string;      // "object" | "family" | "eventsheet" | "layout" | "timeline" | "tilemapbrush" | "project" | "addon"
+  action: string;        // "created" | "updated" | "deleted" (also "unchanged" for an `update_tilemap_brush` that changes nothing, "delete_blocked", "update_blocked", "move_blocked", "would_delete", "already_registered")
   generatedSid?: number;
   generatedUid?: number;
   warnings?: string[];   // e.g., "Auto-registered plugin..."
