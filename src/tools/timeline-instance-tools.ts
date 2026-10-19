@@ -53,14 +53,20 @@ import { refuse, invalidName, readFailure, relativeMessage, caseHint } from './t
 import { trackSelectorShape, type ErrorResult, type TimelineToolkit } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
 
-/** Warn about property names that match no world property, instance variable or plugin property. */
-function unverifiedPropertyWarnings(specs: PropertySpec[]): string[] {
-  const unverified = specs.filter(spec => !spec.verified).map(spec => spec.property);
-  if (unverified.length === 0) return [];
-  return [
-    `Property name(s) ${unverified.join(', ')} match no world property, instance variable or plugin property of the instance ` +
-    `(world properties: ${Object.keys(WORLD_PROPERTIES).join(', ')}); check the track in the Construct 3 editor.`,
-  ];
+/**
+ * The refusal for a property name that matches no world property, instance
+ * variable or plugin property. Construct 3 cannot open a project whose
+ * property track has such a name, so no track is written for it.
+ */
+function unknownPropertyRefusal(name: string, instance: Instance, objectType: ObjectType | undefined): ErrorResult {
+  const unreadable = objectType === undefined
+    ? ` The object type "${instance.type}" could not be read, so its instance variables and plugin properties are not known.`
+    : '';
+  return refuse(
+    `Property "${name}" matches no world property, instance variable or plugin property of instance UID ${instance.uid} ("${instance.type}"), ` +
+    `and Construct 3 cannot open a project whose property track has such a name.${unreadable} ` +
+    `World properties: ${Object.keys(WORLD_PROPERTIES).join(', ')}.`,
+  );
 }
 
 /**
@@ -209,9 +215,6 @@ function currentKeyframes(
   times: number[],
 ): TimelinePropertyKeyframe[] {
   const mode = keyframeMode(data, track, propertyTrack, undefined);
-  if (!spec.verified) {
-    return times.map(time => createPropertyKeyframe(time, spec, { value: 0, rValue: 0, aValue: 0 }));
-  }
   return times.map(time => createPropertyKeyframe(time, spec, valuesFor(spec, spec.base as TimelineValue, mode)));
 }
 
@@ -267,7 +270,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
     return { ok: true, instance: located.instance, objectType: await readObjectTypeSafe(located.instance.type) };
   }
 
-  /** The object type, or undefined when its file cannot be read (properties then count as unverified). */
+  /** The object type, or undefined when its file cannot be read (only world properties are then known). */
   async function readObjectTypeSafe(name: string): Promise<ObjectType | undefined> {
     try {
       return await reader.readObjectType(name);
@@ -276,7 +279,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
     }
   }
 
-  /** Resolve property names for new tracks; a known property whose current value is unreadable is an error. */
+  /** Resolve property names for new tracks; an unknown name, or a known property whose current value is unreadable, is an error. */
   function resolveNewProperties(
     properties: string[],
     instance: Instance,
@@ -287,7 +290,8 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
       const resolved = resolveTimelineProperty(name, instance, objectType);
       if (!resolved.ok) return { ok: false, error: refuse(resolved.error) };
       const spec = resolved.spec;
-      if (spec.verified && spec.base === undefined) {
+      if (!spec.verified) return { ok: false, error: unknownPropertyRefusal(name, instance, objectType) };
+      if (spec.base === undefined) {
         return { ok: false, error: refuse(`Cannot read the current value of "${spec.property}" for instance UID ${instance.uid}${spec.property.startsWith('offsetScale') ? ' (its object type has no frame size to divide by)' : ''}.`) };
       }
       if (specs.some(other => other.property === spec.property && other.source.type === spec.source.type)) {
@@ -394,7 +398,6 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           args.timelineName,
           'track-added',
           saved.backupPath,
-          unverifiedPropertyWarnings(resolved.specs),
         ));
       } catch (error) {
         console.error('[add_timeline_track] failed:', error);
@@ -481,7 +484,6 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           args.timelineName,
           'property-track-added',
           saved.backupPath,
-          unverifiedPropertyWarnings([spec]),
         ));
       } catch (error) {
         console.error('[add_property_track] failed:', error);
@@ -561,7 +563,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         absolute: absoluteSchema.optional().describe('Value of the property at this keyframe: a number, a string or boolean for such variables and plugin properties, or [r,g,b,a] for offsetColor'),
         relative: z.number().optional().describe('For a number property of an instance track: offset from the instance\'s own layout value'),
         ease: z.string().max(100).optional().describe('Ease of this property keyframe (a new one gets "default")'),
-      })).optional().describe('Per-property values, e.g. { "offsetX": { "absolute": 400 }, "offsetOpacity": { "relative": -0.5 }, "tag": { "absolute": "done" } }, or { "value": { "absolute": 2, "ease": "easeinoutsine" } } for a value track. Numbers take absolute or relative; the stored values follow the result mode in force. A name matching no world property, instance variable or plugin property needs both absolute and relative numbers'),
+      })).optional().describe('Per-property values, e.g. { "offsetX": { "absolute": 400 }, "offsetOpacity": { "relative": -0.5 }, "tag": { "absolute": "done" } }, or { "value": { "absolute": 2, "ease": "easeinoutsine" } } for a value track. Numbers take absolute or relative; the stored values follow the result mode in force. A name matching no world property, instance variable or plugin property is refused for a new property track; an existing track with such a name needs both absolute and relative numbers'),
       ease: z.string().max(100).optional().describe('Master keyframe ease name (a new keyframe gets "default")'),
       enabled: z.boolean().optional().describe('Master keyframe enabled flag'),
       tags: z.string().max(500).optional().describe('Master keyframe tags string'),
@@ -660,6 +662,8 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
             : resolveTimelineProperty(name, located!.instance, located!.objectType);
           if (!lookup.ok) return refuse(lookup.error);
           const spec = lookup.spec;
+          // A new property track needs a name Construct 3 knows; an existing one is edited as stored
+          if (!existing && !spec.verified) return unknownPropertyRefusal(name, located!.instance, located!.objectType);
 
           if (!spec.verified) {
             if (typeof input.absolute !== 'number' || input.relative === undefined) {
@@ -723,7 +727,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
           if (ease !== undefined) keyframe.ease = ease;
         }
 
-        const warnings = unverifiedPropertyWarnings(resolved.map(r => r.spec));
+        const warnings: string[] = [];
         if (createdTracks.length > 0) {
           warnings.push(`Created property track(s) ${createdTracks.join(', ')} on the track for instance UID ${uid}; they hold a keyframe only at the times set so far.`);
         }

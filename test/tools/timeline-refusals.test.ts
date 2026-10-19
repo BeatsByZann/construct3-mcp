@@ -31,14 +31,14 @@ const NAME_RULE = 'Name must start with a letter or underscore and contain only 
 const EXACTLY_ONE = 'Give exactly one of instanceUid (an instance track) or trackName (a value or audio track).';
 const FOLDER_MODE = 'A track or property-track folder holding this track has result mode "absolute". No fixture holds a folder with a non-default result mode, so the values Construct would store are not known here; set the folder back to "default" in the Construct 3 editor first.';
 const FOLDERS = 'Folders: "Group", "Other".';
-const PROPERTY_HELP = 'World properties: offsetX, offsetY, offsetZElevation, offsetWidth, offsetHeight, offsetAngle, offsetOpacity, offsetColor, offsetScaleX, offsetScaleY. Instance variable names and plugin property ids (e.g. "initial-animation") are also accepted; prefix "var:" or "plugin:" when a name is both.';
 
 const notFound = (name: string) => `Timeline "${name}" not found. Use list_timelines to see available timelines.`;
 const caseHint = (name: string, registered: string) => `Timeline "${name}" not found. Names are matched with their letter case. Did you mean "${registered}"?`;
 const outOfRange = (time: number) => `Keyframe time ${time} is outside the timeline's [0, 5] range. Raise totalTime with update_timeline first.`;
 const transitionText = (name: string) => `"${name}" is a transition (a custom ease in timelines/transitions/), not a timeline. The timeline tools do not read, change or delete transitions; use list_eases, update_ease or delete_ease.`;
 const unresolvedText = (name: string) => `"${name}" is registered in project.c3proj in a timelines folder the timeline tools cannot resolve: a folder without a name that is not the editor's Transitions folder (only the first unnamed folder directly under timelines is), or a folder inside the Transitions folder. Run validate_project and fix the folder in project.c3proj first.`;
-const noTrack = (timeline: string, uid: number, tracked: string) => `Timeline "${timeline}" has no track for instance UID ${uid}.${tracked} Add one with add_timeline_track.`;
+const unknownProperty = (name: string) => `Property "${name}" matches no world property, instance variable or plugin property of instance UID 0 ("Sprite"), and Construct 3 cannot open a project whose property track has such a name. World properties: offsetX, offsetY, offsetZElevation, offsetWidth, offsetHeight, offsetAngle, offsetOpacity, offsetColor, offsetScaleX, offsetScaleY.`;
+const noTrack =(timeline: string, uid: number, tracked: string) => `Timeline "${timeline}" has no track for instance UID ${uid}.${tracked} Add one with add_timeline_track.`;
 const noEase = (name: string) => `Custom ease "${name}" not found. Use list_eases to see the project's custom eases.`;
 const easeCaseHint = (name: string, registered: string) => `Custom ease "${name}" not found. Names are matched with their letter case. Did you mean "${registered}"?`;
 
@@ -203,6 +203,10 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
     objectType.animations.items = [];
     await writeFile(path, JSON.stringify(objectType, null, '\t'), 'utf-8');
   };
+  const unreadableSprite = async () => {
+    await writeFile(file('objectTypes/Sprite.json'), '{ not json', 'utf-8');
+    reader.invalidateCaches();
+  };
   const withLegacy = async () => {
     await copyFile(join(KINDS_DIR, 'Legacy.json'), file('timelines/Legacy.json'));
     await editProject(project => { project.timelines.items.push('Legacy'); });
@@ -300,6 +304,10 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
   row('add_timeline_track', 'unknown instance variable', { ...addTrack, properties: ['var:nope'] }, '"Sprite" has no instance variable named "nope".');
   row('add_timeline_track', 'property whose value cannot be read', { ...addTrack, properties: ['offsetScaleX'] },
     'Cannot read the current value of "offsetScaleX" for instance UID 0 (its object type has no frame size to divide by).', { prepare: withoutFrames });
+  row('add_timeline_track', 'property that matches nothing', { ...addTrack, properties: ['angle'] }, unknownProperty('angle'));
+  row('add_timeline_track', 'property that matches nothing, next to a known one', { ...addTrack, properties: ['offsetX', 'mystery'] }, unknownProperty('mystery'));
+  row('add_timeline_track', 'property that matches nothing, object type unreadable', { ...addTrack, properties: ['angle'] },
+    'could not be read, so its instance variables and plugin properties are not known.', { partial: true, prepare: unreadableSprite });
   row('add_timeline_track', 'duplicate property', { ...addTrack, properties: ['offsetX', 'offsetX'] },
     'Duplicate property "offsetX" in properties; each property track must appear once.');
   row('add_timeline_track', 'time beyond the end', { ...addTrack, keyframeTimes: [9] }, outOfRange(9));
@@ -336,6 +344,9 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
   row('add_property_track', 'unknown instance variable', { ...addProperty, property: 'var:nope' }, '"Sprite" has no instance variable named "nope".');
   row('add_property_track', 'property whose value cannot be read', { ...addProperty, property: 'offsetScaleX' },
     'Cannot read the current value of "offsetScaleX" for instance UID 0 (its object type has no frame size to divide by).', { prepare: withoutFrames });
+  row('add_property_track', 'property that matches nothing', { ...addProperty, property: 'angle' }, unknownProperty('angle'));
+  row('add_property_track', 'property that matches nothing, object type unreadable', { ...addProperty, property: 'angle' },
+    'could not be read, so its instance variables and plugin properties are not known.', { partial: true, prepare: unreadableSprite });
   row('add_property_track', 'property track that exists', { ...addProperty, property: 'offsetX' },
     'Property track "offsetX" already exists on the track for instance UID 0. Use set_keyframe to change its values.');
 
@@ -391,8 +402,11 @@ describe('timeline and ease tools: refusals (real project on disk)', () => {
   row('set_keyframe', 'color given a relative value', { ...setOnMove, values: { offsetColor: { relative: 1 } } }, 'Property "offsetColor" is a color; give "absolute" only.');
   row('set_keyframe', 'color with no value', { ...setOnMove, values: { offsetColor: {} } }, 'Property "offsetColor" needs an "absolute" value.');
   row('set_keyframe', 'color given text', { ...setOnMove, values: { offsetColor: { absolute: 'x' } } }, '"offsetColor" needs [r, g, b, a] with each part from 0 to 1.');
-  row('set_keyframe', 'property that matches nothing, given no relative value', { ...setOnMove, values: { mystery: { absolute: 1 } } },
-    `Property "mystery" matches no world property, instance variable or plugin property of the instance, so its absolute and relative values cannot be related: supply both "absolute" and "relative" as numbers. ${PROPERTY_HELP}`);
+  row('set_keyframe', 'property that matches nothing, given both values', { ...setOnMove, values: { angle: { absolute: 90, relative: 15 } } }, unknownProperty('angle'));
+  row('set_keyframe', 'property that matches nothing, given one value', { ...setOnMove, values: { mystery: { absolute: 1 } } }, unknownProperty('mystery'));
+  row('set_keyframe', 'property that matches nothing, next to a known one', { ...setOnMove, values: { offsetX: { absolute: 1 }, angle: { absolute: 90, relative: 15 } } }, unknownProperty('angle'));
+  row('set_keyframe', 'property that matches nothing, object type unreadable', { ...setOnMove, values: { angle: { absolute: 90, relative: 15 } } },
+    'could not be read, so its instance variables and plugin properties are not known.', { partial: true, prepare: unreadableSprite });
 
   // ─── delete_keyframe ──────────────────────────────────────
 

@@ -173,14 +173,17 @@ describe('timeline property tracks against the r495.2 editor', () => {
     expect(await readFile(join(tmpDir, 'timelines', 'Sampling.json'), 'utf-8')).toBe(before);
   });
 
-  it('still accepts a name that matches no known property, with a warning and both numbers', async () => {
-    const added = parseResult(await server.callTool('add_property_track', { timelineName: 'Sampling', instanceUid: BOX, property: 'offsetOriginX' }));
-    expect(added.warnings.join(' ')).toContain('offsetOriginX');
-    const refused = await server.callTool('set_keyframe', { timelineName: 'Sampling', instanceUid: BOX, time: 1, values: { offsetOriginX: { absolute: 1 } } });
-    expect(refused.isError).toBe(true);
-    const ok = await server.callTool('set_keyframe', { timelineName: 'Sampling', instanceUid: BOX, time: 1, values: { offsetOriginX: { absolute: 1, relative: 0.5 } } });
-    expect(ok.isError).not.toBe(true);
-    const t = await track();
-    expect(t.propertyTracks.at(-1)!.propertyKeyframes.find(kf => kf.time === 1)).toMatchObject({ value: 0.5, rValue: 0.5, aValue: 1 });
+  it('refuses a name that matches no known property in add_property_track and set_keyframe, leaving the file as it was', async () => {
+    const path = join(tmpDir, 'timelines', 'Sampling.json');
+    const before = await readFile(path, 'utf-8');
+    const added = await server.callTool('add_property_track', { timelineName: 'Sampling', instanceUid: BOX, property: 'offsetOriginX' });
+    expect(added.isError).toBe(true);
+    expect(added.content[0].text).toContain('Property "offsetOriginX" matches no world property, instance variable or plugin property');
+    expect(added.content[0].text).toMatch(/Nothing was changed\.$/);
+    const set = await server.callTool('set_keyframe', { timelineName: 'Sampling', instanceUid: BOX, time: 1, values: { offsetOriginX: { absolute: 1, relative: 0.5 } } });
+    expect(set.isError).toBe(true);
+    expect(set.content[0].text).toContain('Property "offsetOriginX" matches no world property, instance variable or plugin property');
+    expect(set.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await readFile(path, 'utf-8')).toBe(before);
   });
 });

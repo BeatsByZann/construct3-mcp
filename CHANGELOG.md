@@ -12,6 +12,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Changed
 
+- `add_timeline_track`, `add_property_track` and `set_keyframe` refuse a property name that matches no world property, instance variable or plugin property of the instance, before writing anything, and name the known world properties. They used to write the track with a warning, and Construct 3 r506-2 (Free edition) refused to open a project holding such a track ("property track type 'undefined' is not valid", then "Failed to open project"). A property track that already has such a name can still be set with `set_keyframe`.
 - `delete_timeline` of a registered timeline whose file is missing removes the registration (`action: "deregistered"`) instead of refusing; a file that exists but cannot be read is not deleted.
 - `create_timeline` and `delete_timeline` put back their file when the registration step fails.
 - `update_timeline` refuses to overwrite a timeline file that was saved on disk after it read it.

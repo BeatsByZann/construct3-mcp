@@ -307,13 +307,12 @@ describe('timeline track and keyframe tools (real project on disk)', () => {
     expect(result.content[0].text).toContain('Duplicate property');
   });
 
-  it('warns about a property name that matches no known property', async () => {
+  it('refuses a property name that matches no known property, writing no track', async () => {
     await createTimeline();
-    const result = parseResult(await addTrack({ properties: ['offsetX', 'width'] }));
-    expect(result.success).toBe(true);
-    expect(result.warnings.join(' ')).toContain('width');
-    const track = await firstTrack();
-    expect(track.propertyTracks[1].propertyKeyframes[0].aValue).toBe(0);
+    const result = await addTrack({ properties: ['offsetX', 'width'] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Property "width" matches no world property');
+    expect((await onDisk()).tracks).toHaveLength(0);
   });
 
   // ─── set_keyframe ─────────────────────────────────────────
@@ -404,22 +403,55 @@ describe('timeline track and keyframe tools (real project on disk)', () => {
     expect((await firstTrack()).keyframes).toHaveLength(1);
   });
 
-  it('refuses an unverified property given only one value', async () => {
+  it('refuses a property name that matches nothing, however many values it is given, and writes no track', async () => {
     await withTrack();
-    const result = await setKeyframe({ time: 1, values: { angle: { absolute: 90 } } });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('supply both');
-    expect((await firstTrack()).keyframes).toHaveLength(1);
+    const before = await snapshot();
+    for (const input of [{ absolute: 90 }, { absolute: 90, relative: 15 }]) {
+      const result = await setKeyframe({ time: 1, values: { angle: input } });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Property "angle" matches no world property, instance variable or plugin property');
+      expect(result.content[0].text).toContain('offsetAngle');
+      expect(result.content[0].text).toMatch(/Nothing was changed\.$/);
+      expect(await snapshot()).toEqual(before);
+    }
   });
 
-  it('stores an unverified property exactly as given', async () => {
+  it('edits an existing property track whose name matches nothing, storing the values as given', async () => {
     await withTrack();
-    await setKeyframe({ time: 1, values: { angle: { absolute: 90, relative: 15 } } });
+    await patchTimeline(timeline => {
+      const track = timeline.tracks[0] as TimelineInstanceTrack;
+      const copy = structuredClone(track.propertyTracks[0]);
+      copy.property = 'angle';
+      track.propertyTracks.push(copy);
+    });
+    await boot();
+    const result = parseResult(await setKeyframe({ time: 1, values: { angle: { absolute: 90, relative: 15 } } }));
+    expect(result.success).toBe(true);
+    expect(JSON.stringify(result.warnings ?? [])).not.toContain('match no world property');
     const track = await firstTrack();
-    const keyframe = track.propertyTracks.find(pt => pt.property === 'angle')!.propertyKeyframes[0];
+    const keyframe = track.propertyTracks.find(pt => pt.property === 'angle')!.propertyKeyframes.find(kf => kf.time === 1)!;
     expect(keyframe.value).toBe(15);
     expect(keyframe.rValue).toBe(15);
     expect(keyframe.aValue).toBe(90);
+  });
+
+  it('refuses add_timeline_track and add_property_track for a property name that matches nothing, writing nothing', async () => {
+    await createTimeline();
+    const empty = await snapshot();
+    const track = await addTrack({ properties: ['offsetX', 'angle'] });
+    expect(track.isError).toBe(true);
+    expect(track.content[0].text).toContain('Property "angle" matches no world property, instance variable or plugin property');
+    expect(track.content[0].text).toContain('offsetAngle');
+    expect(track.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(empty);
+
+    expect(parseResult(await addTrack()).success).toBe(true);
+    const tracked = await snapshot();
+    const property = await server.callTool('add_property_track', { timelineName: 'Move', instanceUid: SPRITE_UID, property: 'angle' });
+    expect(property.isError).toBe(true);
+    expect(property.content[0].text).toContain('Property "angle" matches no world property, instance variable or plugin property');
+    expect(property.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(tracked);
   });
 
   it('refuses a position keyframe once the instance is gone from every layout', async () => {
