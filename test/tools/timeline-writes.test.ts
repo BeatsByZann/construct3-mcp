@@ -12,7 +12,7 @@ import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
-import { Construct3ProjectWriter, EntityWriteError, UnconfirmedWriteError } from '../../src/construct3/project-writer.js';
+import { Construct3ProjectWriter, ConcurrentWriteError, EntityWriteError, UnconfirmedWriteError } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { runInToolCall, StaleFileError } from '../../src/construct3/disk-state.js';
 import {
@@ -89,10 +89,10 @@ describe('invalidName and invalidSubfolder', () => {
 
 describe('relativeMessage', () => {
   it('strips the project folder in both slash styles and leaves a sibling folder alone', () => {
-    const slashed = dir.replace(/\\/g, '/');
-    const backslashed = dir.replace(/\//g, '\\');
-    for (const form of [slashed, backslashed]) {
-      const message = relativeMessage(new Error(`ENOENT: no such file or directory, open '${form}${form.includes('\\') ? '\\' : '/'}timelines${form.includes('\\') ? '\\' : '/'}X.json'`), dir);
+    const forms: Array<[folder: string, separator: string]> = [[dir.replace(/\\/g, '/'), '/'], [dir.replace(/\//g, '\\'), '\\']];
+    for (const [folder, separator] of forms) {
+      const path = [folder, 'timelines', 'X.json'].join(separator);
+      const message = relativeMessage(new Error(`ENOENT: no such file or directory, open '${path}'`), dir);
       expect(message).toBe("ENOENT: no such file or directory, open 'timelines/X.json'");
       expect(message).not.toContain(dir);
     }
@@ -149,6 +149,15 @@ describe('writeJsonFile', () => {
     // A second call backs the file up as the first call left it
     expect(await runInToolCall(() => writeJsonFile(writer, fresh, { a: 3 }, projectPath()))).toBe(fresh + '.bak');
     expect(await readFile(fresh + '.bak', 'utf-8')).toBe(freshText);
+  });
+});
+
+describe('writeJsonFile into a project without a timelines folder', () => {
+  it('creates the folders through the writer', async () => {
+    await rm(join(dir, 'timelines'), { recursive: true, force: true });
+    const nested = join(dir, 'timelines', 'Sub', 'Deep.json');
+    expect(await runInToolCall(() => writeJsonFile(writer, nested, { a: 4 }, projectPath()))).toBeUndefined();
+    expect(JSON.parse(await readFile(nested, 'utf-8'))).toEqual({ a: 4 });
   });
 });
 
@@ -264,6 +273,39 @@ describe('rollBackToolCall', () => {
     expect(message).toContain('eventSheets/MainSheet.json');
     expect(await readFile(join(dir, 'eventSheets', 'MainSheet.json'), 'utf-8')).toBe(mainBefore);
     expect(await readFile(join(dir, 'eventSheets', 'Second.json'), 'utf-8')).toBe(secondBefore);
+  });
+
+  describe('an event sheet write that failed', () => {
+    const sheetFile = () => join(dir, 'eventSheets', 'MainSheet.json');
+
+    /** Roll back an EntityWriteError for MainSheet whose cause is `cause`. */
+    async function rollBackSheetFailure(cause: Error): Promise<string> {
+      return runInToolCall(() => rollBackToolCall(writer, dir, new EntityWriteError(cause, sheetFile() + '.bak'), []));
+    }
+
+    it('leaves a sheet that another write replaced, without trying to restore it', async () => {
+      const before = await readFile(sheetFile(), 'utf-8');
+      const restore = vi.spyOn(writer, 'restoreFailedWrite');
+      const message = await rollBackSheetFailure(new ConcurrentWriteError('another write landed'));
+      expect(message).toContain('not put back: eventSheets/MainSheet.json (another write replaced it during this one)');
+      expect(message).toContain('rolled back only in part');
+      expect(restore).not.toHaveBeenCalled();
+      expect(await readFile(sheetFile(), 'utf-8')).toBe(before);
+    });
+
+    it('names a sheet the writer left as it is, with its reason and backup', async () => {
+      vi.spyOn(writer, 'restoreFailedWrite').mockResolvedValue({ restored: false, label: 'eventSheets/MainSheet.json', reason: 'changed' });
+      const message = await rollBackSheetFailure(new Error('read-back failed'));
+      expect(message).toContain("not put back: eventSheets/MainSheet.json (another write changed it after this call's write failed; its state from before the call is in eventSheets/MainSheet.json.bak)");
+      expect(message).not.toContain('is as before the call');
+    });
+
+    it('names a sheet whose restore threw, with its backup', async () => {
+      vi.spyOn(writer, 'restoreFailedWrite').mockRejectedValue(new Error('EIO'));
+      const message = await rollBackSheetFailure(new Error('read-back failed'));
+      expect(message).toContain('not put back: eventSheets/MainSheet.json (it could not be put back; its state from before the call is in eventSheets/MainSheet.json.bak)');
+      expect(message).not.toContain('is as before the call');
+    });
   });
 
   it('puts back an error thrown after a confirmed write', async () => {

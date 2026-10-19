@@ -5,7 +5,7 @@
  * rollback of a call that wrote several files.
  */
 
-import { mkdir, readFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { dirname } from 'path';
 import type { MutationToolDeps } from './shared.js';
 import { toolError, validateName, validateSubfolder } from './shared.js';
@@ -23,24 +23,24 @@ export function refuse(message: string) {
   return toolError(`${core}${/[.!?]$/.test(core) ? '' : '.'} Nothing was changed.`);
 }
 
-/** The text of the refusal `validateName` throws for `name`, or undefined for a good name. */
-export function invalidName(name: string): string | undefined {
+/** The message `check` throws, or undefined when it does not throw. */
+function refusalOf(check: () => void): string | undefined {
   try {
-    validateName(name);
+    check();
     return undefined;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
 }
 
+/** The text of the refusal `validateName` throws for `name`, or undefined for a good name. */
+export function invalidName(name: string): string | undefined {
+  return refusalOf(() => validateName(name));
+}
+
 /** The text of the refusal `validateSubfolder` throws for `subfolder`, or undefined. */
 export function invalidSubfolder(subfolder: string): string | undefined {
-  try {
-    validateSubfolder(subfolder);
-    return undefined;
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error);
-  }
+  return refusalOf(() => validateSubfolder(subfolder));
 }
 
 /** Why a file could not be read, without its path: the error code, or the JSON parse text. */
@@ -120,7 +120,6 @@ export async function readTextIfExists(filePath: string): Promise<string | null>
 export async function writeJsonFile(
   writer: Writer, filePath: string, data: unknown, projectPath: string, expected?: FileState,
 ): Promise<string | undefined> {
-  await mkdir(dirname(filePath), { recursive: true });
   const target = await existingSpelling(filePath);
   return writer.replaceFile(target, await jsonFileText(target, data, projectPath), expected === undefined ? {} : { expected });
 }
@@ -171,7 +170,8 @@ export async function rollBackToolCall(
     const label = writer.projectRelative(file.path);
     // The writer refused this file's own write or delete (it is not in the state the call read, or was created meanwhile): it holds another writer's version, which this call did not change
     if (error instanceof StaleFileError && error.file === label) continue;
-    // Recorded before its write: a write that failed before it changed the file leaves nothing to put back
+    // Recorded before its write: a write that failed before it changed the file leaves nothing to put back.
+    // A read error counts as "differs": the restore below is attempted and its refusal is reported.
     if ((await readTextIfExists(file.path).catch(() => undefined)) === file.before) continue;
     try {
       await writer.restoreForCall(file.path, file.before);
