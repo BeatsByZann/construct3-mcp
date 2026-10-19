@@ -13,6 +13,7 @@ import { registerLayoutTools } from './layout-tools.js';
 import { registerProjectTools } from './project-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
+import { registerTilemapDataTools } from './tilemap-data-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -27,4 +28,5 @@ export function registerMutationTools(
   registerProjectTools(deps);
   registerAnimationTools(deps);
   registerTimelineTools(deps);
+  registerTilemapDataTools(deps);
 }
