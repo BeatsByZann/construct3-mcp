@@ -1135,7 +1135,7 @@ Register an existing script file in `rootFileFolders.script` with `script-info` 
 - An entry that is registered already keeps its SID and type, and returns `action: "already_registered"` with `generatedSid` set to its SID. An older registration is repaired in the same update (a `file-info` key replaced by `script-info`, a missing `script-info` added, a purpose changed, duplicate registrations of the name removed) and the result lists the repairs in `repaired`. When nothing needs repair nothing is written
 - `purpose: "main"` is refused while another script is the main script (use [`set_main_script`](#set_main_script)); the check runs again inside the update, so a script that became main meanwhile is refused too
 - Names and subfolders are matched with their letter case. A name or subfolder that differs only in case from a registered one is refused, with the registered spelling named, also when the case variant is saved during the call
-- A name or a subfolder part that Windows cannot store as one plain file is refused: the characters `< > : " | ? *` and control characters, a trailing dot or space, the device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1` to `COM9`, `LPT1` to `LPT9`, with or without an extension) and a name longer than 251 characters (so that `<name>.tmp` and `<name>.bak` fit in 255)
+- A name or a subfolder part that Windows cannot store as one plain file is refused: the characters `< > : " | ? *` and control characters, a trailing dot or space, the device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1` to `COM9`, `LPT1` to `LPT9` and their superscript forms, with or without an extension) and a name longer than 251 characters (so that `<name>.tmp` and `<name>.bak` fit in 255)
 - A refusal made before anything is changed ends with "Nothing was changed." An unexpected error puts back what the call wrote and says so
 
 ### `deregister_script_file`
@@ -1188,7 +1188,9 @@ Copy a file into the directory its Project File family uses and register it in `
 | `video` | `videos/` |
 | `font` | `fonts/` |
 
-`scripts/`, `files/` and `sounds/` are the directories editor-saved projects use (recorded for Construct 3 r495). `music/`, `videos/` and `fonts/` are not checked against an editor save.
+Observed on Construct 3 r506-2, Free edition, guest: a project with a script, a general file, a sound, a music, a video and a font file registered by these tools opened, listed each under its family, and its save kept the files in `scripts/`, `files/`, `sounds/`, `music/`, `videos/` and `fonts/`. An earlier record for Construct 3 r495 shows `files/` and `sounds/` (tier not recorded).
+
+The same save gave the entries the tools had registered new SIDs (the SIDs of the entries already in the project were kept), and wrote `application/octet-stream` as the type of the music and font files, where the tool had recorded `audio/webm` and `font/ttf` (r506-2, Free edition, guest). Other releases and tiers were not checked.
 
 **Notes:**
 - One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), made first. The file is copied after its registration, and a failed copy puts the registration back; the error says what was put back, what could not be, and a file left on disk. The SID is taken for a new entry only
@@ -1211,12 +1213,13 @@ Remove a Project File registration and delete its file from the family directory
 | `subfolder` | string | No | Slash-separated subfolder inside the family directory |
 
 **Notes:**
-- One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), then the file is deleted. The file is backed up to `<file>.bak` first; the latest deleted version is kept, and a later delete of the same path replaces that copy. The result has `fileRemoved` and `backup` (the project-relative path of the copy)
-- Only the file that was registered when the call selected it is deleted: a registration replaced meanwhile is refused, and a file changed meanwhile is left in place and named in the error
-- A file reached through a symbolic link or Windows junction that leaves the project folder is not deleted; this is checked before the registration is removed and again just before the delete (a link swapped in after the second check is not covered). The same two checks apply to `<name>.bak`
+- One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), then the file is deleted. The file is backed up to `<file>.bak` first; the latest deleted version is kept, and a later delete of the same path replaces that copy. The result has `fileRemoved` (false when there was no file to delete) and, when a file was deleted, `backup` (the project-relative path of the copy)
+- Only the file that was registered when the call selected it is deleted: a registration replaced meanwhile is refused before anything is changed
+- A file reached through a symbolic link or Windows junction that leaves the project folder is not deleted; this is checked before the registration is removed (the call is then refused and nothing is changed) and again just before the delete (a link swapped in after the second check is not covered). The same two checks apply to `<name>.bak`
 - A name whose `<name>.bak` is a registered file is refused, before anything is changed (the server backs up to `<name>.bak`). An unregistered `<name>.bak` is replaced by the backup of the deleted file
 - Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named; names and subfolder parts that Windows cannot store as one plain file are refused
-- Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
+- Refusals made before anything is changed end with "Nothing was changed."; an unexpected error in the update of `project.c3proj` puts back what the call wrote and says so
+- After the registration is removed, three outcomes leave the registration removed and return an error that says so: a link or junction found just before the delete (the file is left in place), a file changed since the call selected it (left in place, and named, to check and remove by hand), and a failed delete (the error gives the code and calls the file orphaned, to remove by hand). Nothing is put back in these cases
 
 ### `create_data_file`
 
@@ -1687,8 +1690,8 @@ Mutation tools return this structure on success:
 interface WriteResult {
   success: boolean;
   entity: string;        // name of the entity
-  category: string;      // "object" | "family" | "eventsheet" | "layout" | "timeline" | "project" | "addon"
-  action: string;        // "created" | "updated" | "deleted" (also "delete_blocked", "update_blocked", "move_blocked", "would_delete", "already_registered")
+  category: string;      // "object" | "family" | "eventsheet" | "layout" | "timeline" | "project" | "addon" | "script-file" | "project-file"
+  action: string;        // "created" | "updated" | "deleted" | "registered" | "deregistered" | "unchanged" (also "delete_blocked", "update_blocked", "move_blocked", "would_delete", "already_registered")
   generatedSid?: number;
   generatedUid?: number;
   warnings?: string[];   // e.g., "Auto-registered plugin..."
