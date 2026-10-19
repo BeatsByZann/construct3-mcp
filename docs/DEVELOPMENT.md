@@ -60,9 +60,11 @@ construct3-mcp/
 │   │   ├── instance-variables.ts   # Instance variable values and effect entries on layout instances
 │   │   ├── hierarchy.ts            # Hierarchy (scene graph) links between layout instances
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
+│   │   ├── event-strings.ts        # Strings of an event sheet that can name something (events, parameters, script lines)
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
 │   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert/delete
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
+│   │   ├── entity-name-references.ts # Where an event sheet or a layout is named (rename_event_sheet, rename_layout)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
@@ -105,6 +107,8 @@ construct3-mcp/
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
+│   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), their rollback, script file search
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (6)
 │   │   ├── event-tools.ts          # Event sheet tools (12)
@@ -112,6 +116,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── entity-rename.ts        # Event sheet and layout renames with their references (2)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers

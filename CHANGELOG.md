@@ -4,6 +4,11 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `rename_event_sheet` renames an event sheet with what names it: include events, the event sheet binding of layouts and its project-bar entry, where it keeps its folder and position; the old file is kept as `.bak` and the editor's view state is moved with it. `dryRun` lists the references and files first. Refused, changing nothing: a name another sheet has ignoring case, a change of letter case only, and a sheet whose own file could not be parsed; event sheets and layouts that could not be parsed and possibly name it refuse without `force`. A failure midway puts back what the call wrote, except a file another write changed since, which is named; running the same call again finishes a rename that stopped (#ISSUE).
+- `rename_layout` renames a layout with what names it: the `"layout"` parameters of conditions and actions that are its name (System *Go to layout*), the timelines that start on it, its project-bar entry and the startup layout. Strings, script lines and variable values that may name it are listed, never changed. Dry run, refusals, rollback and rerun as for `rename_event_sheet` (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
