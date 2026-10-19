@@ -21,7 +21,6 @@ import type {
   TimelinePropertyTrack,
 } from '../construct3/types.js';
 import { findInstanceByUid } from '../construct3/layers.js';
-import { StaleFileError } from '../construct3/disk-state.js';
 import {
   WORLD_PROPERTIES,
   resolveTimelineProperty,
@@ -50,11 +49,8 @@ import {
 } from '../construct3/timeline-model.js';
 import { keyframeMode, refreshModeValues, folderModeError } from '../construct3/timeline-result-modes.js';
 import { refuse, invalidName, readFailure, relativeMessage, caseHint } from './timeline-writes.js';
-import { trackSelectorShape, type ErrorResult, type TimelineLookup, type TimelineToolkit } from './timeline-kit.js';
+import { trackSelectorShape, type ErrorResult, type TimelineToolkit } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
-
-/** An opened timeline: the successful form of a lookup. */
-type OpenedTimeline = Extract<TimelineLookup, { ok: true }>;
 
 /** Warn about property names that match no world property, instance variable or plugin property. */
 function unverifiedPropertyWarnings(specs: PropertySpec[]): string[] {
@@ -239,17 +235,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
   const server = withProjectSync(deps.server, deps.reader);
   const { reader } = deps;
 
-  /** Save the timeline; a file changed on disk since it was read is refused with the writer's text. */
-  async function save(
-    opened: OpenedTimeline,
-  ): Promise<{ ok: true; backupPath: string | undefined } | { ok: false; error: ErrorResult }> {
-    try {
-      return { ok: true, backupPath: await kit.saveTimeline(opened.filePath, opened.data, opened.state) };
-    } catch (error) {
-      if (error instanceof StaleFileError) return { ok: false, error: toolError(relativeMessage(error, reader.getProjectDir())) };
-      throw error;
-    }
-  }
+  const { save } = kit;
 
   /** The world instance with this UID, searched across every layout, and its object type. */
   async function requireWorldInstance(uid: number): Promise<

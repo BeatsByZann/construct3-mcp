@@ -18,7 +18,6 @@ import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { Timeline, TimelineFolder } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
-import { StaleFileError } from '../construct3/disk-state.js';
 import {
   timelineFolder,
   isTimelineFolder,
@@ -37,11 +36,8 @@ import {
   type AnyTrack,
 } from '../construct3/timeline-model.js';
 import { refuse, invalidName, relativeMessage } from './timeline-writes.js';
-import { trackSelectorShape, type ErrorResult, type TimelineLookup, type TimelineToolkit } from './timeline-kit.js';
+import { trackSelectorShape, type ErrorResult, type TimelineToolkit } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
-
-/** An opened timeline: the successful form of a lookup. */
-type OpenedTimeline = Extract<TimelineLookup, { ok: true }>;
 
 const folderPathSchema = z.string().max(500)
   .describe('Slash-separated track folder path, e.g. "Doors" or "Doors/Left"; "" is the root');
@@ -53,6 +49,11 @@ function checkFolderName(name: string): string | null {
   return null;
 }
 
+/** The refusal for a value or audio track name the timeline already uses. */
+function duplicateTrackName(timelineName: string, name: string): ErrorResult {
+  return refuse(`Timeline "${timelineName}" already has a value or audio track named "${name}".`);
+}
+
 /**
  * Register the value track, audio track and track folder tools.
  * @param deps The server, reader, writer and id generator.
@@ -62,17 +63,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
   const server = withProjectSync(deps.server, deps.reader);
   const { reader } = deps;
 
-  /** Save the timeline; a file changed on disk since it was read is refused with the writer's text. */
-  async function save(
-    opened: OpenedTimeline,
-  ): Promise<{ ok: true; backupPath: string | undefined } | { ok: false; error: ErrorResult }> {
-    try {
-      return { ok: true, backupPath: await kit.saveTimeline(opened.filePath, opened.data, opened.state) };
-    } catch (error) {
-      if (error instanceof StaleFileError) return { ok: false, error: toolError(relativeMessage(error, reader.getProjectDir())) };
-      throw error;
-    }
-  }
+  const { save } = kit;
 
   /** The timeline's track root folder, created when an old file lacks it. */
   function trackRoot(data: Timeline): TimelineFolder {
@@ -170,7 +161,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
         const { data } = opened;
 
         if (findTrackByName(data, args.name)) {
-          return refuse(`Timeline "${args.timelineName}" already has a value or audio track named "${args.name}".`);
+          return duplicateTrackName(args.timelineName, args.name);
         }
         const times = args.keyframes.map(k => k.time);
         if (new Set(times).size !== times.length) return refuse('Each keyframe time may appear once.');
@@ -231,16 +222,14 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
           while (findTrackByName(data, `Audio Track ${n}`)) n++;
           name = `Audio Track ${n}`;
         } else if (findTrackByName(data, name)) {
-          return refuse(`Timeline "${args.timelineName}" already has a value or audio track named "${name}".`);
+          return duplicateTrackName(args.timelineName, name);
         }
 
         const times = [...new Set(args.keyframeTimes)].sort((a, b) => a - b);
         const rangeError = checkTimes(data, times);
         if (rangeError) return rangeError;
-        // An audio track saved by the editor starts with a keyframe at 0, and a
-        // lone keyframe written at 1s was moved back to 0 on load (r495.2).
         if (times[0] !== 0) {
-          return refuse('An audio track needs its first keyframe at time 0 (Construct moves it there on load). Include 0 in keyframeTimes.');
+          return refuse('An audio track needs its first keyframe at time 0. Include 0 in keyframeTimes.');
         }
 
         const track = createAudioTrack(name, reader.getProject().uniqueId, file.file, args.audioStartOffset, args.audioTag);

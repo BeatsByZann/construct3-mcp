@@ -405,6 +405,18 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
     return writeJsonFile(writer, filePath, data, reader.getProjectPath(), expected);
   }
 
+  /** Save an opened timeline; a file changed on disk since it was read is refused with the writer's text. */
+  async function save(
+    opened: Extract<TimelineLookup, { ok: true }>,
+  ): Promise<{ ok: true; backupPath: string | undefined } | { ok: false; error: ErrorResult }> {
+    try {
+      return { ok: true, backupPath: await saveTimeline(opened.filePath, opened.data, opened.state) };
+    } catch (error) {
+      if (error instanceof StaleFileError) return { ok: false, error: toolError(relativeMessage(error, reader.getProjectDir())) };
+      throw error;
+    }
+  }
+
   function writeResult(
     timelineName: string,
     action: string,
@@ -519,6 +531,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
   const kit: TimelineToolkit = {
     openTimeline,
     saveTimeline,
+    save,
     timelineText,
     writeResult,
     selectTrack,

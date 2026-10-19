@@ -51,6 +51,8 @@ export interface TimelineToolkit {
   openTimeline(timelineName: string, fail: ErrorForm): Promise<TimelineLookup>;
   /** Sync the timeline's custom-ease copies and write it, refused when its file changed since `expected`. The backup path, or undefined for a new file. */
   saveTimeline(filePath: string, data: Timeline, expected: FileState): Promise<string | undefined>;
+  /** Save an opened timeline; a file changed on disk since it was read is refused with the writer's text. */
+  save(opened: Extract<TimelineLookup, { ok: true }>): Promise<{ ok: true; backupPath: string | undefined } | { ok: false; error: ErrorResult }>;
   /** The text saveTimeline would write for `data`. */
   timelineText(filePath: string, data: Timeline, eases: Map<string, CustomEase>): Promise<string>;
   writeResult(timelineName: string, action: string, backupPath: string | undefined, warnings?: string[]): WriteResult;

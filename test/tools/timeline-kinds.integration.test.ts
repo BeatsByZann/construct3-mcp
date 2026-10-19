@@ -28,7 +28,28 @@ const SOUND = { name: 'Beep.webm', type: 'audio/webm; codecs=opus', sid: 7000000
 const SUB_SOUND = { name: 'Blip.webm', type: 'audio/webm; codecs=opus', sid: 700000000000003, 'file-info': { purpose: 'none' } };
 const MUSIC = { name: 'Theme.webm', type: 'audio/webm; codecs=opus', sid: 700000000000002, 'file-info': { purpose: 'none' } };
 
-type Json = Record<string, any>;
+/** A keyframe, property track, track, folder, timeline or project read back from disk: the parts the tests navigate, the rest unknown. */
+interface Json {
+  [key: string]: unknown;
+  name: string;
+  time: number;
+  items: Json[];
+  subfolders: Json[];
+  keyframes: Json[];
+  propertyKeyframes: Json[];
+  propertyTracks: Json[];
+  propertyTracksRoot: Json;
+  sourceAdapter: Record<string, unknown>;
+  tracksRoot: Json;
+  tracks: Json[];
+}
+
+/** The parts of project.c3proj these tests change. */
+interface ProjectJson {
+  rootFileFolders: Record<'sound' | 'music', { items: unknown[]; subfolders: unknown[] }>;
+  properties: Record<string, unknown>;
+  timelines: { items: unknown[] };
+}
 
 function parseResult(result: { content: Array<{ type: string; text: string }>; isError?: boolean }) {
   return JSON.parse(result.content[0].text);
@@ -53,7 +74,7 @@ function expectShape(actual: unknown, expected: unknown) {
 describe('timeline value and audio tracks, track folders and legacy tracks (real project on disk)', () => {
   let tmpDir: string;
   let server: MockServer;
-  let shapes: Json;
+  let shapes: Record<string, Json>;
 
   beforeEach(async () => {
     shapes = JSON.parse(await readFile(join(KINDS_DIR, 'shapes-r495.json'), 'utf-8'));
@@ -102,7 +123,7 @@ describe('timeline value and audio tracks, track folders and legacy tracks (real
     return JSON.parse(await readFile(join(tmpDir, 'timelines', ...folders, `${name}.json`), 'utf-8'));
   }
 
-  async function projectJson(): Promise<Json> {
+  async function projectJson(): Promise<ProjectJson> {
     return JSON.parse(await readFile(join(tmpDir, 'project.c3proj'), 'utf-8'));
   }
 
@@ -372,11 +393,11 @@ describe('timeline value and audio tracks, track folders and legacy tracks (real
       const data = await onDisk();
       const track = data.tracks[0];
       const offsetY = track.propertyTracks.splice(1, 1)[0];
-      track.propertyTracksRoot.subfolders.push({
+      track.propertyTracksRoot.subfolders.push(({
         enabled: true, interpolationMode: 'default', resultMode: 'default', ease: 'default',
         pathMode: 'default', resizeMode: 'default', expanded: true, name: 'Owned',
         items: [offsetY], subfolders: [], ownerId: 'behavior', ownerUid: 'Owned',
-      });
+      }) as unknown as Json);
       expect(Object.keys(track.propertyTracksRoot.subfolders[0])).toEqual(Object.keys(shapes.propertyTracksRootWithFolder.subfolders[0]));
       await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
 
@@ -429,7 +450,7 @@ describe('timeline value and audio tracks, track folders and legacy tracks (real
       await ok('delete_timeline_folder', { timelineName: 'Move', folder: 'A/B' });
       const data = await onDisk();
       expect(data.tracks).toEqual([]);
-      const a = data.tracksRoot.subfolders.find((f: Json) => f.name === 'A');
+      const a = data.tracksRoot.subfolders.find((f: Json) => f.name === 'A')!;
       expect(a.items.map((t: Json) => t.name)).toEqual(['Inner']);
       expect(a.subfolders.map((f: Json) => f.name)).toEqual(['C', 'D']);
     });
@@ -709,7 +730,7 @@ describe('timeline value and audio tracks, track folders and legacy tracks (real
     it('keeps the Sounds subfolder in audioProjectFilePath', async () => {
       await createMove();
       await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Blip.webm', name: 'Sfx' });
-      const track = (await onDisk()).tracks.find((t: Json) => t.name === 'Sfx');
+      const track = (await onDisk()).tracks.find((t: Json) => t.name === 'Sfx')!;
       expect(track.propertyTracks[0].sourceAdapter.audioProjectFilePath).toBe('media/Sfx/Blip.webm');
     });
 
@@ -724,17 +745,17 @@ describe('timeline value and audio tracks, track folders and legacy tracks (real
       await boot();
       await createMove();
       await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Deep.webm', name: 'Line' });
-      const track = (await onDisk()).tracks.find((t: Json) => t.name === 'Line');
+      const track = (await onDisk()).tracks.find((t: Json) => t.name === 'Line')!;
       expect(track.propertyTracks[0].sourceAdapter).toMatchObject({ audioProjectFile: deep, audioProjectFilePath: 'media/Voices/Intro/Deep.webm' });
     });
 
     it('requires an audio track keyframe at time 0', async () => {
       await createMove();
-      await fails('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', keyframeTimes: [1] }, 'first keyframe at time 0');
+      await fails('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', keyframeTimes: [1] }, 'An audio track needs its first keyframe at time 0. Include 0 in keyframeTimes. Nothing was changed.');
       const before = await onDisk();
       expect(before.tracks.some((t: Json) => t.type === 'audio-track')).toBe(false);
       await ok('add_audio_track', { timelineName: 'Move', audioFile: 'Beep.webm', keyframeTimes: [0, 1] });
-      const track = (await onDisk()).tracks.find((t: Json) => t.type === 'audio-track');
+      const track = (await onDisk()).tracks.find((t: Json) => t.type === 'audio-track')!;
       expect(track.keyframes.map((k: Json) => k.time)).toEqual([0, 1]);
     });
   });
