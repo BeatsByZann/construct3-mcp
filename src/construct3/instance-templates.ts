@@ -3,9 +3,9 @@
  * instance by name.
  *
  * A Construct 3 "template" is a layout instance the editor treats as the
- * master copy for other instances ("replicas"). The state lives entirely in
- * the instance's `template` block inside `layouts/<name>.json`; there is no
- * separate template registry. Shape as saved by Construct 3 r506-2 (Free
+ * master copy for other instances ("replicas"). The state of an instance is
+ * its `template` block inside `layouts/<name>.json`; an object type also keeps
+ * the name of a default template. Shape as saved by Construct 3 r506-2 (Free
  * edition):
  *
  *   "template": {
@@ -68,8 +68,7 @@ export const WORLD_INSTANCE_KEYS = [
 ] as const;
 
 /**
- * `x` and `y` are `false` in a saved block, which is what makes replicas
- * independently placeable; every other key is `true` on a fresh template.
+ * `x` and `y` are `false` in a saved block; every other key is `true`.
  */
 const WORLD_INSTANCE_DEFAULT_FALSE = new Set(['x', 'y']);
 
@@ -95,7 +94,12 @@ function pairs(keys: string[]): Array<[string, boolean]> {
   return keys.map(key => [key, true] as [string, boolean]);
 }
 
-/** Build the five components from the instance's own plugin, variable, behavior and effect state. */
+/**
+ * Build the five components from the instance's own plugin, variable,
+ * behavior and effect state. An instance with no plugin properties gets an
+ * empty `plugin` list and one with no world block an empty `world-instance`
+ * list: that is this tool's choice, the editor was not seen saving either.
+ */
 export function buildTemplateComponents(instance: Instance): TemplateComponent[] {
   const properties = (instance.properties ?? {}) as Record<string, unknown>;
   const pluginKeys = Object.keys(properties).filter(key => !PLUGIN_PROPERTIES_NOT_IN_TEMPLATE.has(key));
@@ -159,8 +163,7 @@ export function buildInstanceTemplate(
     templatePropagateHierarchyChanges: true,
     replicaIgnoreTemplateHierarchyChanges: false,
     components: buildTemplateComponents(instance),
-    // Always null on disk, on templates with replicas as well as without:
-    // the editor recomputes the list when it loads the project.
+    // Saved as null by the editor, on a template that has a replica as well.
     replicasUIDs: null,
   };
 }
@@ -193,28 +196,22 @@ export interface TemplateLocation {
   uid: number;
 }
 
-/** A template instance found by name: where it is, and its template name as the layout spells it. */
-export interface TemplateMatch extends TemplateLocation {
-  templateName: string;
-}
-
 /**
- * The instance of `objectType` that is a template named `templateName` in
- * the given layouts (every layer, sub-layer and non-world instance),
- * leaving out the instance `skip` names. The match carries the template
- * name as it is written in the layout.
+ * The first instance of `objectType` that is a template named `templateName`
+ * in the given layouts (every layer, sub-layer and non-world instance),
+ * leaving out the instance `skip` names.
  */
 export function findTemplateInstance(
   layouts: ReadonlyMap<string, Layout>, objectType: string, templateName: string, skip?: TemplateLocation,
-): TemplateMatch | undefined {
+): TemplateLocation | undefined {
   for (const [layoutName, layout] of layouts) {
-    let found: TemplateMatch | undefined;
+    let found: TemplateLocation | undefined;
     forEachLayoutInstance(layout, instance => {
       if (found !== undefined || instance.type !== objectType) return;
       const block = readTemplate(instance);
       if (!block || block.mode !== 'template' || !sameTemplateName(block.templateName, templateName)) return;
       if (skip && skip.layout === layoutName && skip.uid === instance.uid) return;
-      found = { layout: layoutName, uid: instance.uid, templateName: block.templateName };
+      found = { layout: layoutName, uid: instance.uid };
     });
     if (found !== undefined) return found;
   }

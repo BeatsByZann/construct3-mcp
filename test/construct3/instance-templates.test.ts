@@ -129,7 +129,7 @@ function templateInstance(type: string, uid: number, name: string, mode: 'templa
     type, properties: {}, uid, sid: uid,
     template: mode === 'template'
       ? { mode, templateName: name, sourceTemplateName: '', components: [], replicasUIDs: null }
-      : { mode, templateName: '', sourceTemplateName: name, components: [], replicasUIDs: null },
+      : { mode, templateName: name, sourceTemplateName: name, components: [], replicasUIDs: null },
   };
 }
 
@@ -192,7 +192,7 @@ describe('buildInstanceTemplate', () => {
 });
 
 describe('findTemplateInstance', () => {
-  it('finds a template of the object type, skips the given instance, ignores replicas and other object types, and returns the name as the layout spells it', () => {
+  it('finds a template of the object type, skips the given instance, ignores replicas and other object types', () => {
     const layouts = new Map<string, Layout>([
       ['A', layoutOf([
         templateInstance('Other', 1, 'HeroT'),
@@ -201,13 +201,23 @@ describe('findTemplateInstance', () => {
       ])],
       ['B', layoutOf([templateInstance('Hero', 4, 'HeroT')])],
     ]);
-    expect(findTemplateInstance(layouts, 'Hero', 'HeroT')).toEqual({ layout: 'A', uid: 3, templateName: 'HeroT' });
-    expect(findTemplateInstance(layouts, 'Hero', 'HeroT', { layout: 'A', uid: 3 })).toEqual({ layout: 'B', uid: 4, templateName: 'HeroT' });
-    expect(findTemplateInstance(layouts, 'Hero', 'HeroT', { layout: 'B', uid: 4 })).toEqual({ layout: 'A', uid: 3, templateName: 'HeroT' });
-    expect(findTemplateInstance(layouts, 'Other', 'HeroT')).toEqual({ layout: 'A', uid: 1, templateName: 'HeroT' });
+    expect(findTemplateInstance(layouts, 'Hero', 'HeroT')).toEqual({ layout: 'A', uid: 3 });
+    expect(findTemplateInstance(layouts, 'Hero', 'HeroT', { layout: 'A', uid: 3 })).toEqual({ layout: 'B', uid: 4 });
+    expect(findTemplateInstance(layouts, 'Hero', 'HeroT', { layout: 'B', uid: 4 })).toEqual({ layout: 'A', uid: 3 });
+    expect(findTemplateInstance(layouts, 'Other', 'HeroT')).toEqual({ layout: 'A', uid: 1 });
     expect(findTemplateInstance(layouts, 'Hero', 'Nope')).toBeUndefined();
     // Another letter case is another template name
     expect(findTemplateInstance(layouts, 'Hero', 'herot')).toBeUndefined();
+  });
+
+  it('ignores a replica even when its templateName equals the requested name', () => {
+    const layouts = new Map<string, Layout>([['A', layoutOf([templateInstance('Hero', 2, 'HeroT', 'replica')])]]);
+    expect(findTemplateInstance(layouts, 'Hero', 'HeroT')).toBeUndefined();
+  });
+
+  it('returns the first match of a layout', () => {
+    const layouts = new Map<string, Layout>([['A', layoutOf([templateInstance('Hero', 5, 'HeroT'), templateInstance('Hero', 6, 'HeroT')])]]);
+    expect(findTemplateInstance(layouts, 'Hero', 'HeroT')).toEqual({ layout: 'A', uid: 5 });
   });
 
   it('finds a template on a sub-layer', () => {
@@ -215,12 +225,12 @@ describe('findTemplateInstance', () => {
     (layout.layers[0] as unknown as { subLayers: unknown[] }).subLayers = [
       { name: 'Sub', sid: 2, instances: [templateInstance('Hero', 9, 'HeroT')], subLayers: [] },
     ];
-    expect(findTemplateInstance(new Map([['A', layout]]), 'Hero', 'HeroT')).toEqual({ layout: 'A', uid: 9, templateName: 'HeroT' });
+    expect(findTemplateInstance(new Map([['A', layout]]), 'Hero', 'HeroT')).toEqual({ layout: 'A', uid: 9 });
   });
 
   it('reads non-world instances too', () => {
     const layouts = new Map<string, Layout>([['A', layoutOf([], [templateInstance('Hero', 7, 'HeroT')])]]);
-    expect(findTemplateInstance(layouts, 'Hero', 'HeroT')).toEqual({ layout: 'A', uid: 7, templateName: 'HeroT' });
+    expect(findTemplateInstance(layouts, 'Hero', 'HeroT')).toEqual({ layout: 'A', uid: 7 });
   });
 });
 
