@@ -61,7 +61,7 @@ export interface IntegrityResult {
   /**
    * Every object type, family, event sheet and layout file that is registered
    * in project.c3proj and exists on disk was read and checked. False when one
-   * of them was not (over the reader's 10MB cap, invalid JSON, unreadable):
+   * of them was not (over the reader's size limit (10MB by default), invalid JSON, unreadable):
    * those files are listed in unscannedFiles, and no check (duplicate
    * UIDs/SIDs, references, load-time rules) covered their contents. A
    * registered file that does not exist is a file-existence error but leaves
@@ -82,7 +82,7 @@ export interface IntegrityResult {
   info: IntegrityIssue[];
   /**
    * Registered files ("category/name") that exist but were not checked.
-   * Files over the read cap are `unscanned-file` warnings; files that could
+   * Files over the size limit are `unscanned-file` warnings; files that could
    * not be read or parsed are also `file-existence` errors.
    */
   unscannedFiles: string[];

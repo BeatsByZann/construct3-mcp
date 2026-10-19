@@ -32,9 +32,7 @@ import {
   type FileState,
   type ToolCallScope,
 } from './disk-state.js';
-
-/** Maximum entity file size we'll write (5MB — well above any real C3 entity) */
-const MAX_WRITE_SIZE = 5 * 1024 * 1024;
+import { describeFileSizeLimit, describeSize, fileSizeLimit } from './file-size-limit.js';
 
 /** Keys allowed at the project root level (outside properties) */
 const ALLOWED_TOP_LEVEL = new Set(['name']);
@@ -718,10 +716,20 @@ export class Construct3ProjectWriter {
       throw new Error(`Data for "${entityName}" must be an object, got ${typeof data}`);
     }
 
-    const json = JSON.stringify(data, null, '\t');
-
-    if (json.length > MAX_WRITE_SIZE) {
-      throw new Error(`Generated JSON for "${entityName}" is too large (${(json.length / 1024 / 1024).toFixed(1)}MB > 5MB limit)`);
+    let json: string;
+    try {
+      json = JSON.stringify(data, null, '\t');
+    } catch (e) {
+      if (e instanceof RangeError && /Invalid string length/.test(e.message)) {
+        throw new Error(`Generated JSON for "${entityName}" is too large to write (longer than a JavaScript string can hold). Nothing was written.`);
+      }
+      throw e;
+    }
+    // Cheap early check: the written text is never shorter than this, but its bytes may be more,
+    // so the size is a lower bound (see assertWritableSize for the exact one)
+    const limit = fileSizeLimit();
+    if (json.length > limit.bytes) {
+      throw new Error(`Generated JSON for "${entityName}" is too large (at least ${describeSize(json.length, limit)}, over the ${describeFileSizeLimit(limit)}). Nothing was written.`);
     }
 
     // Verify it round-trips cleanly
@@ -732,6 +740,21 @@ export class Construct3ProjectWriter {
     }
 
     return json;
+  }
+
+  /**
+   * Refuse to write `text`, the file's new content as written (tab-indented,
+   * in the file's line endings, with its BOM), when its UTF-8 bytes are over
+   * the size limit, before anything is backed up or written: CRLF line
+   * endings and multibyte characters make it larger than the JSON that
+   * validateJsonData checked.
+   */
+  private assertWritableSize(text: string, entityName: string): void {
+    const limit = fileSizeLimit();
+    const bytes = Buffer.byteLength(text, 'utf-8');
+    if (bytes > limit.bytes) {
+      throw new Error(`Generated JSON for "${entityName}" is too large (${describeSize(bytes, limit)}, over the ${describeFileSizeLimit(limit)}). Nothing was written.`);
+    }
   }
 
   /**
@@ -805,6 +828,7 @@ export class Construct3ProjectWriter {
           const project = parseJsonText(content);
           if (change(project) === false) return undefined;
           const text = applyJsonTextStyle(this.validateJsonData(project, 'project.c3proj'), jsonTextStyleOf(content));
+          this.assertWritableSize(text, 'project.c3proj');
 
           const backupPath = await this.createBackup(projectPath);
           // Changed since the read: read it again, so that change is kept
@@ -897,6 +921,7 @@ export class Construct3ProjectWriter {
         // Keep the existing file's text style; a new file follows the project's
         const style = await resolveJsonTextStyle(filePath, this.reader.getProjectPath(), dirname(filePath));
         const text = applyJsonTextStyle(json, style);
+        this.assertWritableSize(text, name);
 
         const backupPath = await this.createBackup(filePath);
         let state: FileState;

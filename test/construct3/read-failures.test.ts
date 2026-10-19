@@ -3,7 +3,7 @@
  * consumers that depend on them (IdGenerator, validateProjectIntegrity).
  *
  * The in-memory MockReader fakes the I/O, so mock-only tests cannot catch a
- * broken production primitive: the 10MB size-cap bypass, path-map (subfolder)
+ * broken production primitive: the size-cap bypass (10MB by default), path-map (subfolder)
  * resolution, or the real fs error surface (ENOENT, EISDIR). Everything here
  * runs Construct3ProjectReader against files on disk in a temp copy of the
  * minimal-project fixture.
@@ -19,7 +19,7 @@ import { validateProjectIntegrity } from '../../src/construct3/analyzers/integri
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
-/** Must match MAX_FILE_SIZE in src/construct3/project-reader.ts */
+/** The default size limit: DEFAULT_MAX_FILE_MB in src/construct3/file-size-limit.ts (the suite clears C3MCP_MAX_FILE_MB) */
 const READER_SIZE_CAP = 10 * 1024 * 1024;
 /** Pushes a small JSON document just past the cap. ASCII spaces, so byte length equals char length. */
 const PADDING = Buffer.alloc(READER_SIZE_CAP + 4096, 0x20);
@@ -54,7 +54,7 @@ async function registerInProject(projectDir: string, category: Category, name: s
  * A valid JSON document padded past the reader's size cap. The padding is a
  * string field placed BEFORE the tail, so the IDs of interest sit after the
  * 10MB mark: a scanner that only read a prefix would miss them. Written with
- * raw fs because Construct3ProjectWriter refuses files over 5MB.
+ * raw fs because Construct3ProjectWriter refuses files over the size limit.
  */
 function oversizedJson(head: string, tail: string): Buffer {
   return Buffer.concat([Buffer.from(head), PADDING, Buffer.from(tail)]);
@@ -109,7 +109,7 @@ afterEach(async () => {
 // ─── Read-failure recording ──────────────────────────────────
 
 describe('Construct3ProjectReader — read failures (real files)', () => {
-  it('records E_FILE_TOO_LARGE for a layout over the 10MB cap', async () => {
+  it('records E_FILE_TOO_LARGE for a layout over the default 10MB size limit', async () => {
     await registerInProject(tmpDir, 'layouts', 'Big');
     await writeOversizedLayout(tmpDir, 'Big', 30046);
     const reader = await openReader(tmpDir);

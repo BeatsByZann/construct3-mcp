@@ -159,8 +159,8 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
   }
 
   /**
-   * Registered family files the reader could not parse (over the 10MB read
-   * limit, not valid JSON) whose text names the object type `objectName`, or
+   * Registered family files the reader could not parse (over the size limit
+   * (10MB by default), not valid JSON) whose text names the object type `objectName`, or
    * that cannot be read at all: the object is possibly a member of such a
    * family, whose instance variables and behaviors are unknown. Their text is
    * also searched for `variableNames`; a report lists those it found next to
@@ -545,7 +545,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
 
   server.tool(
     'delete_layout',
-    'Delete a layout from the project (checks references first: instances placed on it and its event sheet binding; refused without force while there are any). A layout file that could not be parsed (over the 10MB read limit, not valid JSON) is searched as text for instances and a binding: a match, or a file that cannot be read at all, refuses without force (listed in unscannedFiles).',
+    'Delete a layout from the project (checks references first: instances placed on it and its event sheet binding; refused without force while there are any). A layout file that could not be parsed (over the size limit (10MB by default), not valid JSON) is searched as text for instances and a binding: a match, or a file that cannot be read at all, refuses without force (listed in unscannedFiles).',
     {
       name: z.string().max(200).describe('Layout name to delete'),
       force: z.boolean().optional().default(false).describe('If true, delete even if referenced (does NOT clean up references)'),

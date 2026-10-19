@@ -62,6 +62,7 @@ construct3-mcp/
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
 │   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert/delete
+│   │   ├── file-size-limit.ts      # The size limit: C3MCP_MAX_FILE_MB, 10MB by default, whole megabytes up to 128
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
@@ -301,7 +302,7 @@ Tests prove what the files look like, not that Construct 3 accepts them. Before 
 - [ ] Duplicate name: `create_object` with existing name — must reject
 - [ ] Case-only clash: `create_object` with an existing family's name in other case — must reject
 - [ ] Load-time gate: `add_event_block` with an unterminated string in an expression — must reject
-- [ ] Layout over 10MB: `add_instance_to_layout` on another layout allocates a UID above the big layout's, `validate_project` returns `complete: false` with the file in `unscannedFiles`
+- [ ] Layout over the size limit (10MB by default): `add_instance_to_layout` on another layout allocates a UID above the big layout's, `validate_project` returns `complete: false` with the file in `unscannedFiles`
 
 ## Contributing
 

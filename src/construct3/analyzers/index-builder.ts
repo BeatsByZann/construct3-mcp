@@ -63,7 +63,7 @@
  * (instVars.name, behaviors.Name in script actions, script events and project
  * script files) are listed apart (getScriptMemberReads): which object's
  * instances they read is not known, so they only warrant a warning. A
- * registered object type whose file could not be parsed (over the read cap,
+ * registered object type whose file could not be parsed (over the size limit,
  * not valid JSON) still counts as an object type, with the names it gets
  * from its families only (its own are unknown), so the uses of its families'
  * names through it are found (issue #55).
