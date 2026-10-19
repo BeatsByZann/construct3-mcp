@@ -6,7 +6,9 @@ import {
   RELEASE_PATTERN,
   buildCatalog,
   catalogCounts,
+  UNKNOWN_PARAM_TYPE,
   isAceCatalog,
+  literalToJson,
   releaseFromSaved,
   releaseLabel,
   releaseNumber,
@@ -67,6 +69,86 @@ describe('buildCatalog', () => {
     expect(() => buildCatalog({ ...sources, mainJs: broken })).toThrow('Could not read a common ACE registration');
     // A call whose nested object alone holds the marker keys registers nothing.
     expect(JSON.stringify(catalog.common)).not.toContain('nested-only');
+  });
+});
+
+describe('common ACE candidates', () => {
+  it('reads a registration inside an enclosing call that is not itself a registration', async () => {
+    const sources = await loadSources();
+    const enclosing = 'x({run:function(){return a({id:"set-y",scriptName:"SetY",params:[]})},valid:"yes",extra:{scriptName:"N"}});\n';
+    const catalog = buildCatalog({ ...sources, mainJs: sources.mainJs + enclosing });
+    expect(catalog.common.actions['set-y']).toEqual([]);
+    expect(Object.keys(catalog.common.actions)).toHaveLength(Object.keys(TEST_CATALOG.common.actions).length + 1);
+  });
+
+  it('still refuses an unreadable object whose own keys are a registration', async () => {
+    const sources = await loadSources();
+    const text = sources.mainJs + 'a({id:"set-z",scriptName:g(),valid:1});\n';
+    expect(() => buildCatalog({ ...sources, mainJs: text })).toThrow('Could not read a common ACE registration');
+  });
+
+  it('refuses a template string and names the reader error', async () => {
+    const sources = await loadSources();
+    const text = sources.mainJs + 'a({id:"set-z",scriptName:`SetZ`});\n';
+    expect(() => buildCatalog({ ...sources, mainJs: text })).toThrow(/Could not read a common ACE registration near "\{id:"set-z",scriptName:`SetZ`\}": unexpected "`"/);
+  });
+
+  it('skips a call whose registering function is named like an Object.prototype member', async () => {
+    const sources = await loadSources();
+    const catalog = buildCatalog({ ...sources, mainJs: sources.mainJs + 'constructor({id:"ctor-one",scriptName:"Ctor"});\n' });
+    expect(catalog).toEqual(TEST_CATALOG);
+  });
+
+  it('keeps an id such as __proto__ as an entry of its own', async () => {
+    const sources = await loadSources();
+    const plugins = JSON.parse('{"Odd":{"c":{"actions":[{"id":"__proto__","params":[]}]}}}') as unknown;
+    const catalog = buildCatalog({ ...sources, plugins });
+    expect(Object.keys(catalog.plugins.Odd.actions)).toEqual(['__proto__']);
+    expect(Object.getPrototypeOf(catalog.plugins.Odd.actions)).toBe(Object.prototype);
+  });
+});
+
+describe('literalToJson', () => {
+  it('refuses a string that never ends', () => {
+    expect(() => literalToJson('{a:"x')).toThrow('unterminated string');
+  });
+
+  it('refuses a character and a number it cannot read', () => {
+    expect(() => literalToJson('{a:#}')).toThrow('unexpected "#"');
+    expect(() => literalToJson('{a:-}')).toThrow('unexpected "-"');
+  });
+
+  it('refuses a name that is not a data literal', () => {
+    expect(() => literalToJson('{a:f()}')).toThrow('not a data literal');
+  });
+});
+
+describe('parameters that cannot be read', () => {
+  const withParams = (list: unknown[]): unknown => ({
+    X: { c: { actions: [{ id: 'act', params: list }], expressions: [{ id: 'ex', params: list }] } },
+  });
+
+  it('keep their position as an entry of unknown type', async () => {
+    const sources = await loadSources();
+    const list = [
+      { id: 'a', type: 'number' },
+      5,
+      { id: 'b' },
+      { type: 'string' },
+      { id: 'c', type: 'combo', items: [1] },
+      { id: 'd', type: 'string' },
+    ];
+    const catalog = buildCatalog({ ...sources, plugins: withParams(list) });
+    expect(UNKNOWN_PARAM_TYPE).toBe('unknown');
+    expect(catalog.plugins.X.actions.act).toEqual([
+      { id: 'a', type: 'number' },
+      { id: '', type: 'unknown' },
+      { id: 'b', type: 'unknown' },
+      { id: '', type: 'unknown' },
+      { id: 'c', type: 'unknown' },
+      { id: 'd', type: 'string' },
+    ]);
+    expect(catalog.plugins.X.expressions.ex.params).toEqual(['number', 'unknown', 'unknown', 'unknown', 'unknown', 'string']);
   });
 });
 

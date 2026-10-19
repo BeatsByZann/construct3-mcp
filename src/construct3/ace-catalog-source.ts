@@ -53,17 +53,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** One ACE reduced to its parameter list. */
+/** The type of a parameter whose definition could not be read; the checks skip it. */
+export const UNKNOWN_PARAM_TYPE = 'unknown';
+
+/** Set an own, enumerable entry, also for a key such as __proto__ that plain assignment would take as the prototype. */
+function setOwn<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
+ * One ACE reduced to its parameter list. A parameter that cannot be read (not
+ * an object, no string id, no string type, or items that are not all strings)
+ * keeps its position as an entry of unknown type, so the parameters after it
+ * stay where they are.
+ */
 function params(ace: Record<string, unknown>): AceParam[] {
-  const list = Array.isArray(ace.params) ? ace.params as unknown[] : [];
-  const result: AceParam[] = [];
-  for (const p of list) {
-    if (!isRecord(p) || typeof p.id !== 'string') continue;
-    const param: AceParam = { id: p.id, type: typeof p.type === 'string' ? p.type : 'any' };
-    if (Array.isArray(p.items)) param.items = p.items as string[];
-    result.push(param);
-  }
-  return result;
+  const list: unknown[] = Array.isArray(ace.params) ? ace.params : [];
+  return list.map((p): AceParam => {
+    if (!isRecord(p)) return { id: '', type: UNKNOWN_PARAM_TYPE };
+    const id = typeof p.id === 'string' ? p.id : '';
+    if (typeof p.id !== 'string' || typeof p.type !== 'string') return { id, type: UNKNOWN_PARAM_TYPE };
+    const param: AceParam = { id, type: p.type };
+    if (p.items !== undefined) {
+      if (!Array.isArray(p.items) || !p.items.every(item => typeof item === 'string')) return { id, type: UNKNOWN_PARAM_TYPE };
+      param.items = p.items as string[];
+    }
+    return param;
+  });
 }
 
 /** One expression reduced to what an expression string reveals: its name, parameter types, variadic flag. */
@@ -82,11 +98,11 @@ function flatten(addon: unknown): AceSet {
   for (const category of Object.values(addon)) {
     if (!isRecord(category)) continue;
     for (const kind of ['conditions', 'actions'] as const) {
-      const list = Array.isArray(category[kind]) ? category[kind] as unknown[] : [];
-      for (const ace of list) if (isRecord(ace) && typeof ace.id === 'string') result[kind][ace.id] = params(ace);
+      const list: unknown[] = Array.isArray(category[kind]) ? category[kind] : [];
+      for (const ace of list) if (isRecord(ace) && typeof ace.id === 'string') setOwn(result[kind], ace.id, params(ace));
     }
-    const expressions = Array.isArray(category.expressions) ? category.expressions as unknown[] : [];
-    for (const ace of expressions) if (isRecord(ace) && typeof ace.id === 'string') result.expressions[ace.id] = expression(ace);
+    const expressions: unknown[] = Array.isArray(category.expressions) ? category.expressions : [];
+    for (const ace of expressions) if (isRecord(ace) && typeof ace.id === 'string') setOwn(result.expressions, ace.id, expression(ace));
   }
   return result;
 }
@@ -120,6 +136,49 @@ function matchBracket(text: string, start: number): number {
   return -1;
 }
 
+/**
+ * The names of the keys an object literal holds directly (depth one), found
+ * without parsing: nested objects, arrays, calls and string values are
+ * skipped, so a key of a nested object or a word inside a value is not
+ * counted. `text` starts at the opening brace.
+ */
+function ownKeys(text: string): Set<string> {
+  const keys = new Set<string>();
+  const word = /[A-Za-z_$][\w$]*/y;
+  let depth = 0;
+  let expectKey = false;
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' || c === '\'' || c === '`') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c) j += text[j] === '\\' ? 2 : 1;
+      if (depth === 1 && expectKey && c !== '`') {
+        keys.add(text.slice(i + 1, j));
+        expectKey = false;
+      }
+      i = j + 1;
+    } else if (c === '{' || c === '[' || c === '(') {
+      depth++;
+      if (depth === 1) expectKey = true;
+      i++;
+    } else if (c === '}' || c === ']' || c === ')') {
+      depth--;
+      i++;
+    } else if (c === ',' && depth === 1) {
+      expectKey = true;
+      i++;
+    } else if (depth === 1 && expectKey && /[A-Za-z_$]/.test(c)) {
+      word.lastIndex = i;
+      const name = word.exec(text)?.[0] ?? c;
+      keys.add(name);
+      expectKey = false;
+      i += name.length;
+    } else i++;
+  }
+  return keys;
+}
+
 const ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r' };
 
 /**
@@ -127,7 +186,7 @@ const ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r' };
  * either quote style, numbers such as .5, !0 and !1, bare keys, arrays and
  * objects) as JSON. Anything else, such as a call or a variable, throws.
  */
-function literalToJson(src: string): string {
+export function literalToJson(src: string): string {
   let out = '';
   let i = 0;
   const expectKey: boolean[] = [];
@@ -199,7 +258,8 @@ function commonAces(mainJs: string): AceSet {
     const end = matchBracket(mainJs, start);
     if (end < 0) continue;
     const text = mainJs.slice(start, end + 1);
-    if (!text.includes('id:') || !REGISTRATION_MARKERS.some(key => text.includes(`${key}:`))) continue;
+    const keys = ownKeys(text);
+    if (!keys.has('id') || !REGISTRATION_MARKERS.some(key => keys.has(key))) continue;
     let parsed: unknown;
     try {
       parsed = JSON.parse(literalToJson(text));
@@ -212,24 +272,24 @@ function commonAces(mainJs: string): AceSet {
     if (!REGISTRATION_MARKERS.some(key => key in ace)) continue;
     found.push({ fn: m[1], ace });
   }
-  const kindOf: Record<string, keyof AceSet> = {
-    'compare-instance-variable': 'conditions',
-    'set-instvar-value': 'actions',
-    'uid': 'expressions',
-  };
-  const fnKind: Record<string, keyof AceSet> = {};
+  const kindOf = new Map<string, keyof AceSet>([
+    ['compare-instance-variable', 'conditions'],
+    ['set-instvar-value', 'actions'],
+    ['uid', 'expressions'],
+  ]);
+  const fnKind = new Map<string, keyof AceSet>();
   for (const { fn, ace } of found) {
-    const kind = kindOf[ace.id as string];
-    if (kind) fnKind[fn] = kind;
+    const kind = kindOf.get(ace.id as string);
+    if (kind) fnKind.set(fn, kind);
   }
-  if (Object.values(fnKind).sort().join() !== 'actions,conditions,expressions') {
-    throw new Error(`Could not tell the condition, action and expression registrations apart: ${JSON.stringify(fnKind)}`);
+  if ([...fnKind.values()].sort().join() !== 'actions,conditions,expressions') {
+    throw new Error(`Could not tell the condition, action and expression registrations apart: ${JSON.stringify(Object.fromEntries(fnKind))}`);
   }
   const result: AceSet = { conditions: {}, actions: {}, expressions: {} };
   for (const { fn, ace } of found) {
-    const kind = fnKind[fn];
-    if (kind === 'expressions') result.expressions[ace.id as string] = expression(ace);
-    else if (kind) result[kind][ace.id as string] = params(ace);
+    const kind = fnKind.get(fn);
+    if (kind === 'expressions') setOwn(result.expressions, ace.id as string, expression(ace));
+    else if (kind) setOwn(result[kind], ace.id as string, params(ace));
   }
   return result;
 }
