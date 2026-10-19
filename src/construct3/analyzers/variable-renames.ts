@@ -15,7 +15,8 @@
  * - the arguments of function and custom action calls are expressions;
  * - the parameters of System conditions and actions that hold a name
  *   (NAME_PARAMETER_KEYS) are never a use, except the "layout" of the two
- *   by-name layout actions, which is an expression.
+ *   by-name layout actions, which may hold an expression and is listed
+ *   when it names the variable.
  * Any other string parameter may be an expression, a combo choice or a name
  * of another kind (a group, a timeline): the server has no parameter types
  * for plugin, behavior or System conditions and actions. Such a parameter
