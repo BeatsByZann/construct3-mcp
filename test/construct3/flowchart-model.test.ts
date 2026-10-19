@@ -89,6 +89,26 @@ describe('locateFlowcharts', () => {
     expect(unresolved.has('Deep')).toBe(false);
   });
 
+  it('keeps a name at level 50 and drops one at level 51', () => {
+    type Folder = { name: string; items: string[]; subfolders: Folder[] };
+    let inner: Folder = { name: 'f52', items: [], subfolders: [] };
+    for (let level = 51; level >= 1; level--) {
+      const items = level === 50 ? ['At50'] : level === 51 ? ['At51'] : [];
+      inner = { name: `f${level}`, items, subfolders: [inner] };
+    }
+    const { flowcharts } = locateFlowcharts({ items: [], subfolders: [inner] });
+    expect(flowcharts.get('At50')?.length).toBe(50);
+    expect(flowcharts.has('At51')).toBe(false);
+  });
+
+  it('gives each name its own folder list', () => {
+    const { flowcharts } = locateFlowcharts({ items: ['A', 'B'], subfolders: [{ name: 'F', items: ['C', 'D'], subfolders: [] }] });
+    flowcharts.get('A')?.push('changed');
+    flowcharts.get('C')?.push('changed');
+    expect(flowcharts.get('B')).toEqual([]);
+    expect(flowcharts.get('D')).toEqual(['F']);
+  });
+
   it('stops at 50 levels of folders below a folder without a name too', () => {
     type Folder = { name?: string; items: string[]; subfolders: Folder[] };
     let inner: Folder = { name: 'f51', items: ['Beyond'], subfolders: [] };
@@ -112,6 +132,12 @@ describe('lookups and their messages', () => {
     expect(outputNotFoundMessage(chart(node(1)), 'G', 9)).toBe('Output 9 not found in flowchart "G". This flowchart has no outputs.');
   });
 
+  it('lists output SIDs past a node that has no outputs list', () => {
+    const noList = { sid: 1 } as unknown as FlowchartNode;
+    const holder = node(2, { outputs: [createOutput(10, 'a', '', true, false)] });
+    expect(outputNotFoundMessage(chart(noList, holder), 'G', 9)).toContain('Output SIDs in this flowchart: 10.');
+  });
+
   it('finds an output past a node that has no outputs list', () => {
     const noList = { sid: 1 } as unknown as FlowchartNode;
     const holder = node(2, { outputs: [createOutput(10, 'a', '', true, false), createOutput(11, 'b', '', true, false)] });
@@ -132,6 +158,8 @@ describe('start node', () => {
   it('warns when a flowchart with nodes has no start node, or more than one', () => {
     expect(startNodeWarnings(chart())).toEqual([]);
     expect(startNodeWarnings(chart(node(1), node(2)))[0]).toContain('no start node');
+    expect(startNodeWarnings(chart(node(1), node(2)))[0]).toContain('sampled editor-saved flowchart had exactly one');
+    expect(startNodeWarnings(chart(node(1, { s: true }), node(2, { s: true })))[0]).toContain('sampled editor-saved flowchart had exactly one');
     expect(startNodeWarnings(chart(node(1, { s: true }), node(2, { s: true })))[0]).toContain('2 start nodes (1, 2)');
     expect(startNodeWarnings(chart(node(1, { s: true })))).toEqual([]);
   });
@@ -181,6 +209,42 @@ describe('connections', () => {
     expect(parent.nodeSIDs).toEqual([]);
     expect(child.pnSIDs).toEqual([]);
     expect(disconnectOutput(data, parent, parent.outputs[1])).toBeNull();
+  });
+
+  it('prunes a child link when the parent has no outputs list', () => {
+    const parent = { sid: 1, nodeSIDs: [2, 3] } as unknown as FlowchartNode;
+    pruneChildLink(parent, 2);
+    expect(parent.nodeSIDs).toEqual([3]);
+  });
+
+  it('disconnects an output whose target node is not in the flowchart', () => {
+    const parent = node(1, { nodeSIDs: [99], outputs: [createOutput(10, 'a', '', true, false)] });
+    parent.outputs[0].cnSID = 99;
+    expect(disconnectOutput(chart(parent), parent, parent.outputs[0])).toBe(99);
+    expect(parent.outputs[0].cnSID).toBeNull();
+    expect(parent.nodeSIDs).toEqual([]);
+  });
+
+  it('treats an output with no target value at all as unconnected', () => {
+    const parent = node(1, { outputs: [createOutput(10, 'a', '', true, false)] });
+    delete (parent.outputs[0] as { cnSID?: unknown }).cnSID;
+    expect(disconnectOutput(chart(parent), parent, parent.outputs[0])).toBeNull();
+    expect('cnSID' in parent.outputs[0]).toBe(false);
+  });
+
+  it('removes a deleted node from entries where only the parent node or only the parent output matches', () => {
+    const doomed = node(2, { outputs: [createOutput(20, 'c', '', true, false)] });
+    const other = node(3, { pnSIDs: [2, 4, 5], poSIDs: [99, 20, 50] });
+    const data = chart(other);
+    removeNodeReferences(data, doomed);
+    expect(other.pnSIDs).toEqual([5]);
+    expect(other.poSIDs).toEqual([50]);
+  });
+
+  it('removes references from nodes and a deleted node that lack their lists', () => {
+    const bare = { sid: 5 } as unknown as FlowchartNode;
+    const doomed = { sid: 2 } as unknown as FlowchartNode;
+    expect(() => removeNodeReferences(chart(bare), doomed)).not.toThrow();
   });
 
   it('removes every reference to a deleted node', () => {
@@ -239,6 +303,12 @@ describe('comment nodes', () => {
     expect(n).toMatchObject({ ty: 'dictionary', t: 'Remember' });
   });
 
+  it('turns a node that lacks its connection lists into a comment', () => {
+    const bare = { sid: 6, c: 'Bare', t: 'Bare', ty: 'dictionary' } as unknown as FlowchartNode;
+    expect(changeValueType(bare, 'comment', {})).toMatchObject({ ok: true });
+    expect(bare.ty).toBe('comment');
+  });
+
   it('gives no warning when every comment key is given', () => {
     const n = node(1);
     const result = changeValueType(n, 'comment', { commentText: 'x', font: 'Arial', fontSize: 10, bold: false, italic: true, fontColor: '#000000' });
@@ -253,6 +323,10 @@ describe('comment nodes', () => {
     expect(!refused.ok && refused.error).toContain('a comment node has none');
     const incoming = node(2, { pnSIDs: [1], poSIDs: [10] });
     expect(changeValueType(incoming, 'comment', {}).ok).toBe(false);
+    const parentOnly = node(4, { nodeSIDs: [2] });
+    const blocked = changeValueType(parentOnly, 'comment', {});
+    expect(!blocked.ok && blocked.error).toContain('0 output(s), 0 incoming connection(s) and 1 child link(s)');
+    expect(parentOnly.ty).toBe('dictionary');
     const odd = node(3, { ty: 'other' });
     const unknown = changeValueType(odd, 'comment', {});
     expect(!unknown.ok && unknown.error).toContain('which these tools do not convert');

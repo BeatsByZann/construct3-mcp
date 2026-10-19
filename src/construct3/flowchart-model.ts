@@ -71,7 +71,7 @@ export interface FlowchartNode {
   h: number;
   /** Node type/title. Empty string on comment boxes. */
   t: string;
-  /** True on the single start node; Construct 3 keeps exactly one per flowchart. */
+  /** True on the start node; every sampled editor-saved flowchart had exactly one. */
   s: boolean;
   /** Enabled. */
   e: boolean;
@@ -170,7 +170,7 @@ export function locateFlowcharts(container: ProjectFolderNode | undefined): Loca
   const walk = (folder: ProjectFolderNode, folders: string[]): void => {
     if (folders.length > MAX_FOLDER_DEPTH) return;
     for (const item of itemsOf(folder)) {
-      if (!flowcharts.has(item)) flowcharts.set(item, folders);
+      if (!flowcharts.has(item)) flowcharts.set(item, [...folders]);
     }
     for (const sub of subfoldersOf(folder)) {
       if (isNamelessFolder(sub)) collect(sub, unresolved, folders.length + 1);
@@ -227,7 +227,7 @@ export function outputNotFoundMessage(data: Flowchart, flowchartName: string, ou
 // ─── Start-node rule ───────────────────────────────────────
 
 /**
- * Construct 3 keeps exactly one start node per flowchart. Clear `s` on every
+ * Every sampled editor-saved flowchart had exactly one start node. Clear `s` on every
  * node except `keepSid`; returns how many were cleared.
  */
 export function clearOtherStartNodes(data: Flowchart, keepSid: number): number {
@@ -245,10 +245,10 @@ export function clearOtherStartNodes(data: Flowchart, keepSid: number): number {
 export function startNodeWarnings(data: Flowchart): string[] {
   const starts = data.nodes.filter(n => n.s === true);
   if (data.nodes.length > 0 && starts.length === 0) {
-    return ['This flowchart has no start node. Set isStart on one node so Construct 3 knows where execution begins.'];
+    return ['This flowchart has no start node. Every sampled editor-saved flowchart had exactly one; set isStart on one node.'];
   }
   if (starts.length > 1) {
-    return [`This flowchart has ${starts.length} start nodes (${starts.map(n => n.sid).join(', ')}); Construct 3 expects exactly one.`];
+    return [`This flowchart has ${starts.length} start nodes (${starts.map(n => n.sid).join(', ')}); every sampled editor-saved flowchart had exactly one.`];
   }
   return [];
 }
@@ -447,8 +447,9 @@ export function changeValueType(
   if (to === 'comment') {
     const outputs = node.outputs?.length ?? 0;
     const incoming = node.pnSIDs?.length ?? 0;
-    if (outputs > 0 || incoming > 0 || (node.nodeSIDs?.length ?? 0) > 0) {
-      return { ok: false, error: `Node ${node.sid} has ${outputs} output(s) and ${incoming} incoming connection(s); a comment node has none. Delete its outputs and disconnect the nodes that lead to it first.` };
+    const children = node.nodeSIDs?.length ?? 0;
+    if (outputs > 0 || incoming > 0 || children > 0) {
+      return { ok: false, error: `Node ${node.sid} has ${outputs} output(s), ${incoming} incoming connection(s) and ${children} child link(s); a comment node has none. Delete its outputs and disconnect the nodes that lead to it first.` };
     }
     node.ty = 'comment';
     if (args.nodeType === undefined) node.t = '';
