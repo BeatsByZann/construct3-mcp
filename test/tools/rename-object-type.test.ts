@@ -77,6 +77,7 @@ interface ToolData {
   fileDeleted?: string;
   fileToDelete?: string;
   brushFileToDelete?: string;
+  brushFileDeleted?: string;
   brushMoved?: { from: string; to: string };
   backupFile?: string;
   filesWritten?: string[];
@@ -329,6 +330,30 @@ describe('rename_object_type', () => {
     expect(warnings).toContain('Renamed 2 image file(s) in images/');
     expect(warnings).toContain('2 other expression(s), string(s), script line(s)');
     expect(warnings).toContain('were NOT changed');
+  });
+
+  it('rewrites Name.member under every parameter key, the by-name layout expression and the keys of a plugin action included', async () => {
+    const sheetPath = path('eventSheets', 'MainSheet.json');
+    const main = await readJson<SheetFile>(sheetPath);
+    main.events.push({
+      eventType: 'block',
+      conditions: [],
+      actions: [
+        { id: 'go-to-layout-by-name', objectClass: 'System', sid: 400000000000020, parameters: { layout: 'Alpha.X & ""' } },
+        { id: 'plugin-action', objectClass: 'Sprite', sid: 400000000000021, parameters: { layout: 'Alpha.X', variable: 'Alpha.X', 'audio-file': 'Alpha.X', 'instance-variable': 'Alpha.X' } },
+        { id: 'go-to-layout', objectClass: 'System', sid: 400000000000022, parameters: { layout: 'Alpha' } },
+      ],
+      sid: 400000000000023,
+    });
+    await writeJson(sheetPath, main);
+    await reader.loadProject();
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.success).toBe(true);
+    const actions = (await readJson<SheetFile>(sheetPath)).events[2].actions;
+    expect(actions[0].parameters).toEqual({ layout: 'Gamma.X & ""' });
+    expect(actions[1].parameters).toEqual({ layout: 'Gamma.X', variable: 'Gamma.X', 'audio-file': 'Gamma.X', 'instance-variable': 'Gamma.X' });
+    expect(actions[2].parameters).toEqual({ layout: 'Alpha' });
+    expect((data.possibleReferences ?? []).filter(r => r.kind === 'possible expression')).toEqual([]);
   });
 
   it('deletes the old file after every other write', async () => {
@@ -974,18 +999,18 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(warningsOf(data)).toContain('is a Tilemap, and no brush file named after it was found');
   });
 
-  it('takes the brush file of the object type\'s own folder and leaves a same-name brush file in another folder, and the files of AlphaBeta and Alpha2, as they are', async () => {
-    // 'Aaa' sorts before the object's own file, so a search that took the first match would take the stale one
-    await mkdir(path(...brushDir, 'Aaa'), { recursive: true });
-    await writeFile(path(...brushDir, 'Aaa', 'Alpha.brush.json'), '{"stale":true}');
+  // The other folder sorts before the object's own file in one case and after it in the other, so neither a search that takes the first match nor one that takes the last passes
+  it.each([['Aaa', 'before'], ['Zzz', 'after']])('takes the brush file of the object type\'s own folder and leaves a same-name brush file in the folder %s (sorts %s it), and the files of AlphaBeta and Alpha2, as they are', async other => {
+    await mkdir(path(...brushDir, other), { recursive: true });
+    await writeFile(path(...brushDir, other, 'Alpha.brush.json'), '{"stale":true}');
     await writeFile(path(...brushDir, 'AlphaBeta.brush.json'), '{"beta":true}');
     await writeFile(path(...brushDir, 'Alpha2.brush.json'), '{"two":true}');
     const data = await rename_('Alpha', 'Gamma');
     expect(data.success).toBe(true);
     expect(data.brushMoved).toEqual({ from: 'tilemapBrushes/objectTypes/Alpha.brush.json', to: 'tilemapBrushes/objectTypes/Gamma.brush.json' });
     expect(await readFile(newBrush(), 'utf8')).toBe('{"brushes":["alpha"]}');
-    expect(await readFile(path(...brushDir, 'Aaa', 'Alpha.brush.json'), 'utf8')).toBe('{"stale":true}');
-    expect(existsSync(path(...brushDir, 'Aaa', 'Gamma.brush.json'))).toBe(false);
+    expect(await readFile(path(...brushDir, other, 'Alpha.brush.json'), 'utf8')).toBe('{"stale":true}');
+    expect(existsSync(path(...brushDir, other, 'Gamma.brush.json'))).toBe(false);
     expect(await readFile(path(...brushDir, 'AlphaBeta.brush.json'), 'utf8')).toBe('{"beta":true}');
     expect(await readFile(path(...brushDir, 'Alpha2.brush.json'), 'utf8')).toBe('{"two":true}');
     expect(warningsOf(data)).not.toContain('not in the folder of the object type');
@@ -1086,7 +1111,9 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(existsSync(oldBrush())).toBe(false);
     expect(await readFile(newBrush(), 'utf8')).toBe('{"brushes":["alpha"]}');
     expect(existsSync(path(...brushDir, 'Other.brush.json'))).toBe(true);
-    expect(data.filesWritten).toContain('tilemapBrushes/objectTypes/Gamma.brush.json');
+    // This call deleted the old brush file and wrote nothing under the new name
+    expect(data.brushFileDeleted).toBe('tilemapBrushes/objectTypes/Alpha.brush.json');
+    expect(data.filesWritten).not.toContain('tilemapBrushes/objectTypes/Gamma.brush.json');
   });
 
   it('finishes a run that stopped after the old brush file was deleted, reporting it as moved already', async () => {

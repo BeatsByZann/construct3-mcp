@@ -48,11 +48,11 @@ describe('event sheet uses', () => {
     const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(events())]]), 'Alpha', 'list');
     const definite = uses.filter(u => u.definite).map(u => `${u.kind}:${u.parameter ?? '-'}`).sort();
     expect(definite).toEqual([
-      'custom action family:-', 'custom action owner:-', 'expression:x',
+      'custom action family:-', 'custom action owner:-', 'expression:layout', 'expression:x',
       'object parameter:0', 'object parameter:object-to-create', 'objectClass:-',
     ].sort());
     const possible = uses.filter(u => !u.definite).map(u => u.kind).sort();
-    expect(possible).toEqual(['instance-variable object', 'possible expression', 'script', 'script', 'string literal', 'string literal', 'variable value', 'variable value'].sort());
+    expect(possible).toEqual(['instance-variable object', 'script', 'script', 'string literal', 'string literal', 'variable value', 'variable value'].sort());
     // A whole value under a key that holds another kind of name is no use of the object
     expect(uses.some(u => u.parameter === 'audio-file' || (u.parameter === 'layout' && u.value === 'Alpha'))).toBe(false);
   });
@@ -66,7 +66,7 @@ describe('event sheet uses', () => {
 
   it('rewrites only the definite uses of one sheet, with the new name as given', () => {
     const data = sheet(events());
-    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(events()), 'list')).toBe(6);
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(events()), 'list')).toBe(7);
     const text = JSON.stringify(data);
     expect(text).toContain('"objectClass":"Gamma","functionParameters"');
     expect(text).toContain('{"id":"is-visible","objectClass":"Gamma"}');
@@ -74,7 +74,7 @@ describe('event sheet uses', () => {
     expect(text).toContain('"object-to-create":"Gamma"');
     expect(text).toContain('"instance-variable":{"name":"hp","objectClass":"Alpha"}');
     expect(text).toContain('"customActionObjectClass":"Gamma","parameters":["Gamma"]');
-    expect(text).toContain('"layout":"Alpha.NextLevel"');
+    expect(text).toContain('"layout":"Gamma.NextLevel"');
     expect(text).toContain('"layout":"Alpha"');
     expect(text).toContain('"layer":"\\"Alpha\\""');
     expect(text).toContain('"audio-file":"Alpha"');
@@ -153,16 +153,47 @@ describe('event sheet uses', () => {
     expect(JSON.stringify(data)).toContain('"x":"Alpha2.X + 1"');
   });
 
-  it('lists Name.member under a key that holds a layout or sound name, and never changes it', () => {
-    const data = sheet([{ eventType: 'block', conditions: [], actions: [
-      { id: 'go-to-layout-by-name', objectClass: 'System', parameters: { layout: 'Alpha.NextLevel' } },
+  it('rewrites Name.member under every parameter key, the keys that hold a layout, sound or variable name included', () => {
+    const actions = () => [
+      { id: 'go-to-layout-by-name', objectClass: 'System', parameters: { layout: 'Alpha.X & ""' } },
       { id: 'play', objectClass: 'Audio', parameters: { 'audio-file': 'Alpha.Boom' } },
-    ] }]);
+      { id: 'plugin-layout', objectClass: 'Widget', parameters: { layout: 'Alpha.X' } },
+      { id: 'plugin-variable', objectClass: 'Widget', parameters: { variable: 'Alpha(0).X' } },
+      { id: 'plugin-instance-variable', objectClass: 'Widget', parameters: { 'instance-variable': 'Alpha.X' } },
+      { id: 'plugin-audio', objectClass: 'Widget', parameters: { 'audio-file': 'Alpha.X' } },
+    ];
+    const data = sheet([{ eventType: 'block', conditions: [], actions: actions() }]);
     const uses = findObjectNameUsesInSheets(new Map([['Main', data]]), 'Alpha', 'rewrite');
-    expect(uses.map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort()).toEqual(['audio-file:possible expression:false', 'layout:possible expression:false']);
+    expect(uses.map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort()).toEqual([
+      'audio-file:expression:true', 'audio-file:expression:true', 'instance-variable:expression:true', 'layout:expression:true', 'layout:expression:true', 'variable:expression:true',
+    ]);
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', new Set(), 'rewrite')).toBe(6);
+    const after = (JSON.parse(JSON.stringify(data)) as { events: Array<{ actions: Array<{ parameters: Record<string, string> }> }> }).events[0].actions;
+    expect(after.map(a => Object.values(a.parameters)[0])).toEqual(['Gamma.X & ""', 'Gamma.Boom', 'Gamma.X', 'Gamma(0).X', 'Gamma.X', 'Gamma.X']);
+  });
+
+  it('leaves a bare name under a key that holds a layout, sound or variable name, in either letter case', () => {
+    const data = sheet([{ eventType: 'block', conditions: [], actions: [
+      { id: 'go-to-layout', objectClass: 'System', parameters: { layout: 'Alpha' } },
+      { id: 'play', objectClass: 'Audio', parameters: { 'audio-file': 'alpha' } },
+    ] }]);
+    const before = JSON.stringify(data);
+    expect(findObjectNameUsesInSheets(new Map([['Main', data]]), 'Alpha', 'rewrite')).toEqual([]);
     expect(renameObjectInSheet(data, 'Alpha', 'Gamma', new Set(), 'rewrite')).toBe(0);
-    expect(JSON.stringify(data)).toContain('"layout":"Alpha.NextLevel"');
-    expect(JSON.stringify(data)).toContain('"audio-file":"Alpha.Boom"');
+    expect(JSON.stringify(data)).toBe(before);
+  });
+
+  it('does not match a name made only of digits in an expression, and lists the uses', () => {
+    expect(objectNameInExpression('12.5 + 12(0).Y + 12 + x.12 + a12.Z', '12', 'Gamma'))
+      .toEqual({ text: '12.5 + 12(0).Y + 12 + x.12 + a12.Z', definite: 0, possible: 2 });
+    const data = sheet([{ eventType: 'block', conditions: [], actions: [
+      { id: 'set-x', objectClass: 'Beta', parameters: { x: '12.5', y: '12' } },
+    ] }]);
+    const before = JSON.stringify(data);
+    const uses = findObjectNameUsesInSheets(new Map([['Main', data]]), '12', 'rewrite');
+    expect(uses.map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort()).toEqual(['x:possible expression:false', 'y:possible expression:false']);
+    expect(renameObjectInSheet(data, '12', 'Gamma', new Set(), 'rewrite')).toBe(0);
+    expect(JSON.stringify(data)).toBe(before);
   });
 
   it('leaves a parameter whose key holds another kind of name alone, on any object', () => {

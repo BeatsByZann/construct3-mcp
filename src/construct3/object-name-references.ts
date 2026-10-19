@@ -13,9 +13,10 @@
  *   (isObjectParameterValue: object keys always, the keys that hold other
  *   names never, any other key or call argument unless an event variable
  *   or function parameter has the name), and expressions that use it as
- *   an object ("Name.member", "Name(index).member") under every key except
- *   the keys that hold a layout, sound or other name, where it is only
- *   listed;
+ *   an object ("Name.member", "Name(index).member") under every key, the
+ *   keys that hold a layout, sound or other name included (such a name
+ *   cannot hold a dot, so the value is an expression); a name made only of
+ *   digits is not matched in expressions, and is listed;
  * - an object type also by the "type" of layout instances (layers,
  *   sub-layers, non-world instances), the "type" of its own single-global
  *   instance, the "members" of families and of project.c3proj's containers
@@ -98,6 +99,8 @@ const IDENTIFIER = /[\p{L}_][\p{L}\p{N}_]*/uy;
 /** Names that start with a digit (the editor accepts them) are read as runs of letters, digits and underscores. */
 const DIGIT_FIRST_IDENTIFIER = /[\p{L}\p{N}_]+/uy;
 const STARTS_WITH_DIGIT = /^\p{N}/u;
+/** A name made only of digits reads as a number in an expression ("12.5"). */
+const DIGITS_ONLY = /^\p{N}+$/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_$]/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -134,11 +137,13 @@ function skipSpaces(text: string, from: number): number {
  * `newName` in their place: "Name.member" and "Name(...).member" outside
  * string literals, not after a "." and not inside a longer name, are
  * definite; "Name(...)" without a member after it and a bare "Name" are
- * counted as possible and kept.
+ * counted as possible and kept. A name made only of digits is never definite
+ * ("12.5" is a number): "12.x" and "12(0).x" are counted as possible.
  */
 export function objectNameInExpression(expression: string, objectName: string, newName?: string): { text: string; definite: number; possible: number } {
   const key = nameKey(objectName);
   const identifier = STARTS_WITH_DIGIT.test(objectName) ? DIGIT_FIRST_IDENTIFIER : IDENTIFIER;
+  const digitsOnly = DIGITS_ONLY.test(objectName);
   let out = '';
   let definite = 0;
   let possible = 0;
@@ -178,11 +183,13 @@ export function objectNameInExpression(expression: string, objectName: string, n
       const close = closingParenthesis(expression, next);
       next = close === -1 ? expression.length : skipSpaces(expression, close + 1);
     }
-    if (expression[next] === '.') {
+    const member = expression[next] === '.';
+    if (member && !digitsOnly) {
       definite++;
       out += newName ?? word[0];
     } else {
-      possible++;
+      // "12.5" is a number, not the object "12": kept and listed. A bare number equal to the name is no use at all.
+      if (!digitsOnly || member) possible++;
       out += word[0];
     }
     previous = 'a';
@@ -283,6 +290,11 @@ function walkSheet(sheet: EventSheet, file: string, objectName: string, context:
       if (same(whole)) {
         // The index's rule for a whole value that is the name (isObjectParameterValue)
         if (nameKeyed) return;
+        // A name made only of digits is also a number: a whole value equal to it is only listed
+        if (DIGITS_ONLY.test(objectName)) {
+          uses.push({ ...at, kind: 'possible expression', value, definite: false });
+          return;
+        }
         // The index counts a whole value only when it is the name as registered; another letter case
         // (an enumerated choice such as "left") is listed and never changed
         if (whole !== objectName) {
@@ -297,15 +309,13 @@ function walkSheet(sheet: EventSheet, file: string, objectName: string, context:
         }
         return;
       }
+      // Name.member is an expression under every key: a layout, sound, variable or instance variable name cannot hold a dot
       const found = objectNameInExpression(value, objectName, newName);
-      if (found.definite > 0 && nameKeyed) {
-        // A layout or sound name is not an expression, so Name.member under such a key is only a possible use
-        uses.push({ ...at, kind: 'possible expression', value, definite: false });
-      } else if (found.definite > 0) {
+      if (found.definite > 0) {
         uses.push({ ...at, kind: 'expression', value, definite: rewrites('expression') });
         change('expression', () => set(found.text));
       }
-      if (found.possible > 0 && !(found.definite > 0 && nameKeyed)) uses.push({ ...at, kind: 'possible expression', value, definite: false });
+      if (found.possible > 0) uses.push({ ...at, kind: 'possible expression', value, definite: false });
       if (expressionStringLiterals(value).some(l => nameKey(l.text) === key)) uses.push({ ...at, kind: 'string literal', value, definite: false });
     },
     scriptLine(site, line) {

@@ -7,7 +7,8 @@
  * containers and the editor's view state are not touched. A dry run writes
  * nothing; an event sheet that could not be parsed refuses without force; a
  * failure midway puts back every file; a run that stopped midway is finished
- * by the same call; the call does not take the animation lock. Checked on a
+ * by a second call with the same arguments; the call does not take the
+ * animation lock. Checked on a
  * temp copy of the minimal fixture with the real reader, writer and ID
  * generator; every object type, family, sheet, layout, timeline and image
  * added here is synthetic.
@@ -391,8 +392,10 @@ describe('rename_family', () => {
     await writeFile(path('families', 'Fam.json'), original);
 
     // A scan that throws before any write
+    const beforeScan = await snapshot();
     vi.spyOn(reader, 'readAllEventSheets').mockRejectedValueOnce(new Error('scan failed.'));
     await refusal('rename_family', { name: 'Fam', newName: 'Gang' }, 'The rename stopped before anything was written: scan failed.');
+    expect(await snapshot()).toEqual(beforeScan);
   });
 
   it('answers not found when the same rename is run again after it finished, and writes nothing', async () => {
@@ -466,7 +469,7 @@ describe('rename_family', () => {
     expect(await snapshot()).toEqual(before);
   });
 
-  it('puts the event sheet back and names the new family file when its read-back fails, and the same call finishes the rename', async () => {
+  it('puts the event sheet back and names the new family file when its read-back fails, and a second call with the same arguments finishes the rename', async () => {
     const before = await snapshot();
     failReadBackOf('Gang.json');
     const data = await renameFamily('Fam', 'Gang');
@@ -500,7 +503,9 @@ describe('rename_family', () => {
     expect(data.isError).toBe(true);
     expect(await readFile(path('eventSheets', 'MainSheet.json'), 'utf8')).toBe(saved);
     expect(data.text).toContain('eventSheets/MainSheet.json');
+    expect(data.text).toMatch(/left as they are \([^)]*\): eventSheets\/MainSheet\.json/);
     expect(data.text).not.toContain(tmpDir);
+    expect((await readJson<ProjectFile>(path('project.c3proj'))).families.items).toEqual(['Fam']);
     expect(existsSync(path('families', 'Gang.json'))).toBe(false);
     expect(await readFile(path('families', 'Fam.json'), 'utf8')).toBe(before.get('families/Fam.json'));
   });
@@ -560,10 +565,10 @@ describe('rename_family', () => {
       await barrier.opened;
     });
     await held.opened;
+    const renaming = track(server.callTool('rename_family', { name: 'Fam', newName: 'Gang' }));
     try {
-      const renaming = track(server.callTool('rename_family', { name: 'Fam', newName: 'Gang' }));
       // The rename does file I/O: wait in real time, up to three seconds, for it to settle
-      for (let i = 0; i < 100&& !renaming.settled(); i++) {
+      for (let i = 0; i < 100 && !renaming.settled(); i++) {
         await letOthersRun();
         await new Promise(resolve => setTimeout(resolve, 20));
       }
@@ -573,6 +578,8 @@ describe('rename_family', () => {
     } finally {
       barrier.open();
       await holding;
+      // A rename that is still running must not outlive the temp directory
+      await renaming.promise.catch(() => undefined);
     }
     expect(existsSync(path('families', 'Gang.json'))).toBe(true);
   });

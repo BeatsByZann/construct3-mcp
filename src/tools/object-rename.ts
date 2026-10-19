@@ -781,7 +781,6 @@ async function applyRename(reader: Reader, writer: Writer, plan: RenamePlan) {
         throw error;
       }
       side.files.push({ path: plan.brush.read.path, before: plan.brush.read.bytes });
-      filesWritten.push(plan.brush.label);
     }
     // The old file last of the writes that matter: a rename that stops before this delete
     // leaves the old file beside the new name, which the same call recognises
@@ -804,6 +803,7 @@ async function applyRename(reader: Reader, writer: Writer, plan: RenamePlan) {
     previousName: oldName,
     filesWritten,
     ...(plan.brush !== undefined ? { brushMoved: { from: plan.brush.from, to: plan.brush.label } } : {}),
+    ...(plan.brush?.state === 'finish-delete' ? { brushFileDeleted: plan.brush.from } : {}),
     ...(view.moved.length > 0 ? { viewStateMoved: view.moved } : {}),
     ...(backupPath !== undefined ? { backupFile: backupPath } : {}),
     warnings: warnings.length > 0 ? warnings : undefined,
@@ -855,8 +855,8 @@ export function registerObjectRenameTools({ server: mcpServer, reader, writer }:
         + 'Names are matched ignoring case. The new name must have no spaces. Strings (Create object (by name)), scripts and project '
         + 'script files (runtime.objects.Name), timeline tracks, flowchart nodes, variable values and other names in expressions that may name it are '
         + 'listed in possibleReferences, never changed. A failure midway puts back what the call wrote, except a file another write changed since, '
-        + 'which is named; running the same call again finishes a rename that stopped. Event sheets, layouts and families that could not be parsed, '
-        + 'and timelines that could not be read, refuse without force when they possibly name it (rename_blocked). Runs one at a time with the '
+        + 'which is named; running the same call again finishes a rename that stopped. Event sheets, layouts and families that could not be parsed '
+        + 'refuse without force when they possibly name it, and so does any timeline that could not be read (rename_blocked). Runs one at a time with the '
         + 'animation tools. Use dryRun first.',
       inputSchema: renameSchema('objectTypes'),
     },
