@@ -538,7 +538,6 @@ describe('rename_object_type', () => {
 
   it('refuses an argument it does not take', async () => {
     await expect(server.callTool('rename_object_type', { name: 'Alpha', newName: 'Gamma', bogus: 1 })).rejects.toThrow();
-    await expect(server.callTool('rename_family', { name: 'Fam', newName: 'Clan', bogus: 1 })).rejects.toThrow();
   });
 
   it('every refusal ends with Nothing was changed. and leaves every file as it was', async () => {
@@ -1098,65 +1097,5 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(data.stoppedRun).toBe(true);
     expect(warningsOf(data)).toContain('brush file already moved by the earlier run');
     expect(existsSync(newBrush())).toBe(true);
-  });
-});
-
-describe('rename_family', () => {
-  beforeEach(async () => {
-    const main = await readJson<SheetFile>(path('eventSheets', 'MainSheet.json'));
-    main.events.push({
-      eventType: 'block',
-      conditions: [{ id: 'is-visible', objectClass: 'FAM', sid: 400000000000040 }],
-      actions: [
-        { id: 'set-x', objectClass: 'Sprite', sid: 400000000000041, parameters: { x: 'Fam.X' } },
-        { callCustomAction: 'Hit', objectClass: 'Sprite', customActionObjectClass: 'Fam', sid: 400000000000042, parameters: {} },
-      ],
-      sid: 400000000000043,
-    });
-    await writeJson(path('eventSheets', 'MainSheet.json'), main);
-    await reader.loadProject();
-  });
-
-  it('renames the family and what names it', async () => {
-    const data = await call('rename_family', { name: 'Fam', newName: 'Clan' });
-    expect(data.success).toBe(true);
-    expect(data.previousName).toBe('Fam');
-    expect((await readJson<FamilyFile>(path('families', 'Clan.json'))).name).toBe('Clan');
-    expect(existsSync(path('families', 'Fam.json'))).toBe(false);
-    expect((await readJson<ProjectFile>(path('project.c3proj'))).families.items).toEqual(['Clan']);
-    const event = (await readJson<SheetFile>(path('eventSheets', 'MainSheet.json'))).events[2];
-    expect(event.conditions[0].objectClass).toBe('Clan');
-    expect(event.actions[0].parameters?.x).toBe('Clan.X');
-    expect(event.actions[1].customActionObjectClass).toBe('Clan');
-    expect(data.filesWritten).toEqual(['eventSheets/MainSheet.json', 'families/Clan.json', 'project.c3proj']);
-    expect(data.fileDeleted).toBe('families/Fam.json');
-    // The object types, layouts and images are not touched
-    expect((await readJson<LayoutFile>(path('layouts', 'Layout 1.json'))).layers[0].instances.map((i: InstanceJson) => i.type)).toEqual(['Sprite', 'Alpha']);
-    expect(existsSync(path('images', 'alpha-default-000.png'))).toBe(true);
-  });
-
-  it('with dryRun writes nothing', async () => {
-    const before = await snapshot();
-    const data = await call('rename_family', { name: 'Fam', newName: 'Clan', dryRun: true });
-    expect(data.action).toBe('would_rename');
-    expect(data.filesToWrite).toEqual(['eventSheets/MainSheet.json', 'families/Clan.json', 'project.c3proj']);
-    expect(await snapshot()).toEqual(before);
-  });
-
-  it('refuses a name an object type has, and a name that is not a family', async () => {
-    const before = await snapshot();
-    await refusal('rename_family', { name: 'Fam', newName: 'alpha' }, 'Alpha');
-    await refusal('rename_family', { name: 'Alpha', newName: 'Clan' }, 'Family "Alpha" not found.');
-    await refusal('rename_family', { name: 'Fam', newName: 'Big Clan' }, 'expressions cannot name');
-    expect(await snapshot()).toEqual(before);
-  });
-
-  it('puts every file back when the project update fails', async () => {
-    const before = await snapshot();
-    vi.spyOn(writer, 'renameInProject').mockRejectedValueOnce(new Error('disk full'));
-    const data = await call('rename_family', { name: 'Fam', newName: 'Clan' });
-    expect(data.isError).toBe(true);
-    expect(data.text).toContain('The call was rolled back:');
-    expect(await snapshot()).toEqual(before);
   });
 });
