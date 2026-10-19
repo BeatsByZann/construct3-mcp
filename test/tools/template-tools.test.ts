@@ -313,13 +313,13 @@ async function setDefaultTemplate(name: string): Promise<void> {
   await writeFile(playerPath(), JSON.stringify(type, null, '\t'));
 }
 
-/** The writer's read-back of Level 1.json fails once, with the text verifyWrittenFile itself throws for a failed read. */
-function failLevel1ReadBack(): void {
+/** The writer's read-back of the named file (such as Level 1.json) fails once, with the text verifyWrittenFile itself throws for a failed read. */
+function failReadBackOf(fileName: string): void {
   const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<unknown> };
   const verify = internals.verifyWrittenFile.bind(writer);
   let failed = false;
   internals.verifyWrittenFile = async (path, name, text) => {
-    if (!failed && path.endsWith('Level 1.json')) {
+    if (!failed && path.endsWith(fileName)) {
       failed = true;
       throw new Error(`Post-write verification failed for "${name}": file may be corrupted. A .bak backup exists. Error: EIO: i/o error, read`);
     }
@@ -499,7 +499,7 @@ describe('set_instance_template', () => {
 
   it('puts the layout back when its read-back fails', async () => {
     const before = await snapshotProject(tmpDir);
-    failLevel1ReadBack();
+    failReadBackOf('Level 1.json');
     const data = await set(1, 'template', { templateName: 'T' });
     expect(data.isError).toBe(true);
     expect(data.text).toContain('Post-write verification failed');
@@ -630,21 +630,7 @@ const defCall = async (args: Record<string, unknown>): Promise<ToolData> => {
   const result = await server.callTool('set_default_template', args);
   return result.isError ? { isError: true, text: result.content[0].text } : JSON.parse(result.content[0].text) as ToolData;
 };
-const NO_PLAYER_T = 'No instance of "Player" is a template named "PlayerT". Create one with set_instance_template first, or the editor will have nothing to copy.';
-
-/** The writer's read-back of Player.json fails once, with the text verifyWrittenFile itself throws for a failed read. */
-function failPlayerReadBack(): void {
-  const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<unknown> };
-  const verify = internals.verifyWrittenFile.bind(writer);
-  let failed = false;
-  internals.verifyWrittenFile = async (path, name, text) => {
-    if (!failed && path.endsWith('Player.json')) {
-      failed = true;
-      throw new Error(`Post-write verification failed for "${name}": file may be corrupted. A .bak backup exists. Error: EIO: i/o error, read`);
-    }
-    return verify(path, name, text);
-  };
-}
+const NO_PLAYER_T = 'No instance of "Player" is a template named "PlayerT". Create one with set_instance_template first.';
 
 describe('set_default_template', () => {
   it('sets both editor fields, warns while the template does not exist, and not once it does', async () => {
@@ -714,7 +700,7 @@ describe('set_default_template', () => {
 
   it('puts the object type back when its read-back fails', async () => {
     const before = await snapshotProject(tmpDir);
-    failPlayerReadBack();
+    failReadBackOf('Player.json');
     const data = await defCall({ objectName: 'Player', templateName: 'T' });
     expect(data.isError).toBe(true);
     expect(data.text).toContain('Post-write verification failed');
@@ -751,25 +737,34 @@ describe('set_default_template', () => {
     expect(data.text).toBe(`Error setting default template: EACCES: permission denied, scandir '(path removed)'. ${NOT_WRITTEN}`);
     expect(write).not.toHaveBeenCalled();
   });
-});
 
-describe('set_instance_template replica count of the edited layout', () => {
-  it('counts the replicas in the layout as the file is now, not as a cached copy was', async () => {
-    await set(1, 'template', { templateName: 'T' });
-    await set(3, 'replica', { sourceTemplateName: 'T' });
+  it('matches the template name exactly: a name in another letter case is not the template', async () => {
+    await set(1, 'template', { templateName: 'PlayerT' });
     await reload();
-    // The cached layouts as they were, then the file changed with no reload. A change that keeps
-    // the file's size, modification time and file id is not seen by the reader, so its cache
-    // keeps the old layout; the stand-in below serves that cache.
-    const cached = new Map(structuredClone([...await reader.readAllLayouts()]));
-    expect(instanceWithUid(cached.get('Level 1') as unknown as LayoutFile, 3).template).toBeDefined();
-    const layout = await readLevel1();
-    delete instanceWithUid(layout, 3).template;
-    await writeLevel1(layout);
-    vi.spyOn(reader, 'readAllLayouts').mockResolvedValue(cached);
-
-    const data = await set(1, 'none');
+    const data = await defCall({ objectName: 'Player', templateName: 'playert' });
     expect(data.success).toBe(true);
-    expect(data.warnings).toBeUndefined();
+    expect(data.warnings).toEqual(['No instance of "Player" is a template named "playert". Create one with set_instance_template first.']);
+    expect((await readPlayer()).editorNewInstanceTemplateName).toBe('playert');
+  });
+
+  describe('the replica count of a template set_instance_template ends', () => {
+    it('counts the replicas in the layout as the file is now, not as a cached copy was', async () => {
+      await set(1, 'template', { templateName: 'T' });
+      await set(3, 'replica', { sourceTemplateName: 'T' });
+      await reload();
+      // The cached layouts as they were, then the file changed with no reload. A change that keeps
+      // the file's size, modification time and file id is not seen by the reader, so its cache
+      // keeps the old layout; the stand-in below serves that cache.
+      const cached = new Map(structuredClone([...await reader.readAllLayouts()]));
+      expect(instanceWithUid(cached.get('Level 1') as unknown as LayoutFile, 3).template).toBeDefined();
+      const layout = await readLevel1();
+      delete instanceWithUid(layout, 3).template;
+      await writeLevel1(layout);
+      vi.spyOn(reader, 'readAllLayouts').mockResolvedValue(cached);
+
+      const data = await set(1, 'none');
+      expect(data.success).toBe(true);
+      expect(data.warnings).toBeUndefined();
+    });
   });
 });

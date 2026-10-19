@@ -279,14 +279,14 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         }
         const warnings: string[] = [];
         if (args.templateName === null) {
-          // A cleared default as the editor saves it: no name, the flag true.
+          // A cleared default as Construct 3 r506-2 (Free edition, guest) saves it: no name, the flag true.
           delete objectType.editorNewInstanceTemplateName;
           objectType.editorNewInstanceIsReplica = true;
         } else {
           const search = await layoutsForSearch(reader);
           if (!findTemplateInstance(search.layouts, args.objectName, args.templateName)) {
             warnings.push(`No instance of "${args.objectName}" is a template named "${args.templateName}". `
-              + 'Create one with set_instance_template first, or the editor will have nothing to copy.');
+              + 'Create one with set_instance_template first.');
             warnings.push(...skippedWarnings(search.skipped, 'The template may be in a layout that could not be checked.'));
           }
           objectType.editorNewInstanceIsReplica = true;
