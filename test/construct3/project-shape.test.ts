@@ -199,6 +199,25 @@ describe('upgradeProjectShape', () => {
     expect(JSON.stringify(at)).toBe(atBefore);
   });
 
+  it('B7: does not throw on a malformed project', () => {
+    const cases: ProjectJson[] = [
+      {},
+      { savedWithRelease: 44000 },
+      { properties: 'text' },
+      { rootFileFolders: { script: 'x' } },
+      { savedWithRelease: 44000, properties: 'text', rootFileFolders: { script: 'x' } },
+      { rootFileFolders: 'text', models3d: 'text' },
+      { rootFileFolders: {} },
+      { rootFileFolders: { script: { items: [], subfolders: [null, 'x'] } } },
+      { rootFileFolders: { script: { items: [null, 'x'], subfolders: null } } },
+    ];
+    for (const project of cases) {
+      let changes: string[] = [];
+      expect(() => { changes = upgradeProjectShape(project); }).not.toThrow();
+      expect(changes.every(line => line === 'models3d folder added')).toBe(true);
+    }
+  });
+
   it('B8: does not invent a property that is missing or move one whose anchor is missing', () => {
     const noUid: ProjectJson = {
       savedWithRelease: 44000,
@@ -215,21 +234,5 @@ describe('upgradeProjectShape', () => {
     };
     expect(upgradeProjectShape(noAnchor)).toEqual([]);
     expect(JSON.stringify(noAnchor.properties)).toBe('{"a":1,"uidAllocationMode":"increment","b":2}');
-  });
-
-  it('B7: does not throw on a malformed project', () => {
-    const cases: ProjectJson[] = [
-      {},
-      { savedWithRelease: 44000 },
-      { properties: 'text' },
-      { rootFileFolders: { script: 'x' } },
-      { savedWithRelease: 44000, properties: 'text', rootFileFolders: { script: 'x' } },
-      { rootFileFolders: 'text', models3d: 'text' },
-    ];
-    for (const project of cases) {
-      let changes: string[] = [];
-      expect(() => { changes = upgradeProjectShape(project); }).not.toThrow();
-      expect(changes.every(line => line === 'models3d folder added')).toBe(true);
-    }
   });
 });
