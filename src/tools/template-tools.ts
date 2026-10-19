@@ -188,6 +188,12 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         if (!found) return refuse(`No instance with UID ${uid} in layout "${layoutName}". Use get_layout_details to see the instances.`);
         const instance = found.instance as Instance & Record<string, unknown>;
 
+        if (mode !== 'none' && found.entry === undefined) {
+          return refuse(`Instance UID ${uid} in layout "${layoutName}" is a non-world instance. A template or replica block on a non-world instance `
+            + 'made Construct 3 r506-2 (Free edition, guest) refuse to open the project: the editor refused to open the project ("Failed to open project") '
+            + 'in 2 of 2 attempts, checked with the Array object type only, so no block is written.');
+        }
+
         const warnings: string[] = [];
         const previous = readTemplate(instance);
         let action: string;
@@ -233,10 +239,6 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         // A template this call removes, renames or turns into a replica leaves what named it without a template
         if (previous?.mode === 'template' && !(mode === 'template' && sameTemplateName(previous.templateName, args.templateName!))) {
           warnings.push(...await endedTemplateWarnings(reader, instance.type, previous.templateName, layoutName, layout));
-        }
-        if (mode !== 'none' && found.entry === undefined) {
-          warnings.push(`UID ${uid} is a non-world instance. The block is written, but Construct 3 r506-2 (Free edition, guest) offered no template properties `
-            + 'for the Array object type\'s non-world instance and saved it with no template key.');
         }
 
         let backupPath: string;

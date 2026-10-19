@@ -6,7 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
-- `list_templates`, `set_instance_template` and `set_default_template` read and write a layout instance's `template` block (template, replica or neither) and an object type's default template; layouts are named as registered, a failed write is rolled back, and layouts that could not be parsed are reported instead of skipped.
+- `list_templates`, `set_instance_template` and `set_default_template` read and write a layout instance's `template` block (template, replica or neither) and an object type's default template; layouts are named as registered, a failed write is rolled back, and layouts that could not be parsed are reported instead of skipped. `set_instance_template` refuses a template or replica on a non-world instance: Construct 3 r506-2 (Free edition, guest) refused to open a project with one on an Array object type's instance.
 
 ### Changed
 

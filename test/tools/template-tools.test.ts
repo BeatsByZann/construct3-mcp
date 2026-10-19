@@ -426,7 +426,22 @@ describe('set_instance_template', () => {
     expect(otherCase.success).toBe(true);
   });
 
-  it('warns when no template of that name exists for a replica, and for a non-world instance', async () => {
+  it('refuses a template or replica block on a non-world instance, naming what the editor did', async () => {
+    const before = await snapshotProject(tmpDir);
+    const refusal = `Instance UID 4 in layout "Level 1" is a non-world instance. A template or replica block on a non-world instance `
+      + 'made Construct 3 r506-2 (Free edition, guest) refuse to open the project: the editor refused to open the project ("Failed to open project") '
+      + `in 2 of 2 attempts, checked with the Array object type only, so no block is written. ${NOT_WRITTEN}`;
+    const asTemplate = await set(4, 'template', { templateName: 'K' });
+    expect(asTemplate.isError).toBe(true);
+    expect(asTemplate.text).toBe(refusal);
+    const asReplica = await set(4, 'replica', { sourceTemplateName: 'K' });
+    expect(asReplica.isError).toBe(true);
+    expect(asReplica.text).toBe(refusal);
+    expect(await blockOf(4)).toBeUndefined();
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('warns when no template of that name exists for a replica', async () => {
     const orphan = await set(3, 'replica', { sourceTemplateName: 'Nope' });
     expect(orphan.success).toBe(true);
     expect(orphan.warnings).toEqual([
@@ -439,13 +454,6 @@ describe('set_instance_template', () => {
     const linked = await set(3, 'replica', { sourceTemplateName: 'PlayerT' });
     expect(linked.success).toBe(true);
     expect(linked.warnings).toEqual([expect.stringContaining('existing replica block was rebuilt')]);
-
-    const nonWorld = await set(4, 'template', { templateName: 'K' });
-    expect(nonWorld.success).toBe(true);
-    expect(nonWorld.warnings).toEqual([
-      'UID 4 is a non-world instance. The block is written, but Construct 3 r506-2 (Free edition, guest) offered no template properties for the Array object type\'s non-world instance and saved it with no template key.',
-    ]);
-    expect(await blockOf(4)).toMatchObject({ mode: 'template', templateName: 'K' });
   });
 
   it('says a missing template may be in a layout that could not be parsed', async () => {
