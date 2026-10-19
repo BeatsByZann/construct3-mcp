@@ -349,9 +349,61 @@ describe('replace_object_in_events', () => {
     expect(result.isError).not.toBe(true);
     const data = parse(result);
     expect(data.skippedEvents.find(s => s.eventSid === 610000000000023)!.reasons[0]).toContain('custom action definition');
-    expect(data.skippedEvents.find(s => s.eventSid === 700000000000070)!.reasons).toEqual(['"Alert" calls a custom action, which belongs to its object']);
+    expect(data.skippedEvents.find(s => s.eventSid === 700000000000070)!.reasons).toEqual(['"Alert" calls a custom action; whether Others has it is not checked']);
     // The pick-by-evaluate expression reads Hostiles.health, which Others has
     expect(data.references.byKind.expression).toBeGreaterThan(0);
+  });
+
+  describe('custom actions in a branch', () => {
+    const OWNER = 700000000000150;
+
+    it('skips a call made on the replaced object itself, whatever family owns the custom action', async () => {
+      await addEvents(block(OWNER, [{ customAction: 'Alert', objectClass: 'Player', customActionObjectClass: 'Hostiles', parameters: [] }]));
+      const data = parse(await swap({ sheetName: 'Main' }));
+      expect(data.skippedEvents.find(s => s.eventSid === OWNER)!.reasons).toEqual(['"Alert" calls a custom action; whether Enemy has it is not checked']);
+      expect((await mainEvent(OWNER)).actions![0].objectClass).toBe('Player');
+    });
+
+    it('keeps the owner of a custom action definition nested under an event that uses the replaced family', async () => {
+      await editJson<{ families: { subfolders: Array<{ items: string[] }> } }>(['project.c3proj'], p => { p.families.subfolders[0].items.push('Others'); });
+      await writeFile(path('families', 'Groups', 'Others.json'), JSON.stringify({
+        name: 'Others', 'plugin-id': 'Sprite', sid: 650000000000009, instanceVariables: [{ name: 'health', type: 'number', sid: 650000000000010 }], behaviorTypes: [], effectTypes: [], members: [],
+      }));
+      await addEvents({
+        ...block(OWNER, [{ id: 'destroy', objectClass: 'Hostiles' }]),
+        children: [{ eventType: 'custom-ace-block', aceType: 'action', aceName: 'Nested', objectClass: 'Hostiles', functionParameters: [], sid: OWNER + 1, conditions: [], actions: [] }],
+      });
+      const args = { fromObject: 'Hostiles', toObject: 'Others', sheetName: 'Main' };
+      const row = parse(await server.callTool('replace_object_in_events', { ...args, dryRun: true })).skippedEvents.find(s => s.eventSid === OWNER)!;
+      expect(row.reasons).toHaveLength(1);
+      expect(row.reasons[0]).toMatch(/^sub-event events\[\d+\]\.children\[0\]: custom action definition owned by Hostiles$/);
+      await server.callTool('replace_object_in_events', args);
+      const event = await mainEvent(OWNER);
+      expect(event.actions![0].objectClass).toBe('Hostiles');
+      expect(event.children![0].objectClass).toBe('Hostiles');
+    });
+  });
+
+  describe('an unexpected error', () => {
+    it('is refused before any write, with no path in the text', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const before = await snapshotProject(tmpDir);
+      const writes = vi.spyOn(writer, 'writeEntityFile');
+      vi.spyOn(reader, 'listObjectTypes').mockRejectedValue(new Error(`boom at ${path('x.json')} and ${tmpDir} and D:\\elsewhere\\y.json`));
+      const result = await swap({});
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/^Error replacing object: boom at <project>[\\/]x\.json and <project> and <path>\. Nothing was changed\.$/);
+      noPath(textOf(result));
+      expect(writes).not.toHaveBeenCalled();
+      expect(await snapshotProject(tmpDir)).toEqual(before);
+    });
+
+    it('names a failing file by its code and its place in the project', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(reader, 'listObjectTypes').mockRejectedValue(Object.assign(new Error(`EACCES: permission denied, open '${path('objectTypes', 'x.json')}'`), { code: 'EACCES', path: path('objectTypes', 'x.json') }));
+      const result = await swap({});
+      expect(textOf(result)).toBe('Error replacing object: EACCES on objectTypes/x.json. Nothing was changed.');
+    });
   });
 
   describe('refusals', () => {
@@ -409,12 +461,36 @@ describe('replace_object_in_events', () => {
     expect(data.filesWritten).toEqual(['eventSheets/Main.json']);
     expect(data.complete).toBe(false);
     expect(data.unscannedFiles).toEqual([{ file: 'eventSheets/Helpers', reason: 'not valid JSON', textSearch: 'possible-use', names: ['Player'] }]);
-    expect(data.warnings!.some(w => w.includes('eventSheets/Helpers') && w.includes('could not be parsed') && w.includes('It was not changed.'))).toBe(true);
+    expect(data.warnings).toContain('eventSheets/Helpers (not valid JSON) could not be parsed; its text names "Player". It was not changed.');
     expect(await readFile(path('eventSheets', 'Shared', 'Helpers.json'), 'utf-8')).toBe(broken);
     // A call limited to a sheet that parses does not claim the broken one
     const limited = parse(await swap({ sheetName: 'Main', dryRun: true }));
     expect(limited.complete).toBeUndefined();
     expect(limited.unscannedFiles).toBeUndefined();
+  });
+
+  it('says so when a sheet it cannot parse does not mention the object, or cannot be searched as text', async () => {
+    await writeFile(path('eventSheets', 'Shared', 'Helpers.json'), '{ broken');
+    await start();
+    const noMention = parse(await swap({ dryRun: true }));
+    expect(noMention.unscannedFiles).toEqual([{ file: 'eventSheets/Helpers', reason: 'not valid JSON', textSearch: 'no-match', searchedFor: ['Player'] }]);
+    expect(noMention.warnings).toContain('eventSheets/Helpers (not valid JSON) could not be parsed and was only searched as text; no mention was found. It was not changed.');
+
+    vi.spyOn(reader, 'searchEntityTextRaw').mockRejectedValue(new Error('read failed'));
+    const unreadable = parse(await swap({ dryRun: true }));
+    expect(unreadable.unscannedFiles).toEqual([{ file: 'eventSheets/Helpers', reason: 'not valid JSON', textSearch: 'unreadable' }]);
+    expect(unreadable.warnings).toContain('eventSheets/Helpers (not valid JSON, not even as text) could not be searched either. It was not changed.');
+  });
+
+  it('leaves a sheet with unusual shapes (null lists, null entries) to the same swap', async () => {
+    await addEvents({
+      eventType: 'block', sid: 700000000000140, conditions: null, actions: [null, { id: 'destroy', objectClass: 'Player' }],
+      children: [3, null, { eventType: 'block', sid: 700000000000141, conditions: null, actions: null }],
+    } as unknown as Ev);
+    const dry = parse(await swap({ sheetName: 'Main', dryRun: true }));
+    expect(dry.skippedEvents.map(s => s.eventSid)).not.toContain(700000000000140);
+    await swap({ sheetName: 'Main' });
+    expect((await mainEvent(700000000000140)).actions![1].objectClass).toBe('Enemy');
   });
 
   it('reports what it leaves: scripts and string literals are counted and not changed', async () => {

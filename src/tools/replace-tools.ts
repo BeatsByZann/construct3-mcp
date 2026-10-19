@@ -47,6 +47,7 @@ import {
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
+import { reasonOf } from './rename-files.js';
 import { nothingChanged } from './event-helpers.js';
 import { unregisteredNameMessage } from './registered-names.js';
 import { withProjectSync } from './project-sync.js';
@@ -223,7 +224,7 @@ function incompatibilities(event: Json, ctx: ReplaceContext, warnings: string[])
       const label = String(raw.id ?? raw.customAction ?? raw.callFunction ?? key);
       const onFrom = isFrom(raw.objectClass);
       if ((onFrom && typeof raw.customAction === 'string') || isFrom(raw.customActionObjectClass)) {
-        reasons.push(`"${label}" calls a custom action, which belongs to its object`);
+        reasons.push(`"${label}" calls a custom action; whether ${to} has it is not checked`);
         continue;
       }
       const params = parameterStrings(raw);
@@ -404,9 +405,22 @@ function unparsedSheetWarnings(reports: readonly UnscannedFileReport[]): string[
     const file = describeUnscannedFile(report);
     if (report.textSearch === 'possible-use') return `${file} could not be parsed; its text names ${(report.names ?? []).map(n => `"${n}"`).join(', ')}. It was not changed.`;
     if (report.textSearch === 'unreadable') return `${file} could not be searched either. It was not changed.`;
-    if (report.textSearch === 'not-searched') return `${file} could not be parsed and was not searched (the search text is not a name). It was not changed.`;
     return `${file} could not be parsed and was only searched as text; no mention was found. It was not changed.`;
   });
+}
+
+/**
+ * `text` without absolute paths: the project folder (in either slash style) and any other drive or
+ * rooted path in it are replaced, so an unexpected error never shows where the project is on disk.
+ */
+function withoutPaths(projectDir: string, text: string): string {
+  let shown = text;
+  for (const variant of new Set([projectDir, projectDir.replace(/\\/g, '/'), projectDir.replace(/\//g, '\\')])) {
+    if (variant.length > 0) shown = shown.split(variant).join('<project>');
+  }
+  return shown
+    .replace(/[A-Za-z]:[\\/][^\s"'`]*/g, '<path>')
+    .replace(/(?<![\w.\-:<])\/(?:[\w.\-]+\/)+[\w.\-]*/g, '<path>');
 }
 
 /** Register replace_object_in_events. */
@@ -422,7 +436,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
       + 'An event is swapped only when the replacement has the behaviors, instance variables and effects it uses; a sub-event goes with its parent, '
       + 'and other events are left unchanged and listed with the reason. Layouts are not changed. '
       + 'Both names must be given as registered, in that letter case. All changed sheets are written together, and a failed write is rolled back; '
-      + 'sheets that could not be parsed are listed and not changed.',
+      + 'sheets that could not be parsed are listed and not changed, and a global variable declared in one of them is not known to the swap.',
     {
       fromObject: z.string().max(200).describe('Object type or family to replace (as registered, in that letter case)'),
       toObject: z.string().max(200).describe('Object type or family to use instead (same plugin; as registered)'),
@@ -517,7 +531,8 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
         }, { projectWritten: filesWritten.length > 0 });
       } catch (error) {
         console.error('[replace_object_in_events] failed:', error);
-        return toolError(`Error replacing object: ${error instanceof Error ? error.message : String(error)}`);
+        // Everything before the first write is in this try, and the writes return from their own catch: nothing was changed
+        return refuse(`Error replacing object: ${withoutPaths(reader.getProjectDir(), reasonOf(error, file => writer.projectRelative(file)))}`);
       }
     }
   );
