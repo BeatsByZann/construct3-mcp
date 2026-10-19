@@ -26,11 +26,11 @@ This guide is for Construct 3 developers who want to use the server with Claude 
 
 ## What it does and what it doesn't
 
-construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 83 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
+construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 96 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
 
-- **Read and explain**: list objects, layouts, event sheets, families, timelines and addons, show an event sheet as a readable outline with the editor's event numbers, find where an object is used, map functions, find unused objects and assets.
+- **Read and explain**: list objects, layouts, event sheets, families, timelines, flowcharts and addons, show an event sheet as a readable outline with the editor's event numbers, find where an object is used, map functions, find unused objects and assets.
 - **Check**: `validate_project` runs 29 checks, including rules the Construct 3 editor enforces when it opens a project. `find_runtime_traps` looks for logic that loads fine but hangs or does nothing.
-- **Edit**: create, change and delete objects, families, event sheets and events, layouts, layers, instances, animations and timelines, and change the project metadata (name, version, author, description). Names and references are checked before anything is written, and most rewritten files get a `.bak` copy (exceptions under [.bak files](#bak-files)).
+- **Edit**: create, change and delete objects, families, event sheets and events, layouts, layers, instances, animations, timelines and flowcharts, and change the project metadata (name, version, author, description). Names and references are checked before anything is written, and most rewritten files get a `.bak` copy (exceptions under [.bak files](#bak-files)).
 - **Test the running game**: add a "bridge" script to your project, serve an export of the game, and let the AI read variables, call functions, wait for states, click, type and take screenshots in the running game.
 
 What it does **not** do:
@@ -133,7 +133,7 @@ To see the tool list without any AI tool, use the MCP Inspector in CLI mode:
 npx -y @modelcontextprotocol/inspector --cli node "C:/Tools/construct3-mcp/dist/index.js" "C:/Games/My Game" --method tools/list
 ```
 
-This prints a JSON list of 83 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools`; both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
+This prints a JSON list of 96 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools` (measured on the 83-tool server); both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
 
 ### Alternative: run from GitHub without cloning
 
@@ -262,7 +262,7 @@ This format works, and so does the one `claude mcp add` writes (the same with `"
 
 #### Tool permissions
 
-Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 26 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
+Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 28 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
 
 ```json
 {
@@ -354,12 +354,12 @@ Confirm the trust prompt when the server starts. Logs: Command Palette > **MCP: 
 
 *From each vendor's documentation, not tested for this guide.* Always pass an explicit project path.
 
-- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 83, so disable other servers or tools you don't need if you hit the limit.
+- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 96, so disable other servers or tools you don't need if you hit the limit.
 - **Antigravity**: open the file through the Agent panel > **MCP Servers** > **Manage MCP Servers** > **View raw config**. Current documentation names `~/.gemini/config/mcp_config.json` (global) and `.agents/mcp_config.json` (per workspace).
 
 ### Check that it works
 
-Your client should show `construct3` with 83 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
+Your client should show `construct3` with 96 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
 
 > Give me an overview of this project.
 
@@ -472,6 +472,8 @@ Parameter values are Construct expressions written as strings (`"100"`, `"Player
 
 "Add keyboard input" calls `create_object {"name": "Keyboard", "pluginId": "Keyboard"}`. Built-in Scirra plugins and behaviors are added to the project automatically, with the warning `Auto-registered plugin "Keyboard" in usedAddons (was not previously in the project).`
 
+**Flowcharts.** `create_flowchart` makes an empty flowchart; `add_flowchart_node`, `add_flowchart_output` and `connect_flowchart_nodes` build it. Each change to a flowchart's nodes, outputs or connections is one read and one write of the flowchart file, which is refused if the editor saved that file in the meantime; `create_flowchart` and `delete_flowchart` also change `project.c3proj`. As for every write, close and reopen a project that is open in Construct 3 before saving there.
+
 ### When the server says no
 
 Mistakes are reported without writing anything, for example:
@@ -570,7 +572,7 @@ Before the server rewrites or deletes a JSON file or `project.c3proj`, it copies
 - There is only **one** such `.bak` per file. The next tool call that writes the same file overwrites it, so it holds the state before the **last tool call** that wrote the file, not the state before your session. A tool call that writes a file twice (after "Add keyboard input", `create_object` registers the `Keyboard` addon and then the object in `project.c3proj`) backs it up once, before its first write. One request to the AI can still run several tool calls.
 - Sprite frame images work differently. The editor names a frame's image after the frame's index, so `add_frame_to_animation` with an `index` and `delete_frame_from_animation` rename the images of the later frames one index up or down, and every frame keeps its image. The image of a deleted frame, and an image file that no frame uses but sits where a moved image or the new placeholder has to go, are renamed to `<file>.bak` in `images/`, for example `images/player-animation 1-001.png.bak`. If that name is taken, the next one is `<file>.1.bak`, then `<file>.2.bak`, so older copies are kept. The tool's `warnings` name these files (the first three, then how many more). `delete_object` keeps the image files of the object it deletes the same way, for example `images/player-animation 1-000.png.bak`.
 - Nothing deletes them. They are not listed in `project.c3proj`, and `pack_project` leaves them out of the `.c3p`. `validate_project` lists them as `backup-file` info, including those in `images/`. Whether the Construct 3 editor shows or keeps them was not tested for this guide.
-- A write of a file that already exists keeps its previous content as a `.bak`, once per tool call: `register_addon` and `unregister_addon` (`project.c3proj.bak`), the timeline tools, the runtime-bridge tools (`inject_runtime_bridge`, `remove_runtime_bridge`, and `export_for_preview` / `pack_project` when they add the bridge, which also add or remove one line in your main script; each file is backed up right before its own write) and the image writes. `replace_sprite_image` keeps the image it replaces as `<file>.bak` (`<file>.1.bak`, ... when taken). `create_object` and `add_animation_to_sprite` keep an image file of the same name, for example one left behind by a deleted animation, the same way before they write their placeholder PNGs. A file that did not exist before the call has nothing to back up.
+- A write of a file that already exists keeps its previous content as a `.bak`, once per tool call: `register_addon` and `unregister_addon` (`project.c3proj.bak`), the timeline and flowchart tools, the runtime-bridge tools (`inject_runtime_bridge`, `remove_runtime_bridge`, and `export_for_preview` / `pack_project` when they add the bridge, which also add or remove one line in your main script; each file is backed up right before its own write) and the image writes. `replace_sprite_image` keeps the image it replaces as `<file>.bak` (`<file>.1.bak`, ... when taken). `create_object` and `add_animation_to_sprite` keep an image file of the same name, for example one left behind by a deleted animation, the same way before they write their placeholder PNGs. A file that did not exist before the call has nothing to back up.
 
 To list or delete them:
 
@@ -602,22 +604,23 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 ## Read tools and write tools
 
-**Read-only tools (26)**, safe to auto-approve:
+**Read-only tools (28)**, safe to auto-approve:
 
-- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_addons`, `list_timelines`, `search_objects`
-- Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`
+- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_addons`, `list_timelines`, `list_flowcharts`, `search_objects`
+- Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`, `get_flowchart_details`
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
 - Runtime helpers that only return text: `get_bridge_commands`, `generate_bridge_eval_script`
 - Runtime read: `get_canvas_size` (the canvas geometry of a game you connected to with `connect_to_game`; it sends nothing to the game)
 
-**Tools that write files (47)**, review before approving:
+**Tools that write files (58)**, review before approving:
 
 - Objects and families: `create_object`, `update_object_properties`, `delete_object`, `create_family`, `update_family`, `delete_family`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `move_events_between_sheets`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `delete_layer`, `add_instance_to_layout`, `update_instance`, `delete_instance_from_layout`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `replace_sprite_image`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`
+- Flowcharts: `create_flowchart`, `delete_flowchart`, `add_flowchart_node`, `update_flowchart_node`, `delete_flowchart_node`, `add_flowchart_output`, `update_flowchart_output`, `delete_flowchart_output`, `reorder_flowchart_outputs`, `connect_flowchart_nodes`, `disconnect_flowchart_nodes`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
 
@@ -632,7 +635,7 @@ Defaults to know:
   - On `move_events_between_sheets` it moves an event variable out of the scope of events that still use it (e.g. a used global variable into a group) and lists those uses; without it such a move is refused.
   - On `delete_layer` it deletes the layer together with the instances on it.
   - `unregister_addon` checks no references at all; `force` only allows removing a Scirra built-in addon. It also removes an addon that objects still use (it only adds the warning `If any objects/behaviors still reference it, C3 will error on load.`). Before you approve it, ask which objects use the addon. Afterwards `validate_project` reports leftover uses as `missing-addon` warnings, while the project still counts as `"valid": true`.
-  - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_timeline`, `remove_event_from_sheet`) have no `force` option.
+  - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_timeline`, `delete_flowchart`, `remove_event_from_sheet`) have no `force` option.
 
 Parameter names differ between tools. This only matters if you write tool calls yourself: `get_object_details` takes `name`, `get_object_dependencies` takes `object`, `get_eventsheet_outline` takes `sheet`, `add_event_block` takes `sheetName`. Every tool and parameter is described in the [API Reference](API.md). More request-to-tool examples are in [EXAMPLES.md](EXAMPLES.md).
 
@@ -741,7 +744,7 @@ Install it and add one object that uses the addon in the Construct 3 editor, sav
 - One project per server process.
 - Construct 3 does not see changes while the project is open. Close it before, or close without saving and reopen after.
 - No check of condition and action ids, parameter names or full expression syntax. Only the editor load-time rules listed under [`validate_project`](API.md#validate_project) are checked.
-- Renames update event sheets only in part. A layer renamed with `update_layer` has the `"layer"` parameters of conditions and actions that are exactly its quoted old name pointed at the new name, unless another layout has a layer of the old name (a layer parameter may mean that one); other strings that name the layer (`LayerScale("Main")`, scripts, function call arguments) are only listed in a warning, never changed (issue #38). An event variable renamed with `update_event_variable` is still named by its old name wherever events use it. `rename_animation` does rename the frame image files and the layout instances' start animation, like the editor, but not text in events that names the animation. Objects, families, event sheets, layouts and timelines cannot be renamed by the server.
+- Renames update event sheets only in part. A layer renamed with `update_layer` has the `"layer"` parameters of conditions and actions that are exactly its quoted old name pointed at the new name, unless another layout has a layer of the old name (a layer parameter may mean that one); other strings that name the layer (`LayerScale("Main")`, scripts, function call arguments) are only listed in a warning, never changed (issue #38). An event variable renamed with `update_event_variable` is still named by its old name wherever events use it. `rename_animation` does rename the frame image files and the layout instances' start animation, like the editor, but not text in events that names the animation. Objects, families, event sheets, layouts, timelines and flowcharts cannot be renamed by the server.
 - Files whose new JSON would be larger than 5 MB (very large layouts or event sheets) cannot be written; the write is refused with `Generated JSON for "..." is too large`.
 - Layout, object type, event sheet and family files larger than 10 MB are not read. `validate_project` reports each one as an `unscanned-file` warning and returns `"complete": false` and `"valid": false`: duplicate UIDs and SIDs, broken references and load-time errors inside such a file are not reported. New UIDs still go above the UIDs in a large layout or object type, whatever its size, because the server scans that file as text (streamed, so memory does not grow with the file), but the scan reads the whole file for the first new UID or SID, and again after each change on disk the server did not make (about 0.3 seconds for 50 MB, about 1.5 seconds for 600 MB); the server's own writes add their IDs without a new scan. Tools that edit the large file itself, such as `add_instance_to_layout` on that layout, report it as not found. The reference checks of the delete and update tools search such a layout, event sheet or family file, and one that is not valid JSON, as text for the names they look for (`delete_object` and `delete_family` refuse without `force` when the object type's or family's own file is such a file, since its SID is unknown): a match, or a file that cannot be read at all, refuses without `force` as a possible use (see [When the server says no](#when-the-server-says-no)). `find_orphaned_objects` and `get_object_dependencies` list the objects such a file names as possibly used (`possiblyUsed`, `possiblyUsedObjects`, `possiblyReferencedIn`) instead of unused, and an object whose own object type file is such a file as `unanalysedObjects`, since its SID is unknown. The search reads the file again on every such call, up to its end unless it finds everything earlier (about 0.1 seconds for 50 MB, up to about 0.3 seconds when a name is common inside other names), and finds names, not uses: a name in another string refuses needlessly, and a name built at runtime is not found. Instances in such a layout are not updated when the behaviors, instance variables or effects of their object or its families change (behavior entries, instance variable values, effect entries); the tools warn about it. Version 1.9.1 and older did not search these files: there, `delete_object` without `force` deleted an object whose only instances were in a layout over 10 MB, without a warning. Details are under "File too large" in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#file-too-large--exceeds-10mb-limit).
 - Sprite frames inserted or deleted by index with version 1.9.0 or older can show their neighbour's image or have none, because those versions did not move the frame images. `validate_project` finds only part of this: after such an insert the last frame has no image file (`frame-image` warning), after such a delete a file past the last frame is left over (`frame-image` info). Frames that show their neighbour's image are not reported, and after a delete followed by an append nothing is reported at all. Check such animations in the editor; the image an old insert wrote over cannot be recovered from the project folder. [TROUBLESHOOTING.md](TROUBLESHOOTING.md#sprite-frames-show-the-wrong-image-or-validate_project-reports-frame-image) explains the repair. From 1.9.1 on, the frame tools move the images with their frames (see [.bak files](#bak-files)).
@@ -749,4 +752,4 @@ Install it and add one object that uses the addon in the Construct 3 editor, sav
 - Third-party addons must be installed and added in the editor; `register_addon` only edits the addon list.
 - The documentation resources only return links to the Construct 3 manual.
 - The runtime tools need Node.js 22 or later and Chrome or Edge, start from an export or the editor's preview (the server cannot export), and the bridge must be removed before you ship.
-- Windsurf / Devin Desktop allows 100 tools in total; this server uses 83 of them.
+- Windsurf / Devin Desktop allows 100 tools in total; this server uses 96 of them.

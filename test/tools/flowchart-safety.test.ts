@@ -839,6 +839,18 @@ describe('add_flowchart_node and update_flowchart_node', () => {
     expect(JSON.parse(raw.slice(1)).nodes).toHaveLength(1);
   });
 
+  it('writes a new flowchart file in the line endings and byte order mark of project.c3proj', async () => {
+    const projectText = await readFile(projectFile(), 'utf-8');
+    await writeFile(projectFile(), String.fromCharCode(0xfeff) + projectText.replace(/\r?\n/g, '\r\n'));
+    await project.reader.loadProject();
+    await createGraph();
+    const raw = await readFile(flowchartFile(project.dir, 'Graph'), 'utf-8');
+    expect(raw.charCodeAt(0)).toBe(0xfeff);
+    expect(raw).toContain('\r\n');
+    expect(raw.replace(/\r\n/g, '')).not.toContain('\n');
+    expect(JSON.parse(raw.slice(1)).nodes).toEqual([]);
+  });
+
   const THROWING_CALLS: Array<[string, Record<string, unknown>]> = [
     ['update_flowchart_node', { flowchartName: 'Graph', nodeSid: 1, caption: 'A2' }],
     ['delete_flowchart_node', { flowchartName: 'Graph', nodeSid: 1 }],

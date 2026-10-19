@@ -4,11 +4,16 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Flowchart tools. `list_flowcharts` and `get_flowchart_details` read the flowcharts registered in `project.c3proj`; `create_flowchart` and `delete_flowchart` create or delete `flowcharts/<name>.json` together with its registration; `add_flowchart_node`, `update_flowchart_node` and `delete_flowchart_node` (dictionary and comment nodes, one start node), `add_flowchart_output`, `update_flowchart_output`, `delete_flowchart_output` and `reorder_flowchart_outputs`, and `connect_flowchart_nodes` and `disconnect_flowchart_nodes` change them. A tool that changes a flowchart reads the file and writes it back once, with a `.bak` of the state before the call, and does not overwrite a flowchart file that changed on disk after the call read it. A refusal is given before anything is written and says nothing was changed. Names are matched with their letter case, arguments a tool does not take are refused, and a flowchart file that holds no list of nodes is refused. A failed `create_flowchart` or `delete_flowchart` undoes only its own registration, keeps changes saved in the editor, removes or restores its flowchart file once `project.c3proj` agrees, and says what is on disk. Neither deletes a file that was saved in the editor during the call.
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
 - `register_addon`, `unregister_addon`, `replace_sprite_image`, the timeline tools and the runtime bridge tools write project files through the project writer: each file is backed up once per tool call (`<file>.bak`), written through a temp file and read back. `register_addon` and `unregister_addon` merge a `project.c3proj` saved in the editor during the call instead of refusing it; the runtime bridge tools refuse to write over one (#ISSUE).
 - Images are backed up under the first free `.bak` name (`<file>.bak`, `<file>.1.bak`, ...), so placeholder writes and `replace_sprite_image` never replace an image the frame tools kept as `.bak`; a failed batch of placeholder images puts back an image it wrote over. Image backups accumulate, one more for each call that writes the image, and nothing removes them (#ISSUE).
+- The server has 96 tools (83 before).
 
 ### Fixed
 

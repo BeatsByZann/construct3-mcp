@@ -140,6 +140,18 @@ Full timeline JSON, including tracks and settings. The file is located from the 
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Timeline name |
 
+### `list_flowcharts`
+
+List all flowchart names (root and folders) with a count, in project-bar order. No parameters. A name registered in a folder without a name is not listed, and the other flowchart tools do not resolve it.
+
+### `get_flowchart_details`
+
+Full flowchart JSON: its nodes, outputs and connections. The file is located from the flowchart's folder in `project.c3proj`: `flowcharts/<name>.json` at the root, `flowcharts/<folder>/.../<name>.json` in a folder. The name must be given as registered; a name in another letter case is refused with the registered name. A file that is missing, cannot be read, is not valid JSON or holds no list of nodes is refused, with the file named project-relative.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Flowchart name |
+
 ### `list_addons`
 
 List the addons registered in the project's `usedAddons`, with a count.
@@ -427,13 +439,13 @@ Locations are paths of event types (`function:Name > block > action:3`); `action
 
 ## Mutation Tools
 
-Mutation tools that write entity files through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate -> backup -> write -> verify -> invalidate caches. The other project-file writes go through the writer's `replaceFile`, `deleteFile`, `restoreForCall` and `updateProject` methods, under the file's one lock. `replaceFile`, `deleteFile` and `updateProject` back the file up once per call; `restoreForCall` takes no backup, since it puts back what the call wrote. A write goes through a temp file, and `replaceFile`, `restoreForCall` and `updateProject` read it back and compare the bytes; `deleteFile` does no read-back (it records the file as absent). Renaming image files and deleting one take no file lock and make no backup; every rename of image files runs under the animation lock. The JSON check (`validateJsonData`) and the re-parse run only for entity files and for `project.c3proj` updates made through `updateProject`. The differences: `register_addon` / `unregister_addon` back up `project.c3proj` once per call and merge a change the editor saved during the call; the timeline tools back up their files once per call; the runtime tools refuse a write step whose file changed since the tool read it (the delete of the bridge script by [`remove_runtime_bridge`](#remove_runtime_bridge) takes no such check); PNG images are backed up once per call under the first free `.bak` name (image backups therefore accumulate, one more for each call that writes the image, and nothing removes them). Mutation tools return a `WriteResult` object on success.
+Mutation tools that write entity files through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate -> backup -> write -> verify -> invalidate caches. The other project-file writes go through the writer's `replaceFile`, `deleteFile`, `restoreForCall` and `updateProject` methods, under the file's one lock. `replaceFile`, `deleteFile` and `updateProject` back the file up once per call; `restoreForCall` takes no backup, since it puts back what the call wrote. A write goes through a temp file, and `replaceFile`, `restoreForCall` and `updateProject` read it back and compare the bytes; `deleteFile` does no read-back (it records the file as absent). Renaming image files and deleting one take no file lock and make no backup; every rename of image files runs under the animation lock. The JSON check (`validateJsonData`) and the re-parse run only for entity files and for `project.c3proj` updates made through `updateProject`. The differences: `register_addon` / `unregister_addon` back up `project.c3proj` once per call and merge a change the editor saved during the call; the timeline and flowchart tools back up their files once per call, and the flowchart tools refuse a flowchart file that changed on disk after the call read it; the runtime tools refuse a write step whose file changed since the tool read it (the delete of the bridge script by [`remove_runtime_bridge`](#remove_runtime_bridge) takes no such check); PNG images are backed up once per call under the first free `.bak` name (image backups therefore accumulate, one more for each call that writes the image, and nothing removes them). Mutation tools return a `WriteResult` object on success.
 
 **Text style.** An overwritten file keeps its line endings (LF or CRLF), exact trailing whitespace and BOM. A new file follows `project.c3proj`, then the first JSON file with line breaks in its target folder, then Construct 3's own style: tab-indented JSON with LF line endings, no trailing newline and no BOM. Only files already in that tab layout get line-level diffs; files indented another way are re-indented in full.
 
 **Parallel calls.** The animation tools, from [`add_animation_to_sprite`](#add_animation_to_sprite) to [`replace_sprite_image`](#replace_sprite_image), run one at a time: a call waits until the one before it has finished and reads the object only then. They write a Sprite's object file back, and several rename or write its frame image files, whose names hold the frame index, so two of them in parallel could otherwise move each other's images or write the object without the other's frames. `delete_object`, which renames the object's frame images, takes the same lock around its renames, its delete and its rollback. Other tools that write an object file (e.g. `update_object_properties`) do not wait for them: run such a call on the same Sprite in parallel with an animation tool and one can overwrite the other's change, as for any two calls that change the same file. When [`add_frame_to_animation`](#add_frame_to_animation) or [`delete_frame_from_animation`](#delete_frame_from_animation) finds that another write replaced the object file during its own, it keeps the frames and image files together (see there).
 
-**Names and file names.** Entity files are named after the entity (`<category>/<folders>/<name>.json`, folders mirroring the project bar), and on Windows and macOS names that differ only in case name the same file. Create and rename tools therefore compare names the way the Construct 3 editor does: event sheet and layout names project-wide ignoring case, object type and family names in one namespace ignoring case, layer names per layout ignoring case (sub-layers included; the editor cannot load a layout with two such layers), animation names per sprite ignoring case (in any animation folder), event variable names ignoring case within the variable's scope (see [Event variable names](#event-variable-names)), and sibling project-bar folders (`subfolder` segments) ignoring case; a case-only clash is refused with an error naming the existing entity or folder. Create tools also refuse to write an entity JSON file or a timeline file where one already exists, including one whose name differs only in case; nothing is backed up or replaced, and the error says to choose another name or, for a leftover of a deleted entity, to check and remove the file first. Placeholder PNGs are not refused: `create_object` and `add_animation_to_sprite` write them over an image file of the same name in `images/`, e.g. one a deleted animation left behind, but first keep that image as `<file>.bak` (`<file>.1.bak`, ... when taken), so nothing is replaced without a backup (`delete_object` keeps the images of the object it deletes the same way; `add_frame_to_animation` renames such a file first). Rewrites of an existing file keep its name on disk exactly, including case, and the `.bak` backup takes that name. The event sheet tools that check a sheet together with the other event sheets (`add_event_to_sheet`, `delete_event_sheet`, `delete_event_from_sheet`, `update_event_variable`, `move_events_between_sheets`) take a sheet name only as the project registers it: a name that differs only in letter case is refused as not found, with the registered name in the error, also on Windows and macOS, where the file would open. Their checks know the other sheets by their registered names, so they would see that sheet twice, once as saved; a move whose target was its source spelled in another case lost the moved events.
+**Names and file names.** Entity files are named after the entity (`<category>/<folders>/<name>.json`, folders mirroring the project bar), and on Windows and macOS names that differ only in case name the same file. Create and rename tools therefore compare names the way the Construct 3 editor does: event sheet and layout names project-wide ignoring case, object type and family names in one namespace ignoring case, layer names per layout ignoring case (sub-layers included; the editor cannot load a layout with two such layers), animation names per sprite ignoring case (in any animation folder), event variable names ignoring case within the variable's scope (see [Event variable names](#event-variable-names)), and sibling project-bar folders (`subfolder` segments) ignoring case; a case-only clash is refused with an error naming the existing entity or folder. Create tools also refuse to write an entity JSON file, a timeline file or a flowchart file where one already exists, including one whose name differs only in case; nothing is backed up or replaced, and the error says to choose another name or, for a leftover of a deleted entity, to check and remove the file first. Placeholder PNGs are not refused: `create_object` and `add_animation_to_sprite` write them over an image file of the same name in `images/`, e.g. one a deleted animation left behind, but first keep that image as `<file>.bak` (`<file>.1.bak`, ... when taken), so nothing is replaced without a backup (`delete_object` keeps the images of the object it deletes the same way; `add_frame_to_animation` renames such a file first). Rewrites of an existing file keep its name on disk exactly, including case, and the `.bak` backup takes that name. The event sheet tools that check a sheet together with the other event sheets (`add_event_to_sheet`, `delete_event_sheet`, `delete_event_from_sheet`, `update_event_variable`, `move_events_between_sheets`) take a sheet name only as the project registers it: a name that differs only in letter case is refused as not found, with the registered name in the error, also on Windows and macOS, where the file would open. Their checks know the other sheets by their registered names, so they would see that sheet twice, once as saved; a move whose target was its source spelled in another case lost the moved events.
 
 **Editor reload note.** Every response that reports a completed write includes `editorNote`: *"If this project is open in Construct 3, close and reopen it there before saving, or the editor can overwrite these changes."* The editor keeps an open project in memory, so saving from a session opened before the edit can overwrite it; its Project Bar reload (F9) re-reads script files only. A `WriteResult` with `success: true` counts as a write unless it is a dry run. Tools whose success does not imply a write carry no note: the `already_registered` no-op of `register_addon`, `fix_legacy_behavior_keys` with `dryRun: false` when it found nothing to rename, `fix_legacy_event_shapes` with `dryRun: false` when it found nothing to convert, `clone_project`, and `export_for_preview` / `pack_project` with `injectBridge: false`. Error responses never carry the note, even when a multi-step tool (e.g. `create_object`) failed after an earlier step had already written.
 
@@ -1293,6 +1305,192 @@ Delete a timeline: back up exactly the file that is deleted to `<file>.bak`, del
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Timeline name to delete |
+
+### Flowchart tools
+
+A flowchart is `flowcharts/<name>.json` (`flowcharts/<folder>/.../<name>.json` in a Project Bar folder), registered in the `flowcharts` container of `project.c3proj` in the same folder, as a timeline is. The tools below share these rules:
+
+- A name is accepted as registered, letter case included. A name in another letter case is refused with the registered name. `create_flowchart` refuses a name that differs only in case from an existing flowchart in any folder, and a `subfolder` that differs only in case from an existing Project Bar folder.
+- A tool reads the file, changes it in memory and writes it back once, through a temp file, with the state from before the call kept as `<file>.bak` (once per call). A flowchart file that changed on disk after the call read it, for example because it was saved in the editor, is not overwritten: the error says so and the file keeps that change. The server does not make an open editor re-read the file (see the editor reload note).
+- A refusal is given before anything is written and ends with *Nothing was changed.* A write refused because the file changed on disk says so in its own words: the file was not written, and the tool can be run again. An error before the first write says the change was stopped before anything was written. When a write fails, the error says what is on disk.
+- Arguments a tool does not take are refused, also inside the `outputs` entries of `add_flowchart_node`. Positions and sizes must be finite numbers.
+- A registration whose folder or name would put the file outside `flowcharts/` is not read, changed or deleted.
+- The file keeps its line endings, trailing whitespace and BOM; a new file follows `project.c3proj`. Keys the tools do not model are kept.
+- The tools never write the editor-state file `<name>.uistate.json`, except that `delete_flowchart` deletes it with the flowchart.
+- A flowchart file that is not an object with a list of `nodes` is refused.
+
+#### File format
+
+As observed in flowcharts saved by Construct 3 r495 (an editor-saved project with 31 flowcharts and 1,539 nodes):
+
+| Field | Meaning |
+|-------|---------|
+| `sid`, `name`, `w`, `h` | Flowchart SID, name and canvas size (20000 x 20000 on a new flowchart) |
+| `preset-nodes` | `{ items, subfolders }` preset-node folder tree |
+| `nodes[].t` | Node type/title. Equal to `c` on 1,170 of the 1,539 nodes; empty on comment boxes |
+| `nodes[].c` | Node caption. **Not** a color: node and output colors live in the sibling `<name>.uistate.json` |
+| `nodes[].s` | Start node. All 31 flowcharts carry exactly one |
+| `nodes[].e` | Enabled |
+| `nodes[].ty` | Value type. Observed values: `dictionary` (1,373) and `comment` (166) |
+| `nodes[].n`, `fo`, `fs`, `fb`, `fi`, `fc` | Comment nodes only, after `prfnsid`: body as the editor's HTML (first line plain, later lines in `<div>`, blank lines `<div><br></div>`), font face, font size, bold, italic and `#rrggbb` font color. Comment nodes have no outputs or connections and `t: ""`; their `c` is a separate caption |
+| `nodes[].pi` | Observed values 0, 1 and 2; meaning not determined |
+| `nodes[].pr`, `prfsid`, `prfnsid` | Preset-node markers. Never taken from tool input: new nodes get `false`/`null`/`null` and existing nodes keep whatever they carry |
+| `nodes[].pnSIDs`, `poSIDs` | Strictly parallel, one entry per incoming connection (1,295 of 1,295 pairs valid): `poSIDs[i]` is an output of the node `pnSIDs[i]` |
+| `nodes[].nodeSIDs` | Distinct child node SIDs, in an order independent of the `outputs` array order |
+| `nodes[].outputs[]` | `{ sid, cnSID, name, value, enable, default }`; `cnSID` is the connected node SID or `null` |
+
+#### `create_flowchart`
+
+Create an empty flowchart and register it in the same folder of `project.c3proj`, creating the `flowcharts` entry and the folders when they are missing. The file is written first and the registration second. The checks on the name and the folder are made again on the `project.c3proj` the registration is made in, so a name or folder saved in the editor after the first check is refused and nothing is registered. When the write of the file fails after the file was written, or the registration fails, the registration this call made is taken out again (a change saved in the editor meanwhile is kept) and the file is removed again once `project.c3proj` on disk does not register it; the error says so. A file that cannot be removed is named; a file that `project.c3proj` still registers, or whose registration cannot be checked, is kept and named. A folder the write made stays, empty, and the error names it. Refused before anything is written: an unsafe name or folder, a name that is registered already (a name registered in a folder without a name is refused with its own message), a name that differs only in case from a registered one, a folder that differs only in case from an existing one, a file already on disk at the path (also one whose name differs only in case), and a `project.c3proj` that changed on disk after the call read the version its checks used. When the Flowchart plugin is not in `usedAddons` the result carries a warning: a load check of Construct 3 r495.2 showed that the editor opens such a project (and removes the unused plugin), but a Flowchart object is needed to use the flowchart at run time. This tool does not register plugins.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Flowchart name |
+| `subfolder` | string | No | Slash-separated folder path under `flowcharts/`, created in both places |
+
+#### `delete_flowchart`
+
+Delete a flowchart: remove its registration from `project.c3proj`, then its file (kept as `<file>.bak`) and the editor-state file `<name>.uistate.json` beside it (also kept as `.bak`). Each file is deleted only if it is still in the state it had before the call began: a flowchart file or editor-state file saved in the editor during the call, or created where there was none, is kept (for the flowchart file the call is refused and the registration put back; for the editor-state file it is a warning). When the file cannot be deleted, a file that is gone is restored from its backup first and then the registration is put back, on the `project.c3proj` as it is then (a change saved in the editor meanwhile is kept); a file that cannot be restored leaves the registration removed, so no registered name lacks its file, and the error names the backup. The error says what is on disk. A registered name whose file is missing loses its registration, with a warning. A failure to delete the editor-state file is a warning; the flowchart is gone. Refused before anything is changed when `project.c3proj` changed on disk after the call read it, and when the registration's folder or name would put the file outside `flowcharts/`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Flowchart name to delete |
+
+#### `add_flowchart_node`
+
+Add a node. Outputs are created unconnected; wire them with
+`connect_flowchart_nodes`. When `isStart` is true the flag is cleared on every
+other node, because Construct 3 keeps exactly one start node per flowchart. The
+result carries `generatedSid` for the node and `outputSids` for its pins, plus a
+warning when the flowchart is left without a start node.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `caption` | string | Yes | Node caption (the `c` field) |
+| `nodeType` | string | No | Node type/title (the `t` field; defaults to `caption`) |
+| `x`, `y` | number | Yes | Canvas position |
+| `width`, `height` | number | No | Box size (defaults: 300 x 133) |
+| `isStart` | boolean | No | Make this the start node (default: false) |
+| `enabled` | boolean | No | The `e` field (default: true) |
+| `valueType` | `dictionary` / `comment` | No | The `ty` field (default: `dictionary`). A comment node takes no `outputs`, gets `t: ""` unless `nodeType` is given, and gets the comment keys |
+| `outputs` | array | No | `{ name, value?, enabled?, isDefault? }` pins to create |
+| `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption). Runs of spaces become alternating `&nbsp;` and spaces starting with `&nbsp;`, ending in `&nbsp;` at a line end, and a lone space at a line start or end becomes `&nbsp;`, as in 7,888 of the 7,922 space runs in the comments of an r495 editor-saved project |
+| `commentHtml` | string | No | Comment body as HTML, stored unchanged; give this or `commentText` |
+| `font`, `fontSize`, `bold`, `italic`, `fontColor` | string, number, boolean, boolean, `#rrggbb` | No | Comment formatting (`fo`, `fs`, `fb`, `fi`, `fc`). Missing values take the values most common in editor-saved flowcharts (Calibri, 36, bold, not italic, `#39b530`) with a warning; Construct's own defaults were not observed |
+
+The comment fields are refused on a dictionary node, and a comment node
+cannot be the start node (none of the 166 comment nodes of an r495 editor-saved project is).
+
+There is no `color` parameter: the node `c` field is the caption, and colors are
+held in the `.uistate.json` file these tools do not write.
+
+#### `update_flowchart_node`
+
+Update node properties. Connections, preset markers and unknown keys are
+preserved. `isStart: true` clears the flag on every other node.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `nodeSid` | number | Yes | SID of the node to update |
+| `caption` | string | No | New caption (`c`) |
+| `nodeType` | string | No | New type/title (`t`) |
+| `tags` | string | No | Writes a `tags` key. **Not observed** in any r495 sample flowchart; the result carries a warning saying so |
+| `isStart` | boolean | No | Set or clear the start flag |
+| `enabled` | boolean | No | The `e` field |
+| `parentIndex` | number | No | The `pi` field (meaning undetermined) |
+| `x`, `y`, `width`, `height` | number | No | Canvas position and box size |
+| `valueType` | `dictionary` / `comment` | No | Change the `ty` field. To `comment`: refused while the node has outputs or connections, or is (or is being made) the start node; `t` is cleared and the comment keys are added (body from the caption unless given). To `dictionary`: the comment keys are removed and an empty `t` takes the caption |
+| `commentText`, `commentHtml`, `font`, `fontSize`, `bold`, `italic`, `fontColor` | | No | Comment fields as for `add_flowchart_node`; only on a node that is, or becomes, a comment |
+
+#### `delete_flowchart_node`
+
+Delete a node and clean every reference to it: other nodes' `nodeSIDs`, their
+parallel `pnSIDs`/`poSIDs` entries, and any output whose `cnSID` pointed at it
+(set back to `null`).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `nodeSid` | number | Yes | SID of the node to delete |
+
+#### `add_flowchart_output`
+
+Add an output pin, unconnected, at the end of the array or at `index`.
+Refused on a comment node, which has no outputs.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `nodeSid` | number | Yes | Node to add the pin to |
+| `name` | string | Yes | Output pin name |
+| `value` | string | No | Output value (default: empty string) |
+| `enabled` | boolean | No | The `enable` field (default: true) |
+| `isDefault` | boolean | No | The `default` field (default: false) |
+| `index` | number | No | Insertion index; must not exceed the current output count |
+
+#### `update_flowchart_output`
+
+Update an output pin. Its `cnSID` is preserved.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `outputSid` | number | Yes | SID of the output to update |
+| `name`, `value` | string | No | New name / value |
+| `enabled` | boolean | No | The `enable` field |
+| `isDefault` | boolean | No | The `default` field |
+
+#### `delete_flowchart_output`
+
+Delete an output pin, first undoing any connection it held.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `outputSid` | number | Yes | SID of the output to delete |
+
+#### `reorder_flowchart_outputs`
+
+Reorder a node's output pins. `outputSids` must be a permutation of that node's
+current output SIDs, so a wrong, short or duplicated list is rejected and
+nothing is written. A node whose outputs hold one SID twice is refused too.
+The new order is the order of the outputs array in the flowchart file. Whether
+Construct 3 runs the outputs in that order was not observed, so check the
+flowchart's behavior after a reorder.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `nodeSid` | number | Yes | Node whose outputs to reorder |
+| `outputSids` | number[] | Yes | The node's output SIDs in their new order |
+
+#### `connect_flowchart_nodes`
+
+Set the output's `cnSID`, append the source node SID to the target's `pnSIDs`
+and the output SID to its `poSIDs`, and add the target to the source's
+`nodeSIDs`. Connecting a node to itself is refused, as is reusing an output that
+is already connected (disconnect it first) and connecting from or to a comment
+node, which has no connections.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `outputSid` | number | Yes | Source output pin |
+| `targetNodeSid` | number | Yes | Node to connect to |
+
+#### `disconnect_flowchart_nodes`
+
+Reverse one connection. Because `pnSIDs` and `poSIDs` are per connection, only
+the entry for this output is removed; the target stays in the source's
+`nodeSIDs` while any other output still points at it, so a second connection
+between the same two nodes survives untouched.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `flowchartName` | string | Yes | Flowchart name |
+| `outputSid` | number | Yes | Output pin to disconnect |
 
 ---
 
