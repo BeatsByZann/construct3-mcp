@@ -1,0 +1,43 @@
+{
+	"name": "Level 2",
+	"layers": [
+		{
+			"name": "Game",
+			"sid": 640000000000001,
+			"instances": [
+				{
+					"type": "Enemy",
+					"uid": 10,
+					"sid": 640000000000002,
+					"tags": "",
+					"properties": {},
+					"instanceVariables": {},
+					"behaviors": {},
+					"world": {
+						"x": 50,
+						"y": 50,
+						"width": 64,
+						"height": 64
+					}
+				}
+			],
+			"isInitiallyVisible": true,
+			"isTransparent": true,
+			"color": [1, 1, 1, 1],
+			"blendMode": "normal"
+		},
+		{
+			"name": "Backdrop",
+			"sid": 640000000000003,
+			"instances": [],
+			"isInitiallyVisible": true,
+			"isTransparent": true,
+			"color": [1, 1, 1, 1],
+			"blendMode": "normal"
+		}
+	],
+	"sid": 640000000000004,
+	"eventSheet": "Helpers",
+	"width": 1920,
+	"height": 1080
+}
