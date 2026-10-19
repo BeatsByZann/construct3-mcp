@@ -537,16 +537,19 @@ function parameterPath(site: EventStringSite, key: string, named: boolean): stri
 /**
  * Compare two slots by their place in the sheet: an event's conditions,
  * then its actions, then its sub-events, each in index order (the
- * numbers of the path, with conditions below actions below children).
+ * numbers of the path, with conditions below actions below children). A
+ * positional parameter compares by its index as a number; parameters of one
+ * condition or action that remain tied compare by path text.
  */
 function documentOrder(a: { path: string }, b: { path: string }): number {
-  const offset: Record<string, number> = { events: 0, conditions: 0, actions: 1e6, children: 2e6 };
-  const key = (slot: { path: string }) => [...slot.path.matchAll(/(events|children|conditions|actions)\[(\d+)\]/g)]
+  const offset: Record<string, number> = { events: 0, conditions: 0, actions: 1e6, children: 2e6, parameters: 0 };
+  const key = (slot: { path: string }) => [...slot.path.matchAll(/(events|children|conditions|actions|parameters)\[(\d+)\]/g)]
     .map(m => offset[m[1]] + Number(m[2]));
   const ka = key(a);
   const kb = key(b);
   for (let i = 0; i < Math.min(ka.length, kb.length); i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
-  return ka.length - kb.length || a.path.localeCompare(b.path);
+  if (ka.length !== kb.length) return ka.length - kb.length;
+  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 }
 
 /** A condition or action parameter value that may be replaced. */

@@ -1145,4 +1145,36 @@ describe('replace_in_expressions', () => {
     expect(first.changes.map(c => c.path)).toEqual(['events[0].conditions[0].parameters.v']);
     expect(first.changesTruncated).toBe(true);
   });
+
+  it('reports positional arguments in index order, not text order', async () => {
+    const args = Array.from({ length: 12 }, (_, i) => `ZQ ${i}`);
+    await useEvents(block(700000000000250, [{ callFunction: 'F', objectClass: 'System', parameters: args }]));
+    const data = parseExpr(await replaceText({ find: 'ZQ', replace: 'ZR', dryRun: true }));
+    expect(data.changes.map(c => c.path)).toEqual(args.map((_, i) => `events[0].actions[0].parameters[${i}]`));
+  });
+
+  it('reports the parameters of one condition or action in key-name order', async () => {
+    await useEvents(block(700000000000251, [
+      { id: 'set-text', objectClass: 'Text', parameters: { zeta: 'ZQ z', alpha: 'ZQ a', mid: 'ZQ m' } },
+    ]));
+    const data = parseExpr(await replaceText({ find: 'ZQ', replace: 'ZR', dryRun: true }));
+    expect(data.changes.map(c => c.key)).toEqual(['alpha', 'mid', 'zeta']);
+  });
+
+  it('refuses the whole call when a registered sheet has no file, as replace_object_in_events does', async () => {
+    await rm(path('eventSheets', 'Shared', 'Helpers.json'));
+    await start();
+    const before = await snapshotProject(tmpDir);
+    const writes = vi.spyOn(writer, 'writeEntityFile');
+    const refused = await replaceText({});
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toBe('Cannot read event sheet "Helpers" (not found). Nothing was changed.');
+    noPath(textOf(refused));
+    expect(writes).not.toHaveBeenCalled();
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+
+    const swapRefused = await swap({});
+    expect(swapRefused.isError).toBe(true);
+    expect(textOf(swapRefused)).toBe(textOf(refused));
+  });
 });
