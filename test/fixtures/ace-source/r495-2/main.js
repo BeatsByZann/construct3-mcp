@@ -11,5 +11,9 @@ function registerCommon(c, a, e) {
   a({scriptName:"SetX",id:"set-x",isAsync:!1,params:[{id:"x",type:"number"}]});
   a({id:"set-position",scriptName:"SetPosition",params:[{id:"x",type:"number"},{id:"y",type:"number"}]});
   e({id:"uid",expressionName:"UID",returnType:"number"});
+  e({id:"x",expressionName:"X",returnType:"number"});
+  e({id:"y",expressionName:"Y",returnType:"number"});
+  e({id:"width",expressionName:"Width",returnType:"number"});
+  e({id:"pickedcount",expressionName:"PickedCount",returnType:"number"});
   a({title:"not a registration",extra:{id:"nested-only",scriptName:"Nested"}});
 }

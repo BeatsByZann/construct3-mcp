@@ -28,7 +28,10 @@ export const TEST_CATALOG: AceCatalog = {
           { id: 'from', type: 'combo', items: ['current-frame', 'beginning'] },
         ],
       },
-      expressions: {},
+      expressions: {
+        animationname: { name: 'AnimationName', params: [], returns: 'string' },
+        imagepointx: { name: 'ImagePointX', params: ['string'], returns: 'number' },
+      },
     },
     system: {
       conditions: {
@@ -49,6 +52,13 @@ export const TEST_CATALOG: AceCatalog = {
         choose: { name: 'choose', params: ['any', 'any'], variadic: true, returns: 'any' },
         int: { name: 'int', params: ['any'], returns: 'number' },
         random: { name: 'random', params: ['number', 'number'], returns: 'number' },
+        distance: { name: 'distance', params: ['number', 'number', 'number', 'number'], returns: 'number' },
+        max: { name: 'max', params: ['number', 'number'], variadic: true, returns: 'number' },
+        loopindex: { name: 'loopindex', params: [], variadic: true, returns: 'number' },
+        dt: { name: 'dt', params: [], returns: 'number' },
+        pi: { name: 'pi', params: [], returns: 'number' },
+        layoutname: { name: 'LayoutName', params: [], returns: 'string' },
+        callmapped: { name: 'CallMapped', params: ['string'], variadic: true, returns: 'any' },
       },
     },
   },
@@ -86,6 +96,10 @@ export const TEST_CATALOG: AceCatalog = {
     },
     expressions: {
       uid: { name: 'UID', params: [], returns: 'number' },
+      x: { name: 'X', params: [], returns: 'number' },
+      y: { name: 'Y', params: [], returns: 'number' },
+      width: { name: 'Width', params: [], returns: 'number' },
+      pickedcount: { name: 'PickedCount', params: [], returns: 'number' },
     },
   },
 };

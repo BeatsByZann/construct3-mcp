@@ -58,9 +58,9 @@ describe('buildCatalog', () => {
       plugins: 3,
       behaviors: 1,
       aces: 7,
-      expressions: 4,
+      expressions: 13,
       commonAces: 4,
-      commonExpressions: 1,
+      commonExpressions: 5,
     });
   });
 

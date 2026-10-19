@@ -53,11 +53,64 @@
             { "id": "a", "type": "number" },
             { "id": "b", "type": "number" }
           ]
+        },
+        {
+          "id": "distance",
+          "expressionName": "distance",
+          "returnType": "number",
+          "params": [
+            { "id": "x1", "type": "number" },
+            { "id": "y1", "type": "number" },
+            { "id": "x2", "type": "number" },
+            { "id": "y2", "type": "number" }
+          ]
+        },
+        {
+          "id": "max",
+          "expressionName": "max",
+          "isVariadicParameters": true,
+          "returnType": "number",
+          "params": [
+            { "id": "a", "type": "number" },
+            { "id": "b", "type": "number" }
+          ]
+        },
+        {
+          "id": "loopindex",
+          "expressionName": "loopindex",
+          "isVariadicParameters": true,
+          "returnType": "number",
+          "params": []
+        },
+        { "id": "dt", "expressionName": "dt", "returnType": "number" },
+        { "id": "pi", "expressionName": "pi", "returnType": "number" },
+        { "id": "layoutname", "expressionName": "LayoutName", "returnType": "string" },
+        {
+          "id": "callmapped",
+          "expressionName": "CallMapped",
+          "isVariadicParameters": true,
+          "returnType": "any",
+          "params": [
+            { "id": "name", "type": "string" }
+          ]
         }
       ]
     }
   },
   "Sprite": {
+    "properties": {
+      "expressions": [
+        { "id": "animationname", "expressionName": "AnimationName", "returnType": "string" },
+        {
+          "id": "imagepointx",
+          "expressionName": "ImagePointX",
+          "returnType": "number",
+          "params": [
+            { "id": "point", "type": "string" }
+          ]
+        }
+      ]
+    },
     "animations": {
       "conditions": [],
       "actions": [
