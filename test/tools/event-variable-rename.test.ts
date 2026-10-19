@@ -21,15 +21,57 @@ import { registerEventTools } from '../../src/tools/event-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
-// Several tests write nested sheets and a 10MB sheet; a loaded machine needs more than the default
-vi.setConfig({ testTimeout: 30_000 });
-
 let tmpDir: string;
 let reader: Construct3ProjectReader;
 let writer: Construct3ProjectWriter;
 let server: MockServer;
 
-type Json = Record<string, any>;
+/** A synthetic event, condition or action, with the keys the tests read. */
+interface Json {
+  [key: string]: unknown;
+  eventType?: string;
+  name?: string;
+  title?: string;
+  id?: string;
+  sid?: number;
+  conditions?: Json[];
+  actions?: Json[];
+  children?: Json[];
+  parameters?: Json | string[];
+}
+
+/** An event as read back from a sheet on disk, where the tests read blocks and their conditions and actions. */
+interface Ev {
+  eventType: string;
+  name?: string;
+  title?: string;
+  id?: string;
+  conditions: Ev[];
+  actions: Ev[];
+  children: Ev[];
+  parameters: Record<string, unknown>;
+}
+
+/** One use or one left use, as the tool lists it. */
+type Entry = Record<string, unknown>;
+
+/** What update_event_variable returns, parsed; an error result has its text in `text`. */
+interface Result {
+  success?: boolean;
+  action?: string;
+  dryRun?: boolean;
+  message: string;
+  isError: boolean;
+  text: string;
+  uses?: Entry[];
+  usesNotUpdated?: Entry[];
+  captured?: Entry[];
+  unscannedFiles?: Entry[];
+  sheetsWritten?: string[];
+  sheetsToWrite?: string[];
+  warnings: string[];
+  editorNote?: unknown;
+}
 
 // ─── Synthetic sheets ───
 
@@ -90,7 +132,7 @@ const sheetOf = (name: string, events: Json[]): Json => ({ name, events, sid: si
 // ─── Files ───
 
 const sheetFile = (name: string) => join(tmpDir, 'eventSheets', `${name}.json`);
-const readSheet = async (name: string): Promise<Json> => JSON.parse(await readFile(sheetFile(name), 'utf-8'));
+const readSheet = async (name: string): Promise<{ events: Ev[] }> => JSON.parse(await readFile(sheetFile(name), 'utf-8'));
 const writeSheet = (name: string, events: Json[]) => writeFile(sheetFile(name), JSON.stringify(sheetOf(name, events), null, '\t'));
 
 async function register(name: string): Promise<void> {
@@ -137,20 +179,30 @@ async function start(): Promise<void> {
 }
 
 /** The result of update_event_variable, parsed (an error result has its text in `text`). */
-async function update(args: Record<string, unknown>): Promise<Json> {
+async function update(args: Record<string, unknown>): Promise<Result> {
   const result = await server.callTool('update_event_variable', { sheetName: 'MainSheet', ...args });
-  let json: Json = {};
+  let json: Partial<Result> = {};
   try {
     json = JSON.parse(result.content[0].text);
   } catch {
     // an error result is plain text
   }
-  return { ...json, isError: result.isError === true, text: result.content[0].text };
+  return { message: '', warnings: [], ...json, isError: result.isError === true, text: result.content[0].text };
 }
 
-const eventsOf = (sheet: Json): Json[] => sheet.events;
-const named = (events: Json[], name: string): Json => events.find(e => e.eventType === 'variable' && e.name === name)!;
-const groupOf = (events: Json[], title: string): Json => events.find(e => e.eventType === 'group' && e.title === title)!;
+const eventsOf = (sheet: { events: Ev[] }): Ev[] => sheet.events;
+const named = (events: Ev[], name: string): Ev => events.find(e => e.eventType === 'variable' && e.name === name)!;
+const groupOf = (events: Ev[], title: string): Ev => events.find(e => e.eventType === 'group' && e.title === title)!;
+
+/** Add `event` to the children of the group `title` of freshly built events. */
+function pushIntoGroup(events: Json[], title: string, event: Json): void {
+  const found = events.find(e => e.eventType === 'group' && e.title === title);
+  if (!found?.children) throw new Error(`No group ${title}`);
+  found.children.push(event);
+}
+
+/** The sheets a MockReader stores, as it hands them out. */
+const storedSheets = (mock: MockReader): Map<string, unknown> => (mock as unknown as { eventSheets: Map<string, unknown> }).eventSheets;
 
 beforeEach(async () => {
   nextSid = 1000;
@@ -183,13 +235,13 @@ describe('update_event_variable renames the uses', () => {
     expect(first.actions[1].parameters).toEqual(['Points * 2']);
     expect(other[0].actions[0].parameters).toEqual(['Points']);
     expect(result.sheetsWritten).toEqual(['eventSheets/Other.json', 'eventSheets/MainSheet.json']);
-    expect((result.uses as Json[]).map(u => `${u.sheet}|${u.kind}|${u.parameter}|${u.value}`).sort()).toEqual([
+    expect(result.uses!.map(u => `${u.sheet}|${u.kind}|${u.parameter}|${u.value}`).sort()).toEqual([
       'MainSheet|event-variable|variable|Score',
       'MainSheet|event-variable|variable|score',
       'MainSheet|variable-expression|0|Score * 2',
       'Other|variable-expression|0|Score',
     ]);
-    for (const use of result.uses as Json[]) {
+    for (const use of result.uses!) {
       expect(typeof use.path).toBe('string');
       expect(typeof use.sid).toBe('number');
     }
@@ -201,7 +253,7 @@ describe('update_event_variable renames the uses', () => {
   it('renames a global and leaves a local that shadows it', async () => {
     await update({ sid: 1, newName: 'Points' });
     const main = eventsOf(await readSheet('MainSheet'));
-    const shadow = groupOf(main, 'Shadow').children as Json[];
+    const shadow = groupOf(main, 'Shadow').children;
     expect(shadow[0].name).toBe('Score');
     expect(shadow[1].actions[0].parameters.variable).toBe('Score');
     expect(main.find(e => e.eventType === 'block')!.actions[0].parameters.variable).toBe('Points');
@@ -212,11 +264,11 @@ describe('update_event_variable renames the uses', () => {
     const result = await update({ sid: 2, newName: 'Tally' });
     expect(result.success).toBe(true);
     const main = eventsOf(await readSheet('MainSheet'));
-    const a = groupOf(main, 'A').children as Json[];
+    const a = groupOf(main, 'A').children;
     expect(a[0].name).toBe('Tally');
     expect(a[1].actions[0].parameters.variable).toBe('Tally');
     expect(a[1].children[0].actions[0].parameters).toEqual(['Tally + 1']);
-    const b = groupOf(main, 'B').children as Json[];
+    const b = groupOf(main, 'B').children;
     expect(b[0].name).toBe('Count');
     expect(b[1].actions[0].parameters).toEqual(['count']);
     expect(result.sheetsWritten).toEqual(['eventSheets/MainSheet.json']);
@@ -238,7 +290,7 @@ describe('update_event_variable renames the uses', () => {
     const result = await update({ sid: 1, newName: 'Points', dryRun: true });
     expect(result.action).toBe('would_update');
     expect(result.dryRun).toBe(true);
-    expect((result.uses as Json[]).length).toBe(4);
+    expect(result.uses!.length).toBe(4);
     expect(result.sheetsToWrite).toEqual(['eventSheets/Other.json', 'eventSheets/MainSheet.json']);
     expect(result.editorNote).toBeUndefined();
     expect(await files()).toEqual(before);
@@ -249,7 +301,7 @@ describe('update_event_variable renames the uses', () => {
     const refused = await update({ sid: 5, newName: 'Hearts' });
     expect(refused.success).toBe(false);
     expect(refused.action).toBe('rename_blocked');
-    expect((refused.usesNotUpdated as Json[]).map(u => `${u.parameter ?? '-'}|${u.reason}`).sort()).toEqual(['-|script', 'text|parameter-type-unknown']);
+    expect(refused.usesNotUpdated!.map(u => `${u.parameter ?? '-'}|${u.reason}`).sort()).toEqual(['-|script', 'text|parameter-type-unknown']);
     expect(refused.message.endsWith('Nothing was changed.')).toBe(true);
     expect(await files()).toEqual(before);
 
@@ -265,13 +317,13 @@ describe('update_event_variable renames the uses', () => {
   it('never writes a group name or a combo choice spelled like a variable', async () => {
     const refused = await update({ sid: 6, newName: 'Prize' });
     expect(refused.action).toBe('rename_blocked');
-    expect((refused.usesNotUpdated as Json[]).map(u => `${u.parameter}|${u.reason}`)).toEqual(['group-name|parameter-type-unknown']);
+    expect(refused.usesNotUpdated!.map(u => `${u.parameter}|${u.reason}`)).toEqual(['group-name|parameter-type-unknown']);
     const forced = await update({ sid: 6, newName: 'Prize', force: true });
     expect(forced.success).toBe(true);
     const main = eventsOf(await readSheet('MainSheet'));
     expect(named(main, 'Prize')).toBeDefined();
-    const active = main.find(e => e.eventType === 'block')!.actions.find((a: Json) => a.id === 'set-group-active');
-    expect(active.parameters).toEqual({ 'group-name': 'Bonus', state: 'activated' });
+    const active = main.find(e => e.eventType === 'block')!.actions.find(a => a.id === 'set-group-active');
+    expect(active?.parameters).toEqual({ 'group-name': 'Bonus', state: 'activated' });
   });
 
   it('renames a variable with a non-ASCII name', async () => {
@@ -289,7 +341,7 @@ describe('update_event_variable renames the uses', () => {
     const before = await files();
     const refused = await update({ sid: 1, newName: 'Points' });
     expect(refused.action).toBe('rename_blocked');
-    expect((refused.usesNotUpdated as Json[]).map(u => `${u.sheet}|${u.reason}|${u.value}`)).toEqual(['Other|template-text|`T=${Score}`']);
+    expect(refused.usesNotUpdated!.map(u => `${u.sheet}|${u.reason}|${u.value}`)).toEqual(['Other|template-text|`T=${Score}`']);
     expect(await files()).toEqual(before);
     const forced = await update({ sid: 1, newName: 'Points', force: true });
     expect(forced.success).toBe(true);
@@ -303,7 +355,7 @@ describe('update_event_variable renames the uses', () => {
     const before = await files();
     const refused = await update({ sid: 1, newName: 'Points' });
     expect(refused.action).toBe('rename_blocked');
-    expect((refused.unscannedFiles as Json[]).map(u => `${u.file}|${u.textSearch}`)).toEqual(['eventSheets/Broken|possible-use']);
+    expect(refused.unscannedFiles!.map(u => `${u.file}|${u.textSearch}`)).toEqual(['eventSheets/Broken|possible-use']);
     expect(refused.message.endsWith('Nothing was changed.')).toBe(true);
     expect(await files()).toEqual(before);
 
@@ -337,7 +389,7 @@ describe('update_event_variable renames the uses', () => {
     expect(await files()).toEqual(before);
 
     const main = mainEvents();
-    (groupOf(main, 'A').children as Json[]).push(nest(60, block([], [setVar('Count')])));
+    pushIntoGroup(main, 'A', nest(60, block([], [setVar('Count')])));
     await writeSheet('MainSheet', main);
     const local = await update({ sid: 2, newName: 'Tally' });
     expect(local.action).toBe('rename_blocked');
@@ -413,7 +465,7 @@ describe('update_event_variable rolls a failed rename back', () => {
 /** The same sheets on the mocks, to check the objects a refusal must not touch. */
 function mockSetup(extra: (reader: MockReader) => void = () => {}) {
   const reader = new MockReader({
-    eventSheets: new Map<string, any>([
+    eventSheets: new Map<string, Record<string, unknown>>([
       ['MainSheet', sheetOf('MainSheet', mainEvents())],
       ['Other', sheetOf('Other', otherEvents())],
     ]),
@@ -429,7 +481,7 @@ describe('every refusal says Nothing was changed. and leaves every sheet as it w
     await register('Broken');
     await writeFile(sheetFile('Broken'), '{"name":"Broken","events":[{"x":"Score Count"} broken');
     const main = mainEvents();
-    (groupOf(main, 'A').children as Json[]).push(nest(60, block([], [setVar('Count')])));
+    pushIntoGroup(main, 'A', nest(60, block([], [setVar('Count')])));
     await writeSheet('MainSheet', main);
     await addSheet('Deep', [nest(60, block([], [setVar('Score')]))]);
     const before = await files();
@@ -466,18 +518,50 @@ describe('every refusal says Nothing was changed. and leaves every sheet as it w
       ['not updated', () => {}, { sid: 5, newName: 'Hearts', newType: 'string' }],
       ['unparsed sheet', r => r.registerUnreadableEntity('eventSheets', 'Broken', { code: 'E_INVALID_JSON', message: 'Unexpected token' }, '{"x":"Score"'),
         { sid: 1, newName: 'Points', newType: 'string' }],
-      ['limit', r => (r as any).eventSheets.set('Deep', deep), { sid: 1, newName: 'Points', newType: 'string' }],
+      ['limit', r => storedSheets(r).set('Deep', deep), { sid: 1, newName: 'Points', newType: 'string' }],
     ];
     for (const [label, extra, args] of cases) {
       const { reader: mock, mockServer } = mockSetup(extra);
-      const stored = (mock as any).eventSheets as Map<string, Json>;
+      const stored = storedSheets(mock);
       const snapshot = JSON.stringify([...stored]);
       const result = await mockServer.callTool('update_event_variable', { sheetName: 'MainSheet', ...args });
-      const parsed = JSON.parse(result.content[0].text);
+      const parsed: Result = JSON.parse(result.content[0].text);
       expect(parsed.action, label).toBe('rename_blocked');
       expect(parsed.message.endsWith('Nothing was changed.'), label).toBe(true);
       expect(JSON.stringify([...stored]), label).toBe(snapshot);
     }
+  });
+});
+
+describe('a dry run answers as the rename would', () => {
+  it('refuses with the same message and writes nothing when the rename would be refused', async () => {
+    const before = await files();
+    const real = await update({ sid: 5, newName: 'Hearts' });
+    const dry = await update({ sid: 5, newName: 'Hearts', dryRun: true });
+    expect(dry.success).toBe(false);
+    expect(dry.action).toBe('rename_blocked');
+    expect(dry.message).toBe(real.message);
+    expect(dry.message.endsWith('Nothing was changed.')).toBe(true);
+    expect(await files()).toEqual(before);
+
+    const forced = await update({ sid: 5, newName: 'Hearts', dryRun: true, force: true });
+    expect(forced.action).toBe('would_update');
+    expect(forced.warnings.some(w => w.includes('They still name "Lives"'))).toBe(true);
+    expect(await files()).toEqual(before);
+  });
+});
+
+describe('update_event_variable reads each sheet once per call', () => {
+  it('uses one read of every registered sheet for the name check, the uses and the writes', async () => {
+    const original = reader.readEventSheet.bind(reader);
+    const reads: string[] = [];
+    vi.spyOn(reader, 'readEventSheet').mockImplementation(async (name: string) => {
+      reads.push(name);
+      return original(name);
+    });
+    const result = await update({ sid: 1, newName: 'Points' });
+    expect(result.success).toBe(true);
+    expect([...reads].sort()).toEqual(['MainSheet', 'Other']);
   });
 });
 
@@ -511,7 +595,7 @@ describe('update_event_variable and a sheet it cannot read', () => {
     const before = await files();
     const global = await update({ sid: 1, newName: 'Points' });
     expect(global.action).toBe('rename_blocked');
-    expect((global.unscannedFiles as Json[]).map(u => `${u.file}|${u.textSearch}`)).toEqual(['eventSheets/Big|possible-use']);
+    expect(global.unscannedFiles!.map(u => `${u.file}|${u.textSearch}`)).toEqual(['eventSheets/Big|possible-use']);
     expect(global.message).toContain('declare a variable named "Points"');
     expect(global.message.endsWith('Nothing was changed.')).toBe(true);
     expect(await files()).toEqual(before);
@@ -528,7 +612,7 @@ describe('update_event_variable and names the expression reader would take for n
   it('does not rewrite call arguments to a new name that starts with a digit', async () => {
     const refused = await update({ sid: 1, newName: '2x' });
     expect(refused.action).toBe('rename_blocked');
-    expect((refused.usesNotUpdated as Json[]).map(u => `${u.sheet}|${u.value}|${u.reason}`).sort()).toEqual([
+    expect(refused.usesNotUpdated!.map(u => `${u.sheet}|${u.value}|${u.reason}`).sort()).toEqual([
       'MainSheet|Score * 2|number-like-new-name',
       'Other|Score|number-like-new-name',
     ]);
@@ -546,13 +630,13 @@ describe('update_event_variable and names the expression reader would take for n
   it('never writes a combo choice spelled like the variable it renames', async () => {
     const refused = await update({ sid: 8, newName: 'on1' });
     expect(refused.action).toBe('rename_blocked');
-    expect((refused.usesNotUpdated as Json[]).map(u => `${u.parameter}|${u.reason}`)).toEqual(['state|parameter-type-unknown']);
+    expect(refused.usesNotUpdated!.map(u => `${u.parameter}|${u.reason}`)).toEqual(['state|parameter-type-unknown']);
     const forced = await update({ sid: 8, newName: 'on1', force: true });
     expect(forced.success).toBe(true);
     const main = eventsOf(await readSheet('MainSheet'));
     expect(named(main, 'on1')).toBeDefined();
-    const active = main.find(e => e.eventType === 'block')!.actions.find((a: Json) => a.id === 'set-group-active');
-    expect(active.parameters).toEqual({ 'group-name': 'Bonus', state: 'activated' });
+    const active = main.find(e => e.eventType === 'block')!.actions.find(a => a.id === 'set-group-active');
+    expect(active?.parameters).toEqual({ 'group-name': 'Bonus', state: 'activated' });
   });
 });
 
