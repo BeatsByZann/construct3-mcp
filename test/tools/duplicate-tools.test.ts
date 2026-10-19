@@ -23,7 +23,7 @@ type Args = Record<string, unknown>;
 type Obj = Record<string, unknown>;
 
 interface Folder { name?: string; items: unknown[]; subfolders: Folder[] }
-interface ProjectFile { layouts: Folder; eventSheets: Folder; objectTypes: Folder; [key: string]: unknown }
+interface ProjectFile { layouts: Folder; eventSheets: Folder; objectTypes: Folder; timelines: Folder; [key: string]: unknown }
 interface InstanceJson {
   type: string;
   uid: number;
@@ -940,6 +940,190 @@ describe('duplicate_object_type', () => {
     const registered = treeFiles((await project()).objectTypes, 'objectTypes');
     expect(registered).toContain('objectTypes/Actors/Hero.json');
     for (const file of registered) expect(existsSync(path(...file.split('/'))), file).toBe(true);
+  });
+});
+
+describe('duplicate_timeline', () => {
+  /** Change the timelines tree of project.c3proj and reload it. */
+  async function editTimelines(change: (tree: Folder) => void): Promise<void> {
+    const registered = await project();
+    change(registered.timelines);
+    await writeJson(['project.c3proj'], registered);
+    await reader.reloadProject();
+  }
+
+  /** A nameless first-level folder holding the custom ease Ease1, as the editor writes it. */
+  const addEase = () => editTimelines(tree => { tree.subfolders.unshift({ items: ['Ease1'], subfolders: [] }); });
+
+  it('copies a timeline under a new name next to the source, in the style of the project', async () => {
+    const source = await readJson<Obj>('timelines', 'Intro.json');
+    const data = await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' });
+    expect(data.isError).not.toBe(true);
+    expect(data).toMatchObject({ success: true, entity: 'Copy', category: 'timeline', action: 'duplicated', source: 'Intro' });
+    expect(data.tracks).toBe((source.tracks as unknown[]).length);
+    expect(warningsOf(data)).toContain('animates the same instances');
+    expect(data.backupFile).toContain('project.c3proj');
+    const copy = await readJson<Obj>('timelines', 'Copy.json');
+    expect(copy.name).toBe('Copy');
+    expect(copy.tracks).toEqual(source.tracks);
+    expect({ ...copy, name: 'Intro' }).toEqual(source);
+    expect(Object.keys(copy)).toEqual(Object.keys(source));
+    expect((await project()).timelines.items).toEqual(['Intro', 'Copy']);
+  });
+
+  it('writes the copy in the style of the project, whatever the BOM and line endings of the source', async () => {
+    const projectText = await text('project.c3proj');
+    expect(projectText).toContain('\r\n');
+    const sourceText = await text('timelines', 'Intro.json');
+    const source = JSON.parse(sourceText) as Obj;
+
+    await writeFile(path('timelines', 'Intro.json'), '﻿' + sourceText.replace(/\r\n/g, '\n'));
+    expect((await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' })).isError).not.toBe(true);
+    const crlfCopy = await text('timelines', 'Copy.json');
+    expect(crlfCopy.charCodeAt(0)).not.toBe(0xfeff);
+    expect(crlfCopy.replace(/\r\n/g, '')).not.toContain('\n');
+    expect(crlfCopy).toContain('\r\n');
+    expect(JSON.parse(crlfCopy)).toEqual({ ...source, name: 'Copy' });
+
+    await writeFile(path('project.c3proj'), projectText.replace(/\r\n/g, '\n'));
+    await writeFile(path('timelines', 'Intro.json'), '﻿' + sourceText.replace(/\r?\n/g, '\r\n'));
+    await reader.reloadProject();
+    expect((await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy 2' })).isError).not.toBe(true);
+    const lfCopy = await text('timelines', 'Copy 2.json');
+    expect(lfCopy.charCodeAt(0)).not.toBe(0xfeff);
+    expect(lfCopy).not.toContain('\r');
+    expect(JSON.parse(lfCopy)).toEqual({ ...source, name: 'Copy 2' });
+  });
+
+  it('gives no warning for a timeline without tracks', async () => {
+    const source = await readJson<Obj>('timelines', 'Intro.json');
+    await writeJson(['timelines', 'Intro.json'], { ...source, tracks: [] });
+    const data = await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' });
+    expect(data.isError).not.toBe(true);
+    expect(data.tracks).toBe(0);
+    expect(data.warnings).toBeUndefined();
+  });
+
+  it('refuses a custom ease', async () => {
+    await addEase();
+    await refusal('duplicate_timeline', { timelineName: 'Ease1', newName: 'Copy' }, '"Ease1" is a custom ease, not a timeline');
+  });
+
+  it('refuses a timeline that is not at the root of the timelines tree, naming the folder', async () => {
+    await editTimelines(tree => {
+      tree.subfolders.push({ name: 'Cutscenes', items: ['Cut 1'], subfolders: [] });
+    });
+    await refusal('duplicate_timeline', { timelineName: 'Cut 1', newName: 'Copy' },
+      'Timeline "Cut 1" is in folder "Cutscenes"; only timelines at the root can be duplicated.');
+    await refusal('duplicate_timeline', { timelineName: 'Swipe', newName: 'Copy' }, 'is in folder "transitions"');
+    await addEase();
+    await editTimelines(tree => { tree.subfolders.push({ items: ['Odd'], subfolders: [] }); });
+    await refusal('duplicate_timeline', { timelineName: 'Odd', newName: 'Copy' },
+      'Timeline "Odd" is in an unnamed folder; only timelines at the root can be duplicated.');
+  });
+
+  it('refuses a project without a timelines tree', async () => {
+    const registered = await project();
+    Reflect.deleteProperty(registered, 'timelines');
+    await writeJson(['project.c3proj'], registered);
+    await reader.reloadProject();
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'project.c3proj has no timelines tree.');
+  });
+
+  it('refuses a name a timeline or transition uses, an unknown timeline, a case-variant source and a name that cannot be used', async () => {
+    await addEase();
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'intro' }, '"Intro" is already a timeline or transition name');
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'swipe' }, '"Swipe" is already a timeline or transition name');
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'ease1' }, '"Ease1" is already a timeline or transition name');
+    await refusal('duplicate_timeline', { timelineName: 'intro', newName: 'Copy' }, 'names are matched with their letter case', 'Did you mean "Intro"?');
+    await refusal('duplicate_timeline', { timelineName: 'Nope', newName: 'Copy' }, 'Timeline "Nope" not found.');
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'bad/name' }, 'Name must start with a letter or underscore');
+  });
+
+  it('refuses a timeline file that cannot be read or parsed, without a path', async () => {
+    await writeFile(path('timelines', 'Intro.json'), '{ broken');
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'Timeline "Intro" could not be read (not valid JSON).');
+    await rm(path('timelines', 'Intro.json'));
+    await mkdir(path('timelines', 'Intro.json'));
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'Timeline "Intro" could not be read (could not be read).');
+    await rm(path('timelines', 'Intro.json'), { recursive: true });
+    await writeFile(path('timelines', 'Intro.json'), '[]');
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'Timeline "Intro" could not be read (not a JSON object).');
+  });
+
+  it('refuses a copy larger than the writer allows before anything is written', async () => {
+    const source = await readJson<Obj>('timelines', 'Intro.json');
+    await writeJson(['timelines', 'Intro.json'], { ...source, padding: 'x'.repeat(5.5 * 1024 * 1024) });
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'Generated JSON for "Copy" is too large');
+  });
+
+  it('says Nothing was changed. when a step before the write throws unexpectedly, without a path', async () => {
+    const failure = Object.assign(new Error(`EACCES: permission denied, scandir '${path('timelines')}'`), { code: 'EACCES', path: path('timelines') });
+    // The first call is the reader's own, while it reads the source; the second is the tool's, for the target path
+    const projectDir = reader.getProjectDir.bind(reader);
+    vi.spyOn(reader, 'getProjectDir').mockImplementationOnce(projectDir).mockImplementationOnce(() => { throw failure; });
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'Error duplicating timeline: EACCES on timelines. Nothing was changed.');
+  });
+
+  it('removes the new file when the registration fails, rolling back once', async () => {
+    const undoToolCall = vi.spyOn(writer, 'undoToolCall');
+    vi.spyOn(writer, 'updateProject').mockRejectedValueOnce(new Error('boom'));
+    const before = await snapshotProject();
+    const data = await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe('boom. The call was rolled back: timelines/Copy.json (removed: the call had created it) is as before the call.');
+    expect(await snapshotProject()).toEqual(before);
+    expect(undoToolCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('says the writes could not be undone, naming the files, when the rollback itself fails', async () => {
+    vi.spyOn(writer, 'updateProject').mockRejectedValueOnce(new Error('boom'));
+    const failure = Object.assign(new Error(`EACCES: permission denied, open '${path('project.c3proj')}'`), { code: 'EACCES', path: path('project.c3proj') });
+    vi.spyOn(writer, 'undoToolCall').mockRejectedValueOnce(failure);
+    const data = await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain("boom. The call's writes could not be undone (EACCES on project.c3proj)");
+    expect(data.text).toContain('timelines/Copy.json');
+    expect(data.text).not.toContain('Nothing was changed');
+    expect(data.text).not.toContain(tmpDir);
+  });
+
+  it('refuses a timeline file that exists unregistered under the new name, in any letter case, before any write', async () => {
+    await writeFile(path('timelines', 'Copy.json'), '{"keep":1}');
+    const writes = vi.spyOn(writer, 'replaceFile');
+    const updates = vi.spyOn(writer, 'updateProject');
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' },
+      'timelines/Copy.json already exists and is not registered; move or delete it first. Nothing was changed.');
+    expect(await text('timelines', 'Copy.json')).toBe('{"keep":1}');
+    await rm(path('timelines', 'Copy.json'));
+    await writeFile(path('timelines', 'copy.json'), '{"keep":2}');
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' },
+      'timelines/copy.json already exists and is not registered; move or delete it first. Nothing was changed.');
+    expect(await text('timelines', 'copy.json')).toBe('{"keep":2}');
+    expect(writes).not.toHaveBeenCalled();
+    expect(updates).not.toHaveBeenCalled();
+  });
+
+  it('leaves a file that appears at the target after that check as it is, and registers nothing', async () => {
+    const replaceFile = writer.replaceFile.bind(writer);
+    vi.spyOn(writer, 'replaceFile').mockImplementationOnce(async (file, content, options) => {
+      await writeFile(file, '{"planted":true}');
+      return replaceFile(file, content, options);
+    });
+    const updates = vi.spyOn(writer, 'updateProject');
+    const before = await snapshotProject();
+    const data = await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toMatch(/Nothing was changed\.$/);
+    expect(data.text).not.toMatch(/already exists and is not registered; move or delete/);
+    expect(data.text).not.toContain(tmpDir);
+    expect(await text('timelines', 'Copy.json')).toBe('{"planted":true}');
+    expect(updates).not.toHaveBeenCalled();
+    expect((await project()).timelines.items).toEqual(['Intro']);
+    const after = await snapshotProject();
+    after.delete('timelines/Copy.json');
+    before.delete('timelines/Copy.json');
+    expect(after).toEqual(before);
   });
 });
 

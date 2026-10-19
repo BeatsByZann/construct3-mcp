@@ -1,6 +1,6 @@
 /**
- * Duplicate tools: duplicate_layout, duplicate_layer, duplicate_event_sheet
- * and duplicate_object_type.
+ * Duplicate tools: duplicate_layout, duplicate_layer, duplicate_event_sheet,
+ * duplicate_object_type and duplicate_timeline.
  *
  * A copy gets fresh IDs: every SID in it is new, a layout copy's instances get
  * UIDs above the project maximum, and the hierarchy links inside the copy
@@ -29,7 +29,8 @@ import { findNameClash, nameKey } from '../construct3/names.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { classifyReadError } from '../construct3/project-reader.js';
 import { describeReadFailure, unscannedFilesOf } from '../construct3/analyzers/unscanned-uses.js';
-import { allTreeNames, isTree, registerAfterInTree } from '../construct3/project-tree.js';
+import { allTreeNames, isTree, locateInTree, registerAfterInTree } from '../construct3/project-tree.js';
+import { transitionsFolderIndex } from '../construct3/timeline-folders.js';
 import {
   hierarchyEscapes, planImageCopies, remapAllSids, remapImageSpriteIds, remapInstanceUids, sidRemapper, templateInstances,
 } from '../construct3/entity-copies.js';
@@ -76,8 +77,15 @@ async function createEntityCopy(
   writer: Writer, reader: Reader, side: RenameSideWrites, category: RenamedCategory,
   name: string, subfolder: string | undefined, data: unknown,
 ): Promise<void> {
-  const json = writer.validateJsonData(data, name);
   const path = resolveProjectPath(reader.getProjectDir(), ...entityFileSegments(category, subfolder, name));
+  await createJsonCopyFile(writer, reader, side, path, name, data);
+}
+
+/** Create the JSON file of a copy at `path` as a file of the call: checked by the writer, in the project's text style. */
+async function createJsonCopyFile(
+  writer: Writer, reader: Reader, side: RenameSideWrites, path: string, name: string, data: unknown,
+): Promise<void> {
+  const json = writer.validateJsonData(data, name);
   const style = await resolveJsonTextStyle(path, reader.getProjectPath(), dirname(path));
   await createFileForCall(writer, side, path, applyJsonTextStyle(json, style));
 }
@@ -243,7 +251,7 @@ async function readCopySource(path: string, label: string, optional = false): Pr
   }
 }
 
-/** Register the layout, layer, event sheet and object type duplicate tools. */
+/** Register the layout, layer, event sheet, object type and timeline duplicate tools. */
 export function registerDuplicateTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps): void {
   const server = withProjectSync(mcpServer, reader);
   const newNameSchema = z.string().max(200).describe('Name for the copy');
@@ -709,6 +717,91 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         console.error('[duplicate_object_type] failed:', error);
         // Only the steps before the first write can throw out of the inner blocks; the copy's write and its rollback are inside them
         return refuse(`Error duplicating object type: ${reasonOf(error, path => writer.projectRelative(path))}`);
+      }
+    },
+  );
+
+  // ─── duplicate_timeline ───────────────────────────────
+
+  server.registerTool(
+    'duplicate_timeline',
+    {
+      description: 'Duplicate a timeline under a new name, registered next to the source. The copy animates the same instances (tracks address instances by UID). '
+        + 'The timeline name is matched as registered. Only timelines at the root of the timelines list can be copied: custom eases (the unnamed Transitions folder) are not timelines, '
+        + 'and a timeline inside a folder is refused. A name another timeline or transition uses, ignoring case, is refused. A failure puts back what the call wrote.',
+      inputSchema: {
+        timelineName: z.string().max(200).describe('Timeline to copy (as registered, at the root of the timelines list)'),
+        newName: newNameSchema,
+      },
+    },
+    async (args) => {
+      try {
+        try {
+          validateName(args.newName);
+        } catch (error) {
+          return refuse(error instanceof Error ? error.message : String(error));
+        }
+        const root: unknown = reader.getProject().timelines;
+        if (!isTree(root)) return refuse('project.c3proj has no timelines tree.');
+        const registered = allTreeNames(root, true);
+        const missing = unregisteredNameMessage('Timeline', args.timelineName, registered,
+          () => root.items.filter((item): item is string => typeof item === 'string').slice(0, 10), 'list_timelines');
+        if (missing !== undefined) return refuse(missing);
+        const easeFolder = root.subfolders[transitionsFolderIndex(root)];
+        if (isTree(easeFolder) && allTreeNames(easeFolder, true).includes(args.timelineName)) {
+          return refuse(`"${args.timelineName}" is a custom ease, not a timeline; eases cannot be duplicated with this tool.`);
+        }
+        const place = locateInTree(root, args.timelineName)[0];
+        if (place?.folder !== root) {
+          return refuse(`Timeline "${args.timelineName}" is ${place === undefined ? 'in an unnamed folder' : `in folder "${place.path}"`}; only timelines at the root can be duplicated.`);
+        }
+        const clash = findNameClash(args.newName, registered);
+        if (clash !== undefined) {
+          return refuse(`"${clash}" is already a timeline or transition name. Timeline names are compared without case because they are file names.`);
+        }
+
+        let copy: Json;
+        try {
+          const parsed: unknown = parseJsonText(await reader.readDataFileText('timelines', `${args.timelineName}.json`));
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return refuse(`Timeline "${args.timelineName}" could not be read (not a JSON object).`);
+          }
+          copy = parsed as Json;
+        } catch (error) {
+          return refuse(`Timeline "${args.timelineName}" could not be read (${describeReadFailure(classifyReadError(error))}).`);
+        }
+        copy.name = args.newName;
+
+        const targetPath = resolveProjectPath(reader.getProjectDir(), 'timelines', `${args.newName}.json`);
+        const taken = await findFileIgnoringCase(targetPath);
+        if (taken !== undefined) {
+          return refuse(`${writer.projectRelative(taken)} already exists and is not registered; move or delete it first.`);
+        }
+
+        const side = newSideWrites();
+        let backupPath: string | undefined;
+        try {
+          backupPath = await writeAndRegisterCopy(writer, 'timelines', args.timelineName, args.newName,
+            () => createJsonCopyFile(writer, reader, side, targetPath, args.newName, copy));
+        } catch (error) {
+          return toolError(await rollBackCopy(writer, reader, error, side, 'timelines', args.newName));
+        }
+
+        const tracks = Array.isArray(copy.tracks) ? copy.tracks.length : 0;
+        return toolResult({
+          success: true,
+          entity: args.newName,
+          category: 'timeline',
+          action: 'duplicated',
+          source: args.timelineName,
+          tracks,
+          warnings: tracks > 0 ? ['The copy animates the same instances as the source; playing both at once makes them compete.'] : undefined,
+          backupFile: backupPath === undefined ? undefined : writer.projectRelative(backupPath),
+        });
+      } catch (error) {
+        console.error('[duplicate_timeline] failed:', error);
+        // Only the steps before the first write can throw out of the inner blocks; the copy's write and its rollback are inside them
+        return refuse(`Error duplicating timeline: ${reasonOf(error, path => writer.projectRelative(path))}`);
       }
     },
   );
