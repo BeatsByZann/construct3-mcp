@@ -107,14 +107,11 @@ export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineT
       if (!Array.isArray(container.subfolders)) container.subfolders = [];
       if (add) {
         const folder = ensureTransitionsFolder(container);
-        if (folder.items.includes(name)) return false;
-        folder.items.push(name);
-        return true;
+        if (!folder.items.includes(name)) folder.items.push(name);
+        return;
       }
       const folder = transitionsFolder(container);
-      if (!folder || !folder.items.includes(name)) return false;
-      folder.items = folder.items.filter(item => item !== name);
-      return true;
+      if (folder) folder.items = folder.items.filter(item => item !== name);
     });
   }
 
@@ -149,8 +146,8 @@ export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineT
 
   /**
    * Event sheets whose ACE `ease` parameters name `name`, as a bare string or
-   * as the object Construct saves for a custom ease. Each sheet is a private
-   * copy, so editing it for a write never changes the reader's cached sheet.
+   * as the object Construct saves for a custom ease. Each call reads
+   * the sheets afresh, so editing one for a write changes only this call's copy.
    */
   async function eventSheetUsers(name: string): Promise<{ sheets: EventSheetUse[]; unreadable: string[] }> {
     const sheets: EventSheetUse[] = [];
@@ -158,7 +155,7 @@ export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineT
     for (const sheet of await reader.listEventSheets()) {
       let data: unknown;
       try {
-        data = structuredClone(await reader.readEventSheet(sheet));
+        data = await reader.readEventSheet(sheet);
       } catch {
         unreadable.push(sheet);
         continue;

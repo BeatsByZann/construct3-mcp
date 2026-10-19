@@ -605,6 +605,50 @@ describe('custom eases (real project on disk)', () => {
       expect(await snapshot()).toEqual(before);
     });
 
+    it('delete_ease refuses while a script or an event sheet cannot be read, and deletes when forced', async () => {
+      await ok('create_ease', { name: 'Bouncy', points: POINTS });
+      // A registered script whose file is missing cannot be searched for the name
+      await editProject(project => {
+        project.rootFileFolders.script!.items.push({ name: 'gone.js', type: 'application/javascript', sid: 700000000000008, 'script-info': { purpose: 'import' } });
+      });
+      await boot();
+      const before = await snapshot();
+
+      await fails('delete_ease', { name: 'Bouncy' }, 'script "scripts/gone.js" could not be read');
+      expect(await snapshot()).toEqual(before);
+
+      const readEventSheet = reader.readEventSheet.bind(reader);
+      vi.spyOn(reader, 'readEventSheet').mockImplementation(async (name: string) => {
+        if (name === 'Second') throw new Error(`EACCES: permission denied, open '${file('eventSheets/Second.json')}'`);
+        return readEventSheet(name);
+      });
+      const refused = await call('delete_ease', { name: 'Bouncy' });
+      expect(refused.content[0].text).toContain('event sheet "Second", script "scripts/gone.js" could not be read');
+      expect(slashed(refused.content[0].text)).not.toContain(slashed(tmpDir));
+      expect(await snapshot()).toEqual(before);
+
+      const forced = await ok('delete_ease', { name: 'Bouncy', force: true });
+      expect((forced.warnings as string[]).join(' ')).toContain('Deleted with force although');
+      expect(existsSync(file('timelines/transitions/Bouncy.json'))).toBe(false);
+    });
+
+    it('reports a registered ease whose file is missing', async () => {
+      await ok('create_ease', { name: 'Bouncy', points: POINTS });
+      await rm(file('timelines/transitions/Bouncy.json'));
+      await boot();
+      const before = await snapshot();
+
+      await fails('update_ease', { name: 'Bouncy', linear: true }, 'could not be read (ENOENT)');
+      const listed = await ok('list_eases', {});
+      expect(String((listed.eases as Json[])[0].error)).toContain('could not be read: ENOENT');
+
+      const deleted = await ok('delete_ease', { name: 'Bouncy' });
+      expect(deleted.action).toBe('deleted');
+      expect(Object.keys(deleted)).not.toContain('backupFile');
+      expect((await projectJson()).timelines.subfolders[0].items).toEqual([]);
+      expect(Object.keys(before)).not.toContain('timelines/transitions/Bouncy.json');
+    });
+
     it('update_ease puts back an error thrown after a confirmed write', async () => {
       await setupUsed();
       const before = await snapshot();
@@ -775,8 +819,10 @@ describe('custom eases (real project on disk)', () => {
         return readEventSheet(name);
       });
 
-      await fails('update_ease', { name: 'Bouncy', linear: true }, 'event sheet "Second"');
       const refused = await call('update_ease', { name: 'Bouncy', linear: true });
+      expect(refused.isError).toBe(true);
+      expect(refused.content[0].text).toContain('event sheet "Second"');
+      expect(refused.content[0].text).toMatch(/Nothing was changed\.$/);
       expect(slashed(refused.content[0].text)).not.toContain(slashed(tmpDir));
       expect(replaces).toEqual([]);
       expect(entityWrites).not.toHaveBeenCalled();
