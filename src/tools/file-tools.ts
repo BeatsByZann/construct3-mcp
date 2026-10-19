@@ -17,6 +17,7 @@ import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { StaleFileError } from '../construct3/disk-state.js';
 import { filesLeftClause } from '../construct3/project-writer.js';
 import { nameKey } from '../construct3/names.js';
+import { BRIDGE_FILENAME } from './runtime-tools.js';
 import type { Construct3Project } from '../construct3/types.js';
 import {
   applyMainScript, applyRegistration, entryPurpose, findEntryNameClash, findFileEntry, findSubfolderClash,
@@ -313,6 +314,7 @@ async function readSourceFile(sourcePath: string): Promise<{ bytes: Buffer } | {
 const purposeField = z.string().min(1).max(100);
 const subfolderField = z.string().min(1).max(500);
 
+/** Register register_script_file, deregister_script_file and set_main_script. */
 export function registerFileTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
   const server = withProjectSync(mcpServer, reader);
 
@@ -339,7 +341,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
         });
         return toolResult(registrationResult(outcome, { entity: args.name, category: 'script-file', subfolder: args.subfolder }), { projectWritten: written });
       } catch (error) {
-        console.error('[register_script_file] failed:', error);
+        if (!(error instanceof Refusal)) console.error('[register_script_file] failed:', error);
         return toolError(await failureText(writer, 'Error registering script file', error));
       }
     },
@@ -363,7 +365,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
         if (backup === undefined) return refuse(`Script file "${args.name}" is no longer registered: project.c3proj changed on disk while this call ran`);
         return toolResult({ success: true, entity: args.name, category: 'script-file', action: 'deregistered', subfolder: args.subfolder });
       } catch (error) {
-        console.error('[deregister_script_file] failed:', error);
+        if (!(error instanceof Refusal)) console.error('[deregister_script_file] failed:', error);
         return toolError(await failureText(writer, 'Error deregistering script file', error));
       }
     },
@@ -397,6 +399,11 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
           return refuse(`Script "${args.name}" is registered in more than one script subfolder (${chosen.map(label).join(', ')}). Pass subfolder to choose one`);
         }
         const target = chosen[0];
+        // Construct loads only the main script, and the runtime bridge is the main script when no other is: moving "main" away would stop it loading
+        const bridge = scripts.find(located => located.entry.name === BRIDGE_FILENAME && entryPurpose(located.entry) === 'main' && located !== target);
+        if (bridge) {
+          return refuse(`"${label(bridge)}" is the current main script, which is how the runtime bridge loads; making "${label(target)}" the main script would stop the bridge loading. Call remove_runtime_bridge first, then set_main_script again`);
+        }
 
         const seen: { changed: string[] } = { changed: [] };
         await writer.updateProject(project => {
@@ -418,7 +425,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
             : [`"${args.name}" was already the main script.`],
         }, { projectWritten: seen.changed.length > 0 });
       } catch (error) {
-        console.error('[set_main_script] failed:', error);
+        if (!(error instanceof Refusal)) console.error('[set_main_script] failed:', error);
         return toolError(await failureText(writer, 'Error setting the main script', error));
       }
     },

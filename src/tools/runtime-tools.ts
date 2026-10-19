@@ -182,7 +182,8 @@ const inputActionSchema = z.discriminatedUnion('type', [
   }
 });
 
-const BRIDGE_FILENAME = 'c3-runtime-bridge.js';
+/** The file name of the runtime bridge script in the project's script folder. */
+export const BRIDGE_FILENAME ='c3-runtime-bridge.js';
 
 interface RuntimeToolDeps {
   server: McpServer;

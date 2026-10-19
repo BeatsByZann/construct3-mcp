@@ -13,7 +13,7 @@ import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.
 import { EDITOR_RELOAD_NOTE } from '../../src/tools/shared.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
-const BOM = '﻿';
+const BOM = String.fromCharCode(0xfeff);
 
 interface Entry {
   name: string;
@@ -167,6 +167,7 @@ describe('script file tools', () => {
     const vanished = await callError('deregister_script_file', { name: 'gone.js' });
     expect(vanished.isError).toBe(true);
     expect(vanished.text).toContain('is no longer registered');
+    nothingChanged(vanished.text);
   });
 
   it('S3 repairs an older registration: key and duplicates', async () => {
@@ -448,6 +449,59 @@ describe('script file tools', () => {
     nothingChanged(result.text);
     expect((await projectBytes()).equals(left as Buffer)).toBe(true);
     expect(await scriptItems()).toHaveLength(1);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('S16b refuses inside the update a subfolder variant saved during the call', async () => {
+    let left: Buffer | undefined;
+    beforeNextProjectUpdate(async () => {
+      await saveInEditor(project => { project.rootFileFolders.script.subfolders = [sub('Embedded', [script('other.js', 777)])]; });
+      left = await projectBytes();
+    });
+    const result = await callError('register_script_file', { name: 'host.js', subfolder: 'embedded' });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('differs only in case from the existing project-bar folder path "Embedded"');
+    nothingChanged(result.text);
+    expect((await projectBytes()).equals(left as Buffer)).toBe(true);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('S18 refuses set_main_script while the runtime bridge is the main script', async () => {
+    await seedScripts({ items: [script('c3-runtime-bridge.js', 1, 'main'), script('x.js', 2)], subfolders: [] });
+    const before = await projectBytes();
+    const spy = vi.spyOn(writer, 'updateProject');
+    const result = await callError('set_main_script', { name: 'x.js' });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('stop the bridge loading');
+    expect(result.text).toContain('remove_runtime_bridge');
+    nothingChanged(result.text);
+    expect(spy).not.toHaveBeenCalled();
+    expect((await projectBytes()).equals(before)).toBe(true);
+    // The bridge itself may be made main again (it is the target)
+    const same = await call('set_main_script', { name: 'c3-runtime-bridge.js' });
+    expect(same.action).toBe('unchanged');
+  });
+
+  it('registers and deregisters one of two scripts of one name in different folders', async () => {
+    await seedScripts({ items: [script('dup.js', 1)], subfolders: [sub('a', [script('dup.js', 2)])] });
+    const before = await projectBytes();
+    const registered = await call('register_script_file', { name: 'dup.js', subfolder: 'a' });
+    expect(registered.generatedSid).toBe(2);
+    expect((await projectBytes()).equals(before)).toBe(true);
+    await call('deregister_script_file', { name: 'dup.js' });
+    const root = (await projectJson()).rootFileFolders.script;
+    expect(root.items).toEqual([]);
+    expect(root.subfolders[0].items.map(item => item.sid)).toEqual([2]);
+  });
+
+  it('names (none) when set_main_script finds no registered scripts, and a case variant in the chosen folder', async () => {
+    const none = await callError('set_main_script', { name: 'x.js' });
+    expect(none.text).toContain('Registered scripts: (none)');
+    await seedScripts({ items: [script('x.js', 1)], subfolders: [sub('a', [script('Y.js', 2)])] });
+    const variant = await callError('set_main_script', { name: 'y.js', subfolder: 'a' });
+    expect(variant.text).toContain('"a/Y.js" is');
+    const elsewhere = await callError('set_main_script', { name: 'y.js', subfolder: 'b' });
+    expect(elsewhere.text).toContain('is not registered in this project');
   });
 
   it('S17 refuses inside the update a second main script made during the call', async () => {
@@ -465,5 +519,6 @@ describe('script file tools', () => {
     expect((await projectBytes()).equals(left as Buffer)).toBe(true);
     const items = await scriptItems();
     expect(items.map(item => [item.name, item['script-info']?.purpose])).toEqual([['other.js', 'none'], ['main.js', 'main']]);
+    expect(consoleError).not.toHaveBeenCalled();
   });
 });
