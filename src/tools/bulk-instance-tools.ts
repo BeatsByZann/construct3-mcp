@@ -15,9 +15,13 @@ import type { Layout } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError } from './shared.js';
 import { mergeUnscannedReports, unscannedFields, type UnscannedFileReport } from '../construct3/analyzers/unscanned-uses.js';
 import { readFamiliesForInstances } from '../construct3/instance-behaviors.js';
+import { hierarchyUnlinkWarnings, unlinkRemovedInstances } from '../construct3/hierarchy.js';
 import {
+  describeInstancePlace,
   instanceOperations,
+  isEmptyInstanceUpdate,
   placeInstanceShape,
+  updateInstanceShape,
   type FamiliesForInstances,
   type PlacementType,
 } from './layout-tools.js';
@@ -202,6 +206,79 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
       } catch (error) {
         // The write's failures are answered in finishBulk: what reaches here was thrown before anything was written
         console.error('[add_instances_to_layout] failed:', error);
+        return toolError(stoppedBeforeWrite(error));
+      }
+    }
+  );
+
+  // ─── update_instances ─────────────────────────────────────
+
+  server.tool(
+    'update_instances',
+    `Update many placed instances of one layout in one call: each item takes a uid and update_instance's other arguments, and is applied as that tool applies it, in list order (two items for one UID apply one after the other). Every item is checked and applied in memory first; if one is refused, nothing is changed and the message names the item by its 0-based index. Otherwise the layout file is written once; a failed write is rolled back, and the error names any file that could not safely be put back. Up to ${MAX_BULK_INSTANCES} items.`,
+    {
+      layoutName: z.string().max(200).describe('Layout name (as registered, in that letter case)'),
+      updates: z.array(z.object(updateInstanceShape)).min(1).max(MAX_BULK_INSTANCES)
+        .describe('Updates to apply, in order; each is an update_instance call without layoutName'),
+      dryRun: bulkDryRun,
+    },
+    async (args) => {
+      try {
+        const read = await readRegisteredLayout(reader, args.layoutName);
+        if ('refusal' in read) return toolError(read.refusal);
+        const { layout } = read;
+
+        // Every check of an item, its arguments' included, runs at its turn: the first refused item is the one named
+        const applied = await applyItems(args.updates, async (item, index) => {
+          if (isEmptyInstanceUpdate(item)) return { error: 'No updates provided. Specify at least one property to update.' };
+          const updated = await ops.updateInstanceInLayout(layout, args.layoutName, item);
+          if ('error' in updated) return updated;
+          return { index, uid: item.uid, ...updated };
+        });
+        if ('refusal' in applied) return toolError(applied.refusal);
+        return await finishBulk(args.layoutName, layout, args.dryRun,
+          applied.done.map(u => ({ index: u.index, uid: u.uid })), itemWarnings(applied.done), applied.done.flatMap(u => u.unscanned));
+      } catch (error) {
+        console.error('[update_instances] failed:', error);
+        return toolError(stoppedBeforeWrite(error));
+      }
+    }
+  );
+
+  // ─── delete_instances_from_layout ─────────────────────────
+
+  server.tool(
+    'delete_instances_from_layout',
+    `Remove many placed instances of one layout by UID in one call, as delete_instance_from_layout removes one: hierarchy links to them are removed (their other children stay, without a parent). Every UID is checked first; if one is missing or listed twice, nothing is changed and the message names the item by its 0-based index. Otherwise the layout file is written once; a failed write is rolled back, and the error names any file that could not safely be put back. Up to ${MAX_BULK_INSTANCES} UIDs.`,
+    {
+      layoutName: z.string().max(200).describe('Layout name (as registered, in that letter case)'),
+      uids: z.array(z.number().int()).min(1).max(MAX_BULK_INSTANCES).describe('UIDs of the instances to remove'),
+      dryRun: bulkDryRun,
+    },
+    async (args) => {
+      try {
+        const read = await readRegisteredLayout(reader, args.layoutName);
+        if ('refusal' in read) return toolError(read.refusal);
+        const { layout } = read;
+
+        const seen = new Set<number>();
+        const applied = await applyItems(args.uids, async (uid, index) => {
+          if (seen.has(uid)) return { error: `UID ${uid} is listed more than once.` };
+          seen.add(uid);
+          const removal = ops.removeInstanceFromLayout(layout, args.layoutName, uid);
+          if ('error' in removal) return removal;
+          return {
+            index, uid, objectType: removal.removedType,
+            warnings: removal.removedType ? [`Removed instance of "${removal.removedType}" (UID ${uid}) from ${describeInstancePlace(removal.entry)}.`] : [],
+          };
+        });
+        if ('refusal' in applied) return toolError(applied.refusal);
+        // Hierarchy links name UIDs: every removed one is unlinked at once
+        const warnings = [...itemWarnings(applied.done), ...hierarchyUnlinkWarnings(unlinkRemovedInstances(layout, seen))];
+        return await finishBulk(args.layoutName, layout, args.dryRun,
+          applied.done.map(r => ({ index: r.index, uid: r.uid, objectType: r.objectType })), warnings, []);
+      } catch (error) {
+        console.error('[delete_instances_from_layout] failed:', error);
         return toolError(stoppedBeforeWrite(error));
       }
     }

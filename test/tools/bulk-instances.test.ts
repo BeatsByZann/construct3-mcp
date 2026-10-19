@@ -424,3 +424,269 @@ describe('add_instances_to_layout', () => {
     expect(data.warnings![0].startsWith('Item 0: "Store" is a global (nonworld) object')).toBe(true);
   });
 });
+
+describe('update_instances and delete_instances_from_layout', () => {
+  let a: number;
+  let b: number;
+  let c: number;
+  let d: number;
+
+  const update = (updates: Item[], extra: Item = {}) => call('update_instances', { layoutName: 'Layout 1', updates, ...extra });
+  const remove = (uids: number[], extra: Item = {}) => call('delete_instances_from_layout', { layoutName: 'Layout 1', uids, ...extra });
+  const instanceOf = async (uid: number) => (await mainInstances()).find(i => i.uid === uid);
+
+  /** Edit the layout file directly and re-read the project. */
+  async function editLayout(change: (layout: LayoutFile) => void): Promise<void> {
+    const layout = await readLayout();
+    change(layout);
+    await writeFile(layoutPath(), JSON.stringify(layout, null, '\t'));
+    await reader.loadProject();
+  }
+
+  beforeEach(async () => {
+    const placed = await add([sprite(1), sprite(2), sprite(3), sprite(4)]);
+    [a, b, c, d] = placed.results!.map(r => r.uid);
+  });
+
+  it('updates every item and writes once', async () => {
+    const spy = writeSpy();
+    const data = await update([{ uid: a, x: 50 }, { uid: b, zElevation: 7 }]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(data).toMatchObject({ success: true, action: 'updated', count: 2 });
+    expect(data.results).toEqual([{ index: 0, uid: a }, { index: 1, uid: b }]);
+    expect((await instanceOf(a))!.world!.x).toBe(50);
+    expect((await instanceOf(b))!.world!.z).toBe(7);
+  });
+
+  it('applies two updates of one UID in order', async () => {
+    const data = await update([{ uid: a, x: 1 }, { uid: a, x: 2 }]);
+    expect(data.success).toBe(true);
+    expect((await instanceOf(a))!.world!.x).toBe(2);
+  });
+
+  it('refuses an empty update by its index', async () => {
+    const spy = writeSpy();
+    const before = await layoutBytes();
+    const data = await update([{ uid: a, x: 1 }, { uid: b }]);
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe(`Item 1: No updates provided. Specify at least one property to update. ${NOTHING_CHANGED}`);
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('refuses an update or a delete the single tool would refuse', async () => {
+    const spy = writeSpy();
+    const before = await layoutBytes();
+
+    const unknown = await update([{ uid: a, x: 1 }, { uid: 999, x: 1 }]);
+    expect(unknown.isError).toBe(true);
+    expect(unknown.text!.startsWith('Item 1: Instance with UID 999 not found in layout "Layout 1".')).toBe(true);
+    expect(unknown.text!.endsWith(NOTHING_CHANGED)).toBe(true);
+
+    const variable = await update([{ uid: a, x: 1 }, { uid: b, instanceVariables: { nosuchvar: 1 } }]);
+    expect(variable.isError).toBe(true);
+    expect(variable.text!.startsWith('Item 1: ')).toBe(true);
+    expect(variable.text).toContain('no instance variable "nosuchvar"');
+    expect(countOf(variable.text!, NOTHING_CHANGED)).toBe(1);
+
+    const missing = await remove([a, 999, b]);
+    expect(missing.isError).toBe(true);
+    expect(missing.text!.startsWith('Item 1: Instance with UID 999 not found in layout "Layout 1".')).toBe(true);
+    expect(missing.text!.endsWith(NOTHING_CHANGED)).toBe(true);
+
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the world.zElevation handling of update_instance', async () => {
+    await editLayout(layout => {
+      const world = layout.layers[0].instances.find(i => i.uid === a)!.world!;
+      delete world.z;
+      world.zElevation = 3;
+    });
+    const data = await update([{ uid: a, zElevation: 4 }]);
+    expect(data.success).toBe(true);
+    const world = (await instanceOf(a))!.world!;
+    expect(world.z).toBe(4);
+    expect(world).not.toHaveProperty('zElevation');
+    expect(data.warnings).toHaveLength(1);
+    expect(data.warnings![0].startsWith(`Item 0: Instance ${a} held its Z elevation as world.zElevation (3)`)).toBe(true);
+  });
+
+  it('deletes every UID and writes once', async () => {
+    const spy = writeSpy();
+    const data = await remove([a, b]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(data).toMatchObject({ success: true, action: 'updated', count: 2 });
+    expect(data.results).toEqual([{ index: 0, uid: a, objectType: 'Sprite' }, { index: 1, uid: b, objectType: 'Sprite' }]);
+    expect((await mainInstances()).map(i => i.uid)).toEqual([0, c, d]);
+    expect(data.warnings).toEqual([
+      `Item 0: Removed instance of "Sprite" (UID ${a}) from layer "Main".`,
+      `Item 1: Removed instance of "Sprite" (UID ${b}) from layer "Main".`,
+    ]);
+  });
+
+  it('refuses a UID listed twice', async () => {
+    const before = await layoutBytes();
+    const data = await remove([a, b, a]);
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe(`Item 2: UID ${a} is listed more than once. ${NOTHING_CHANGED}`);
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+  });
+
+  it('removes a parent and its child together, unlinking once', async () => {
+    const flags = { x: true, y: true, z: false, w: true, h: true, a: false, o: false, v: false, d: true, sm: 'normal' };
+    const preview = {
+      transformX: 0, transformY: 0, transformZElevation: 0, transformW: 0, transformH: 0, transformA: 0,
+      transformSX: 0, transformSY: 0, transformO: 0, previewSceneGraph: false,
+    };
+    const record = (uid: number, parent: number | null, children: number[] = []) => ({
+      'parent-uid': parent, uid, ...(children.length > 0 ? { children: children.map(child => ({ uid: child, flags: { ...flags } })) } : {}),
+      flags: { ...flags }, preview: { ...preview },
+    });
+    await editLayout(layout => {
+      const byUid = (uid: number) => layout.layers[0].instances.find(i => i.uid === uid)!;
+      byUid(a).sceneGraphData = record(a, null, [b]);
+      byUid(b).sceneGraphData = record(b, a, [c]);
+      byUid(c).sceneGraphData = record(c, b);
+    });
+
+    const data = await remove([a, b]);
+    expect(data.success).toBe(true);
+    const left = await mainInstances();
+    expect(left.map(i => i.uid)).toEqual([0, c, d]);
+    expect((left.find(i => i.uid === c)!.sceneGraphData as { 'parent-uid': number | null })['parent-uid']).toBeNull();
+    const detached = data.warnings!.filter(w => w.includes('Detached hierarchy children'));
+    expect(detached).toHaveLength(1);
+    expect(detached[0].startsWith('Detached hierarchy children')).toBe(true);
+    expect(detached[0]).toContain(`UID ${c} `);
+    expect(detached[0]).not.toContain(`UID ${b}`);
+  });
+
+  it('a dry run writes nothing', async () => {
+    const spy = writeSpy();
+    const before = await layoutBytes();
+    const updated = await update([{ uid: a, x: 9 }], { dryRun: true });
+    expect(updated).toMatchObject({ success: true, action: 'dry-run', dryRun: true, count: 1 });
+    const removed = await remove([a, b], { dryRun: true });
+    expect(removed).toMatchObject({ success: true, action: 'dry-run', dryRun: true, count: 2 });
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a layout name in another letter case, and a layout it cannot read, for both tools', async () => {
+    const spy = writeSpy();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const original = await layoutBytes();
+    const calls: Array<[string, Item]> = [
+      ['update_instances', { updates: [{ uid: a, x: 1 }] }],
+      ['delete_instances_from_layout', { uids: [a] }],
+    ];
+    for (const [tool, args] of calls) {
+      await resetLayout(original);
+      const run = (layoutName: string) => call(tool, { layoutName, ...args });
+      const unchanged = async (expected: Buffer) => {
+        expect(Buffer.compare(await layoutBytes(), expected)).toBe(0);
+        expect(spy).not.toHaveBeenCalled();
+      };
+
+      const letterCase = await run('layout 1');
+      expect(letterCase.text).toBe(`Layout "layout 1" not found: names are matched with their letter case. Did you mean "Layout 1"? ${NOTHING_CHANGED}`);
+      await unchanged(original);
+
+      const broken = Buffer.from('{ broken');
+      await resetLayout(broken);
+      const unreadable = await run('Layout 1');
+      expect(unreadable.text!.startsWith('Cannot read layout "Layout 1": ')).toBe(true);
+      expect(unreadable.text!.endsWith(` ${NOTHING_CHANGED}`)).toBe(true);
+      await unchanged(broken);
+
+      const nothing = Buffer.from('null');
+      await resetLayout(nothing);
+      expect((await run('Layout 1')).text).toBe(`Cannot read layout "Layout 1": it does not hold a layout object. ${NOTHING_CHANGED}`);
+      await unchanged(nothing);
+
+      await resetLayout(original);
+      consoleError.mockClear();
+      vi.spyOn(reader, 'listLayouts').mockRejectedValueOnce(new Error('EMFILE'));
+      expect((await run('Layout 1')).text).toBe(`The change was stopped before anything was written: EMFILE. ${NOTHING_CHANGED}`);
+      expect(consoleError.mock.calls.some(args => String(args[0]).includes(`[${tool}] failed`))).toBe(false);
+      await unchanged(original);
+    }
+  });
+
+  it('reports the first refused item in list order, whatever kind its refusal is', async () => {
+    const updates = await update([{ uid: 999, x: 1 }, { uid: b }]);
+    expect(updates.text!.startsWith('Item 0: Instance with UID 999 not found')).toBe(true);
+
+    const missingFirst = await remove([999, a, a]);
+    expect(missingFirst.text!.startsWith('Item 0: Instance with UID 999 not found')).toBe(true);
+
+    const repeatedFirst = await remove([a, a, 999]);
+    expect(repeatedFirst.text).toBe(`Item 1: UID ${a} is listed more than once. ${NOTHING_CHANGED}`);
+  });
+
+  it('turns an error a step throws into the item\'s refusal, for both tools', async () => {
+    const spy = writeSpy();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const before = await layoutBytes();
+
+    // A name Sprite has no variable of makes the check read the family files, which fail
+    vi.spyOn(reader, 'listFamilies').mockRejectedValueOnce(new Error('EBUSY'));
+    const updated = await update([{ uid: a, x: 1 }, { uid: b, instanceVariables: { nosuchvar: 1 } }]);
+    expect(updated.text).toBe(`Item 1: EBUSY. ${NOTHING_CHANGED}`);
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+
+    // A layout whose layers cannot be read: the step throws on the first item
+    const real = await reader.readLayout('Layout 1');
+    const unreadableLayers = Object.defineProperty({ ...real }, 'layers', {
+      enumerable: true,
+      get: () => { throw new Error('layers unreadable'); },
+    });
+    vi.spyOn(reader, 'readLayout').mockResolvedValueOnce(unreadableLayers);
+    const removed = await remove([a]);
+    expect(removed.text).toBe(`Item 0: layers unreadable. ${NOTHING_CHANGED}`);
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+    expect(consoleError.mock.calls.some(args => String(args[0]).includes('failed'))).toBe(false);
+  });
+
+  it('refuses a dry run of an update whose write the size limit refuses', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const size = async () => (await stat(layoutPath())).size;
+    const target = MB - 2000;
+    const bigItem = (x: number): Item => sprite(x, { properties: { note: '€'.repeat(16_000) } });
+    const filler = (bytes: number): Item => sprite(0, { properties: { note: 'x'.repeat(bytes) } });
+
+    // Fill the layout to within about 2KB of the limit: multibyte items, then ASCII fillers, then one sized to the gap
+    const s0 = await size();
+    await add([bigItem(0)]);
+    const growth = (await size()) - s0;
+    await add(Array.from({ length: Math.floor((MB - (await size()) - 52_000) / growth) }, (_, i) => bigItem(i)));
+    while (target - (await size()) > 45_000) await add([filler(40_000)]);
+    const s1 = await size();
+    await add([filler(0)]);
+    const overhead = (await size()) - s1;
+    await add([filler(target - (await size()) - overhead)]);
+    expect(await size()).toBeGreaterThan(MB - 3000);
+    expect(await size()).toBeLessThan(MB - 1000);
+
+    const [x, y] = (await mainInstances()).slice(-2).map(i => i.uid);
+    const tags = '€'.repeat(500);
+    const before = await layoutBytes();
+    const spy = writeSpy();
+
+    // One update adds 1,500 bytes and fits; two do not
+    const fits = await update([{ uid: x, tags }], { dryRun: true });
+    expect(fits).toMatchObject({ success: true, action: 'dry-run' });
+
+    const data = await update([{ uid: x, tags }, { uid: y, tags }], { dryRun: true });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('is too large');
+    expect(data.text).toContain('over the');
+    expect(data.text!.endsWith(NOTHING_CHANGED)).toBe(true);
+    expect(countOf(data.text!, NOTHING_CHANGED)).toBe(1);
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+  }, 60_000);
+});
