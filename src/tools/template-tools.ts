@@ -1,18 +1,24 @@
 /**
- * Instance template tools: list_templates. A template is a layout instance
- * the editor treats as the master copy of its replicas; the state is the
- * instance's `template` block (construct3/instance-templates.ts).
+ * Instance template tools: list_templates and set_instance_template. A
+ * template is a layout instance the editor treats as the master copy of its
+ * replicas; the state is the instance's `template` block
+ * (construct3/instance-templates.ts).
  */
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { Instance, Layout } from '../construct3/types.js';
+import type { Instance, Layout, WriteResult } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
 import { withProjectSync } from './project-sync.js';
 import { unregisteredNameMessage } from './registered-names.js';
-import { unscannedFilesOf, type UnscannedFile } from '../construct3/analyzers/unscanned-uses.js';
-import { forEachLayoutInstance } from '../construct3/layers.js';
-import { readTemplate, templateKey } from '../construct3/instance-templates.js';
+import { nothingChanged } from './event-helpers.js';
+import { writeEntityOrRollBack } from './call-rollback.js';
+import { classifyReadError } from '../construct3/project-reader.js';
+import { unscannedFilesOf, describeReadFailure, type UnscannedFile } from '../construct3/analyzers/unscanned-uses.js';
+import { forEachLayoutInstance, findInstanceByUid } from '../construct3/layers.js';
+import {
+  buildInstanceTemplate, findTemplateInstance, readTemplate, sameTemplateName, templateKey,
+} from '../construct3/instance-templates.js';
 
 type Reader = MutationToolDeps['reader'];
 
@@ -44,8 +50,45 @@ function withoutAbsolutePaths(text: string): string {
     .replace(/(?<![\w.])\/(?:[\w.-]+\/)+[^"'\r\n]*/g, '(path removed)');
 }
 
-/** Register list_templates. */
-export function registerTemplateTools({ server: mcpServer, reader }: MutationToolDeps): void {
+/**
+ * What still names a template that a call removes, renames or turns into
+ * a replica: the replicas of that name in every layout (`layout`, the
+ * edited one, in place of its file) and the object type's default
+ * template. Warnings only: what the editor does with such replicas was not
+ * observed.
+ */
+async function endedTemplateWarnings(
+  reader: Reader, objectType: string, templateName: string, layoutName: string, layout: Layout,
+): Promise<string[]> {
+  const search = await layoutsForSearch(reader);
+  search.layouts.set(layoutName, layout);
+  let replicas = 0;
+  for (const searched of search.layouts.values()) {
+    forEachLayoutInstance(searched, instance => {
+      const block = readTemplate(instance);
+      if (instance.type === objectType && block?.mode === 'replica' && sameTemplateName(block.sourceTemplateName, templateName)) replicas += 1;
+    });
+  }
+  const warnings: string[] = [];
+  if (replicas > 0) {
+    warnings.push(`${replicas} replica(s) of "${objectType}" follow the template "${templateName}", which no instance is any more; `
+      + 'list_templates lists them as orphanedReplicas.');
+  }
+  warnings.push(...skippedWarnings(search.skipped.filter(f => f.name !== layoutName), `Replicas of "${templateName}" in these layouts were not counted.`));
+  try {
+    const type = await reader.readObjectType(objectType);
+    const named = type.editorNewInstanceTemplateName;
+    if (named !== undefined && sameTemplateName(named, templateName)) {
+      warnings.push(`Object type "${objectType}" creates new instances from the template "${templateName}"; clear or change it with set_default_template.`);
+    }
+  } catch (error) {
+    warnings.push(`Whether object type "${objectType}" creates new instances from "${templateName}" could not be checked (${describeReadFailure(classifyReadError(error))}).`);
+  }
+  return warnings;
+}
+
+/** Register list_templates and set_instance_template. */
+export function registerTemplateTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
   const server = withProjectSync(mcpServer, reader);
 
   // ─── list_templates ───────────────────────────────────────
@@ -109,6 +152,105 @@ export function registerTemplateTools({ server: mcpServer, reader }: MutationToo
       } catch (error) {
         console.error('[list_templates] failed:', error);
         return toolError(`Error listing templates: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
+  );
+
+  // ─── set_instance_template ────────────────────────────────
+
+  server.tool(
+    'set_instance_template',
+    'Make a layout instance a template, a replica of a named template, or neither. The template block is built from the instance\'s own plugin properties, instance variables, behaviors and effects. The layout name must be given as registered, in that letter case. A failed write is rolled back.',
+    {
+      layoutName: z.string().max(200).describe('Layout holding the instance (as registered, in that letter case)'),
+      uid: z.number().int().describe('Instance UID'),
+      mode: z.enum(['none', 'template', 'replica']).describe('none removes the template block; template makes this the master; replica links it to a template'),
+      templateName: z.string().max(200).optional().describe('Template name; required for mode "template"'),
+      sourceTemplateName: z.string().max(200).optional().describe('Name of the template to follow; required for mode "replica"'),
+    },
+    async (args) => {
+      const refuse = (message: string) => toolError(nothingChanged(message));
+      try {
+        const { layoutName, uid, mode } = args;
+        if (mode === 'template' && !args.templateName) return refuse('mode "template" requires templateName.');
+        if (mode === 'replica' && !args.sourceTemplateName) return refuse('mode "replica" requires sourceTemplateName.');
+        const missing = unregisteredNameMessage('Layout', layoutName, await reader.listLayouts(),
+          () => reader.findNearestName(layoutName, 'layouts'), 'list_layouts');
+        if (missing !== undefined) return refuse(missing);
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(layoutName);
+        } catch (error) {
+          return refuse(`Cannot read layout "${layoutName}" (${describeReadFailure(classifyReadError(error))}).`);
+        }
+        const found = findInstanceByUid(layout, uid);
+        if (!found) return refuse(`No instance with UID ${uid} in layout "${layoutName}". Use get_layout_details to see the instances.`);
+        const instance = found.instance as Instance & Record<string, unknown>;
+
+        const warnings: string[] = [];
+        const previous = readTemplate(instance);
+        let action: string;
+        if (mode === 'none') {
+          if (!previous) return refuse(`Instance UID ${uid} in layout "${layoutName}" has no template block; nothing to remove.`);
+          delete instance.template;
+          action = 'template removed';
+        } else if (mode === 'template') {
+          const templateName = args.templateName!;
+          // Two templates of one object type with one name would make every replica of that name ambiguous
+          const search = await layoutsForSearch(reader);
+          search.layouts.set(layoutName, layout);
+          const clash = findTemplateInstance(search.layouts, instance.type, templateName, { layout: layoutName, uid });
+          if (clash) {
+            return refuse(`Instance UID ${clash.uid} in layout "${clash.layout}" is already a template named "${templateName}" `
+              + `for object type "${instance.type}". Template names must be unique per object type.`);
+          }
+          warnings.push(...skippedWarnings(search.skipped.filter(f => f.name !== layoutName),
+            `Whether another instance of "${instance.type}" is already a template named "${templateName}" could not be checked in every layout.`));
+          instance.template = buildInstanceTemplate(instance, 'template', templateName, '') as unknown as Record<string, unknown>;
+          action = 'template created';
+        } else {
+          const sourceTemplateName = args.sourceTemplateName!;
+          if (previous?.mode === 'template' && sameTemplateName(previous.templateName, sourceTemplateName)) {
+            return refuse(`Instance UID ${uid} in layout "${layoutName}" is the template "${previous.templateName}" itself; `
+              + 'it cannot be a replica of its own template.');
+          }
+          const search = await layoutsForSearch(reader);
+          search.layouts.set(layoutName, layout);
+          // The instance itself cannot be found here: a template of this name it was is refused above
+          if (!findTemplateInstance(search.layouts, instance.type, sourceTemplateName)) {
+            warnings.push(`No instance of "${instance.type}" is a template named "${sourceTemplateName}". `
+              + 'The replica is written anyway; it has no template to follow until one of that name exists.');
+            warnings.push(...skippedWarnings(search.skipped.filter(f => f.name !== layoutName), 'The template may be in a layout that could not be checked.'));
+          }
+          instance.template = buildInstanceTemplate(instance, 'replica', '', sourceTemplateName) as unknown as Record<string, unknown>;
+          action = 'replica linked';
+        }
+        if (previous !== undefined && previous.mode === mode) {
+          warnings.push(`The instance's existing ${mode} block was rebuilt from its current properties, instance variables, behaviors and effects; `
+            + 'sync settings changed in the editor were reset.');
+        }
+        // A template this call removes, renames or turns into a replica leaves what named it without a template
+        if (previous?.mode === 'template' && !(mode === 'template' && sameTemplateName(previous.templateName, args.templateName!))) {
+          warnings.push(...await endedTemplateWarnings(reader, instance.type, previous.templateName, layoutName, layout));
+        }
+        if (mode !== 'none' && found.entry === undefined) {
+          warnings.push(`UID ${uid} is a non-world instance; whether Construct 3 keeps a template block on a non-world instance was not checked.`);
+        }
+
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'layouts', layoutName, layout);
+        } catch (error) {
+          return toolError(error instanceof Error ? error.message : String(error));
+        }
+        const result: WriteResult = {
+          success: true, entity: `${layoutName}#${uid}`, category: 'template', action,
+          warnings: warnings.length > 0 ? warnings : undefined, backupFile: backupPath,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[set_instance_template] failed:', error);
+        return refuse(`Error setting instance template: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error))}`);
       }
     }
   );

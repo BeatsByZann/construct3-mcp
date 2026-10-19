@@ -28,10 +28,12 @@ interface ToolData {
   isError?: boolean; text?: string; templates?: Row[]; count?: number;
   orphanedReplicas?: Orphan[]; orphanedReplicaCount?: number;
   orphanedReplicasTruncated?: boolean; complete?: boolean; unscannedFiles?: Array<{ file: string; reason: string }>; warnings?: string[];
+  success?: boolean; action?: string; entity?: string; backupFile?: string;
 }
 
 let tmpDir: string;
 let reader: Construct3ProjectReader;
+let writer: Construct3ProjectWriter;
 let server: MockServer;
 
 const level1Path = () => join(tmpDir, 'layouts', 'Level 1.json');
@@ -98,13 +100,14 @@ beforeEach(async () => {
   reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
   await reader.loadProject();
   const idGen = new IdGenerator();
-  const writer = new Construct3ProjectWriter(reader, idGen);
+  writer = new Construct3ProjectWriter(reader, idGen);
   server = new MockServer();
   registerTemplateTools({ server, reader, writer, idGen } as never);
   resetProjectIndex();
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -274,5 +277,348 @@ describe('list_templates', () => {
     const data = await call();
     expect(data.templates?.[0].replicaCount).toBe(0);
     expect(data.orphanedReplicaCount).toBe(1);
+  });
+});
+
+// ─── set_instance_template ────────────────────────────────
+
+const level2Path = () => join(tmpDir, 'layouts', 'Extra', 'Level 2.json');
+const readLevel2 = async (): Promise<LayoutFile> => JSON.parse(await readFile(level2Path(), 'utf8')) as LayoutFile;
+const playerPath = () => join(tmpDir, 'objectTypes', 'Actors', 'Player.json');
+const NOT_WRITTEN = 'Nothing was changed.';
+
+const setCall = async (args: Record<string, unknown>): Promise<ToolData> => {
+  const result = await server.callTool('set_instance_template', args);
+  return result.isError ? { isError: true, text: result.content[0].text } : JSON.parse(result.content[0].text) as ToolData;
+};
+const set = (uid: number, mode: string, extra: Record<string, unknown> = {}, layoutName = 'Level 1') =>
+  setCall({ layoutName, uid, mode, ...extra });
+
+/** The saved template block of an instance of Level 1, or undefined. */
+const blockOf = async (uid: number): Promise<Record<string, unknown> | undefined> => {
+  const layout = await readLevel1();
+  const all = [...gameLayer(layout).instances, ...(gameLayer(layout).subLayers ?? []).flatMap(l => l.instances), ...(layout['nonworld-instances'] ?? [])];
+  return all.find(i => i.uid === uid)?.template as Record<string, unknown> | undefined;
+};
+
+const reload = async (): Promise<void> => {
+  await reader.loadProject();
+  resetProjectIndex();
+};
+
+/** Player.json names a default template for new instances. */
+async function setDefaultTemplate(name: string): Promise<void> {
+  const type = JSON.parse(await readFile(playerPath(), 'utf8')) as Record<string, unknown>;
+  type.editorNewInstanceTemplateName = name;
+  await writeFile(playerPath(), JSON.stringify(type, null, '\t'));
+}
+
+/** The writer's read-back of Level 1.json fails once, with the text verifyWrittenFile itself throws for a failed read. */
+function failLevel1ReadBack(): void {
+  const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<unknown> };
+  const verify = internals.verifyWrittenFile.bind(writer);
+  let failed = false;
+  internals.verifyWrittenFile = async (path, name, text) => {
+    if (!failed && path.endsWith('Level 1.json')) {
+      failed = true;
+      throw new Error(`Post-write verification failed for "${name}": file may be corrupted. A .bak backup exists. Error: EIO: i/o error, read`);
+    }
+    return verify(path, name, text);
+  };
+}
+
+const WORLD_STATE = [['x', false], ['y', false], ['z', true], ['w', true], ['h', true], ['d', true], ['a', true], ['o', true], ['c', true],
+  ['sx', true], ['sy', true], ['sz', true], ['bm', true], ['sam', true], ['tgs', true], ['twpx', true], ['twpy', true],
+  ['twpz', true], ['twpw', true], ['twph', true], ['twpd', true], ['twpa', true], ['dwp', true], ['ssm', true]];
+
+describe('set_instance_template', () => {
+  it('builds the full block from the instance\'s own state', async () => {
+    const data = await set(1, 'template', { templateName: 'PlayerT' });
+    expect(data.success).toBe(true);
+    expect(data.action).toBe('template created');
+    expect(await blockOf(1)).toEqual({
+      mode: 'template',
+      templateName: 'PlayerT',
+      sourceTemplateName: '',
+      replicaHierarchyInSyncWithTemplate: false,
+      templatePropagateHierarchyChanges: true,
+      replicaIgnoreTemplateHierarchyChanges: false,
+      components: [
+        {
+          id: 'plugin',
+          component: [{ key: 'plugin', state: [['initially-visible', true], ['initial-animation', true], ['initial-frame', true], ['enable-collisions', true]] }],
+        },
+        { id: 'instance-variable', component: [{ key: 'instance-variable', state: [{ iv: 'health', state: true }, { iv: 'name', state: true }] }] },
+        {
+          id: 'behavior',
+          component: [
+            { key: 'Platform', state: [['max-speed', true], ['enabled', true]] },
+            { key: 'Fade', state: [] },
+          ],
+        },
+        { id: 'effect', component: [{ key: 'Glow', state: [['intensity', true], ['<<effect-template-enable>>', true]] }] },
+        { id: 'world-instance', component: [{ key: 'world-instance', state: WORLD_STATE }] },
+      ],
+      replicasUIDs: null,
+    });
+  });
+
+  it('makes an instance a template, then a replica of it in another layout', async () => {
+    expect((await set(2, 'template', { templateName: 'Boss' })).success).toBe(true);
+    const replica = await set(10, 'replica', { sourceTemplateName: 'Boss' }, 'Level 2');
+    expect(replica.success).toBe(true);
+    expect(replica.action).toBe('replica linked');
+    expect(replica.warnings).toBeUndefined();
+    expect((await readLevel2()).layers[0].instances[0].template).toMatchObject({ mode: 'replica', templateName: '', sourceTemplateName: 'Boss' });
+
+    await reload();
+    const listed = JSON.parse((await server.callTool('list_templates', {})).content[0].text) as ToolData;
+    expect(listed.templates).toEqual([{ templateName: 'Boss', objectType: 'Enemy', layout: 'Level 1', uid: 2, replicaCount: 1 }]);
+    expect(listed.orphanedReplicas).toBeUndefined();
+  });
+
+  it('removes the block with mode none and refuses when there is none', async () => {
+    await set(1, 'template', { templateName: 'PlayerT' });
+    const removed = await set(1, 'none');
+    expect(removed.success).toBe(true);
+    expect(removed.action).toBe('template removed');
+    expect(await blockOf(1)).toBeUndefined();
+
+    const before = await snapshotProject(tmpDir);
+    const refused = await set(1, 'none');
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toBe(`Instance UID 1 in layout "Level 1" has no template block; nothing to remove. ${NOT_WRITTEN}`);
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('refuses a missing templateName or sourceTemplateName before reading anything', async () => {
+    const listLayouts = vi.spyOn(reader, 'listLayouts');
+    const before = await snapshotProject(tmpDir);
+    const noName = await set(1, 'template');
+    expect(noName.isError).toBe(true);
+    expect(noName.text).toBe(`mode "template" requires templateName. ${NOT_WRITTEN}`);
+    const noSource = await set(1, 'replica', { sourceTemplateName: '' });
+    expect(noSource.text).toBe(`mode "replica" requires sourceTemplateName. ${NOT_WRITTEN}`);
+    expect(listLayouts).not.toHaveBeenCalled();
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('refuses a template name another instance of the object type already has, and allows it for another type', async () => {
+    await set(1, 'template', { templateName: 'T' });
+    await set(2, 'template', { templateName: 'E' });
+    await reload();
+    const before = await snapshotProject(tmpDir);
+
+    const sameLayout = await set(3, 'template', { templateName: 'T' });
+    expect(sameLayout.isError).toBe(true);
+    expect(sameLayout.text).toBe(`Instance UID 1 in layout "Level 1" is already a template named "T" for object type "Player". Template names must be unique per object type. ${NOT_WRITTEN}`);
+
+    const otherLayout = await set(10, 'template', { templateName: 'E' }, 'Level 2');
+    expect(otherLayout.isError).toBe(true);
+    expect(otherLayout.text).toBe(`Instance UID 2 in layout "Level 1" is already a template named "E" for object type "Enemy". Template names must be unique per object type. ${NOT_WRITTEN}`);
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+
+    const otherType = await set(10, 'template', { templateName: 'T' }, 'Level 2');
+    expect(otherType.success).toBe(true);
+
+    // Names are compared exactly: a name in another letter case is another name
+    const otherCase = await set(3, 'template', { templateName: 't' });
+    expect(otherCase.success).toBe(true);
+  });
+
+  it('warns when no template of that name exists for a replica, and for a non-world instance', async () => {
+    const orphan = await set(3, 'replica', { sourceTemplateName: 'Nope' });
+    expect(orphan.success).toBe(true);
+    expect(orphan.warnings).toEqual([
+      'No instance of "Player" is a template named "Nope". The replica is written anyway; it has no template to follow until one of that name exists.',
+    ]);
+    expect(await blockOf(3)).toMatchObject({ mode: 'replica', sourceTemplateName: 'Nope' });
+
+    await set(1, 'template', { templateName: 'PlayerT' });
+    await reload();
+    const linked = await set(3, 'replica', { sourceTemplateName: 'PlayerT' });
+    expect(linked.success).toBe(true);
+    expect(linked.warnings).toEqual([expect.stringContaining('existing replica block was rebuilt')]);
+
+    const nonWorld = await set(4, 'template', { templateName: 'K' });
+    expect(nonWorld.success).toBe(true);
+    expect(nonWorld.warnings).toEqual(['UID 4 is a non-world instance; whether Construct 3 keeps a template block on a non-world instance was not checked.']);
+    expect(await blockOf(4)).toMatchObject({ mode: 'template', templateName: 'K' });
+  });
+
+  it('says a missing template may be in a layout that could not be parsed', async () => {
+    await writeFile(level2Path(), '{ broken');
+    await reload();
+    const data = await set(3, 'replica', { sourceTemplateName: 'Nope' });
+    expect(data.success).toBe(true);
+    expect(data.warnings).toEqual([
+      expect.stringContaining('No instance of "Player" is a template named "Nope"'),
+      'The template may be in a layout that could not be checked. Layouts that could not be parsed: layouts/Level 2 (not valid JSON).',
+    ]);
+  });
+
+  it('refuses a layout name in another letter case, an unknown layout and an unknown UID', async () => {
+    const before = await snapshotProject(tmpDir);
+    const variant = await set(1, 'none', {}, 'level 1');
+    expect(variant.isError).toBe(true);
+    expect(variant.text).toContain('Did you mean "Level 1"?');
+    expect(variant.text?.endsWith(NOT_WRITTEN)).toBe(true);
+
+    const unknown = await set(1, 'none', {}, 'Nope');
+    expect(unknown.isError).toBe(true);
+    expect(unknown.text).toContain('Layout "Nope" not found.');
+    expect(unknown.text?.endsWith(NOT_WRITTEN)).toBe(true);
+
+    const noUid = await set(999, 'none');
+    expect(noUid.isError).toBe(true);
+    expect(noUid.text).toBe(`No instance with UID 999 in layout "Level 1". Use get_layout_details to see the instances. ${NOT_WRITTEN}`);
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('refuses a layout it cannot parse', async () => {
+    await writeFile(level1Path(), '{ broken');
+    await reload();
+    const before = await snapshotProject(tmpDir);
+    const data = await set(1, 'template', { templateName: 'T' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe(`Cannot read layout "Level 1" (not valid JSON). ${NOT_WRITTEN}`);
+    expect(data.text).not.toContain(tmpDir);
+    expect(data.text).not.toMatch(/[A-Za-z]:[\\/]/);
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('warns that layouts it could not parse were not checked for the name', async () => {
+    await writeFile(level2Path(), '{ broken');
+    await reload();
+    const data = await set(1, 'template', { templateName: 'T' });
+    expect(data.success).toBe(true);
+    expect(data.warnings).toEqual([
+      'Whether another instance of "Player" is already a template named "T" could not be checked in every layout. Layouts that could not be parsed: layouts/Level 2 (not valid JSON).',
+    ]);
+  });
+
+  it('puts the layout back when its read-back fails', async () => {
+    const before = await snapshotProject(tmpDir);
+    failLevel1ReadBack();
+    const data = await set(1, 'template', { templateName: 'T' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('Post-write verification failed');
+    expect(data.text).toContain('The call was rolled back');
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  it('writes the layout once and backs it up', async () => {
+    const write = vi.spyOn(writer, 'writeEntityFile');
+    const data = await set(1, 'template', { templateName: 'T' });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0]).toBe('layouts');
+    expect(write.mock.calls[0][1]).toBe('Level 1');
+    expect(data.backupFile).toBeTruthy();
+    expect(data.entity).toBe('Level 1#1');
+  });
+
+  it('leaves the cached layouts as they were after a refusal', async () => {
+    await set(1, 'template', { templateName: 'T' });
+    await reload();
+    const cachedBefore = await reader.readAllLayouts();
+    const copy = structuredClone([...cachedBefore]);
+    expect((await set(3, 'template', { templateName: 'T' })).isError).toBe(true);
+    expect([...await reader.readAllLayouts()]).toEqual(copy);
+  });
+
+  it('refuses a replica of the instance\'s own template', async () => {
+    await set(1, 'template', { templateName: 'T' });
+    const before = await snapshotProject(tmpDir);
+    const data = await set(1, 'replica', { sourceTemplateName: 'T' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe(`Instance UID 1 in layout "Level 1" is the template "T" itself; it cannot be a replica of its own template. ${NOT_WRITTEN}`);
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+  });
+
+  describe('what still names a template the call ends', () => {
+    const REPLICAS = '2 replica(s) of "Player" follow the template "T", which no instance is any more; list_templates lists them as orphanedReplicas.';
+    const DEFAULT = 'Object type "Player" creates new instances from the template "T"; clear or change it with set_default_template.';
+
+    /** Player UID 1 is the template "T"; Player UID 3 (Level 1) and a Player added to Level 2 (UID 20) are its replicas; Player names "T" as its default. */
+    async function setupEnded(options: { replicas?: boolean; defaultName?: boolean } = {}): Promise<void> {
+      const { replicas = true, defaultName = true } = options;
+      await rm(tmpDir, { recursive: true, force: true });
+      await cp(FIXTURE_DIR, tmpDir, { recursive: true });
+      await reload();
+      await set(1, 'template', { templateName: 'T' });
+      if (replicas) {
+        await set(3, 'replica', { sourceTemplateName: 'T' });
+        const level2 = await readLevel2();
+        const added = { type: 'Player', uid: 20, sid: 640000000000020, tags: '', properties: {}, instanceVariables: {}, behaviors: {}, world: { x: 0, y: 0, width: 8, height: 8 } } as unknown as Instance;
+        added.template = buildInstanceTemplate(added, 'replica', '', 'T') as unknown as Record<string, unknown>;
+        level2.layers[0].instances.push(added);
+        await writeFile(level2Path(), JSON.stringify(level2, null, '\t'));
+      }
+      if (defaultName) await setDefaultTemplate('T');
+      await reload();
+    }
+
+    it('warns for mode none, a new name and a replica of another template', async () => {
+      await setupEnded();
+      const removed = await set(1, 'none');
+      expect(removed.warnings).toEqual([REPLICAS, DEFAULT]);
+
+      await setupEnded();
+      const renamed = await set(1, 'template', { templateName: 'U' });
+      expect(renamed.warnings).toEqual([expect.stringContaining('existing template block was rebuilt'), REPLICAS, DEFAULT]);
+
+      await setupEnded();
+      const replica = await set(1, 'replica', { sourceTemplateName: 'Z' });
+      expect(replica.warnings).toEqual([expect.stringContaining('No instance of "Player" is a template named "Z"'), REPLICAS, DEFAULT]);
+    });
+
+    it('does not warn for the same name again, or for a template with no replicas and no default', async () => {
+      await setupEnded();
+      const again = await set(1, 'template', { templateName: 'T' });
+      expect(again.warnings).toHaveLength(1);
+      expect(again.warnings?.[0]).toContain('existing template block was rebuilt');
+
+      await setupEnded({ replicas: false, defaultName: false });
+      const bare = await set(1, 'none');
+      expect(bare.success).toBe(true);
+      expect(bare.warnings).toBeUndefined();
+    });
+
+    it('says the default could not be checked when the object type cannot be read, without a path', async () => {
+      await setupEnded({ defaultName: false });
+      await writeFile(playerPath(), '{ broken');
+      const data = await set(1, 'none');
+      expect(data.success).toBe(true);
+      expect(data.warnings).toEqual([REPLICAS, 'Whether object type "Player" creates new instances from "T" could not be checked (not valid JSON).']);
+      expect(JSON.stringify(data)).not.toContain(tmpDir);
+    });
+
+    it('says replicas in a layout it could not parse were not counted', async () => {
+      await setupEnded({ replicas: false, defaultName: false });
+      await writeFile(level2Path(), '{ broken');
+      await reload();
+      const data = await set(1, 'none');
+      expect(data.warnings).toEqual(['Replicas of "T" in these layouts were not counted. Layouts that could not be parsed: layouts/Level 2 (not valid JSON).']);
+    });
+  });
+
+  it('warns that an existing block was rebuilt, and not when there was none', async () => {
+    const fresh = await set(1, 'template', { templateName: 'T' });
+    expect(fresh.warnings).toBeUndefined();
+    const again = await set(1, 'template', { templateName: 'T' });
+    expect(again.success).toBe(true);
+    expect(again.warnings).toEqual([
+      'The instance\'s existing template block was rebuilt from its current properties, instance variables, behaviors and effects; sync settings changed in the editor were reset.',
+    ]);
+  });
+
+  it('refuses with no path in the text when an unexpected error is thrown, before any write', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(reader, 'listLayouts').mockRejectedValue(new Error("EACCES: permission denied, scandir 'C:\\Users\\Someone Else\\proj\\layouts'"));
+    const write = vi.spyOn(writer, 'writeEntityFile');
+    const data = await set(1, 'none');
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe(`Error setting instance template: EACCES: permission denied, scandir '(path removed)'. ${NOT_WRITTEN}`);
+    expect(write).not.toHaveBeenCalled();
   });
 });
