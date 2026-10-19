@@ -975,6 +975,85 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(warningsOf(data)).toContain('is a Tilemap, and no brush file named after it was found');
   });
 
+  it('takes the brush file of the object type\'s own folder and leaves a same-name brush file in another folder, and the files of AlphaBeta and Alpha2, as they are', async () => {
+    // 'Aaa' sorts before the object's own file, so a search that took the first match would take the stale one
+    await mkdir(path(...brushDir, 'Aaa'), { recursive: true });
+    await writeFile(path(...brushDir, 'Aaa', 'Alpha.brush.json'), '{"stale":true}');
+    await writeFile(path(...brushDir, 'AlphaBeta.brush.json'), '{"beta":true}');
+    await writeFile(path(...brushDir, 'Alpha2.brush.json'), '{"two":true}');
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.success).toBe(true);
+    expect(data.brushMoved).toEqual({ from: 'tilemapBrushes/objectTypes/Alpha.brush.json', to: 'tilemapBrushes/objectTypes/Gamma.brush.json' });
+    expect(await readFile(newBrush(), 'utf8')).toBe('{"brushes":["alpha"]}');
+    expect(await readFile(path(...brushDir, 'Aaa', 'Alpha.brush.json'), 'utf8')).toBe('{"stale":true}');
+    expect(existsSync(path(...brushDir, 'Aaa', 'Gamma.brush.json'))).toBe(false);
+    expect(await readFile(path(...brushDir, 'AlphaBeta.brush.json'), 'utf8')).toBe('{"beta":true}');
+    expect(await readFile(path(...brushDir, 'Alpha2.brush.json'), 'utf8')).toBe('{"two":true}');
+    expect(warningsOf(data)).not.toContain('not in the folder of the object type');
+  });
+
+  it('does not take the brush file of AlphaBeta or Alpha2 for the object type\'s, even when its own is in another folder', async () => {
+    await mkdir(path(...brushDir, 'Maps'), { recursive: true });
+    await rename(oldBrush(), path(...brushDir, 'Maps', 'Alpha.brush.json'));
+    await writeFile(path(...brushDir, 'AlphaBeta.brush.json'), '{"beta":true}');
+    await writeFile(path(...brushDir, 'Alpha2.brush.json'), '{"two":true}');
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.success).toBe(true);
+    expect(data.brushMoved).toEqual({ from: 'tilemapBrushes/objectTypes/Maps/Alpha.brush.json', to: 'tilemapBrushes/objectTypes/Maps/Gamma.brush.json' });
+    expect(await readFile(path(...brushDir, 'AlphaBeta.brush.json'), 'utf8')).toBe('{"beta":true}');
+    expect(await readFile(path(...brushDir, 'Alpha2.brush.json'), 'utf8')).toBe('{"two":true}');
+  });
+
+  it('warns that the brush search stopped at its depth limit', async () => {
+    const deep = path(...brushDir, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j');
+    await mkdir(deep, { recursive: true });
+    await writeFile(join(deep, 'Far.brush.json'), '{}');
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.success).toBe(true);
+    expect(warningsOf(data)).toContain('The search below tilemapBrushes/ stopped at its limit');
+  });
+
+  it('names the old brush file when its delete fails and the file then holds other bytes, finishing a stopped run', async () => {
+    expect((await rename_('Alpha', 'Gamma')).success).toBe(true);
+    await stopAfterProjectUpdate();
+    await writeFile(oldBrush(), '{"brushes":["alpha"]}');
+    const saved = '{"brushes":["alpha","saved in the editor"]}';
+    vi.spyOn(writer, 'deleteFile').mockImplementation(async file => {
+      if (file.endsWith('Alpha.brush.json')) {
+        await editorSave(oldBrush(), saved);
+        throw Object.assign(new Error('EIO'), { code: 'EIO' });
+      }
+      return undefined;
+    });
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('tilemapBrushes/objectTypes/Alpha.brush.json');
+    expect(data.text).toContain('neither this call\'s nor those from before it');
+    expect(data.text).not.toContain('Nothing was changed.');
+    expect(data.text).not.toContain(tmpDir);
+    expect(await readFile(oldBrush(), 'utf8')).toBe(saved);
+  });
+
+  it('names the old brush file when its delete fails and the file can no longer be read, finishing a stopped run', async () => {
+    expect((await rename_('Alpha', 'Gamma')).success).toBe(true);
+    await stopAfterProjectUpdate();
+    await writeFile(oldBrush(), '{"brushes":["alpha"]}');
+    vi.spyOn(writer, 'deleteFile').mockImplementation(async file => {
+      if (file.endsWith('Alpha.brush.json')) {
+        // A folder where the file was: it exists, but cannot be read as a file
+        await rm(oldBrush());
+        await mkdir(oldBrush());
+        throw Object.assign(new Error('EIO'), { code: 'EIO' });
+      }
+      return undefined;
+    });
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('tilemapBrushes/objectTypes/Alpha.brush.json');
+    expect(data.text).toContain('neither this call\'s nor those from before it');
+    expect(data.text).not.toContain(tmpDir);
+  });
+
   it('puts back the old brush file when its delete fails after it was removed, finishing a stopped run', async () => {
     expect((await rename_('Alpha', 'Gamma')).success).toBe(true);
     await stopAfterProjectUpdate();
