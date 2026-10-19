@@ -1,9 +1,10 @@
 /**
  * Layer and instance order tools (#ISSUE): reorder_layers, move_layer,
- * move_instance. A layout's layers, each layer's sub-layers and each
+ * move_instance, move_instances. A layout's layers, each layer's sub-layers and each
  * layer's instances are arrays in the layout file; these tools change the
  * order of those arrays and move an entry from one to another, in one
- * layout. Layers are found as update_layer finds them (resolveLayer: the
+ * layout. A bulk move applies each move as move_instance does and writes
+ * the layout once. Layers are found as update_layer finds them (resolveLayer: the
  * exact name, or a sub-layer by its path, "Main > HUD"). Each tool writes
  * the layout once, and a failed write is rolled back (rollBackFailedCall).
  * A "layer" parameter can also name a layer by a number
@@ -225,9 +226,90 @@ function moveInstanceInLayout(layout: Layout, layoutName: string, args: MoveInst
   };
 }
 
+type Reader = Construct3ProjectReader;
+
+/**
+ * Most items one bulk call takes: a guard on the size of one request and
+ * its result (each item may carry up to 50KB of property values and 50KB
+ * of behavior values, and the result lists every item). The size of a
+ * layout is bounded by the writer instead: it refuses a file whose text
+ * as written is over the file size limit, before anything is written.
+ */
+const MAX_BULK_INSTANCES = 500;
+
+/** An error's message without its final full stop. */
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
+
+/** A bulk call's refusal for item `index`: its message, ending once with "Nothing was changed." */
+function bulkItemRefusal(index: number, message: string): string {
+  const core = message.replace(/\s*Nothing was changed\.\s*$/, '').trimEnd();
+  return `Item ${index}: ${core}${/[.!?]$/.test(core) ? '' : '.'} Nothing was changed.`;
+}
+
+/** The refusal when a step outside the items throws before anything was written. */
+function stoppedBeforeWrite(error: unknown): string {
+  return `The change was stopped before anything was written: ${messageOf(error)}. Nothing was changed.`;
+}
+
+/**
+ * The layout a bulk call writes, by its registered name: a name in another
+ * letter case is refused (a case-blind file system would read the file,
+ * and the write would name it as given), and so is a layout file that
+ * cannot be read. Every refusal ends with "Nothing was changed.".
+ */
+async function readRegisteredLayout(reader: Reader, layoutName: string): Promise<{ layout: Layout } | { refusal: string }> {
+  let registered: string[];
+  try {
+    registered = await reader.listLayouts();
+  } catch (error) {
+    return { refusal: stoppedBeforeWrite(error) };
+  }
+  if (!registered.includes(layoutName)) {
+    const sameIgnoringCase = registered.find(n => n.toLowerCase() === layoutName.toLowerCase());
+    if (sameIgnoringCase !== undefined) {
+      return { refusal: `Layout "${layoutName}" not found: names are matched with their letter case. Did you mean "${sameIgnoringCase}"? Nothing was changed.` };
+    }
+    const notFound = notFoundError('Layout', layoutName, reader.findNearestName(layoutName, 'layouts'), 'list_layouts').content[0].text;
+    return { refusal: `${notFound} Nothing was changed.` };
+  }
+  let layout: unknown;
+  try {
+    layout = await reader.readLayout(layoutName);
+  } catch (error) {
+    return { refusal: `Cannot read layout "${layoutName}": ${messageOf(error)}. Nothing was changed.` };
+  }
+  // A file of valid JSON that is not an object (null, a number) parses, and every item step would throw on it
+  if (layout === null || typeof layout !== 'object' || Array.isArray(layout)) {
+    return { refusal: `Cannot read layout "${layoutName}": it does not hold a layout object. Nothing was changed.` };
+  }
+  return { layout: layout as Layout };
+}
+
+/**
+ * Apply `step` to each item in order. The first item it refuses, or that
+ * throws, refuses the whole call with that item's index; nothing has been
+ * written then.
+ */
+async function applyItems<T, R extends object>(
+  items: readonly T[], step: (item: T, index: number) => Promise<R | { error: string }>,
+): Promise<{ done: R[] } | { refusal: string }> {
+  const done: R[] = [];
+  for (const [index, item] of items.entries()) {
+    let outcome: R | { error: string };
+    try {
+      outcome = await step(item, index);
+    } catch (error) {
+      return { refusal: bulkItemRefusal(index, messageOf(error)) };
+    }
+    if ('error' in outcome && typeof outcome.error === 'string') return { refusal: bulkItemRefusal(index, outcome.error) };
+    done.push(outcome as R);
+  }
+  return { done };
+}
+
 const quoted = (names: readonly string[]) => names.map(n => `"${n}"`).join(', ');
 
-/** Register reorder_layers, move_layer and move_instance. */
+/** Register reorder_layers, move_layer, move_instance and move_instances. */
 export function registerLayerOrderTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
   const server = withProjectSync(mcpServer, reader);
 
@@ -419,6 +501,63 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
       } catch (error) {
         console.error('[move_instance] failed:', error);
         return toolError(`Error moving instance: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── move_instances ───────────────────────────────────────
+
+  server.tool(
+    'move_instances',
+    `Move many placed instances of one layout in one call: each item takes a uid and move_instance's other arguments and is applied as that tool applies it, in list order, so a position or an anchor counts the instances as the moves before it left them. Every move is checked and applied in memory first; if one is refused, nothing is changed and the message names the item by its 0-based index. Otherwise the layout file is written once (a failed write is rolled back, and the error names any file that could not safely be put back), or not at all when the moves leave it as it was. Up to ${MAX_BULK_INSTANCES} moves. Hierarchy links stay as they are. A dry run checks the moves; the write's own checks run only when it writes.`,
+    {
+      layoutName: z.string().max(200).describe('Layout name (as registered, in that letter case)'),
+      moves: z.array(z.object(moveInstanceShape)).min(1).max(MAX_BULK_INSTANCES)
+        .describe('Moves to apply, in order; each is a move_instance call without layoutName'),
+      dryRun: z.boolean().optional().default(false)
+        .describe('Check every move and apply it to the layout in memory, report the results, and write nothing (default: false)'),
+    },
+    async (args) => {
+      try {
+        const read = await readRegisteredLayout(reader, args.layoutName);
+        if ('refusal' in read) return toolError(read.refusal);
+        const { layout } = read;
+        const before = JSON.stringify(layout);
+
+        // Each move's checks, its arguments' included, at its turn; a throw becomes the item's refusal
+        const applied = await applyItems(args.moves, async (item, index) => {
+          const argsError = moveArgsError(item);
+          if (argsError) return { error: argsError };
+          const moved = moveInstanceInLayout(layout, args.layoutName, item);
+          if ('error' in moved) return moved;
+          return { index, uid: item.uid, ...moveFields(moved) };
+        });
+        if ('refusal' in applied) return toolError(applied.refusal);
+        const results: Array<Record<string, unknown>> = applied.done;
+
+        const common = { success: true, entity: args.layoutName, category: 'layout', count: results.length, results };
+        if (JSON.stringify(layout) === before) {
+          return toolResult({
+            ...common, action: 'unchanged', ...(args.dryRun ? { dryRun: true } : {}),
+            message: 'The moves leave the layout as it was. Nothing was written.',
+          }, { projectWritten: false });
+        }
+        if (args.dryRun) {
+          return toolResult({ ...common, action: 'dry-run', dryRun: true, message: 'Nothing was written.' });
+        }
+        let backupPath: string;
+        try {
+          backupPath = await writeLayout(args.layoutName, layout);
+        } catch (error) {
+          // writeEntityOrRollBack's message says what is on disk
+          console.error('[move_instances] write failed:', error);
+          return toolError(`Error writing layout "${args.layoutName}": ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return toolResult({ ...common, action: 'updated', backupFile: backupPath });
+      } catch (error) {
+        // The write's failures are answered above: what reaches here was thrown before anything was written
+        console.error('[move_instances] failed:', error);
+        return toolError(stoppedBeforeWrite(error));
       }
     }
   );

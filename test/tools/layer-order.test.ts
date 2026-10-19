@@ -7,7 +7,7 @@
  * on a temp copy of the minimal fixture, with the real reader and writer.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -366,6 +366,34 @@ describe('a failed layout write', () => {
     expect(data.text).toContain('left as it is: layouts/Layout 1.json (another write changed it after this call\'s write failed; '
       + 'its state from before the call is in layouts/Layout 1.json.bak)');
     expect(await readFile(layoutPath(), 'utf8')).toBe(saved);
+  });
+});
+
+describe('move_instance refusals', () => {
+  it('refuses an unknown toLayer with the text of the layer lookup, and changes nothing', async () => {
+    const before = await readFile(layoutPath(), 'utf8');
+    const data = await call('move_instance', { uid: 0, toLayer: 'Nowhere' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe('Layer "Nowhere" not found in layout "Layout 1". Available layers: Back, Main, Main > HUD, Main > Overlay, Main > Overlay > Top, Main > Overlay > Under, Front. Nothing was changed.');
+    expect(await readFile(layoutPath(), 'utf8')).toBe(before);
+  });
+
+  it('leaves the layout it read untouched in memory when it refuses', async () => {
+    const readLayoutOf = vi.spyOn(reader, 'readLayout');
+    const refusals: Array<Record<string, unknown>> = [
+      { uid: 0, toLayer: 'Nowhere' },
+      { uid: 0, toLayer: 'Front', position: 5 },
+      { uid: 0, toLayer: 'Front', afterUid: 3 },
+      { uid: 42, toLayer: 'Front' },
+      { uid: 9, toLayer: 'Front' },
+    ];
+    for (const args of refusals) {
+      const result = await call('move_instance', args);
+      expect(result.isError).toBe(true);
+      const layout = await readLayoutOf.mock.results[readLayoutOf.mock.results.length - 1].value as LayoutFile;
+      const fresh = JSON.parse(await readFile(layoutPath(), 'utf8')) as LayoutFile;
+      expect(JSON.stringify(layout)).toBe(JSON.stringify(fresh));
+    }
   });
 });
 
