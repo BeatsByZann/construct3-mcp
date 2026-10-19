@@ -27,6 +27,7 @@ export async function collectProjectFiles(rootDir: string, subDir = ''): Promise
   const fullDir = subDir ? join(rootDir, subDir) : rootDir;
   const entries = await readdir(fullDir, { withFileTypes: true });
   for (const entry of entries) {
+    if (SKIP_FILES.has(entry.name)) continue;
     const relPath = subDir ? `${subDir}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;

@@ -2,9 +2,11 @@
  * Minimal ZIP reader using Node.js built-ins, for .c3p project archives.
  *
  * Reads the central directory, then each entry's data, and inflates DEFLATE
- * entries with node:zlib. Construct 3 r506-2 saved a .c3p as a ZIP64 archive
- * with DEFLATE entries and backslashes in its paths; ZIP64 and STORE are read
- * as well. Encrypted entries, multi-disk archives, other compression methods,
+ * entries with node:zlib. Construct 3 r495.2 saved a .c3p as a ZIP64 archive
+ * whose entries are STORE or DEFLATE (a count of three editor-saved archives
+ * found both methods, and a UTF-8 flag on every entry), with backslashes in
+ * its paths; a save read in the editor page on r506-2 showed a ZIP64 central
+ * directory, DEFLATE entries and backslash names. Encrypted entries, multi-disk archives, other compression methods,
  * entry paths that are unsafe or name their file ambiguously, and two entries
  * that would land on one file or folder are refused rather than guessed at.
  */

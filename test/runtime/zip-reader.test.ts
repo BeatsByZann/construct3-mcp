@@ -1,7 +1,8 @@
 /**
  * The .c3p zip reader, round-tripped against the project's zip writer and
- * against archives built as Construct 3 r506-2 saved one (ZIP64 records,
- * DEFLATE, backslash paths), damaged, or crafted to be unsafe. The archives are
+ * against archives built as Construct 3 saved them (r495.2: ZIP64 records,
+ * STORE and DEFLATE entries, backslash paths; r506-2: ZIP64, DEFLATE,
+ * backslash paths), damaged, or crafted to be unsafe. The archives are
  * synthetic.
  */
 
@@ -54,7 +55,7 @@ function unicodePathRecord(nameBytes: Buffer, unicodeName: string, crc = crc32(n
 }
 
 /**
- * A ZIP64 archive shaped like the ones Construct r506-2 saves: every size and
+ * A ZIP64 archive shaped like the ones Construct r495.2 saved: every size and
  * offset in the local and central headers is the 0xFFFFFFFF placeholder, the
  * real values sit in each entry's ZIP64 extra field, and the end record points
  * to a ZIP64 end record through a locator. Entries are DEFLATE-compressed
@@ -166,6 +167,15 @@ describe('readZip', () => {
     expect(readZip(withDir).map(e => e.path)).toEqual(['images/a.png']);
   });
 
+  it('lists a repeated directory entry once', () => {
+    const zip = zipBuffer([
+      { path: 'files/', data: Buffer.alloc(0) },
+      { path: 'files\\', data: Buffer.alloc(0) },
+      { path: 'files/a.txt', data: Buffer.from('a') },
+    ]);
+    expect(readZipArchive(zip).directories).toEqual(['files/']);
+  });
+
   it('lists directory entries apart from files', () => {
     const zip = zipBuffer([{ path: 'files/', data: Buffer.alloc(0) }, { path: 'files/a.txt', data: Buffer.from('a') }]);
     const archive = readZipArchive(zip);
@@ -225,7 +235,7 @@ describe('readZip', () => {
     expect(() => readZipArchive(archive)).toThrow(/images\/\.\/a\.png/);
   });
 
-  it('reads backslashes as folder separators, as Construct on Windows writes its paths', () => {
+  it('reads backslashes as folder separators', () => {
     expect(checkEntryPath('objectTypes\\System Objects\\Keyboard.json')).toBe('objectTypes/System Objects/Keyboard.json');
     const zip = zipBuffer([{ path: 'project.c3proj', data: json }, { path: 'images\\', data: Buffer.alloc(0) }, { path: 'images\\a.png', data: png }]);
     expect(readZip(zip).map(e => e.path)).toEqual(['project.c3proj', 'images/a.png']);
@@ -287,7 +297,7 @@ describe('readZip', () => {
     expect(() => readZip(placeholder)).toThrow(/missing its ZIP64 sizes/);
   });
 
-  it('reads a ZIP64 archive laid out as Construct saves a .c3p', () => {
+  it('reads a ZIP64 archive with placeholder sizes, DEFLATE entries and backslash paths', () => {
     const entries = [
       { path: 'project.c3proj', data: json },
       { path: 'objectTypes\\System Objects\\Keyboard.json', data: Buffer.from('{"name":"Keyboard"}') },
