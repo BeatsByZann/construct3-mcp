@@ -1,0 +1,89 @@
+{
+  "system": {
+    "layout": {
+      "conditions": [
+        { "id": "on-start-of-layout", "params": [] }
+      ],
+      "actions": []
+    },
+    "values": {
+      "conditions": [
+        {
+          "id": "compare-two-values",
+          "params": [
+            { "id": "first-value", "type": "any" },
+            { "id": "comparison", "type": "cmp" },
+            { "id": "second-value", "type": "any" }
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "id": "set-eventvar-value",
+          "params": [
+            { "id": "variable", "type": "eventvar" },
+            { "id": "value", "type": "any" }
+          ]
+        }
+      ],
+      "expressions": [
+        {
+          "id": "choose",
+          "expressionName": "choose",
+          "isVariadicParameters": true,
+          "returnType": "any",
+          "params": [
+            { "id": "a", "type": "any" },
+            { "id": "b", "type": "any" }
+          ]
+        },
+        {
+          "id": "int",
+          "expressionName": "int",
+          "returnType": "number",
+          "params": [
+            { "id": "value", "type": "any" }
+          ]
+        },
+        {
+          "id": "random",
+          "expressionName": "random",
+          "returnType": "number",
+          "params": [
+            { "id": "a", "type": "number" },
+            { "id": "b", "type": "number" }
+          ]
+        }
+      ]
+    }
+  },
+  "Sprite": {
+    "animations": {
+      "conditions": [],
+      "actions": [
+        {
+          "id": "set-animation",
+          "params": [
+            { "id": "animation", "type": "string" },
+            { "id": "from", "type": "combo", "items": ["current-frame", "beginning"] }
+          ]
+        }
+      ]
+    }
+  },
+  "Audio": {
+    "playback": {
+      "actions": [
+        {
+          "id": "play",
+          "params": [
+            { "id": "audio-file", "type": "audiofile" },
+            { "id": "loop", "type": "combo", "items": ["not-looping", "looping"] },
+            { "id": "volume", "type": "number" },
+            { "id": "tag", "type": "string" }
+          ]
+        }
+      ]
+    }
+  }
+}

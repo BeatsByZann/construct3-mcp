@@ -1,0 +1,20 @@
+{
+  "Platform": {
+    "movement": {
+      "conditions": [
+        { "id": "is-on-floor", "params": [] }
+      ],
+      "actions": [
+        {
+          "id": "simulate-control",
+          "params": [
+            { "id": "control", "type": "combo", "items": ["left", "right", "jump"] }
+          ]
+        }
+      ],
+      "expressions": [
+        { "id": "VectorX", "expressionName": "VectorX", "returnType": "number" }
+      ]
+    }
+  }
+}
