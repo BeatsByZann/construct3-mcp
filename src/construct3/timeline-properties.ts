@@ -16,8 +16,9 @@
  *   and plugin properties use `source: { type: 'plugin', uid: <plugin id> }`;
  *   the track's `property` is the variable name or the plugin property id.
  * - Numbers: `rValue` is the offset from the instance's own value
- *   (`aValue - base`), and `value` repeats `aValue` when the effective result
- *   mode is "absolute" and `rValue` otherwise.
+ *   (`aValue - base`), and `value` equals `rValue` under the "default" result
+ *   mode. The tools write `value` as `aValue` under "absolute"; no fixture
+ *   holds an absolute-mode track, so check the result in the Construct 3 editor.
  * - Strings and booleans: `value`, `rValue` and `aValue` are all the value.
  * - Color: `value` and `aValue` are the [r, g, b, a] array; there is no `rValue`.
  * - Only offsetX and offsetY use `pathMode: 'default'` and a `cubic-bezier`

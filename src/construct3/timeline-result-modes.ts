@@ -27,9 +27,10 @@ export function keyframeMode(
 
 /**
  * Recompute each numeric keyframe's `value` after a result mode changed: the
- * editor stores `aValue` there under "absolute" and `rValue` otherwise, and
- * rewrites stale values when it saves. Only typed instance tracks are
- * touched; untyped (legacy) tracks keep their stored values.
+ * tools write `aValue` there under "absolute" and `rValue` otherwise. No
+ * fixture holds an absolute-mode track, so check the result in the Construct 3
+ * editor. Only typed instance tracks are touched; untyped (legacy) tracks keep
+ * their stored values.
  */
 export function refreshModeValues(data: Timeline): void {
   for (const { track } of listTracks(data)) {
@@ -56,18 +57,17 @@ export function folderModeError(data: Timeline, loc: TrackLocation): string | nu
 }
 
 /**
- * Untyped (older) tracks whose values follow the timeline's result mode:
- * neither the track nor a property track sets its own mode. An untyped track
- * that sets "relative" or "absolute" on the track keeps valid values when the
- * timeline-level mode changes.
+ * Untyped instance tracks whose result mode is the timeline's: a property
+ * track of the track has no mode of its own and neither has the track. A
+ * keyframe's own mode needs no separate check: a keyframe that is "default"
+ * with its property track and track is "default" with them alone.
  */
 export function legacyTracksFollowingTimeline(data: Timeline): number[] {
   const uids: number[] = [];
   for (const { track } of listTracks(data)) {
     if (trackKind(track) !== 'legacy-instance-track') continue;
     const follows = listPropertyTracks(track).some(({ propertyTrack }) =>
-      effectiveResultMode(propertyTrack.resultMode, track.resultMode) === 'default'
-      || (propertyTrack.propertyKeyframes ?? []).some(kf => effectiveResultMode(kf.resultMode, propertyTrack.resultMode, track.resultMode) === 'default'));
+      effectiveResultMode(propertyTrack.resultMode, track.resultMode) === 'default');
     if (follows) uids.push(track.worldInstance as number);
   }
   return uids;

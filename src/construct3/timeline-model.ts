@@ -5,21 +5,25 @@
  * Shapes checked against timelines saved by the Construct 3 r495.2 editor
  * (test/fixtures/timeline-kinds/shapes-r495.json):
  * - Track kinds: `instance-track`, `value-track` and `audio-track`, plus
- *   tracks with no `type` at all, which are an older instance-track form: they
- *   carry `worldInstance` but no `objectType`, `project` or `resizeMode`, and
- *   their property keyframes have no `resultMode` and often no
- *   `rValue`/`aValue`. No fixture shows the same timeline before and after an
- *   upgrade, so these tools read such tracks but never rewrite their values.
+ *   tracks with no `type` at all (untyped instance tracks): the `legacyTrack`
+ *   shape carries `worldInstance` but no `objectType`, `project` or
+ *   `resizeMode`, and its property keyframes carry `value` but no
+ *   `resultMode`, `rValue` or `aValue`. No fixture shows how the editor treats
+ *   such a track, so these tools read it but never rewrite its values.
  * - A value track has one property track, `value`, with
  *   `source: { type: 'value', uid: 'value' }`; its keyframes carry `value`,
- *   `rValue` and `aValue` (all equal) and no `resultMode` or `pathMode`. The
- *   track, its property track and its master keyframes have no
+ *   `rValue` and `aValue` and no `resultMode` or `pathMode`. The track, its
+ *   property track and its master keyframes have no
  *   `resultMode`/`pathMode`/`resizeMode` keys.
  * - An audio track has one property track, `audioSource`, with
  *   `source: { type: 'audio', uid: 'audio' }`, no keyframes, and a
- *   `sourceAdapter` whose `audioProjectFile` is a verbatim copy of the file's
- *   `rootFileFolders` entry and whose `audioType` names that root folder. The
- *   audio track keeps `resultMode` but has no `pathMode`/`resizeMode`.
+ *   `sourceAdapter` with `audioProjectFile` (an object with `name`, `type`,
+ *   `sid` and `file-info`), `audioProjectFilePath`, `audioStartOffset`,
+ *   `audioTag` and `audioType` (a string). The tools write `audioProjectFile`
+ *   as a copy of the file's `rootFileFolders` entry and `audioType` as the
+ *   root folder's name; the fixture holds no values, so check the result in
+ *   the Construct 3 editor. The audio track keeps `resultMode` but has no
+ *   `pathMode`/`resizeMode`.
  * - Folders: `tracksRoot` and each track's `propertyTracksRoot` are folders.
  *   A track or property track moved into a subfolder is removed from
  *   `tracks`/`propertyTracks` and stored whole in the subfolder's `items`.
@@ -30,8 +34,8 @@
  *   `{ name, linear, purpose, transitionKeyframes }`, registered in the first,
  *   nameless subfolder of the project.c3proj `timelines` container (empty or
  *   not). Each timeline that uses the ease embeds a copy in `transitionsData`
- *   as `{ folders: [], json: <ease file> }`; timelines that do not use it
- *   carry no entry.
+ *   as `{ folders: [], json: <ease file> }`. The tools add an entry only for
+ *   an ease the timeline uses.
  */
 
 import type {
@@ -217,8 +221,8 @@ export function summarizeTracks(data: Timeline): Array<Record<string, unknown>> 
       keyframeCount: Array.isArray(propertyTrack.propertyKeyframes) ? propertyTrack.propertyKeyframes.length : 0,
     }));
     if (kind === 'legacy-instance-track') {
-      summary.note = 'Untyped instance track from an older Construct release. Tools can remove, move or re-flag it, '
-        + 'but refuse to change its values; open and save it in the Construct 3 editor first.';
+      summary.note = 'Untyped instance track (no type, objectType, project or resizeMode). Tools can remove, move or re-flag it, '
+        + 'but refuse to change its values.';
     }
     if (kind === 'audio-track') {
       const adapter = listPropertyTracks(track)[0]?.propertyTrack.sourceAdapter as Record<string, unknown> | undefined;
@@ -507,10 +511,6 @@ export function referencedEases(data: Timeline): Set<string> {
   while (pending.length > 0) {
     const { value, top } = pending.pop()!;
     if (!value || typeof value !== 'object') continue;
-    if (Array.isArray(value)) {
-      for (const item of value) pending.push({ value: item, top: false });
-      continue;
-    }
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
       if (top && key === 'transitionsData') continue;
       if (key === 'ease' && typeof entry === 'string') names.add(entry);

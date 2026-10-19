@@ -19,6 +19,7 @@ describe('ease parameters', () => {
     expect(needsEaseLookup({ ease: easeParameterValue(EASE) })).toBe(false);
     expect(needsEaseLookup({ time: '1' })).toBe(false);
     expect(needsEaseLookup(['Bouncy'])).toBe(false);
+    expect(needsEaseLookup(Object.assign(['x'], { ease: 'Bouncy' }))).toBe(false);
   });
 
   it('reads the ease name from a string or an embedded copy', () => {

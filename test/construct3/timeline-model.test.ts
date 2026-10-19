@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
   trackKind,
   listTracks,
@@ -177,6 +179,18 @@ describe('custom eases', () => {
     ]);
     expect(easeWarnings(['Swoop', 'default'], new Map([['Swoop', EASE]]))).toEqual([]);
     expect(easeWarnings([undefined], new Map())).toEqual([]);
+  });
+});
+
+describe('untyped track fixture', () => {
+  it('has the keys of the recorded legacy shape, in order, and reads as an untyped instance track', () => {
+    const dir = join(__dirname, '..', 'fixtures', 'timeline-kinds');
+    const shapes = JSON.parse(readFileSync(join(dir, 'shapes-r495.json'), 'utf-8')) as { legacyTimelineKeys: string[]; legacyTrack: Record<string, unknown> };
+    const legacy = JSON.parse(readFileSync(join(dir, 'Legacy.json'), 'utf-8')) as Timeline;
+    expect(Object.keys(legacy)).toEqual(shapes.legacyTimelineKeys);
+    const track = legacy.tracks[0] as AnyTrack;
+    expect(Object.keys(track)).toEqual(Object.keys(shapes.legacyTrack));
+    expect(trackKind(track)).toBe('legacy-instance-track');
   });
 });
 

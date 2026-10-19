@@ -38,13 +38,17 @@ describe('refreshModeValues', () => {
   it('stores aValue under absolute and rValue otherwise on a typed track, and leaves an untyped track alone', () => {
     const typed = keyframe(0);
     const untyped = keyframe(99);
+    const color = keyframe(0, { value: [0, 0, 0, 1], aValue: [1, 1, 1, 1], rValue: undefined });
+    const text = keyframe(0, { value: 'a', aValue: 'b', rValue: 'b' });
     const data = timeline([
-      { type: 'instance-track', worldInstance: 1, propertyTracks: [propertyTrack([typed])] },
+      { type: 'instance-track', worldInstance: 1, propertyTracks: [propertyTrack([typed, color, text])] },
       { worldInstance: 2, propertyTracks: [propertyTrack([untyped])] },
     ], { resultMode: 'absolute' });
     refreshModeValues(data);
     expect(typed.value).toBe(15);
     expect(untyped.value).toBe(99);
+    expect(color.value).toEqual([0, 0, 0, 1]);
+    expect(text.value).toBe('a');
 
     data.resultMode = 'relative';
     refreshModeValues(data);

@@ -546,8 +546,8 @@ export interface TimelineKeyframeAddon {
  *
  * `value` is the property's value relative to the instance's layout value and
  * `aValue` is its absolute value: the offsetX keyframe of timeline-sample carries
- * `value: 0, aValue: 324` for an instance placed at x 324. `rValue` equals
- * `value` in every observed keyframe.
+ * `value: 0, aValue: 324` for an instance placed at x 324. Under the "default"
+ * result mode `rValue` equals `value`.
  */
 export interface TimelinePropertyKeyframe {
   time: number;
@@ -555,7 +555,7 @@ export interface TimelinePropertyKeyframe {
   resultMode: string;
   ease: string;
   pathMode: string;
-  /** Equal to `aValue` when the result mode in force is "absolute", otherwise to `rValue`. */
+  /** The tools write `aValue` here under the "absolute" result mode and `rValue` otherwise. */
   value: number | string | boolean | number[];
   /** Offset from the instance's own value for numbers; the value itself for strings and booleans; absent for colors. */
   rValue?: number | string | boolean;
