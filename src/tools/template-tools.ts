@@ -33,6 +33,17 @@ function skippedWarnings(skipped: readonly UnscannedFile[], consequence: string)
   return [`${consequence} Layouts that could not be parsed: ${skipped.map(f => `${f.file} (${f.reason})`).join(', ')}.`];
 }
 
+/** The most orphaned replicas one result lists. */
+const ORPHAN_LIST_LIMIT = 50;
+
+/** The text with every absolute path (drive, UNC or rooted) replaced, from its start to the end of the line or a quote. */
+function withoutAbsolutePaths(text: string): string {
+  return text
+    .replace(/[A-Za-z]:[\\/][^"'\r\n]*/g, '(path removed)')
+    .replace(/\\\\[^"'\r\n]*/g, '(path removed)')
+    .replace(/(?<![\w.])\/(?:[\w.-]+\/)+[^"'\r\n]*/g, '(path removed)');
+}
+
 /** Register list_templates. */
 export function registerTemplateTools({ server: mcpServer, reader }: MutationToolDeps): void {
   const server = withProjectSync(mcpServer, reader);
@@ -59,9 +70,7 @@ export function registerTemplateTools({ server: mcpServer, reader }: MutationToo
         const templates: Row[] = [];
         const replicas: Replica[] = [];
         for (const layoutName of await reader.listLayouts()) {
-          const layout = layouts.get(layoutName);
-          if (layout === undefined) continue;
-          forEachLayoutInstance(layout, (instance: Instance) => {
+          forEachLayoutInstance(layouts.get(layoutName), (instance: Instance) => {
             const block = readTemplate(instance);
             if (!block || (args.objectType !== undefined && instance.type !== args.objectType)) return;
             if (block.mode === 'template' && block.templateName) {
@@ -71,7 +80,7 @@ export function registerTemplateTools({ server: mcpServer, reader }: MutationToo
             }
           });
         }
-        // A replica names its source template, not the source's UID: counted per (object type, name), names compared as sameTemplateName does
+        // A replica names its source template, not the source's UID: counted per (object type, name), names compared as templateKey does (exactly, like sameTemplateName)
         const counts = new Map<string, number>();
         for (const r of replicas) {
           const key = templateKey(r.objectType, r.sourceTemplateName);
@@ -81,18 +90,25 @@ export function registerTemplateTools({ server: mcpServer, reader }: MutationToo
         const known = new Set(templates.map(row => templateKey(row.objectType, row.templateName)));
         const orphans = replicas.filter(r => !known.has(templateKey(r.objectType, r.sourceTemplateName)));
 
+        const cut = orphans.length > ORPHAN_LIST_LIMIT;
+        const warnings = [
+          ...skippedWarnings(skipped, 'Templates and replicas in these layouts are not listed, so counts and orphans may be wrong.'),
+          ...(cut ? [`Only the first ${ORPHAN_LIST_LIMIT} of ${orphans.length} orphaned replicas are listed.`] : []),
+        ];
+
         return toolResult({
           templates,
           count: templates.length,
-          // A replica whose template instance is not in this project
-          orphanedReplicas: orphans.length > 0 ? orphans.slice(0, 50) : undefined,
+          // A replica whose template instance was not found in the layouts that could be read
+          orphanedReplicas: orphans.length > 0 ? orphans.slice(0, ORPHAN_LIST_LIMIT) : undefined,
           orphanedReplicaCount: orphans.length > 0 ? orphans.length : undefined,
+          orphanedReplicasTruncated: cut ? true : undefined,
           ...(skipped.length > 0 ? { complete: false, unscannedFiles: skipped.map(({ file, reason }) => ({ file, reason })) } : {}),
-          warnings: skipped.length > 0 ? skippedWarnings(skipped, 'Templates and replicas in these layouts are not listed.') : undefined,
+          warnings: warnings.length > 0 ? warnings : undefined,
         });
       } catch (error) {
         console.error('[list_templates] failed:', error);
-        return toolError(`Error listing templates: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing templates: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error))}`);
       }
     }
   );

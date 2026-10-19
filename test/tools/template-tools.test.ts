@@ -27,7 +27,7 @@ interface Orphan { objectType: string; layout: string; uid: number; sourceTempla
 interface ToolData {
   isError?: boolean; text?: string; templates?: Row[]; count?: number;
   orphanedReplicas?: Orphan[]; orphanedReplicaCount?: number;
-  complete?: boolean; unscannedFiles?: Array<{ file: string; reason: string }>; warnings?: string[];
+  orphanedReplicasTruncated?: boolean; complete?: boolean; unscannedFiles?: Array<{ file: string; reason: string }>; warnings?: string[];
 }
 
 let tmpDir: string;
@@ -161,6 +161,22 @@ describe('list_templates', () => {
     const data = await call();
     expect(data.orphanedReplicas).toHaveLength(50);
     expect(data.orphanedReplicaCount).toBe(52);
+    expect(data.orphanedReplicasTruncated).toBe(true);
+    expect(data.warnings).toEqual(['Only the first 50 of 52 orphaned replicas are listed.']);
+  });
+
+  it('does not flag a list of exactly 50 orphans as cut', async () => {
+    await setupTemplates();
+    const layout = await readLevel1();
+    for (let i = 0; i < 50; i++) addReplica(layout, 'Enemy', 100 + i, 'Gone');
+    await writeLevel1(layout);
+    await reader.loadProject();
+    resetProjectIndex();
+
+    const data = await call();
+    expect(data.orphanedReplicas).toHaveLength(50);
+    expect(data.orphanedReplicasTruncated).toBeUndefined();
+    expect(data.warnings).toBeUndefined();
   });
 
   it('refuses an unknown object type filter with the plain not-found text, and a case variant with the letter-case hint', async () => {
@@ -187,6 +203,7 @@ describe('list_templates', () => {
     expect(data.complete).toBe(false);
     expect(data.unscannedFiles).toEqual([{ file: 'layouts/Level 2', reason: 'not valid JSON' }]);
     expect(data.warnings?.join(' ')).toContain('layouts/Level 2 (not valid JSON)');
+    expect(data.warnings?.join(' ')).toContain('counts and orphans may be wrong');
     expect(data.templates?.map(t => t.templateName)).toEqual(['PlayerT', 'EnemyT']);
     expect(text).not.toContain(tmpDir);
     expect(text).not.toMatch(/[A-Za-z]:[\\/]/);
@@ -231,6 +248,18 @@ describe('list_templates', () => {
     expect(data.isError).toBe(true);
     expect(data.text).toBe('Error listing templates: read failed');
     expect(log).toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it('removes an absolute path from the message of an error', async () => {
+    await setupTemplates();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(reader, 'readAllLayouts').mockRejectedValue(new Error("EACCES: permission denied, open 'C:\\Users\\Someone Else\\proj\\layouts\\Level 1.json'"));
+    const windows = await call();
+    expect(windows.text).toBe('Error listing templates: EACCES: permission denied, open \'(path removed)\'');
+    vi.spyOn(reader, 'readAllLayouts').mockRejectedValue(new Error('ENOENT: no such file /home/someone/proj/layouts/Level 1.json'));
+    const posix = await call();
+    expect(posix.text).toBe('Error listing templates: ENOENT: no such file (path removed)');
     vi.restoreAllMocks();
   });
 
