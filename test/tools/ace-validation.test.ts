@@ -31,6 +31,7 @@ const dirs: string[] = [];
 let restoreNetwork: () => void;
 let savedEnv: string | undefined;
 
+/** A new temp folder, removed after the test. */
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'c3-ace-tools-'));
   dirs.push(dir);
@@ -61,10 +62,18 @@ async function putAddon(parent: string, name: string, id = 'ProbeTimer'): Promis
   return target;
 }
 
-async function call(server: MockServer, args: Record<string, unknown>): Promise<{ isError: boolean; text: string; data: Record<string, any> }> {
+/** The shape load_addon_definitions returns on success. */
+interface ToolPayload {
+  loaded: Array<{ id: string; source: string }>;
+  skipped: Array<{ name: string; reason: string }>;
+  nowLoaded: string[];
+}
+
+/** Call the tool; `data` is the parsed payload, empty after an error. */
+async function call(server: MockServer, args: Record<string, unknown>): Promise<{ isError: boolean; text: string; data: ToolPayload }> {
   const result = await server.callTool('load_addon_definitions', args) as { isError?: boolean; content: Array<{ text: string }> };
   const text = result.content[0].text;
-  return { isError: result.isError === true, text, data: result.isError ? {} : JSON.parse(text) };
+  return { isError: result.isError === true, text, data: result.isError ? { loaded: [], skipped: [], nowLoaded: [] } : JSON.parse(text) as ToolPayload };
 }
 
 beforeEach(() => {
@@ -130,7 +139,7 @@ describe('load_addon_definitions', () => {
     const { dir, server } = await openProject();
     const result = await call(server, { path: join(dir, 'nowhere') });
     expect(result.isError).toBe(true);
-    expect(result.text).toBe('Error loading addon definitions: nowhere: not found Nothing was loaded.');
+    expect(result.text).toBe('Error loading addon definitions: nowhere: not found. Nothing was loaded.');
   });
 
   it('lists the entries it skipped by base name', async () => {
@@ -142,7 +151,7 @@ describe('load_addon_definitions', () => {
     await writeFile(join(folder, 'broken', 'addon.json'), '{"type":"effect","id":"x"}');
     await writeFile(join(folder, 'broken', 'aces.json'), '{}');
     const result = await call(server, { path: folder });
-    expect(result.data.loaded.map((d: { id: string }) => d.id)).toEqual(['GoodTimer']);
+    expect(result.data.loaded.map(d => d.id)).toEqual(['GoodTimer']);
     expect(result.data.skipped).toEqual([{ name: 'broken', reason: expect.stringContaining('only plugins and behaviors') }]);
     expect(result.text).not.toContain(dir);
   });

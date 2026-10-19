@@ -194,7 +194,8 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
         }
         const report = await defs.load(args.path);
         if (report.loaded.length === 0) {
-          const text = report.skipped.map(s => `${s.name}: ${s.reason}`).join('; ');
+          const joined = report.skipped.map(s => `${s.name}: ${s.reason}`).join('; ');
+          const text = joined.endsWith('.') ? joined : `${joined}.`;
           return toolError(`Error loading addon definitions: ${text}${text.endsWith('Nothing was loaded.') ? '' : ' Nothing was loaded.'}`);
         }
         return toolResult({ loaded: report.loaded, skipped: report.skipped, nowLoaded: nowLoaded(defs) });

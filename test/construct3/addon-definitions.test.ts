@@ -54,7 +54,7 @@ async function makeAddon(dir: string, id = 'ProbeTimer', bom = false): Promise<s
   const addon = (await readFile(join(FIXTURE, 'addon.json'), 'utf8')).replace('"ProbeTimer"', JSON.stringify(id));
   const aces = await readFile(join(FIXTURE, 'aces.json'), 'utf8');
   await writeFile(join(dir, 'addon.json'), addon);
-  await writeFile(join(dir, 'aces.json'), (bom ? '﻿' : '') + aces);
+  await writeFile(join(dir, 'aces.json'), (bom ? '\uFEFF' : '') + aces);
   return dir;
 }
 
@@ -186,11 +186,44 @@ describe('the allowed roots', () => {
     const defs = await registryWith(project);
     // Roots that do not exist are dropped by setRoots, so put one in directly.
     (defs as unknown as { realRoots: string[] }).realRoots = ['\\\\server', '//server', project];
-    for (const path of ['\\\\server\\share\\addon', '//server/share/addon']) {
+    vi.mocked(realpath).mockClear();
+    const forms = ['\\\\server\\share\\addon', '//server/share/addon', '/\\server\\share\\addon', '\\/server/share/addon'];
+    for (const path of forms) {
       const report = await defs.load(path);
       expect(report.loaded).toEqual([]);
       expect(report.skipped).toEqual([{ name: 'addon', reason: 'a network path is not accepted. Nothing was loaded.' }]);
     }
+    expect(vi.mocked(realpath)).not.toHaveBeenCalled();
+  });
+
+  it('refuses a relative path that resolves to a network path, before realpath', async () => {
+    const defs = await registryWith(project);
+    vi.mocked(realpath).mockClear();
+    vi.spyOn(process, 'cwd').mockReturnValue('\\\\server\\share');
+    const report = await defs.load('addon');
+    expect(report.skipped).toEqual([{ name: 'addon', reason: 'a network path is not accepted. Nothing was loaded.' }]);
+    expect(vi.mocked(realpath)).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a network root', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(realpath).mockClear();
+    const defs = await registryWith('//server/share', '\\\\server\\share', '/\\server\\share');
+    expect(defs.roots()).toEqual([]);
+    expect(vi.mocked(realpath)).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports a child link whose target is gone and still loads the others', async ctx => {
+    const folder = join(project, 'addons');
+    await makeAddon(join(folder, 'good'), 'GoodTimer');
+    await mkdir(join(other, 'gone'));
+    if (!linkDirectory(join(other, 'gone'), join(folder, 'dangling'))) ctx.skip('this platform refused to create a directory link');
+    await rm(join(other, 'gone'), { recursive: true });
+    const defs = await registryWith(project);
+    const report = await defs.load(folder);
+    expect(report.loaded.map(d => d.id)).toEqual(['GoodTimer']);
+    expect(report.skipped).toEqual([{ name: 'dangling', reason: 'could not be read' }]);
   });
 
   it('carries no absolute path and no file text in a report', async () => {

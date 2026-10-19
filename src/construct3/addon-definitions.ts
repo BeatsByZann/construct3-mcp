@@ -46,9 +46,9 @@ function baseName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? '';
 }
 
-/** True for a network path (`\\server\share` or `//server/share`). */
+/** True for a network path: two separators of either kind lead it (`\\server\share`, `//server/share`, `/\server`), which Windows reads as a network root. */
 function isNetworkPath(path: string): boolean {
-  return path.startsWith('\\\\') || path.startsWith('//');
+  return /^[\\/]{2}/.test(path);
 }
 
 /** The case a path comparison uses: the file systems of Windows and macOS ignore case. */
@@ -128,6 +128,11 @@ export class AddonDefinitions implements AddonLookup {
   async setRoots(roots: readonly string[]): Promise<void> {
     const real: string[] = [];
     for (const root of roots) {
+      // A network root would be contacted by realpath, and load refuses network paths anyway
+      if (isNetworkPath(root)) {
+        console.error(`Addon definitions root not accepted: ${baseName(root)}`);
+        continue;
+      }
       try {
         const resolved = await realpath(resolve(root));
         if (!real.includes(resolved)) real.push(resolved);
@@ -144,6 +149,7 @@ export class AddonDefinitions implements AddonLookup {
     return real !== undefined && this.isInsideRoots(real) ? real : undefined;
   }
 
+  /** The real path of `path`, or undefined when it does not exist or cannot be resolved. */
   private async realPathOf(path: string): Promise<string | undefined> {
     try {
       return await realpath(path);
@@ -152,6 +158,7 @@ export class AddonDefinitions implements AddonLookup {
     }
   }
 
+  /** True when the real path `real` lies inside one of the stored roots. */
   private isInsideRoots(real: string): boolean {
     return this.realRoots.some(root => isInside(root, real));
   }
@@ -165,7 +172,7 @@ export class AddonDefinitions implements AddonLookup {
   async load(path: string): Promise<LoadReport> {
     const report: LoadReport = { loaded: [], skipped: [] };
     const name = baseName(path);
-    if (isNetworkPath(path)) {
+    if (isNetworkPath(path) || isNetworkPath(resolve(path))) {
       report.skipped.push({ name, reason: `a network path is not accepted. ${NOTHING_LOADED}` });
       return report;
     }
@@ -203,7 +210,11 @@ export class AddonDefinitions implements AddonLookup {
     }
     for (const entry of entries) {
       const childReal = await this.realPathOf(join(real, entry));
-      if (childReal === undefined) continue;
+      if (childReal === undefined) {
+        found++;
+        report.skipped.push({ name: entry, reason: 'could not be read' });
+        continue;
+      }
       if (!this.isInsideRoots(childReal)) {
         found++;
         report.skipped.push({ name: entry, reason: OUTSIDE });
@@ -218,6 +229,7 @@ export class AddonDefinitions implements AddonLookup {
     return report;
   }
 
+  /** True when the folder holds an addon.json (the file's real path is checked when it is read). */
   private async isAddonFolder(folder: string): Promise<boolean> {
     try {
       await stat(join(folder, 'addon.json'));
