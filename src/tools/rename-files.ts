@@ -189,6 +189,9 @@ const bytesOf = (content: string | Buffer): Buffer => (typeof content === 'strin
  * record one when it failed), which restoreForCall compares the file with.
  * It holds other bytes: another write's, left as it is and recorded as
  * such, so the message names it with its backup.
+ * A file that is gone is taken as the call's own replace or delete, also
+ * when another program removed it meanwhile; the rollback then writes the
+ * bytes from before the call back.
  */
 async function recordFailedSideWrite(
   side: RenameSideWrites, path: string, before: Buffer | null, written: Buffer | null,
@@ -306,9 +309,9 @@ export async function moveViewStateFiles(
           warnings.push(`The editor's view state ${fromLabel} was left as it is: ${writer.projectRelative(taken)} already exists.`);
           continue;
         }
-        // Only the old name goes, and only while it is as read (deleteFile keeps a .bak of it)
+        // Only the old name goes, and only while it is as read: refused early here, and again by the writer under the file's lock (deleteFile keeps a .bak of it)
         await assertUnchangedSinceRead(writer, from);
-        await writer.deleteFile(fromPath);
+        await writer.deleteFile(fromPath, { expected: from.state });
       } else {
         await moveFileForRename(writer, newSideWrites(), from, toPath, content);
       }
@@ -336,7 +339,7 @@ async function putBackSideWrites(writer: RenameWriter, side: RenameSideWrites): 
     const back = side.imageRenames.map(r => ({ from: r.to, to: r.from })).reverse();
     try {
       await writer.renameImageFiles(back);
-      putBack.push(`the ${side.imageRenames.length} image file(s) it renamed in images/ (renamed back)`);
+      putBack.push(`images/ (${side.imageRenames.length} file(s) the call renamed, renamed back)`);
     } catch (error) {
       left.push(`the image files it renamed in images/ (renaming them back failed: ${reasonOf(error, relative)}; `
         + `rename them back by hand: ${back.map(r => `images/${r.from} to images/${r.to}`).join(', ')})`);
