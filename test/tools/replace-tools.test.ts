@@ -14,9 +14,18 @@ import { join, relative } from 'path';
 import { Construct3ProjectReader, ProjectReadError } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
-import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import { NON_OBJECT_PARAMETER_KEYS, OBJECT_PARAMETER_KEYS, resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import { OTHER_NAME_PARAMETER_KEYS } from '../../src/construct3/object-name-references.js';
 import { MockServer } from '../mocks/mock-server.js';
-import { MAX_EVENT_DEPTH, expressionMembers, registerReplaceTools } from '../../src/tools/replace-tools.js';
+import {
+  MAX_EVENT_DEPTH,
+  NAME_PARAMETER_KEYS,
+  RegexTimeoutError,
+  expressionMembers,
+  isProtectedParameter,
+  matchAllBounded,
+  registerReplaceTools,
+} from '../../src/tools/replace-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'rename-project');
 const MAIN_BLOCK = 610000000000015;
@@ -59,6 +68,22 @@ interface Result {
   warnings?: string[];
   unscannedFiles?: Array<{ file: string; reason: string; textSearch: string; names?: string[] }>;
 }
+interface ExprChange { sheet: string; eventSid?: number; path: string; key: string; before: string; after: string }
+interface ExprResult {
+  success: boolean;
+  action: string;
+  sheetsScanned: number;
+  totalMatches: number;
+  parametersChanged: number;
+  bySheet: Array<{ sheet: string; parameters: number; matches: number }>;
+  changes: ExprChange[];
+  changesTruncated: boolean;
+  filesWritten: string[];
+  dryRun: boolean;
+  complete?: boolean;
+  warnings?: string[];
+  unscannedFiles?: Array<{ file: string; reason: string; textSearch: string; names?: string[]; searchedFor?: string[] }>;
+}
 type Call = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
 let tmpDir: string;
@@ -70,6 +95,8 @@ const parse = (result: Call): Result => JSON.parse(result.content[0].text) as Re
 const textOf = (result: Call): string => result.content[0].text;
 const swap = (args: Record<string, unknown>): Promise<Call> => server.callTool('replace_object_in_events', { fromObject: 'Player', toObject: 'Enemy', ...args });
 const path = (...segments: string[]): string => join(tmpDir, ...segments);
+const parseExpr = (result: Call): ExprResult => JSON.parse(result.content[0].text) as ExprResult;
+const replaceText = (args: Record<string, unknown>): Promise<Call> => server.callTool('replace_in_expressions', { find: 'Player.X', replace: 'Hero.X', ...args });
 
 async function readJson<T>(...segments: string[]): Promise<T> {
   return JSON.parse(await readFile(path(...segments), 'utf-8')) as T;
@@ -752,5 +779,370 @@ describe('replace_object_in_events', () => {
       while (event.children) event = event.children[0];
       expect(event.actions![0].objectClass).toBe('Enemy');
     });
+  });
+});
+
+describe('replace_in_expressions', () => {
+  const MAIN_X = 'events[2].actions[0].parameters.x';
+
+  /** Replace the events of Main with `events` and start again. */
+  async function useEvents(...events: Ev[]): Promise<void> {
+    await editJson<SheetFile>(['eventSheets', 'Main.json'], s => { s.events = events; });
+    await start();
+  }
+
+  const setText = (sid: number, params: Record<string, unknown> | unknown[], extra: Partial<Ace> = {}): Ev =>
+    block(sid, [{ id: 'set-text', objectClass: 'Text', parameters: params, ...extra }]);
+
+  async function mainParameters(sid: number, list: 'conditions' | 'actions' = 'actions', index = 0): Promise<Record<string, unknown>> {
+    return (await mainEvent(sid))[list]![index].parameters as Record<string, unknown>;
+  }
+
+  it('counts matches on a dry run and writes nothing', async () => {
+    const before = await snapshotProject(tmpDir);
+    const writes = vi.spyOn(writer, 'writeEntityFile');
+    const data = parseExpr(await replaceText({ dryRun: true }));
+    expect(data.action).toBe('dry-run');
+    expect(data.dryRun).toBe(true);
+    expect(data.totalMatches).toBe(4);
+    expect(data.parametersChanged).toBe(4);
+    expect(data.bySheet).toEqual([{ sheet: 'Main', parameters: 3, matches: 3 }, { sheet: 'Helpers', parameters: 1, matches: 1 }]);
+    expect(data.changes[0]).toMatchObject({ sheet: 'Main', key: 'expression', before: 'Player.X > Hostiles.health', after: 'Hero.X > Hostiles.health' });
+    expect(data.filesWritten).toEqual([]);
+    expect(writes).not.toHaveBeenCalled();
+    expect(await snapshotProject(tmpDir)).toEqual(before);
+
+    const real = parseExpr(await replaceText({}));
+    expect(real.action).toBe('replaced');
+    expect(real.parametersChanged).toBe(4);
+    expect(real.filesWritten).toEqual(['eventSheets/Main.json', 'eventSheets/Shared/Helpers.json']);
+    expect((await mainParameters(MAIN_BLOCK)).x).toBe('Hero.X + PlayerShip.X');
+  });
+
+  it('changes only the chosen parameter keys, and a name key named there becomes replaceable', async () => {
+    const only = parseExpr(await replaceText({ find: 'Player', replace: 'Hero', parameterKeys: ['x'] }));
+    expect(only.changes.map(c => c.path)).toEqual([MAIN_X]);
+    const params = await mainParameters(MAIN_BLOCK);
+    expect(params).toEqual({ x: 'Hero.X + HeroShip.X', y: 'Enemy.Player + 10' });
+
+    const named = parseExpr(await replaceText({ find: 'Player', replace: 'Hero', parameterKeys: ['object'] }));
+    expect(named.changes.map(c => [c.key, c.before, c.after])).toEqual([['object', 'Player', 'Hero']]);
+    expect(named.warnings).toBeUndefined();
+    expect(await mainParameters(MAIN_BLOCK, 'conditions', 1)).toEqual({ object: 'Hero', expression: 'Player.X > Hostiles.health' });
+  });
+
+  it('expands regex groups and keeps a plain replacement literal', async () => {
+    await replaceText({ find: 'Player\\.(X)', replace: 'Hero.$1Pos', regex: true, parameterKeys: ['x'] });
+    expect((await mainParameters(MAIN_BLOCK)).x).toBe('Hero.XPos + PlayerShip.X');
+
+    await replaceText({ find: 'PlayerShip.X', replace: 'a$&b$1', parameterKeys: ['x'] });
+    expect((await mainParameters(MAIN_BLOCK)).x).toBe('Hero.XPos + a$&b$1');
+  });
+
+  it('matches case-insensitively and by whole word when asked', async () => {
+    expect(parseExpr(await replaceText({ find: 'player.x', replace: 'Hero.X', parameterKeys: ['x'], dryRun: true })).parametersChanged).toBe(0);
+    const insensitive = parseExpr(await replaceText({ find: 'player.x', replace: 'Hero.X', caseSensitive: false, parameterKeys: ['x'], dryRun: true }));
+    expect(insensitive.changes.map(c => c.after)).toEqual(['Hero.X + PlayerShip.X']);
+
+    const loose = parseExpr(await replaceText({ find: 'Player', replace: 'Hero', parameterKeys: ['x'], dryRun: true }));
+    expect(loose.changes.map(c => c.after)).toEqual(['Hero.X + HeroShip.X']);
+    expect(loose.totalMatches).toBe(2);
+    const whole = parseExpr(await replaceText({ find: 'Player', replace: 'Hero', wholeWord: true, parameterKeys: ['x'], dryRun: true }));
+    expect(whole.changes.map(c => c.after)).toEqual(['Hero.X + PlayerShip.X']);
+    expect(whole.totalMatches).toBe(1);
+  });
+
+  it('changes positional custom action arguments', async () => {
+    const data = parseExpr(await replaceText({ find: 'Player', replace: 'Hero', parameterKeys: ['0', '1'] }));
+    expect(data.changes.map(c => [c.path, c.key, c.after])).toEqual([
+      ['events[3].children[0].actions[0].parameters[0]', '0', 'Hero.UID'],
+      ['events[3].children[0].actions[0].parameters[1]', '1', '"Hero"'],
+    ]);
+    const group = (await readJson<SheetFile>('eventSheets', 'Main.json')).events[3];
+    expect(group.children![0].actions![0].parameters).toEqual(['Hero.UID', '"Hero"', 'score']);
+  });
+
+  describe('name and combo parameters', () => {
+    it('are left alone unless parameterKeys names them, in one warning', async () => {
+      await addEvents(setText(700000000000200, { type: 'tag-up', state: 'tag + 1', which: 'tag' }));
+      const before = await readJson<SheetFile>('eventSheets', 'Main.json');
+      const data = parseExpr(await replaceText({ find: 'Player', replace: 'Hero' }));
+      const warned = (data.warnings ?? []).filter(w => w.startsWith('Matches in parameters'));
+      expect(warned).toEqual(['Matches in parameters that hold a name or a combo choice were left unchanged: object (1), object-to-create (1), parent (1). '
+        + 'Name those keys in parameterKeys to change them.']);
+      const after = await readJson<SheetFile>('eventSheets', 'Main.json');
+      const event = bySid(after.events, MAIN_BLOCK);
+      expect(event.conditions![1].parameters).toEqual({ object: 'Player', expression: 'Hero.X > Hostiles.health' });
+      expect(event.actions![1].parameters).toMatchObject({ 'object-to-create': 'Player' });
+      expect(event.actions![2].parameters).toMatchObject({ parent: 'Player', child: 'Enemy' });
+      expect(changedLeaves(before, after)).toBeGreaterThan(0);
+
+      const combo = parseExpr(await replaceText({ find: 'tag', replace: 'mark' }));
+      expect(combo.changes.map(c => [c.key, c.after])).toEqual([['state', 'mark + 1']]);
+      expect(combo.warnings).toEqual(['Matches in parameters that hold a name or a combo choice were left unchanged: type (1), which (1). '
+        + 'Name those keys in parameterKeys to change them.']);
+      expect(await mainParameters(700000000000200)).toEqual({ type: 'tag-up', state: 'mark + 1', which: 'tag' });
+
+      await replaceText({ find: 'tag', replace: 'mark', parameterKeys: ['type', 'which'] });
+      expect(await mainParameters(700000000000200)).toEqual({ type: 'mark-up', state: 'mark + 1', which: 'mark' });
+    });
+
+    it('hold every name key of the reference index and of the other name keys', () => {
+      const keys = [...OBJECT_PARAMETER_KEYS, ...NON_OBJECT_PARAMETER_KEYS, ...OTHER_NAME_PARAMETER_KEYS];
+      expect(keys.length).toBeGreaterThan(0);
+      for (const key of keys) {
+        expect(NAME_PARAMETER_KEYS.has(key), key).toBe(true);
+        expect(isProtectedParameter(key, 'Player.X + 1'), key).toBe(true);
+      }
+      for (const key of ['parent', 'instance', 'object-class', 'target']) expect(NAME_PARAMETER_KEYS.has(key), key).toBe(true);
+      expect(isProtectedParameter('x', 'Player.X')).toBe(false);
+      expect(isProtectedParameter('type', 'tag-up')).toBe(true);
+      expect(isProtectedParameter('type', 'tag + 1')).toBe(false);
+    });
+  });
+
+  describe('refusals', () => {
+    const ends = (text: string) => {
+      expect(text.endsWith(' Nothing was changed.')).toBe(true);
+      expect(text.split('Nothing was changed.').length).toBe(2);
+    };
+
+    it('refuses a pattern that matches empty text, and one that matches zero characters between words', async () => {
+      const before = await snapshotProject(tmpDir);
+      const empty = await replaceText({ find: 'x*', regex: true });
+      expect(empty.isError).toBe(true);
+      expect(textOf(empty)).toBe('The search pattern matches zero characters (on empty text), which would insert the replacement between characters. '
+        + 'Use a pattern that always consumes at least one character. Nothing was changed.');
+
+      // No parameter is a candidate, so only the empty text the call tries first can show it
+      const none = await replaceText({ find: 'x*', regex: true, sheets: ['Helpers'], parameterKeys: ['nothing'] });
+      expect(textOf(none)).toContain('(on empty text)');
+
+      const between = await replaceText({ find: '\\b', regex: true, replace: '_' });
+      expect(between.isError).toBe(true);
+      expect(textOf(between)).toBe('The search pattern matches zero characters (in Main events[2].conditions[1].parameters.expression), '
+        + 'which would insert the replacement between characters. Use a pattern that always consumes at least one character. Nothing was changed.');
+      expect(await snapshotProject(tmpDir)).toEqual(before);
+    });
+
+    it('refuses an invalid regular expression, an unknown sheet and a sheet in another letter case', async () => {
+      const before = await snapshotProject(tmpDir);
+      const invalid = await replaceText({ find: '(', regex: true });
+      expect(invalid.isError).toBe(true);
+      expect(textOf(invalid)).toMatch(/^Invalid regular expression: .*\./);
+      ends(textOf(invalid));
+
+      const unknown = await replaceText({ sheets: ['Main', 'Nope', 'Other'] });
+      expect(unknown.isError).toBe(true);
+      expect(textOf(unknown)).toBe('Event sheet(s) not found: Nope, Other. Use list_eventsheets to see all names. Nothing was changed.');
+
+      const variant = await replaceText({ sheets: ['main'] });
+      expect(variant.isError).toBe(true);
+      expect(textOf(variant)).toBe('Event sheet(s) not found: main (Did you mean "Main"?). Use list_eventsheets to see all names. Nothing was changed.');
+      noPath(textOf(variant));
+      expect(await snapshotProject(tmpDir)).toEqual(before);
+    });
+
+    it('stops a catastrophically backtracking pattern at the time limit', async () => {
+      expect(() => matchAllBounded(/(a+)+$/g, '', [`${'a'.repeat(40)}b`], 50)).toThrow(RegexTimeoutError);
+      await addEvents(setText(700000000000201, { value: `${'a'.repeat(40)}b` }));
+      const before = await snapshotProject(tmpDir);
+      const result = await replaceText({ find: '(a+)+$', regex: true, replace: '', sheets: ['Main'] });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toBe('The search pattern took longer than 2000 ms to run (probably catastrophic backtracking). '
+        + 'Simplify the pattern or narrow the sheets. Nothing was changed.');
+      expect(await snapshotProject(tmpDir)).toEqual(before);
+    }, 30000);
+
+    it('refuses an unexpected error without a path, before any write', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const before = await snapshotProject(tmpDir);
+      const writes = vi.spyOn(writer, 'writeEntityFile');
+      vi.spyOn(reader, 'listEventSheets').mockRejectedValue(new Error(`boom at ${path('x.json')} and ${tmpDir}`));
+      const result = await replaceText({});
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/^Error replacing text: boom at <project>[\\/]x\.json and <project>\. Nothing was changed\.$/);
+      noPath(textOf(result));
+      expect(writes).not.toHaveBeenCalled();
+      expect(await snapshotProject(tmpDir)).toEqual(before);
+    });
+  });
+
+  it('counts a repeated sheet once', async () => {
+    const once = parseExpr(await replaceText({ sheets: ['Main'], dryRun: true }));
+    const twice = parseExpr(await replaceText({ sheets: ['Main', 'Main'], dryRun: true }));
+    expect(twice.sheetsScanned).toBe(1);
+    expect(twice.totalMatches).toBe(once.totalMatches);
+    expect(twice.bySheet).toEqual(once.bySheet);
+    const real = parseExpr(await replaceText({ sheets: ['Main', 'Main'] }));
+    expect(real.filesWritten).toEqual(['eventSheets/Main.json']);
+    expect(real.parametersChanged).toBe(3);
+  });
+
+  it('truncates the list at maxReported and reports the full counts', async () => {
+    const some = parseExpr(await replaceText({ maxReported: 2, dryRun: true }));
+    expect(some.changes).toHaveLength(2);
+    expect(some.changesTruncated).toBe(true);
+    expect(some.parametersChanged).toBe(4);
+    expect(some.totalMatches).toBe(4);
+    expect(some.bySheet.map(s => s.parameters)).toEqual([3, 1]);
+    const none = parseExpr(await replaceText({ maxReported: 0, dryRun: true }));
+    expect(none.changes).toEqual([]);
+    expect(none.changesTruncated).toBe(true);
+    const all = parseExpr(await replaceText({ dryRun: true }));
+    expect(all.changes).toHaveLength(4);
+    expect(all.changesTruncated).toBe(false);
+  });
+
+  it('does not touch comments, scripts or declarations', async () => {
+    const untouched: Ev[] = [
+      { eventType: 'variable', name: 'Player.X', type: 'string', initialValue: 'Player.X', comment: 'Player.X', sid: 700000000000210 },
+      { eventType: 'comment', text: 'Player.X' },
+      { eventType: 'script', script: ['Player.X'], sid: 700000000000211 } as Ev,
+      {
+        eventType: 'function-block', sid: 700000000000212, functionName: 'F', conditions: [], actions: [],
+        functionParameters: [{ name: 'Player.X', type: 'string', initialValue: 'Player.X', sid: 700000000000213 }],
+      } as Ev,
+      block(700000000000214, [{ type: 'script', language: 'javascript', script: ['Player.X'] }]),
+    ];
+    await addEvents(...untouched);
+    const before = (await readJson<SheetFile>('eventSheets', 'Main.json')).events.slice(-untouched.length);
+    const data = parseExpr(await replaceText({ sheets: ['Main'] }));
+    expect(data.parametersChanged).toBe(3);
+    const after = (await readJson<SheetFile>('eventSheets', 'Main.json')).events.slice(-untouched.length);
+    expect(after).toEqual(before);
+  });
+
+  describe('sheets it cannot parse', () => {
+    const BROKEN = '{ "events": [ broken "Player" ';
+    const breakHelpers = async () => {
+      await writeFile(path('eventSheets', 'Shared', 'Helpers.json'), BROKEN);
+      await start();
+    };
+
+    it('lists one in unscannedFiles with a text search of a plain name, and never changes it', async () => {
+      await breakHelpers();
+      const data = parseExpr(await replaceText({ find: 'Player', replace: 'Hero' }));
+      expect(data.filesWritten).toEqual(['eventSheets/Main.json']);
+      expect(data.sheetsScanned).toBe(1);
+      expect(data.complete).toBe(false);
+      expect(data.unscannedFiles).toEqual([{ file: 'eventSheets/Helpers', reason: 'not valid JSON', textSearch: 'possible-use', names: ['Player'] }]);
+      expect(data.warnings).toContain('eventSheets/Helpers (not valid JSON) could not be parsed; its text names "Player". It was not changed.');
+      expect(await readFile(path('eventSheets', 'Shared', 'Helpers.json'), 'utf-8')).toBe(BROKEN);
+    });
+
+    it('lists one as not searched when the text is a regular expression or is not name-shaped', async () => {
+      await breakHelpers();
+      for (const args of [{ find: 'Player', regex: true }, { find: 'Player.X' }]) {
+        const result = await replaceText({ replace: 'Hero', dryRun: true, ...args });
+        const data = parseExpr(result);
+        expect(data.complete).toBe(false);
+        expect(data.unscannedFiles).toEqual([{ file: 'eventSheets/Helpers', reason: 'not valid JSON', textSearch: 'not-searched' }]);
+        expect(data.warnings).toContain('eventSheets/Helpers (not valid JSON) could not be parsed and was not searched. It was not changed.');
+        noPath(textOf(result));
+      }
+      expect(await readFile(path('eventSheets', 'Shared', 'Helpers.json'), 'utf-8')).toBe(BROKEN);
+    });
+
+    it('is refused when the call names it, and not claimed by a call that names other sheets', async () => {
+      await breakHelpers();
+      const before = await snapshotProject(tmpDir);
+      const refused = await replaceText({ sheets: ['Helpers'] });
+      expect(refused.isError).toBe(true);
+      expect(textOf(refused)).toBe('Cannot read event sheet "Helpers" (not valid JSON). Nothing was changed.');
+      noPath(textOf(refused));
+      expect(await snapshotProject(tmpDir)).toEqual(before);
+      const limited = parseExpr(await replaceText({ sheets: ['Main'], dryRun: true }));
+      expect(limited.complete).toBeUndefined();
+      expect(limited.unscannedFiles).toBeUndefined();
+    });
+  });
+
+  describe('a failed write', () => {
+    it('puts the sheets back when the second write fails', async () => {
+      const before = await snapshotProject(tmpDir);
+      const internals = writer as unknown as { verifyWrittenFile: (path: string, name: string, text: string) => Promise<unknown> };
+      const verify = internals.verifyWrittenFile.bind(writer);
+      internals.verifyWrittenFile = async (file, name, text) => {
+        if (file.endsWith('Helpers.json')) throw new Error(`Post-write verification failed for "${name}": file may be corrupted.`);
+        return verify(file, name, text);
+      };
+      const result = await replaceText({});
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toBe('Post-write verification failed for "Helpers": file may be corrupted. '
+        + 'The call was rolled back: eventSheets/Shared/Helpers.json, eventSheets/Main.json are as before the call.');
+      expect(await snapshotProject(tmpDir)).toEqual(before);
+    });
+
+    it('refuses a sheet changed on disk after it was read and puts the earlier one back', async () => {
+      const before = await snapshotProject(tmpDir);
+      const write = writer.writeEntityFile.bind(writer);
+      let first = true;
+      vi.spyOn(writer, 'writeEntityFile').mockImplementation(async (...args) => {
+        const written = await write(...args);
+        if (first) {
+          first = false;
+          await writeFile(path('eventSheets', 'Shared', 'Helpers.json'), `${await readFile(path('eventSheets', 'Shared', 'Helpers.json'), 'utf-8')} `);
+        }
+        return written;
+      });
+      const result = await replaceText({});
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('eventSheets/Shared/Helpers.json was changed on disk after this server read it');
+      expect(textOf(result)).toContain('The files this tool call had already changed were put back as they were before the call (eventSheets/Main.json), so the call changed nothing.');
+      expect((await snapshotProject(tmpDir))['eventSheets/Main.json']).toEqual(before['eventSheets/Main.json']);
+    });
+  });
+
+  it('gives each change its path and event SID', async () => {
+    await useEvents(
+      block(700000000000220, [
+        { id: 'wait', objectClass: 'System', parameters: { seconds: '1' } },
+        { id: 'set-text', objectClass: 'Text', parameters: { value: 'ZQ one' } },
+      ]),
+      block(700000000000221, []),
+      block(700000000000222, []),
+      block(700000000000223, [], [{ callFunction: 'F', objectClass: 'System', parameters: ['ZQ two'] }]),
+    );
+    const data = parseExpr(await replaceText({ find: 'ZQ', replace: 'ZR' }));
+    expect(data.changes.map(c => [c.path, c.eventSid, c.key, c.after])).toEqual([
+      ['events[0].actions[1].parameters.value', 700000000000220, 'value', 'ZR one'],
+      ['events[3].conditions[0].parameters[0]', 700000000000223, '0', 'ZR two'],
+    ]);
+  });
+
+  it('reports changes in the sheet\'s order', async () => {
+    const hit = (sid: number, text: string, children: Ev[] = []): Ev => ({
+      ...block(sid, [{ id: 'set-text', objectClass: 'Text', parameters: { v: `ZQ ${text} action` } }],
+        [{ id: 'compare', objectClass: 'System', parameters: { v: `ZQ ${text} condition` } }]),
+      children,
+    });
+    const empty = (sid: number): Ev => block(sid, []);
+    await useEvents(
+      hit(700000000000230, 'a', [hit(700000000000231, 'a1')]),
+      hit(700000000000232, 'b', [hit(700000000000233, 'b1')]),
+      hit(700000000000234, 'two'),
+      ...[3, 4, 5, 6, 7, 8, 9].map(n => empty(700000000000240 + n)),
+      hit(700000000000235, 'ten'),
+      empty(700000000000236),
+    );
+    const data = parseExpr(await replaceText({ find: 'ZQ', replace: 'ZR', dryRun: true }));
+    expect(data.changes.map(c => c.path)).toEqual([
+      'events[0].conditions[0].parameters.v',
+      'events[0].actions[0].parameters.v',
+      'events[0].children[0].conditions[0].parameters.v',
+      'events[0].children[0].actions[0].parameters.v',
+      'events[1].conditions[0].parameters.v',
+      'events[1].actions[0].parameters.v',
+      'events[1].children[0].conditions[0].parameters.v',
+      'events[1].children[0].actions[0].parameters.v',
+      'events[2].conditions[0].parameters.v',
+      'events[2].actions[0].parameters.v',
+      'events[10].conditions[0].parameters.v',
+      'events[10].actions[0].parameters.v',
+    ]);
+    const first = parseExpr(await replaceText({ find: 'ZQ', replace: 'ZR', dryRun: true, maxReported: 1 }));
+    expect(first.changes.map(c => c.path)).toEqual(['events[0].conditions[0].parameters.v']);
+    expect(first.changesTruncated).toBe(true);
   });
 });
