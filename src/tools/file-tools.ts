@@ -292,17 +292,25 @@ function registrationResult(
  */
 async function failedAfterRegistration(writer: Writer, destination: string, relativePath: string, problem: string): Promise<string> {
   const undo = await writer.undoToolCall();
-  const onDisk = (await findFileIgnoringCase(destination)) !== undefined;
+  // The undo above has cleared what the call changed, so this message must not throw: a second undo would find nothing and report "Nothing was changed."
+  let onDisk: boolean | undefined;
+  try {
+    onDisk = (await findFileIgnoringCase(destination)) !== undefined;
+  } catch {
+    onDisk = undefined;
+  }
   const putBack = undo.restored.length > 0 && undo.left.length === 0;
   const parts = [`${problem}.`];
   if (undo.restored.length > 0) parts.push('The registration in project.c3proj was put back.');
   if (undo.left.length > 0) parts.push(`The registration could not be put back: ${filesLeftClause(undo.left)}.`);
-  if (onDisk) {
+  if (onDisk === undefined) {
+    parts.push(`Whether ${relativePath} is on disk could not be checked; check it.`);
+  } else if (onDisk) {
     parts.push(putBack
       ? `${relativePath} is on disk and not registered; check it.`
       : `${relativePath} is on disk, and its registration in project.c3proj may still be there; check both.`);
   }
-  if (undo.left.length > 0 || onDisk) parts.push('Check the project (validate_project) before you run the tool again.');
+  if (undo.left.length > 0 || onDisk !== false) parts.push('Check the project (validate_project) before you run the tool again.');
   return parts.join(' ');
 }
 
@@ -560,7 +568,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
         const removed = await writer.updateProject(project => {
           const current = findFileEntry(project as Construct3Project, folder, args.name, args.subfolder);
           if (current && current.entry.sid !== selectedSid) {
-            throw new Refusal(`Project File "${args.name}" was registered again while this call ran, so its file was not touched`);
+            throw new Refusal(`The registration of Project File "${args.name}" changed since this call selected it (it was registered again, or saved in the editor with a new SID), so its file was not touched`);
           }
           return removeFileEntry(project as Construct3Project, folder, args.name, args.subfolder) ? undefined : false;
         });

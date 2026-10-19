@@ -12,6 +12,13 @@ import { StaleFileError } from '../../src/construct3/disk-state.js';
 import { serializeJson } from '../../src/construct3/json-format.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { EDITOR_RELOAD_NOTE } from '../../src/tools/shared.js';
+import { findFileIgnoringCase } from '../../src/construct3/atomic-write.js';
+
+// Delegates to the real lookup; a test makes it throw to reach the message of a failed write
+vi.mock('../../src/construct3/atomic-write.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/construct3/atomic-write.js')>();
+  return { ...actual, findFileIgnoringCase: vi.fn(actual.findFileIgnoringCase) };
+});
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 const BOM = String.fromCharCode(0xfeff);
@@ -943,6 +950,36 @@ describe('Project File tools', () => {
     expect(deregistered.text).not.toContain(dir);
   });
 
+  for (const tool of ['register_project_file', 'create_data_file'] as const) {
+    it(`P25 ${tool} never ends "Nothing was changed." when the on-disk check after a failed write throws`, async () => {
+      const args = tool === 'register_project_file' ? { sourcePath: await source() } : { name: 'source.json', kind: 'json' };
+      const lookup = vi.mocked(findFileIgnoringCase);
+      const real = lookup.getMockImplementation() as typeof findFileIgnoringCase;
+      let writeFailed = false;
+      // Throws only for the check made once the write has failed
+      lookup.mockImplementation(async (file, fs) => {
+        if (writeFailed) throw fsError('EACCES', file);
+        return real(file, fs);
+      });
+      vi.spyOn(writer, 'replaceFile').mockImplementationOnce(async () => {
+        writeFailed = true;
+        throw fsError('EBUSY', path('files', 'source.json'));
+      });
+      try {
+        const result = await callError(tool, args);
+        expect(result.isError).toBe(true);
+        expect(result.text).toContain('EBUSY');
+        expect(result.text).toContain('The registration in project.c3proj was put back.');
+        expect(result.text).toContain('Whether files/source.json is on disk could not be checked; check it.');
+        expect(result.text).not.toContain('Nothing was changed.');
+        expect(result.text).not.toContain(dir);
+        expect(await generalItems()).toEqual([]);
+      } finally {
+        lookup.mockImplementation(real);
+      }
+    });
+  }
+
   it('P11 does not copy over a registration another writer made during the call, and create_data_file refuses', async () => {
     const hookEntry = () => saveInEditor(project => { project.rootFileFolders.general = { items: [fileEntry('source.json', 777)], subfolders: [] }; });
     const replace = vi.spyOn(writer, 'replaceFile');
@@ -1031,7 +1068,8 @@ describe('Project File tools', () => {
       beforeNextProjectUpdate(() => saveInEditor(project => { project.rootFileFolders.general.items = [fileEntry('source.json', 999)]; }));
       const result = await callError('deregister_project_file', { name: 'source.json' });
       expect(result.isError).toBe(true);
-      expect(result.text).toContain('was registered again while this call ran');
+      expect(result.text).toContain('The registration of Project File "source.json" changed since this call selected it');
+      expect(result.text).toContain('saved in the editor with a new SID');
       nothingChanged(result.text);
       expect(await readFile(path('files', 'source.json'), 'utf-8')).toBe('original');
       expect(existsSync(path('files', 'source.json.bak'))).toBe(false);
