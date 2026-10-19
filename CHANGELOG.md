@@ -7,6 +7,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 ### Added
 
 - `C3MCP_MAX_FILE_MB`, a setting of whoever starts the server (whole megabytes, 1 to 128; default 10), sets the size limit for the object type, family, event sheet, layout and script files the server reads, for the project files, flowcharts and timelines the analysis tools read, and for the entity files and `project.c3proj` it writes. Another value keeps the default, and the refusals say it was ignored. Memory use grows with the whole project; TROUBLESHOOTING has measurements (#ISSUE).
+- `add_instances_to_layout`, `update_instances` and `delete_instances_from_layout` place, update or remove up to 500 instances of one layout in one call and one write, each item handled as its single tool handles it; when one item is refused, nothing is changed and the message names the item; a failed write is rolled back, and the error names any file that could not safely be put back; `dryRun` reports the results without writing, and runs the write's own checks (#ISSUE).
 
 ### Changed
 

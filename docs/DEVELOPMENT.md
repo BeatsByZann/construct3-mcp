@@ -113,6 +113,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── bulk-instance-tools.ts  # Bulk instance tools (3)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers

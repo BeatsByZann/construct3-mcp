@@ -1082,6 +1082,50 @@ Remove a placed instance by UID from the layout's layers and sub-layers or its n
 
 Hierarchy (scene graph) links to the instance are removed with it, since links name UIDs and a new instance can get the deleted one's UID: its children get `"parent-uid": null` and stay in the layout, on whatever layer they are (whether the editor deletes them with their parent is not verified, and detaching loses no instance), and its parent's `children` entry for it is removed (an emptied `children` array is removed, as the editor saves a parent without children). A warning names the UIDs of the instances changed. When another instance of the layout has the same UID (a duplicate UID, `duplicate-uid` in `validate_project`), the links naming it are left as they are, since they may mean that instance, and a warning says so; `delete_layer` does the same.
 
+### `add_instances_to_layout`
+
+Place many object instances on one layout in one call and one write. Each item is placed as [`add_instance_to_layout`](#add_instance_to_layout) places one, in list order. Every item is checked and placed in the layout in memory first; the layout file is written once, with one backup of it, only when every item was placed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Target layout, as registered, in that letter case |
+| `instances` | object[] | Yes | 1 to 500 items, placed in order. Each item takes the arguments of `add_instance_to_layout` without `layoutName`: `layerName`, `objectType`, `x`, `y`, `width`, `height`, `properties`, `angle`, `color`, `zElevation`, `originX`, `originY`, `instanceVariables`, `behaviors`, `tags`, `showing`, `locked` |
+| `dryRun` | boolean | No | Place every item in memory, report the results and write nothing (default: false) |
+
+**Limits.** At most 500 items per call (`MAX_BULK_INSTANCES`). The limit bounds the size of one request and of its result, since each item may carry up to 50KB of property values and 50KB of behavior values and the result lists every item; it does not bound a layout. A layout is bounded by the file size limit instead: the writer refuses a layout whose text as written (tab-indented, in the file's line endings, with its BOM) is over the limit in UTF-8 bytes, 10MB by default and set by `C3MCP_MAX_FILE_MB`, before anything is backed up or written, whatever the number of calls that grew it. The reader refuses a file over the same limit, so a layout these tools write can be read back. A dry run of a call whose layout would pass the limit is refused the same way. Construct 3 r506-2 (Free edition) opened and saved a layout of 9,975,982 bytes written by these tools.
+
+**Refusals.** When an item is refused, the call is refused as a whole before anything is written, and the message names the item by its 0-based index and ends with `Nothing was changed.`, for example `Item 1: Object type "Missing" does not exist. ... Nothing was changed.` The refusals are the single tool's. An error a step throws inside the item loop (for example the UID generator refusing because a project file could not be scanned) is refused the same way. A layout name that is not registered in that letter case is refused (`Did you mean "Layout 1"?`), as is a layout file that cannot be read or does not hold a layout object; an error before the first item becomes `The change was stopped before anything was written: ... Nothing was changed.` The UIDs and SIDs taken for the items of a refused call are not reused.
+
+**Result.** `success`, `entity`, `category`, `action` (`"updated"`), `count`, `results` (for each item `index`, `objectType`, `uid`, `sid`), `backupFile`, `warnings` and `unscannedFiles`. A warning that several items gave is listed once with its items: `Item 2: ...`, `Items 0, 1: ...` (after five items, `Items 0, 1, 2, 3, 4 and 7 more: ...`). A family file the server could not parse that possibly lists an object type of an item as a member is listed once in `unscannedFiles`, with the names every item found in it. Each placement searches such a file again, so a call with many items costs more when a family file cannot be parsed.
+
+**Dry run.** `dryRun: true` places the items in memory and runs the checks of the write (the JSON, the file's text style and the size limit), and writes nothing. The result has `action: "dry-run"`, `dryRun: true`, the `results` and a `message` saying so. The UIDs and SIDs in it were taken for the preview only: a call without `dryRun` gives new ones.
+
+**Rollback.** If the write fails after it replaced the file, the file is put back from its backup, and the error says what is on disk. A file another write changed meanwhile (an editor save, say), or whose backup was replaced, is left as it is and named in the error, which then says the call was rolled back only in part. The single instance tools write without this rollback, as before; only these three tools roll back.
+
+### `update_instances`
+
+Update many placed instances of one layout in one call and one write. Each item is applied as [`update_instance`](#update_instance) applies one, in list order: two items for one UID apply one after the other.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name, as registered, in that letter case |
+| `updates` | object[] | Yes | 1 to 500 items. Each item takes the arguments of `update_instance` without `layoutName`: `uid`, `x`, `y`, `width`, `height`, `angle`, `zElevation`, `color`, `showing`, `locked`, `tags`, `instanceVariables` |
+| `dryRun` | boolean | No | Apply every item in memory, report the results and write nothing (default: false) |
+
+An item that names no property to change (only `uid`) is refused as `update_instance` refuses it, at its turn: the first refused item in list order is the one named. The limits, refusals, dry run and rollback are as for [`add_instances_to_layout`](#add_instances_to_layout). `results` lists `index` and `uid` for each item. An update that moves a Z elevation held as `world.zElevation` to `world.z` gives the single tool's warning, prefixed with its item.
+
+### `delete_instances_from_layout`
+
+Remove many placed instances of one layout by UID in one call and one write, as [`delete_instance_from_layout`](#delete_instance_from_layout) removes one, in list order.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name, as registered, in that letter case |
+| `uids` | number[] | Yes | 1 to 500 UIDs of the instances to remove |
+| `dryRun` | boolean | No | Remove every instance in memory, report the results and write nothing (default: false) |
+
+A UID that is not in the layout is refused at its turn, and so is a UID listed twice (`Item 2: UID 5 is listed more than once.`). Hierarchy links to the removed instances are removed once for all of them, after the last one: a child of a removed instance gets `"parent-uid": null` and stays in the layout, and a removed child is taken out of its parent's `children`, as for the single tool; two instances removed together that were linked to each other give one warning that names only instances that stay. These warnings are not prefixed with an item. `results` lists `index`, `uid` and `objectType` for each item, and the warnings say where each was removed from (`Item 0: Removed instance of "Sprite" (UID 5) from layer "Main".`). The limits, refusals, dry run and rollback are as for [`add_instances_to_layout`](#add_instances_to_layout).
+
 ### `update_project_metadata`
 
 Update project-level metadata.

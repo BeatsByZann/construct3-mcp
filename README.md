@@ -187,6 +187,9 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `add_instance_to_layout` | Place an object instance on a layout layer or sub-layer with full property control; writes a value for every instance variable of the object and its families and refuses names they do not have |
 | `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, visibility, tags, instance variables of its object and families) |
 | `delete_instance_from_layout` | Remove a placed instance by UID (layers, sub-layers and non-world instances); its hierarchy children stay without a parent, and its parent no longer lists it |
+| `add_instances_to_layout` | Place many instances on one layout in one write, each as `add_instance_to_layout` places one; all refused when one item is |
+| `update_instances` | Update many placed instances of one layout in one write, each as `update_instance` does |
+| `delete_instances_from_layout` | Remove many placed instances of one layout by UID in one write, hierarchy links removed as `delete_instance_from_layout` removes them |
 
 **Sprite animations**
 
@@ -440,7 +443,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 86.
 
 ### Standalone Testing
 
@@ -556,6 +559,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── bulk-instance-tools.ts  # Bulk instance tools (3)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/
