@@ -287,7 +287,7 @@ describe('move_project_item', () => {
     await refusal({ category: 'flowchart', name: 'Graph', folder: 'A' }, 'project.c3proj has no flowcharts tree');
     await refusal({ category: 'file', name: 'data.json', sourceFolder: 'Old', folder: '' }, 'the root already holds a project file named "data.json"');
     await refusal({ category: 'file', name: 'a/b', folder: 'New' }, 'File name must be a single path segment');
-    await refusal({ category: 'file', name: 'data.json', sourceFolder: 'Old/../X', folder: 'New' }, 'Subfolder path contains invalid characters');
+    await refusal({ category: 'file', name: 'data.json', sourceFolder: 'Old/../X', folder: 'New' }, 'Folder path contains invalid characters');
   });
 
   it('refuses a destination folder that differs from a sibling only in case, and a folder name Windows forbids', async () => {

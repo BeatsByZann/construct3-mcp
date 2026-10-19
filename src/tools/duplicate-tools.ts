@@ -359,7 +359,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
           folder: subfolder ?? '',
           layers: allLayers(copy.layers).length,
           instances: instances.length,
-          uidRange: newUids.length > 0 ? [Math.min(...newUids), Math.max(...newUids)] : undefined,
+          uidRange: newUids.length > 0 ? [newUids.reduce((a, b) => Math.min(a, b)), newUids.reduce((a, b) => Math.max(a, b))] : undefined,
           freshSids: sids.map.size,
           sidKeysRewritten: sidCount,
           eventSheet: copy.eventSheet,

@@ -584,12 +584,30 @@ describe('duplicate_layer', () => {
     await refusal('duplicate_layer', { layoutName: 'Level 1', layerName: 'UI', newName: 'UI2' }, 'parent uid 1');
   });
 
-  it('puts back the layout when its write fails', async () => {
+  it('says Nothing was changed. when the write fails before it changes the file', async () => {
     vi.spyOn(writer, 'writeEntityFile').mockRejectedValueOnce(new Error('boom'));
     const before = await snapshotProject();
     const data = await call('duplicate_layer', { layoutName: 'Level 1', layerName: 'UI', newName: 'UI2' });
     expect(data.isError).toBe(true);
     expect(data.text).toBe('boom. Nothing was changed.');
+    expect(await snapshotProject()).toEqual(before);
+  });
+
+  it('puts back the layout when the read-back of its write fails', async () => {
+    const before = await snapshotProject();
+    const internals = writer as unknown as { verifyWrittenFile: (file: string, name: string, text: string) => Promise<unknown> };
+    const verify = internals.verifyWrittenFile.bind(writer);
+    internals.verifyWrittenFile = async (file, name, written) => {
+      if (file.endsWith('Level 1.json')) {
+        throw new Error(`Post-write verification failed for "${name}": file may be corrupted. A .bak backup exists. Error: EIO: i/o error, read`);
+      }
+      return verify(file, name, written);
+    };
+    const data = await call('duplicate_layer', { layoutName: 'Level 1', layerName: 'UI', newName: 'UI2' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toBe('Post-write verification failed for "Level 1": file may be corrupted. A .bak backup exists. Error: EIO: i/o error, read. '
+      + 'The call was rolled back: layouts/Level 1.json is as before the call.');
+    expect(existsSync(path('layouts', 'Level 1.json.bak'))).toBe(true);
     expect(await snapshotProject()).toEqual(before);
   });
 });
@@ -989,7 +1007,8 @@ describe('duplicate_timeline', () => {
     const sourceText = await text('timelines', 'Intro.json');
     const source = JSON.parse(sourceText) as Obj;
 
-    await writeFile(path('timelines', 'Intro.json'), '﻿' + sourceText.replace(/\r\n/g, '\n'));
+    await writeFile(path('timelines', 'Intro.json'), '\uFEFF' + sourceText.replace(/\r\n/g, '\n'));
+    expect((await readFile(path('timelines', 'Intro.json')))[0]).toBe(0xef);
     expect((await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' })).isError).not.toBe(true);
     const crlfCopy = await text('timelines', 'Copy.json');
     expect(crlfCopy.charCodeAt(0)).not.toBe(0xfeff);
@@ -998,7 +1017,8 @@ describe('duplicate_timeline', () => {
     expect(JSON.parse(crlfCopy)).toEqual({ ...source, name: 'Copy' });
 
     await writeFile(path('project.c3proj'), projectText.replace(/\r\n/g, '\n'));
-    await writeFile(path('timelines', 'Intro.json'), '﻿' + sourceText.replace(/\r?\n/g, '\r\n'));
+    await writeFile(path('timelines', 'Intro.json'), '\uFEFF' + sourceText.replace(/\r?\n/g, '\r\n'));
+    expect((await readFile(path('timelines', 'Intro.json')))[0]).toBe(0xef);
     await reader.reloadProject();
     expect((await call('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy 2' })).isError).not.toBe(true);
     const lfCopy = await text('timelines', 'Copy 2.json');

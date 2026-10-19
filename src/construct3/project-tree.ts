@@ -80,9 +80,9 @@ const WINDOWS_FORBIDDEN = /[<>:"|?*\u0000-\u001f]/;
 
 /** Why a folder path cannot be a Project Bar folder path on Windows, or undefined when it can. */
 export function folderSegmentsProblem(path: string): string | undefined {
-  if (path.includes('..') || path.includes('\\') || path.startsWith('/')) return 'Subfolder path contains invalid characters (use forward slashes only, no "..")';
+  if (path.includes('..') || path.includes('\\') || path.startsWith('/')) return 'Folder path contains invalid characters (use forward slashes only, no "..")';
   for (const part of path.split('/')) {
-    if (part.length === 0 || part === '.') return 'Subfolder path contains invalid segments';
+    if (part.length === 0 || part === '.') return 'Folder path contains invalid segments';
     if (part.length > 255) return `Folder name "${part.slice(0, 20)}..." is too long (max 255 characters)`;
     if (WINDOWS_FORBIDDEN.test(part)) return `Folder name "${part}" contains a character Windows does not allow in folder names (< > : " | ? * or a control character)`;
     if (/[ .]$/.test(part) || /^ /.test(part)) return `Folder name "${part}" must not start with a space or end with a space or a dot`;
