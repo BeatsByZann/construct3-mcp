@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { deflateRawSync } from 'node:zlib';
 import { readZip, readZipArchive, checkEntryPath, decodeCp437 } from '../../src/runtime/zip-reader.js';
 import { zipBuffer, crc32, tableCrc32 } from '../../src/runtime/zip-writer.js';
+import { zipWithDeflate, centralEntryOffsets, localOffsetOf } from './zip-fixtures.js';
 
 const json = Buffer.from(JSON.stringify({ name: 'Game', items: Array(50).fill('repeated text') }));
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -390,6 +391,120 @@ describe('crc32', () => {
       expect(crc32(data)).toBe(tableCrc32(data));
     }
     expect(tableCrc32(Buffer.from('123456789'))).toBe(0xcbf43926);
+  });
+});
+
+describe('the DEFLATE archive helper', () => {
+  it('writes method 8 in the central header and reads back byte for byte when undamaged', () => {
+    const zip = zipWithDeflate([
+      { path: 'a.txt', data: json, method: 8 },
+      { path: 'b.bin', data: png, method: 0 },
+    ]);
+    const [first, second] = centralEntryOffsets(zip);
+    expect(zip.readUInt16LE(first + 10)).toBe(8);
+    expect(zip.readUInt16LE(second + 10)).toBe(0);
+    const files = readZip(zip);
+    expect(files.map(f => f.path)).toEqual(['a.txt', 'b.bin']);
+    expect(files[0].data.equals(json)).toBe(true);
+    expect(files[1].data.equals(png)).toBe(true);
+  });
+
+  it('makes a damaged stream fail inflation, not the CRC check', () => {
+    const zip = zipWithDeflate([{ path: 'a.txt', data: json, method: 8, damage: true }]);
+    expect(zip.readUInt16LE(centralEntryOffsets(zip)[0] + 10)).toBe(8);
+    let thrown: (Error & { code?: string }) | undefined;
+    try {
+      readZip(zip);
+    } catch (error) {
+      thrown = error as Error & { code?: string };
+    }
+    expect(thrown?.code).toBe('Z_DATA_ERROR');
+    expect(thrown?.message).not.toContain('CRC');
+  });
+});
+
+describe('reading only the wanted entries', () => {
+  const only = (name: string) => (path: string) => path === name;
+  /** The `code` of the error `fn` throws. */
+  const codeOf = (fn: () => unknown): string | undefined => {
+    try {
+      fn();
+    } catch (error) {
+      return (error as { code?: string }).code;
+    }
+    return undefined;
+  };
+
+  it('returns only the wanted entry and does not inflate an unwanted damaged one', () => {
+    const zip = zipWithDeflate([
+      { path: 'a.txt', data: json, method: 8 },
+      { path: 'bad.bin', data: json, method: 8, damage: true },
+    ]);
+    const files = readZipArchive(zip, { wanted: only('a.txt') }).files;
+    expect(files.map(f => f.path)).toEqual(['a.txt']);
+    expect(files[0].data.equals(json)).toBe(true);
+    expect(codeOf(() => readZipArchive(zip, { wanted: only('bad.bin') }))).toBe('Z_DATA_ERROR');
+    expect(codeOf(() => readZip(zip))).toBe('Z_DATA_ERROR');
+  });
+
+  it('still refuses an unwanted unsafe path', () => {
+    const zip = zipBuffer([{ path: 'a.txt', data: json }, { path: '../escape.txt', data: json }]);
+    expect(() => readZipArchive(zip, { wanted: only('a.txt') })).toThrow('has an empty, "." or ".." path segment');
+  });
+
+  it('still refuses an unwanted entry whose local header is damaged', () => {
+    const zip = zipBuffer([{ path: 'a.txt', data: json }, { path: 'other.bin', data: png }]);
+    zip.writeUInt32LE(0, localOffsetOf(zip, centralEntryOffsets(zip)[1]));
+    expect(() => readZipArchive(zip, { wanted: only('a.txt') })).toThrow('Zip entry "other.bin" has a damaged local header');
+  });
+
+  it('still refuses an unwanted entry that runs past the end of the archive', () => {
+    const zip = zipBuffer([{ path: 'a.txt', data: json }, { path: 'other.bin', data: png }]);
+    zip.writeUInt32LE(zip.length, centralEntryOffsets(zip)[1] + 20);
+    expect(() => readZipArchive(zip, { wanted: only('a.txt') })).toThrow('Zip entry "other.bin" runs past the end of the archive');
+  });
+
+  it('still refuses an unwanted file beside a wanted file inside a folder of the same name', () => {
+    const zip = zipBuffer([{ path: 'a', data: png }, { path: 'a/addon.json', data: json }]);
+    expect(() => readZipArchive(zip, { wanted: only('a/addon.json') })).toThrow('The archive\'s "a" is both a file and a folder');
+  });
+});
+
+describe('bounded inflation', () => {
+  const MB = 1024 * 1024;
+
+  it('refuses a kept entry whose declared size is over the entry limit before inflating it', () => {
+    const zip = zipWithDeflate([{ path: 'aces.json', data: Buffer.alloc(1024, 0x20), method: 8, declaredSize: 10 * MB + 1 }]);
+    expect(() => readZipArchive(zip, { maxEntryBytes: 10 * MB })).toThrow('Zip entry "aces.json" is larger than 10MB');
+  });
+
+  it('stops inflating at the declared size instead of producing the whole output', () => {
+    const zip = zipWithDeflate([{ path: 'aces.json', data: Buffer.alloc(MB), method: 8, declaredSize: 100 }]);
+    let thrown: (Error & { cause?: { code?: string } }) | undefined;
+    try {
+      readZip(zip);
+    } catch (error) {
+      thrown = error as Error & { cause?: { code?: string } };
+    }
+    expect(thrown?.message).toBe('Zip entry "aces.json" is more than 100 bytes, but the archive says 100');
+    expect(thrown?.cause?.code).toBe('ERR_BUFFER_TOO_LARGE');
+  });
+
+  it('refuses a fifth kept entry before inflating it', () => {
+    const entries = Array.from({ length: 6 }, (_, i) => ({ path: `f${i}/addon.json`, data: json, method: 8 as const, damage: i >= 4 }));
+    expect(() => readZipArchive(zipWithDeflate(entries), { maxKept: 4 })).toThrow('The archive holds more than 4 addon definition files');
+    expect(readZipArchive(zipWithDeflate(entries.slice(0, 4)), { maxKept: 4 }).files).toHaveLength(4);
+  });
+
+  it('refuses kept entries whose declared sizes together pass the total before inflating the one that passes it', () => {
+    const nine = Buffer.alloc(9 * MB, 0x20);
+    const zip = zipWithDeflate([
+      { path: 'a/addon.json', data: nine, method: 8 },
+      { path: 'a/aces.json', data: nine, method: 8 },
+      { path: 'b/addon.json', data: nine, method: 8, damage: true },
+    ]);
+    expect(() => readZipArchive(zip, { maxKeptBytes: 20 * MB })).toThrow('together hold more than 20MB');
+    expect(readZipArchive(zip, { maxKeptBytes: 20 * MB, wanted: p => p !== 'b/addon.json' }).files).toHaveLength(2);
   });
 });
 

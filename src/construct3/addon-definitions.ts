@@ -18,11 +18,29 @@
 
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { readZipArchive, type ZipReadEntry } from '../runtime/zip-reader.js';
 import { flatten } from './ace-catalog-source.js';
 import type { AddonDefinition, AddonLookup } from './ace-types.js';
 
 /** The largest addon.json or aces.json that is read. */
 export const MAX_DEFINITION_BYTES = 10 * 1024 * 1024;
+
+/** The largest .c3addon archive that is read. */
+export const MAX_ARCHIVE_BYTES = 25 * 1024 * 1024;
+
+/** The definition files an archive may hold: the root or one folder deep. */
+const ARCHIVE_DEFINITION_FILE = /^(?:[^/]+\/)?(?:addon|aces)\.json$/;
+
+/** True for the name of a .c3addon archive. */
+function isArchiveName(name: string): boolean {
+  return /\.c3addon$/i.test(name);
+}
+
+/** The folder part of an archive path: '' at the root. */
+function folderOf(path: string): string {
+  const cut = path.lastIndexOf('/');
+  return cut < 0 ? '' : path.slice(0, cut);
+}
 
 /** What a load did: the definitions now held, and what was refused or skipped, each by base name. */
 export interface LoadReport {
@@ -193,7 +211,8 @@ export class AddonDefinitions implements AddonLookup {
       return report;
     }
     if (!isDirectory) {
-      report.skipped.push({ name, reason: 'not an addon folder' });
+      if (isArchiveName(name)) await this.attemptArchive(name, real, report);
+      else report.skipped.push({ name, reason: 'not an addon folder' });
       return report;
     }
     if (await this.isAddonFolder(real)) {
@@ -220,7 +239,10 @@ export class AddonDefinitions implements AddonLookup {
         report.skipped.push({ name: entry, reason: OUTSIDE });
         continue;
       }
-      if (await this.isAddonFolder(childReal)) {
+      if (isArchiveName(entry) && await this.isFile(childReal)) {
+        found++;
+        await this.attemptArchive(entry, childReal, report);
+      } else if (await this.isAddonFolder(childReal)) {
         found++;
         await this.attempt(entry, childReal, report);
       }
@@ -236,6 +258,57 @@ export class AddonDefinitions implements AddonLookup {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** True when `path` is a regular file. */
+  private async isFile(path: string): Promise<boolean> {
+    try {
+      return (await stat(path)).isFile();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Load one .c3addon archive by its real path (already checked against the
+   * roots); a failure is reported by `label` and nothing else is lost. The
+   * archive is read only when it is at most 25MB; of its entries only the
+   * addon.json and aces.json at its root or one folder deep are inflated.
+   */
+  private async attemptArchive(label: string, real: string, report: LoadReport): Promise<void> {
+    try {
+      const info = await stat(real);
+      if (info.size > MAX_ARCHIVE_BYTES) throw new DefinitionProblem(`the archive is larger than 25MB. ${NOTHING_LOADED}`);
+      const buffer = await readFile(real);
+      let files: ZipReadEntry[];
+      try {
+        files = readZipArchive(buffer, {
+          wanted: path => ARCHIVE_DEFINITION_FILE.test(path),
+          maxEntryBytes: MAX_DEFINITION_BYTES,
+          maxKept: 4,
+          maxKeptBytes: 2 * MAX_DEFINITION_BYTES,
+        }).files;
+      } catch (error) {
+        // Entry names come from the archive: keep the wording, drop the quoted names
+        const message = error instanceof Error ? error.message.replace(/"[^"]*"/g, '"an entry"') : 'the archive could not be read';
+        throw new DefinitionProblem(`the archive could not be read: ${message}`);
+      }
+      const addons = files.filter(file => file.path.endsWith('addon.json'));
+      const aces = files.filter(file => file.path.endsWith('aces.json'));
+      if (addons.length === 0) throw new DefinitionProblem('the archive holds no addon.json at its root or one folder deep');
+      if (aces.length === 0) throw new DefinitionProblem('the archive holds no aces.json at its root or one folder deep');
+      if (addons.length > 1) throw new DefinitionProblem('the archive holds more than one addon.json');
+      if (aces.length > 1) throw new DefinitionProblem('the archive holds more than one aces.json');
+      if (folderOf(addons[0].path) !== folderOf(aces[0].path)) {
+        throw new DefinitionProblem('addon.json and aces.json are not in the same folder');
+      }
+      const definition = parseAddonDefinition(addons[0].data.toString('utf8'), aces[0].data.toString('utf8'), label);
+      this.definitions.set(`${definition.type}:${definition.id}`, definition);
+      const { aces: _aces, ...summary } = definition;
+      report.loaded.push(summary);
+    } catch (error) {
+      report.skipped.push({ name: label, reason: error instanceof DefinitionProblem ? error.message : 'could not be read' });
     }
   }
 

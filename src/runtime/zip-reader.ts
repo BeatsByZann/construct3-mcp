@@ -149,17 +149,41 @@ function findEocd(buf: Buffer): number {
   throw new Error('Not a zip archive: no end-of-central-directory record');
 }
 
+/** What a read may keep and how much of it. Every field is optional; without one, nothing is filtered or limited. */
+export interface ZipReadOptions {
+  /** Whether the entry at this path is kept; an entry that is not kept is checked for structure but never inflated. */
+  wanted?: (path: string) => boolean;
+  /** The most bytes one kept entry may declare */
+  maxEntryBytes?: number;
+  /** The most entries that may be kept */
+  maxKept?: number;
+  /** The most bytes the kept entries may declare in all */
+  maxKeptBytes?: number;
+}
+
+/** A size in whole megabytes for a message (limits are whole megabytes). */
+function megabytes(bytes: number): number {
+  return Math.round(bytes / (1024 * 1024));
+}
+
 /**
  * Read a zip archive: its file entries, and the directory entries it lists
- * (each with a trailing "/"). Every check runs while the central directory
- * is read, before any entry's data is returned.
+ * (each with a trailing "/"). Every structure check runs while the central
+ * directory is read, for every entry, before any entry's data is returned.
+ * With `options.wanted`, only the entries it accepts are inflated, sized and
+ * checked against their CRC; the others still have their path, local header,
+ * extent and file-or-folder rules checked. A kept entry's declared size is
+ * checked against the limits in `options` before it is inflated, and its
+ * inflation never produces more than the declared size.
  */
-export function readZipArchive(buf: Buffer): { files: ZipReadEntry[]; directories: string[] } {
+export function readZipArchive(buf: Buffer, options?: ZipReadOptions): { files: ZipReadEntry[]; directories: string[] } {
   const eocd = findEocd(buf);
   const { count, offset: cdOffset, size: cdSize, end } = centralDirectory(buf, eocd);
   if (cdOffset + cdSize > end) throw new Error('The zip central directory lies outside the archive');
 
   const entries: ZipReadEntry[] = [];
+  const skipped: string[] = [];
+  let keptBytes = 0;
   const directories: string[] = [];
   const seen = new Set<string>();
   const folders = new Map<string, string>();
@@ -223,23 +247,47 @@ export function readZipArchive(buf: Buffer): { files: ZipReadEntry[]; directorie
     if (dataStart + compressedSize > buf.length) throw new Error(`Zip entry "${path}" runs past the end of the archive`);
     const raw = buf.subarray(dataStart, dataStart + compressedSize);
 
+    if (options?.wanted && !options.wanted(path)) {
+      skipped.push(path);
+      continue;
+    }
+    if (options?.maxEntryBytes !== undefined && size > options.maxEntryBytes) {
+      throw new Error(`Zip entry "${path}" is larger than ${megabytes(options.maxEntryBytes)}MB`);
+    }
+    if (options?.maxKept !== undefined && entries.length + 1 > options.maxKept) {
+      throw new Error(`The archive holds more than ${options.maxKept} addon definition files`);
+    }
+    if (options?.maxKeptBytes !== undefined && keptBytes + size > options.maxKeptBytes) {
+      throw new Error(`The addon definition files in the archive together hold more than ${megabytes(options.maxKeptBytes)}MB`);
+    }
+    keptBytes += size;
+
     let data: Buffer;
     if (method === 0) data = Buffer.from(raw);
-    else if (method === 8) data = inflateRawSync(raw);
-    else throw new Error(`Zip entry "${path}" uses compression method ${method}; only STORE and DEFLATE are supported`);
+    else if (method === 8) {
+      try {
+        data = inflateRawSync(raw, { maxOutputLength: Math.max(size, 1) });
+      } catch (error) {
+        // Output past the declared size: the entry is not what the archive says, and nothing more was inflated
+        if ((error as { code?: string }).code === 'ERR_BUFFER_TOO_LARGE') {
+          throw new Error(`Zip entry "${path}" is more than ${size} bytes, but the archive says ${size}`, { cause: error });
+        }
+        throw error;
+      }
+    } else throw new Error(`Zip entry "${path}" uses compression method ${method}; only STORE and DEFLATE are supported`);
     if (data.length !== size) throw new Error(`Zip entry "${path}" is ${data.length} bytes, but the archive says ${size}`);
     if (crc32(data) !== crc) throw new Error(`Zip entry "${path}" fails its CRC check`);
     entries.push({ path, data });
   }
 
   // A path that is a file and also a folder (of another entry, or a directory entry) cannot be unpacked
-  for (const entry of entries) {
-    if (folders.has(pathKey(entry.path))) throw new Error(`The archive's "${entry.path}" is both a file and a folder`);
+  for (const path of [...entries.map(entry => entry.path), ...skipped]) {
+    if (folders.has(pathKey(path))) throw new Error(`The archive's "${path}" is both a file and a folder`);
   }
   return { files: entries, directories };
 }
 
 /** Read every file entry of a zip archive (directory entries are left out: readZipArchive lists them). */
-export function readZip(buf: Buffer): ZipReadEntry[] {
-  return readZipArchive(buf).files;
+export function readZip(buf: Buffer, options?: ZipReadOptions): ZipReadEntry[] {
+  return readZipArchive(buf, options).files;
 }

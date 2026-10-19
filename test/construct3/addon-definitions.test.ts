@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, sep } from 'node:path';
 import {
   AddonDefinitions,
+  MAX_ARCHIVE_BYTES,
   MAX_DEFINITION_BYTES,
   addonDefinitionsOf,
   addonRootsFor,
@@ -18,6 +19,7 @@ import {
   type LoadReport,
 } from '../../src/construct3/addon-definitions.js';
 import { guardNetwork } from './ace-fetch-stub.js';
+import { zipWithDeflate, paddedJson, type FixtureEntry } from '../runtime/zip-fixtures.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -159,6 +161,211 @@ describe('loading folders', () => {
     expect(defs.roots()).toEqual([await realpath(project)]);
     expect(errors.mock.calls.flat().join('\n')).toContain('gone');
     expect(errors.mock.calls.flat().join('\n')).not.toContain(tmp);
+  });
+});
+
+describe('.c3addon archives', () => {
+  const MB = 1024 * 1024;
+
+  /** The probe addon's two definition files as archive entries under `folder` ('' for the root), as real DEFLATE streams. */
+  async function definitionEntries(folder = '', id = 'ProbeTimer'): Promise<FixtureEntry[]> {
+    const addon = Buffer.from((await readFile(join(FIXTURE, 'addon.json'), 'utf8')).replace('"ProbeTimer"', JSON.stringify(id)));
+    const aces = await readFile(join(FIXTURE, 'aces.json'));
+    const prefix = folder === '' ? '' : `${folder}/`;
+    return [
+      { path: `${prefix}addon.json`, data: addon, method: 8 },
+      { path: `${prefix}aces.json`, data: aces, method: 8 },
+    ];
+  }
+
+  /** Write an archive of `entries` to `path`, making its folder. */
+  async function writeArchive(path: string, entries: FixtureEntry[]): Promise<string> {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, zipWithDeflate(entries));
+    return path;
+  }
+
+  /** What loading `path` skipped, as reasons. */
+  async function reasonsFor(path: string): Promise<string[]> {
+    const defs = await registryWith(project);
+    const report = await defs.load(path);
+    expect(report.loaded).toEqual([]);
+    expect(defs.list()).toEqual([]);
+    return report.skipped.map(s => s.reason);
+  }
+
+  it('loads an archive whose definition files sit at the root, without inflating the damaged 5MB file beside them', async () => {
+    const path = await writeArchive(join(project, 'addons', 'probe.c3addon'), [
+      ...await definitionEntries(),
+      { path: 'big.bin', data: Buffer.alloc(5 * MB, 7), method: 8, damage: true },
+    ]);
+    const defs = await registryWith(project);
+    const report = await defs.load(path);
+    expect(report.skipped).toEqual([]);
+    expect(report.loaded).toEqual([{
+      id: 'ProbeTimer', type: 'plugin', name: 'Probe Timer', version: '1.0.0.0', source: 'probe.c3addon',
+      counts: { conditions: 1, actions: 1, expressions: 1 },
+    }]);
+    expect(Object.keys(defs.get('plugin', 'ProbeTimer')!.aces.actions)).toEqual(['start-timer']);
+  });
+
+  it('loads an archive whose definition files sit one folder deep', async () => {
+    const path = await writeArchive(join(project, 'probe.c3addon'), [
+      ...await definitionEntries('probe-folder'),
+      { path: 'probe-folder/big.bin', data: Buffer.alloc(MB, 7), method: 8, damage: true },
+    ]);
+    const defs = await registryWith(project);
+    expect((await defs.load(path)).loaded.map(d => d.id)).toEqual(['ProbeTimer']);
+  });
+
+  it('loads an archive that holds exactly one co-located pair', async () => {
+    const path = await writeArchive(join(project, 'one.c3addon'), await definitionEntries('x'));
+    const defs = await registryWith(project);
+    expect((await defs.load(path)).loaded.map(d => d.id)).toEqual(['ProbeTimer']);
+  });
+
+  it('refuses an archive without an addon.json or aces.json, with two of either, or with them in different folders', async () => {
+    const [addon, aces] = await definitionEntries();
+    const place = (entry: FixtureEntry, path: string): FixtureEntry => ({ ...entry, path });
+    const none = await writeArchive(join(project, 'none.c3addon'), [aces]);
+    expect(await reasonsFor(none)).toEqual([expect.stringContaining('no addon.json')]);
+    const noAces = await writeArchive(join(project, 'noaces.c3addon'), [addon]);
+    expect(await reasonsFor(noAces)).toEqual([expect.stringContaining('no aces.json')]);
+    const two = await writeArchive(join(project, 'two.c3addon'), [addon, aces, place(addon, 'b/addon.json')]);
+    expect(await reasonsFor(two)).toEqual([expect.stringContaining('more than one addon.json')]);
+    const twoAces = await writeArchive(join(project, 'twoaces.c3addon'), [addon, aces, place(aces, 'b/aces.json')]);
+    expect(await reasonsFor(twoAces)).toEqual([expect.stringContaining('more than one aces.json')]);
+    const apart = await writeArchive(join(project, 'apart.c3addon'), [place(addon, 'a/addon.json'), place(aces, 'b/aces.json')]);
+    expect(await reasonsFor(apart)).toEqual(['addon.json and aces.json are not in the same folder']);
+    const rootAndFolder = await writeArchive(join(project, 'mixed.c3addon'), [addon, place(aces, 'a/aces.json')]);
+    expect(await reasonsFor(rootAndFolder)).toEqual(['addon.json and aces.json are not in the same folder']);
+  });
+
+  it('does not take an addon.json two folders deep as a candidate', async () => {
+    const alone = await writeArchive(join(project, 'alone.c3addon'), [(await definitionEntries('a/b'))[0]]);
+    expect(await reasonsFor(alone)).toEqual([expect.stringContaining('no addon.json')]);
+    const both = await writeArchive(join(project, 'deep.c3addon'), await definitionEntries('a/b'));
+    expect(await reasonsFor(both)).toEqual([expect.stringContaining('no addon.json')]);
+  });
+
+  it('refuses an archive over 25MB before reading it', async () => {
+    const path = join(project, 'huge.c3addon');
+    const handle = await open(path, 'w');
+    await handle.write(Buffer.from('x'), 0, 1, MAX_ARCHIVE_BYTES);
+    await handle.close();
+    const defs = await registryWith(project);
+    vi.mocked(readFile).mockClear();
+    const report = await defs.load(path);
+    expect(report.loaded).toEqual([]);
+    expect(report.skipped).toEqual([{ name: 'huge.c3addon', reason: 'the archive is larger than 25MB. Nothing was loaded.' }]);
+    expect(vi.mocked(readFile).mock.calls.some(call => String(call[0]).endsWith('huge.c3addon'))).toBe(false);
+  });
+
+  it('refuses an archive outside the roots, and one reached through a junction that leads out', async ctx => {
+    const outside = await writeArchive(join(other, 'probe.c3addon'), await definitionEntries());
+    const defs = await registryWith(project);
+    const refused = await defs.load(outside);
+    expect(refused.loaded).toEqual([]);
+    expect(refused.skipped).toEqual([{ name: 'probe.c3addon', reason: `${OUTSIDE}. Nothing was loaded.` }]);
+    if (!linkDirectory(other, join(project, 'out'))) ctx.skip('this platform refused to create a directory link');
+    const viaLink = await defs.load(join(project, 'out', 'probe.c3addon'));
+    expect(viaLink.loaded).toEqual([]);
+    expect(viaLink.skipped).toEqual([{ name: 'probe.c3addon', reason: `${OUTSIDE}. Nothing was loaded.` }]);
+    await defs.setRoots([project, other]);
+    expect((await defs.load(outside)).loaded.map(d => d.id)).toEqual(['ProbeTimer']);
+  });
+
+  it('skips an archive in a scanned folder whose real path lies outside the roots and loads the others', async () => {
+    const folder = join(project, 'addons');
+    await writeArchive(join(folder, 'good.c3addon'), await definitionEntries('', 'GoodTimer'));
+    await writeArchive(join(folder, 'evil.c3addon'), await definitionEntries('', 'EvilTimer'));
+    const target = await writeArchive(join(other, 'target.c3addon'), await definitionEntries('', 'EvilTimer'));
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const outside = await actual.realpath(target);
+    vi.mocked(realpath).mockImplementation((async (path: string) =>
+      String(path).endsWith(`${sep}evil.c3addon`) ? outside : actual.realpath(path)) as typeof realpath);
+    const defs = await registryWith(project);
+    const report = await defs.load(folder);
+    expect(report.loaded.map(d => d.id)).toEqual(['GoodTimer']);
+    expect(report.skipped).toEqual([{ name: 'evil.c3addon', reason: OUTSIDE }]);
+    expect(defs.get('plugin', 'EvilTimer')).toBeUndefined();
+  });
+
+  it('skips an archive that is a link to an outside file when the platform allows one, and loads the others', async ctx => {
+    const folder = join(project, 'addons');
+    await writeArchive(join(folder, 'good.c3addon'), await definitionEntries('', 'GoodTimer'));
+    const target = await writeArchive(join(other, 'target.c3addon'), await definitionEntries('', 'EvilTimer'));
+    try {
+      symlinkSync(target, join(folder, 'evil.c3addon'), 'file');
+    } catch {
+      ctx.skip('this platform refused to create a file link');
+    }
+    const defs = await registryWith(project);
+    const report = await defs.load(folder);
+    expect(report.loaded.map(d => d.id)).toEqual(['GoodTimer']);
+    expect(report.skipped).toEqual([{ name: 'evil.c3addon', reason: OUTSIDE }]);
+  });
+
+  it('loads archives and folders found by scanning a folder, and ignores other files', async () => {
+    const folder = join(project, 'addons');
+    await writeArchive(join(folder, 'a.c3addon'), await definitionEntries('', 'AlphaTimer'));
+    await writeArchive(join(folder, 'b.C3ADDON'), await definitionEntries('inner', 'BetaTimer'));
+    await makeAddon(join(folder, 'c'), 'GammaTimer');
+    await writeFile(join(folder, 'notes.txt'), 'ignored');
+    const defs = await registryWith(project);
+    const report = await defs.load(folder);
+    expect(report.skipped).toEqual([]);
+    expect(report.loaded.map(d => [d.id, d.source])).toEqual([['AlphaTimer', 'a.c3addon'], ['BetaTimer', 'b.C3ADDON'], ['GammaTimer', 'c']]);
+  });
+
+  it('reads a folder whose name ends in .c3addon as a folder, not as an archive', async () => {
+    const folder = join(project, 'addons');
+    await makeAddon(join(folder, 'unpacked.c3addon'), 'FolderTimer');
+    const defs = await registryWith(project);
+    const report = await defs.load(folder);
+    expect(report.skipped).toEqual([]);
+    expect(report.loaded.map(d => [d.id, d.source])).toEqual([['FolderTimer', 'unpacked.c3addon']]);
+  });
+
+  it('refuses a definition file whose declared size is over 10MB before inflating it', async () => {
+    const [addon, aces] = await definitionEntries();
+    const path = await writeArchive(join(project, 'declared.c3addon'), [addon, { ...aces, declaredSize: 10 * MB + 1 }]);
+    expect(await reasonsFor(path)).toEqual(['the archive could not be read: Zip entry "an entry" is larger than 10MB']);
+  });
+
+  it('refuses a definition file that inflates past its declared size', async () => {
+    const [addon] = await definitionEntries();
+    const path = await writeArchive(join(project, 'bomb.c3addon'), [addon, { path: 'aces.json', data: Buffer.alloc(MB), method: 8, declaredSize: 100 }]);
+    expect(await reasonsFor(path)).toEqual(['the archive could not be read: Zip entry "an entry" is more than 100 bytes, but the archive says 100']);
+  });
+
+  it('refuses an archive of thousands of definition files before inflating the fifth', async () => {
+    const data = paddedJson('{"type":"plugin","id":"Padded"}', MB);
+    const entries: FixtureEntry[] = Array.from({ length: 2000 }, (_, i) => ({ path: `f${i}/addon.json`, data, method: 8, damage: i >= 4 }));
+    const path = await writeArchive(join(project, 'many.c3addon'), entries);
+    expect(await reasonsFor(path)).toEqual(['the archive could not be read: The archive holds more than 4 addon definition files']);
+  });
+
+  it('refuses definition files that together pass 20MB before inflating the one that passes it', async () => {
+    const nine = paddedJson('{"type":"plugin","id":"Padded"}', 9 * MB);
+    const path = await writeArchive(join(project, 'heavy.c3addon'), [
+      { path: 'a/addon.json', data: nine, method: 8 },
+      { path: 'a/aces.json', data: nine, method: 8 },
+      { path: 'b/addon.json', data: nine, method: 8, damage: true },
+    ]);
+    expect(await reasonsFor(path)).toEqual(['the archive could not be read: The addon definition files in the archive together hold more than 20MB']);
+  });
+
+  it('carries no entry name from the archive in a report', async () => {
+    const secret = 'SECRET-ENTRY-4711';
+    const [addon] = await definitionEntries();
+    const unsafe = await writeArchive(join(project, 'unsafe.c3addon'), [{ ...addon, path: `${secret}/../addon.json` }]);
+    const damaged = await writeArchive(join(project, 'damaged.c3addon'), [{ ...addon, path: `${secret}/addon.json`, damage: true }]);
+    const folderAndFile = await writeArchive(join(project, 'both.c3addon'), [{ ...addon, path: secret }, { ...addon, path: `${secret}/addon.json` }]);
+    const reasons = [...await reasonsFor(unsafe), ...await reasonsFor(damaged), ...await reasonsFor(folderAndFile)];
+    expect(reasons).toHaveLength(3);
+    expect(JSON.stringify(reasons)).not.toContain(secret);
+    expect(JSON.stringify(reasons)).not.toContain(tmp);
   });
 });
 
