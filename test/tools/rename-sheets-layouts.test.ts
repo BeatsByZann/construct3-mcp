@@ -273,7 +273,7 @@ describe('rename_event_sheet', () => {
     expect(data.success).toBe(true);
     expect(data.dryRun).toBe(true);
     expect(data.action).toBe('would_rename');
-    expect((data.references ?? []).map(r => r.in)).toEqual(['eventSheets/MainSheet', 'eventSheets/Other', 'layouts/Level 2']);
+    expect((data.references ?? []).map(r => r.in)).toEqual(['eventSheets/MainSheet.json', 'eventSheets/Other.json', 'layouts/Level 2.json']);
     expect(data.filesToWrite).toContain('eventSheets/Shared/Shared Logic.json');
     expect(data.fileToDelete).toBe('eventSheets/Shared/Common.json');
     expect(warningsOf(data)).toContain('Would point 2 include(s)');
@@ -332,7 +332,7 @@ describe('rename_event_sheet', () => {
     await refusal('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' }, 'could not be parsed (not valid JSON)');
   });
 
-  it('puts every file back when a step fails midway', async () => {
+  it('puts every file back when a write fails midway', async () => {
     const before = await snapshot();
     vi.spyOn(writer, 'deleteEntityFile').mockRejectedValueOnce(new Error('disk full'));
     const data = await call('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' });
@@ -435,6 +435,47 @@ describe('rename_event_sheet: what else it finds and how it fails', () => {
     now.delete('project.c3proj');
     before.delete('project.c3proj');
     expect(now).toEqual(before);
+  });
+
+  it('names a file by its path in the project when an fs error stops the rename', async () => {
+    const before = await snapshot();
+    const file = path('eventSheets', 'Shared', 'Common.json');
+    const fsError = Object.assign(new Error(`ENOSPC: no space left on device, open '${file}'`), { code: 'ENOSPC', path: file });
+    vi.spyOn(writer, 'deleteEntityFile').mockRejectedValueOnce(fsError);
+    const data = await call('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('ENOSPC on eventSheets/Shared/Common.json');
+    expect(data.text).toContain('The call was rolled back:');
+    expect(data.text).not.toContain(tmpDir);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('names a file by its path in the project when an fs error stops the search before any write', async () => {
+    const before = await snapshot();
+    const file = path('eventSheets', 'Other.json');
+    const fsError = Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES', path: file });
+    vi.spyOn(reader, 'readAllEventSheets').mockRejectedValueOnce(fsError);
+    const data = await refusal('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' }, 'The rename stopped before anything was written: EACCES on eventSheets/Other.json.');
+    expect(data.text).not.toContain(tmpDir);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('warns when the sheet\'s view state holds a name the rename could not change', async () => {
+    await writeFile(path('eventSheets', 'Shared', 'Common.uistate.json'), '{"name":"common","scroll":3}');
+    const data = await call('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' });
+    expect(data.success).toBe(true);
+    expect(warningsOf(data)).toContain('The editor\'s view state eventSheets/Shared/Shared Logic.uistate.json was moved with the "name" it holds unchanged');
+    expect(await readFile(path('eventSheets', 'Shared', 'Shared Logic.uistate.json'), 'utf8')).toBe('{"name":"common","scroll":3}');
+  });
+
+  it('does not warn about a view state whose name was changed', async () => {
+    await writeFile(path('eventSheets', 'Shared', 'Common.uistate.json'), '{"name":"Common","scroll":3}');
+    expect(warningsOf(await call('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' }))).not.toContain('view state');
+  });
+
+  it('does not warn about a view state that holds no name', async () => {
+    await writeFile(path('eventSheets', 'Shared', 'Common.uistate.json'), '{"scroll":3}');
+    expect(warningsOf(await call('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' }))).not.toContain('view state');
   });
 
   it('restores a referencing file from its backup when its own write fails after replacing it', async () => {
@@ -615,8 +656,8 @@ describe('rename_layout', () => {
     const warning = warningsOf(data);
     expect(warning).toContain('6 other expression(s), variable value(s) or script line(s) contain the string "Layout 1"');
     expect(warning).toContain('"MainSheet" events[2] "NextLevel"');
-    expect(data.possibleReferences).toContainEqual({ in: 'layouts/Layout 1', kind: 'instance variable', uid: 0, parameter: 'target', value: 'Layout 1' });
-    expect(data.possibleReferences).toContainEqual({ in: 'eventSheets/MainSheet', kind: 'variable value', path: 'events[3]', parameter: 'where', value: 'layout 1' });
+    expect(data.possibleReferences).toContainEqual({ in: 'layouts/Title Screen.json', kind: 'instance variable', uid: 0, parameter: 'target', value: 'Layout 1' });
+    expect(data.possibleReferences).toContainEqual({ in: 'eventSheets/MainSheet.json', kind: 'variable value', path: 'events[3]', parameter: 'where', value: 'layout 1' });
     expect((data.possibleReferences ?? []).map(r => r.kind)).not.toContain('layout parameter');
   });
 
@@ -655,7 +696,7 @@ describe('rename_layout', () => {
     expect(warningsOf(data)).toContain('Would point the "startOnLayout" of 2 timeline(s)');
   });
 
-  it('puts every file back when a step fails midway', async () => {
+  it('puts every file back when a write fails midway', async () => {
     await addTimelines();
     const before = await snapshot();
     vi.spyOn(writer, 'deleteEntityFile').mockRejectedValueOnce(new Error('disk full'));
@@ -663,6 +704,38 @@ describe('rename_layout', () => {
     expect(data.isError).toBe(true);
     expect(data.text).toContain('The call was rolled back:');
     expect(await snapshot()).toEqual(before);
+  });
+
+  it('names a timeline file by its path in the project when an fs error stops its write', async () => {
+    await addTimelines();
+    const before = await snapshot();
+    const file = path('timelines', 'Intro.json');
+    const fsError = Object.assign(new Error(`ENOSPC: no space left on device, open '${file}.tmp'`), { code: 'ENOSPC', path: `${file}.tmp` });
+    vi.spyOn(writer, 'replaceFile').mockRejectedValueOnce(fsError);
+    const data = await call('rename_layout', { name: 'Layout 1', newName: 'Title Screen' });
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('ENOSPC on timelines/Intro.json.tmp');
+    expect(data.text).not.toContain(tmpDir);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('refuses a new name that starts or ends with a space, before any change', async () => {
+    const before = await snapshot();
+    await refusal('rename_layout', { name: 'Layout 1', newName: 'Title ' }, 'ends with a space');
+    await refusal('rename_layout', { name: 'Layout 1', newName: ' Title' }, 'Name must start with a letter or underscore');
+    await refusal('rename_event_sheet', { name: 'Common', newName: 'Shared ' }, 'ends with a space');
+    await refusal('rename_event_sheet', { name: 'Common', newName: ' Shared' }, 'Name must start with a letter or underscore');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('names the file that holds a possible reference as it is in a dry run and under its new name after the rename', async () => {
+    const layout = await readJson<LayoutFile>(path('layouts', 'Layout 1.json'));
+    layout.layers[0].instances[0].instanceVariables = { target: 'Layout 1' };
+    await writeJson(path('layouts', 'Layout 1.json'), layout);
+    await reader.loadProject();
+    const inFile = (data: ToolData) => (data.possibleReferences ?? []).filter(r => r.kind === 'instance variable').map(r => r.in);
+    expect(inFile(await call('rename_layout', { name: 'Layout 1', newName: 'Title Screen', dryRun: true }))).toEqual(['layouts/Layout 1.json']);
+    expect(inFile(await call('rename_layout', { name: 'Layout 1', newName: 'Title Screen' }))).toEqual(['layouts/Title Screen.json']);
   });
 });
 

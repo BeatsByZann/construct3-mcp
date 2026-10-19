@@ -18,8 +18,8 @@
  * file for the new name that is not registered, is spelled as the new name
  * and holds the entity's SID is the stopped run's and is written over; and
  * when the entity is registered under the new name already and the old
- * file itself is still there with the same SID, the steps after the
- * project update are done (stoppedRun in the result). A finished rename
+ * file itself is still there with the same SID, what follows the project
+ * update is done (stoppedRun in the result). A finished rename
  * leaves only the old file's .bak, which is no such evidence: the same
  * call repeated answers that the name is not found.
  */
@@ -55,6 +55,8 @@ import {
   type EntityNameUse,
 } from '../construct3/entity-name-references.js';
 import { parseJsonText } from '../construct3/json-format.js';
+import { StaleFileError } from '../construct3/disk-state.js';
+import { EntityWriteError } from '../construct3/project-writer.js';
 import { readRegisteredTimelines, timelineFileText, type RegisteredTimeline } from './timeline-tools.js';
 import {
   assertUnchangedSinceRead,
@@ -63,6 +65,7 @@ import {
   moveViewStateFiles,
   newFileState,
   newSideWrites,
+  reasonOf,
   replaceForRename,
   rollBackRename,
   scriptFileUses,
@@ -116,6 +119,8 @@ interface RenamePlan {
   referencing: EntityNameUse[];
   startingOn: RegisteredTimeline[];
   views: ViewStateMove[];
+  /** Old paths of view-state files whose "name" could not be changed when they moved; filled while the files move */
+  declinedViews: string[];
   result: Record<string, unknown>;
   warnings: string[];
 }
@@ -142,22 +147,42 @@ export function viewStateWithName(text: string, oldName: string, newName: string
   }
   if (!isRecord(data) || data.name !== oldName) return text;
   const entry = new RegExp(`("name"\\s*:\\s*)${JSON.stringify(oldName).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}`);
+  // Only a string literal is replaced by another, so the changed text is valid JSON
   const changed = text.replace(entry, (_all, key: string) => `${key}${JSON.stringify(newName)}`);
+  return JSON.stringify(parseJsonText(changed)) === JSON.stringify({ ...data, name: newName }) ? changed : text;
+}
+
+/** Whether view-state text holds a top-level "name" other than `newName`, so that a rewrite which left the text as it is has left a stale name. */
+function holdsOtherName(text: string, newName: string): boolean {
   try {
-    return JSON.stringify(parseJsonText(changed)) === JSON.stringify({ ...data, name: newName }) ? changed : text;
+    const data = parseJsonText(text);
+    return isRecord(data) && 'name' in data && data.name !== newName;
   } catch {
-    return text;
+    return false;
   }
 }
 
-/** The editor's view-state files of an event sheet or a layout, moved with it. */
-function viewStateMoves(category: Category, subfolder: string | undefined, oldName: string, newName: string): ViewStateMove[] {
+/**
+ * The editor's view-state files of an event sheet or a layout, moved with
+ * it. A sheet's file whose "name" the rewrite could not change is added to
+ * `declined` (by its old path).
+ */
+function viewStateMoves(category: Category, subfolder: string | undefined, oldName: string, newName: string, declined: string[]): ViewStateMove[] {
   const folders = subfolder ? subfolder.split('/') : [];
+  const from = [category, ...folders, `${oldName}.uistate.json`];
   const moves: ViewStateMove[] = [
     {
-      from: [category, ...folders, `${oldName}.uistate.json`],
+      from,
       to: [category, ...folders, `${newName}.uistate.json`],
-      ...(category === 'eventSheets' ? { rewrite: (text: string) => viewStateWithName(text, oldName, newName) } : {}),
+      ...(category === 'eventSheets'
+        ? {
+          rewrite: (text: string) => {
+            const rewritten = viewStateWithName(text, oldName, newName);
+            if (rewritten === text && holdsOtherName(text, newName)) declined.push(from.join('/'));
+            return rewritten;
+          },
+        }
+        : {}),
     },
   ];
   if (category === 'layouts') {
@@ -166,10 +191,23 @@ function viewStateMoves(category: Category, subfolder: string | undefined, oldNa
   return moves;
 }
 
-/** A use as tool results list it. */
-function useEntry(use: EntityNameUse): Record<string, unknown> {
+/**
+ * An error as a message may show it: an fs error (it carries a code and a
+ * path) becomes a plain error with its code and the file's path in the
+ * project, since its own message spells the absolute path. A stale-file
+ * error and an entity write error are returned as they are (the writer
+ * words them).
+ */
+function withoutAbsolutePath(writer: Writer, error: unknown): unknown {
+  if (error instanceof StaleFileError || error instanceof EntityWriteError) return error;
+  const { code, path } = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; path?: unknown };
+  return typeof code === 'string' && typeof path === 'string' ? new Error(reasonOf(error, file => writer.projectRelative(file))) : error;
+}
+
+/** A use as tool results list it, in the file `fileOf` names (project-relative, with its folder and extension). */
+function useEntry(use: EntityNameUse, fileOf: (use: EntityNameUse) => string): Record<string, unknown> {
   return {
-    in: `${use.category}/${use.file}`,
+    in: fileOf(use),
     kind: use.kind,
     ...(use.eventPath !== undefined ? { path: use.eventPath } : {}),
     ...(use.ace !== undefined ? { ace: use.ace } : {}),
@@ -191,6 +229,10 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     validateName(newName);
   } catch (error) {
     return refuse(error instanceof Error ? error.message : String(error));
+  }
+  // The name check refuses a leading space; a trailing one it accepts
+  if (newName !== newName.trimEnd()) {
+    return refuse(`The new name "${newName}" ends with a space, which this tool does not accept. Remove the space.`);
   }
   if (newName === oldName) return refuse(`${kind.title} "${oldName}" already has this name.`);
   if (nameKey(newName) === nameKey(oldName)) {
@@ -269,12 +311,16 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   const referencing = [...new Map(definite
     .filter(u => !(start.mode === 'rename' && u.category === category && u.file === oldName))
     .map(u => [`${u.category}/${u.file}`, u] as const)).values()];
+  // After a rename the entity's own file is the one under its new name; a dry run names the files as they are
+  const fileOf = (use: EntityNameUse) => (start.mode === 'rename' && !args.dryRun && use.category === category && use.file === oldName
+    ? newFile
+    : reader.getEntityRelativePath(use.category, use.file));
   const references = [
-    ...definite.map(useEntry),
+    ...definite.map(use => useEntry(use, fileOf)),
     ...(startup ? [{ in: 'project.c3proj', kind: 'firstLayout', value: oldName }] : []),
     ...startingOn.map(t => ({ in: t.file, kind: 'startOnLayout', value: t.data.startOnLayout })),
   ];
-  const possibleList = [...possible.map(useEntry), ...scriptEntries];
+  const possibleList = [...possible.map(use => useEntry(use, fileOf)), ...scriptEntries];
   const possibleReferences = possibleList.length > 0 ? { possibleReferences: possibleList } : {};
   const timelinesUnread = timelineScan.unreadable.length > 0
     ? `Timeline file(s) that could not be read or parsed may start on this layout ("startOnLayout"): ${listSome(timelineScan.unreadable)}.`
@@ -355,9 +401,11 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
       warnings: warnings.length > 0 ? warnings : undefined,
     });
   }
+  const declinedViews: string[] = [];
   return {
     category, oldName, newName, subfolder, start, referencing, startingOn,
-    views: viewStateMoves(category, subfolder, oldName, newName),
+    views: viewStateMoves(category, subfolder, oldName, newName, declinedViews),
+    declinedViews,
     result: { ...common, fileDeleted: oldFile },
     warnings,
   };
@@ -413,10 +461,15 @@ async function applyRename(reader: Reader, writer: Writer, plan: RenamePlan) {
     if (start.mode === 'finish') await assertUnchangedSinceRead(writer, start.oldRead);
     backupPath = await writer.deleteEntityFile(category, oldName, subfolder);
   } catch (error) {
-    throw new Error(await rollBackRename(writer, error, side, writing !== undefined ? { writing } : {}));
+    throw new Error(await rollBackRename(writer, withoutAbsolutePath(writer, error), side, writing !== undefined ? { writing } : {}));
   }
   const view = await moveViewStateFiles(writer, reader.getProjectDir(), plan.views);
-  const warnings = [...plan.warnings, ...view.warnings];
+  const declined = view.moved.filter(m => plan.declinedViews.includes(m.from));
+  const warnings = [
+    ...plan.warnings,
+    ...view.warnings,
+    ...declined.map(m => `The editor's view state ${m.to} was moved with the "name" it holds unchanged: it is not "${oldName}" as written, or the text could not be changed safely.`),
+  ];
   return toolResult({
     success: true,
     action: 'renamed',
@@ -451,14 +504,15 @@ export function registerEntityRenameTools({ server: mcpServer, reader, writer }:
       planned = await planRename(reader, writer, category, args);
     } catch (error) {
       console.error(`[${tool}] failed:`, error);
-      return refuse(`The rename stopped before anything was written: ${(error instanceof Error ? error.message : String(error)).replace(/\.$/, '')}.`);
+      return refuse(`The rename stopped before anything was written: ${reasonOf(error, file => writer.projectRelative(file))}.`);
     }
     if ('content' in planned) return planned;
     try {
       return await applyRename(reader, writer, planned);
     } catch (error) {
       console.error(`[${tool}] failed:`, error);
-      return toolError(`Error renaming ${label}: ${error instanceof Error ? error.message : String(error)}`);
+      const shown = withoutAbsolutePath(writer, error);
+      return toolError(`Error renaming ${label}: ${shown instanceof Error ? shown.message : String(shown)}`);
     }
   };
 
