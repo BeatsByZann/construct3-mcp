@@ -94,8 +94,8 @@ function expression(ace: Record<string, unknown>): ExpressionDef {
   return entry;
 }
 
-/** An addon's categories flattened to the catalogue's shape. */
-function flatten(addon: unknown): AceSet {
+/** An addon's categories flattened to the catalogue's shape (also used for a third-party addon's aces.json). */
+export function flatten(addon: unknown): AceSet {
   const result: AceSet = { conditions: {}, actions: {}, expressions: {} };
   if (!isRecord(addon)) return result;
   for (const category of Object.values(addon)) {
