@@ -2024,7 +2024,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       isStatic: z.boolean().optional().describe('Mark as static (value persists between calls)'),
       isConstant: z.boolean().optional().describe('Mark as constant (cannot be changed at runtime)'),
       dryRun: z.boolean().optional().default(false).describe('Report what the update would change, the uses a rename points at the new name included, and write nothing'),
-      force: z.boolean().optional().default(false).describe('Rename even when uses would keep the old name or a clash cannot be ruled out: parameters the server cannot update, script lines, event sheets that could not be parsed and possibly use a renamed global or declare the new name, or uses past the limit of the search (those uses are NOT updated, and expressions left with the old name make Construct 3 r506-2 refuse to open the project until they are corrected)'),
+      force: z.boolean().optional().default(false).describe('Rename even when uses would keep the old name or a clash cannot be ruled out: parameters the server cannot update, script lines, event sheets that could not be parsed and possibly use a renamed global or declare the new name, or uses past the limit of the search (those uses are NOT updated, and expressions left with the old name made Construct 3 r506-2 show an "Invalid expressions" dialog naming them, offering only to close the project)'),
     },
     async (args) => {
       try {

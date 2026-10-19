@@ -311,7 +311,7 @@ describe('update_event_variable renames the uses', () => {
     const main = eventsOf(await readSheet('MainSheet'));
     expect(named(main, 'Hearts')).toBeDefined();
     expect(JSON.stringify(main.find(e => e.eventType === 'block')!.actions.slice(3, 6))).toBe(textBefore);
-    expect(forced.warnings.some((w: string) => w.includes('They still name "Lives"') && w.includes('refuses to open the project'))).toBe(true);
+    expect(forced.warnings.some((w: string) => w.includes('They still name "Lives"') && w.includes('"Invalid expressions" dialog'))).toBe(true);
   });
 
   it('never writes a group name or a combo choice spelled like a variable', async () => {

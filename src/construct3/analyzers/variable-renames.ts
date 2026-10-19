@@ -516,7 +516,7 @@ export function renameWarnings(plan: VariableRenamePlan, oldName: string, newNam
   }
   if (plan.notUpdated.length > 0) {
     warnings.push(`${dryRun ? 'Would rename' : 'Renamed'} with force=true: ${describeUsesNotUpdated(plan.notUpdated, oldName)} `
-      + `They still name "${oldName}"; Construct 3 r506-2 refuses to open the project while expressions name it, until they are corrected.`);
+      + `They still name "${oldName}"; with expressions naming it, Construct 3 r506-2 showed an "Invalid expressions" dialog and offered only to close the project.`);
   }
   return warnings;
 }
