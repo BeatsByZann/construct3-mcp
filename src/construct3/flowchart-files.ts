@@ -22,7 +22,6 @@ import { readFile } from 'fs/promises';
 import { dirname } from 'path';
 import type { Construct3ProjectReader } from './project-reader.js';
 import type { Construct3ProjectWriter } from './project-writer.js';
-import { newProjectFolder } from './project-writer.js';
 import { StaleFileError, currentToolCall, fileKey, sameFileState, statFileState, type FileState } from './disk-state.js';
 import { existingSpelling } from './atomic-write.js';
 import { parseJsonText, resolveJsonTextStyle, serializeJson } from './json-format.js';
@@ -219,6 +218,11 @@ function isEmptyFolder(folder: ProjectFolderNode): boolean {
     && (!Array.isArray(folder.subfolders) || folder.subfolders.length === 0);
 }
 
+/** A new Project Bar folder with its keys in the order the r506-2 editor saved them. */
+function newFlowchartFolder(name: string): ProjectFolderNode {
+  return { name, items: [], subfolders: [] };
+}
+
 /**
  * What registerFlowchart added to a project: the flowcharts container, and
  * how many of the folders on the path it made (always the innermost ones:
@@ -231,12 +235,19 @@ export interface Registration {
 
 /**
  * Register `name` in the flowcharts container of a parsed project.c3proj, in
- * `folders`, creating the container and the folders the way the editor
- * writes them (key order items, subfolders, name). Returns what it added, or
- * undefined when the name is already registered there; throws when the
- * entry is not a folder container, before anything is changed.
+ * `folders`, creating the container and the folders with their keys in the
+ * order the r506-2 editor saved a folder in (name, items, subfolders). The
+ * name goes at the end of the folder, or at `at` (clamped to the folder's
+ * length) when the caller puts back a name it took out. Returns what it
+ * added, or undefined when the name is already registered there; throws when
+ * the entry is not a folder container, before anything is changed.
  */
-export function registerFlowchart(project: ProjectWithFlowcharts, name: string, folders: readonly string[]): Registration | undefined {
+export function registerFlowchart(
+  project: ProjectWithFlowcharts,
+  name: string,
+  folders: readonly string[],
+  at?: number,
+): Registration | undefined {
   const container = project.flowcharts === undefined;
   if (container) project.flowcharts = { items: [], subfolders: [] };
   if (typeof project.flowcharts !== 'object' || project.flowcharts === null || Array.isArray(project.flowcharts)) {
@@ -248,7 +259,7 @@ export function registerFlowchart(project: ProjectWithFlowcharts, name: string, 
     if (!Array.isArray(folder.subfolders)) folder.subfolders = [];
     let next = namedChild(folder, part);
     if (!next) {
-      next = newProjectFolder(part);
+      next = newFlowchartFolder(part);
       (folder.subfolders as unknown[]).push(next);
       foldersMade++;
     }
@@ -257,7 +268,8 @@ export function registerFlowchart(project: ProjectWithFlowcharts, name: string, 
   if (!Array.isArray(folder.items)) folder.items = [];
   const items = folder.items as unknown[];
   if (items.includes(name)) return undefined;
-  items.push(name);
+  if (at === undefined || at >= items.length) items.push(name);
+  else items.splice(Math.max(at, 0), 0, name);
   return { container, foldersMade };
 }
 
@@ -268,15 +280,17 @@ export function isRegistered(project: ProjectWithFlowcharts, name: string, folde
 }
 
 /**
- * Remove `name` from exactly the folder it is registered in. Throws when it
+ * Remove `name` from exactly the folder it is registered in and return the
+ * index it had there, for registerFlowchart to put it back at. Throws when it
  * is not registered there (the project changed since the call looked).
  */
-export function unregisterFlowchart(project: ProjectWithFlowcharts, name: string, folders: readonly string[]): void {
+export function unregisterFlowchart(project: ProjectWithFlowcharts, name: string, folders: readonly string[]): number {
   const folder = folderAt(project, folders);
   const items = folder && Array.isArray(folder.items) ? folder.items as unknown[] : [];
   const index = items.indexOf(name);
   if (index === -1) throw new Error(`"${name}" is not registered in ${['flowcharts', ...folders].join('/')} of project.c3proj`);
   items.splice(index, 1);
+  return index;
 }
 
 /**
@@ -512,6 +526,8 @@ interface DeleteTarget {
   label: string;
   /** Whether the file was there before the call (a registered name can lack its file). */
   existed: boolean;
+  /** The index the last round of the delete's update took the name from in its folder, for the put-back. */
+  index: number | undefined;
 }
 
 /**
@@ -529,7 +545,7 @@ async function failedUnregisterMessage(reader: Reader, writer: Writer, error: un
   let registered = await registeredOnDisk(reader, name, folders);
   let put: UpdateAttempt = { wrote: false };
   if (registered !== true) {
-    put = await attemptUpdate(writer, project => registerFlowchart(project, name, folders) !== undefined);
+    put = await attemptUpdate(writer, project => registerFlowchart(project, name, folders, target.index) !== undefined);
     registered = await registeredOnDisk(reader, name, folders);
   }
   if (registered === true) {
@@ -590,7 +606,7 @@ async function failedFileDeleteMessage(reader: Reader, writer: Writer, error: un
     }
     restored = ` ${label} was restored from its backup.`;
   }
-  const put = await attemptUpdate(writer, project => registerFlowchart(project, name, folders) !== undefined);
+  const put = await attemptUpdate(writer, project => registerFlowchart(project, name, folders, target.index) !== undefined);
   if ((await registeredOnDisk(reader, name, folders)) === true) {
     return `${cause}.${restored}${put.wrote ? ` The registration of "${name}" was put back in project.c3proj.` : ''} Nothing was changed.`;
   }
@@ -645,12 +661,12 @@ export async function deleteFlowchartFiles(
   const fileSeen = await statFileState(filePath);
   const stateSeen = await statFileState(statePath);
   await writer.assertProjectFileCurrent();
-  const target: DeleteTarget = { name, folders, filePath, label, existed: fileSeen !== null };
+  const target: DeleteTarget = { name, folders, filePath, label, existed: fileSeen !== null, index: undefined };
   const round = { removed: false };
   try {
     await writer.updateProject(project => {
       round.removed = false;
-      unregisterFlowchart(project, name, folders);
+      target.index = unregisterFlowchart(project, name, folders);
       round.removed = true;
     });
   } catch (error) {

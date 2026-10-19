@@ -216,7 +216,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | Tool | Description |
 |------|-------------|
 | `create_flowchart` | Create an empty flowchart and register it in the same Project Bar folder; refuses a case variant of an existing name; warns when the Flowchart plugin is not in the project |
-| `delete_flowchart` | Delete a flowchart: its registration first, then its file and editor-state file (kept as `.bak`), each only if the editor did not save it meanwhile; the registration is put back when the file cannot be deleted |
+| `delete_flowchart` | Delete a flowchart: its registration first, then its file and editor-state file (kept as `.bak`), each only if the editor did not save it meanwhile; the registration is put back at its place when the file cannot be deleted |
 | `add_flowchart_node` | Add a dictionary or comment node with its output pins; one start node is kept |
 | `update_flowchart_node` | Update a node: caption, position, start flag, value type, comment text and formatting; connections are kept |
 | `delete_flowchart_node` | Delete a node and every reference to it |

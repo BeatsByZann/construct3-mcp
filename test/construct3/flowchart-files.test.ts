@@ -215,7 +215,7 @@ describe('writeFlowchart', () => {
 });
 
 describe('the project.c3proj registration', () => {
-  it('creates the container and the folders the way the editor saves them', () => {
+  it('creates the container and the folders, a folder with its name key first as the r506-2 editor saved it', () => {
     const project: { flowcharts?: unknown } = {};
     expect(registerFlowchart(project, 'Deep', ['AI', 'States'])).toEqual({ container: true, foldersMade: 2 });
     expect(project.flowcharts).toEqual({
@@ -223,7 +223,19 @@ describe('the project.c3proj registration', () => {
       subfolders: [{ items: [], subfolders: [{ items: ['Deep'], subfolders: [], name: 'States' }], name: 'AI' }],
     });
     const ai = (project.flowcharts as { subfolders: Array<Record<string, unknown>> }).subfolders[0];
-    expect(Object.keys(ai)).toEqual(['items', 'subfolders', 'name']);
+    expect(Object.keys(ai)).toEqual(['name', 'items', 'subfolders']);
+  });
+
+  it('puts a name back at the index it was taken from, or at the end when the folder is shorter now', () => {
+    const project = { flowcharts: { items: ['A', 'Graph', 'B'], subfolders: [] as unknown[] } };
+    const index = unregisterFlowchart(project, 'Graph', []);
+    expect(index).toBe(1);
+    expect(registerFlowchart(project, 'Graph', [], index)).toEqual({ container: false, foldersMade: 0 });
+    expect(project.flowcharts.items).toEqual(['A', 'Graph', 'B']);
+    unregisterFlowchart(project, 'Graph', []);
+    project.flowcharts.items.pop();
+    registerFlowchart(project, 'Graph', [], 5);
+    expect(project.flowcharts.items).toEqual(['A', 'Graph']);
   });
 
   it('reuses an existing folder and reports a name that is already registered there', () => {

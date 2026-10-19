@@ -459,6 +459,25 @@ describe('delete_flowchart', () => {
     expect(await registeredFlowcharts(project.dir)).toEqual({ items: ['Graph'], subfolders: [] });
   });
 
+  it('puts the registration back at its place among other flowcharts when the file cannot be deleted', async () => {
+    await createGraph();
+    await setFlowchartContainer(project, { items: ['A', 'Graph', 'B'], subfolders: [] });
+    vi.spyOn(project.writer, 'deleteFile').mockRejectedValue(new Error('disk full'));
+    const { text } = await call('delete_flowchart', { name: 'Graph' });
+    expect(text).toBe('disk full. The registration of "Graph" was put back in project.c3proj. Nothing was changed.');
+    expect(await registeredFlowcharts(project.dir)).toEqual({ items: ['A', 'Graph', 'B'], subfolders: [] });
+  });
+
+  it('puts the registration back at its place among other flowcharts when removing it failed after it wrote', async () => {
+    await createGraph();
+    await setFlowchartContainer(project, { items: ['A', 'Graph', 'B'], subfolders: [] });
+    const mergesThenFails = updateThatMergesTwoSavesThenFails(await editedProjectText(), await editedProjectText(LATER_NOTE));
+    vi.spyOn(project.writer, 'updateProject').mockImplementationOnce(mergesThenFails);
+    const { text } = await call('delete_flowchart', { name: 'Graph' });
+    expect(text).toBe('the check failed. The registration of "Graph" was put back in project.c3proj. Nothing was changed.');
+    expect(await registeredFlowcharts(project.dir)).toEqual({ items: ['A', 'Graph', 'B'], subfolders: [] });
+  });
+
   it('puts the registration back on top of the editor save when removing it failed after it wrote', async () => {
     await createGraph();
     const mergesThenFails = updateThatMergesTwoSavesThenFails(await editedProjectText(), await editedProjectText(LATER_NOTE));
