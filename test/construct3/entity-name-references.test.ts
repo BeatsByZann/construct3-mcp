@@ -72,6 +72,30 @@ describe('layout references', () => {
     expect(text.match(/"layout":"Stage"/g)).toHaveLength(3);
   });
 
+  it('lists a "layout" parameter of another object\'s action as possible and leaves it, while a System go-to-layout is rewritten', () => {
+    const custom = sheet([
+      { eventType: 'block', conditions: [], actions: [
+        { id: 'open-level', objectClass: 'Hero', parameters: { layout: 'Level' } },
+        { id: 'call-function', callFunction: 'Show', objectClass: 'Functions', parameters: { layout: 'level' } },
+        goTo('Level'),
+      ] },
+    ]);
+    const uses = findLayoutNameUses(new Map([['Main', custom]]), 'Level');
+    expect(uses.map(u => [u.ace, u.kind, u.definite])).toEqual([
+      ['action 0', 'layout parameter', false], ['action 1', 'layout parameter', false], ['action 2', 'layout parameter', true],
+    ]);
+    const data = structuredClone(custom);
+    expect(renameLayoutParameters(data, 'Level', 'Stage')).toBe(1);
+    const actions = (data.events[0] as unknown as { actions: Array<{ parameters: { layout: string } }> }).actions;
+    expect(actions.map(a => a.parameters.layout)).toEqual(['Level', 'level', 'Stage']);
+  });
+
+  it('gives a script use only its place, without the id of the action', () => {
+    const scripted = sheet([{ eventType: 'block', conditions: [], actions: [{ id: 'run-script', objectClass: 'System', type: 'script', script: ['runtime.goToLayout("Level");'] }] }]);
+    const [use] = findLayoutNameUses(new Map([['Main', scripted]]), 'Level');
+    expect(use).toEqual({ category: 'eventSheets', file: 'Main', kind: 'script', eventPath: 'events[0]', ace: 'action 0', parameter: 'script', value: 'runtime.goToLayout("Level");', definite: false });
+  });
+
   it('lists instance variable values of layout instances that are the name', () => {
     const layouts = new Map([['A', layout({ layers: [{ name: 'L0', instances: [{ type: 'Door', uid: 7, instanceVariables: { target: 'Level 1', n: 3 } }] }] })]]);
     const uses = findInstanceVariableValues(layouts, 'level 1');

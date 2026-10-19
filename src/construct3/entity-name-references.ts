@@ -5,16 +5,20 @@
  * (its "name", and the file name), and besides:
  * - an event sheet by the include events of event sheets ("includeSheet")
  *   and by the event sheet binding of layouts ("eventSheet");
- * - a layout by the "layout" parameter of conditions and actions (System Go
+ * - a layout by the "layout" parameter of System conditions and actions (Go
  *   to layout), which the editor saves as the bare name, not as a string
- *   expression (`"layout": "Level 2"`), by project.c3proj's "firstLayout"
- *   (the startup layout, also kept in its "properties") and by the
- *   "startOnLayout" of timelines (readRegisteredTimelines in
- *   tools/timeline-tools.ts).
+ *   expression (`"layout": "Level 2"`).
  * The editor compares these names ignoring case (names.ts), and no two event
  * sheets or layouts have names that differ only in case, so a name that
  * matches ignoring case names this one. These are sure references
- * (`definite`) and a rename rewrites them.
+ * (`definite`) and a rename rewrites them. This module finds no other
+ * place: project.c3proj's "firstLayout" (the startup layout, also kept in
+ * its "properties") is renamed by renameInProject in project-writer.ts, and
+ * the "startOnLayout" of timelines is handled with readRegisteredTimelines
+ * in tools/timeline-tools.ts.
+ *
+ * A "layout" parameter of any other condition or action (a custom function
+ * or action, a plugin) is not a Go to layout: it is only reported.
  *
  * A layout's name in a string literal (Go to layout (by name), a comparison
  * with LayoutName, a function call argument), in a script, or as the value
@@ -125,6 +129,8 @@ function walkLayoutNameUses(sheet: EventSheet, file: string, layoutName: string,
   const uses: EntityNameUse[] = [];
   const key = nameKey(layoutName);
   const scriptPattern = quotedNamePattern(layoutName);
+  /** Whether the condition or action being visited belongs to System (the ace visitor runs before its parameters) */
+  let onSystem = false;
   const variableValue = (variable: Record<string, unknown>, eventPath: string) => {
     if (isSameEntityName(variable.initialValue, layoutName)) {
       const parameter = typeof variable.name === 'string' ? variable.name : undefined;
@@ -140,17 +146,22 @@ function walkLayoutNameUses(sheet: EventSheet, file: string, layoutName: string,
         }
       }
     },
-    scriptLine(site, line) {
+    ace(_site, ace) {
+      onSystem = ace.objectClass === 'System';
+    },
+    scriptLine({ eventPath, ace }, line) {
       if (scriptPattern.test(line)) {
-        uses.push({ category: 'eventSheets', file, kind: 'script', ...site, parameter: 'script', value: line, definite: false });
+        uses.push({ category: 'eventSheets', file, kind: 'script', eventPath, ace, parameter: 'script', value: line, definite: false });
       }
     },
     parameter({ id, ...site }, { key: parameter, value, set }) {
       // Go to layout (by name) takes an expression under the same key
       const byName = id !== undefined && id.endsWith('-by-name');
       if (parameter === 'layout' && !byName && isSameEntityName(value, layoutName)) {
-        uses.push({ category: 'eventSheets', file, kind: 'layout parameter', ...site, parameter, value, definite: ENTITY_REWRITE_POLICY['layout parameter'] });
-        if (newName !== undefined && ENTITY_REWRITE_POLICY['layout parameter']) set(newName);
+        // Only a System condition or action takes a layout; another object's "layout" parameter (a custom function, a custom action, a plugin) is only listed
+        const rewritten = onSystem && ENTITY_REWRITE_POLICY['layout parameter'];
+        uses.push({ category: 'eventSheets', file, kind: 'layout parameter', ...site, parameter, value, definite: rewritten });
+        if (newName !== undefined && rewritten) set(newName);
       } else if (expressionStringLiterals(value).some(l => nameKey(l.text) === key)) {
         uses.push({ category: 'eventSheets', file, kind: 'string literal', ...site, parameter, value, definite: false });
       }
