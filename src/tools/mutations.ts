@@ -10,6 +10,7 @@ import type { IdGenerator } from '../construct3/id-generator.js';
 import { registerObjectTools } from './object-tools.js';
 import { registerEventTools } from './event-tools.js';
 import { registerLayoutTools } from './layout-tools.js';
+import { registerBulkInstanceTools } from './bulk-instance-tools.js';
 import { registerProjectTools } from './project-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
@@ -24,6 +25,7 @@ export function registerMutationTools(
   registerObjectTools(deps);
   registerEventTools(deps);
   registerLayoutTools(deps);
+  registerBulkInstanceTools(deps);
   registerProjectTools(deps);
   registerAnimationTools(deps);
   registerTimelineTools(deps);
