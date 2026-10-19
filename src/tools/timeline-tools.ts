@@ -310,7 +310,12 @@ async function loadTimeline(projectDir: string, name: string, location: Timeline
       const file = await readFileForWrite(fallback);
       const other = file === null ? undefined : parseJsonText(file.text);
       if (file !== null && isTimelineData(other)) return { ok: true, filePath: fallback, data: other, text: file.text, state: file.state };
-    } catch { /* not there either */ }
+    } catch (e: unknown) {
+      // Missing, or not JSON: not there either. Any other failure is that file's own, and is reported
+      const reason = readFailure(e);
+      if (e instanceof SyntaxError || reason === 'ENOENT') return { ok: false, reason: 'unreadable', filePath: primary, detail, missing };
+      return { ok: false, reason: 'unreadable', filePath: fallback, detail: reason, missing: false };
+    }
   }
   return { ok: false, reason: 'unreadable', filePath: primary, detail, missing };
 }
@@ -613,14 +618,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
         }
         await reader.reloadProject();
 
-        const result: WriteResult = {
-          success: true,
-          entity: args.name,
-          category: 'timeline',
-          action: 'created',
-          warnings: warnings.length > 0 ? warnings : undefined,
-        };
-        return toolResult(result);
+        return toolResult(writeResult(args.name, 'created', undefined, warnings));
       } catch (error) {
         console.error('[create_timeline] failed:', error);
         return toolError(`Error creating timeline: ${relativeMessage(error, reader.getProjectDir())}`);
@@ -730,7 +728,13 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
 
         // Only delete a file that really is this timeline; a transition (custom
         // ease) file of the same name in timelines/transitions/ is left alone.
-        const loaded = await loadTimeline(projectDir, args.name, location);
+        let loaded: LoadResult;
+        try {
+          loaded = await loadTimeline(projectDir, args.name, location);
+        } catch (e: unknown) {
+          // A registered name that resolves outside timelines/ is refused before anything is touched
+          return refuse(`Timeline "${args.name}": ${relativeMessage(e, projectDir)}`);
+        }
         if (!loaded.ok && loaded.reason === 'not-a-timeline') {
           return refuse(`Timeline "${args.name}" is registered but its file ${projectLabel(loaded.filePath)} holds no tracks, so it was not deleted. Check it with get_timeline_details.`);
         }
@@ -755,23 +759,11 @@ export function registerTimelineTools({ server: mcpServer, reader, writer }: Mut
 
         if (backupPath === undefined) {
           // A registration whose file is gone: only the registration was removed
-          const deregistered: WriteResult = {
-            success: true,
-            entity: args.name,
-            category: 'timeline',
-            action: 'deregistered',
-            warnings: [`The file ${fileLabel} was not found, so no file was removed; "${args.name}" was only removed from project.c3proj.`],
-          };
-          return toolResult(deregistered);
+          return toolResult(writeResult(args.name, 'deregistered', undefined, [
+            `The file ${fileLabel} was not found, so no file was removed; "${args.name}" was only removed from project.c3proj.`,
+          ]));
         }
-        const result: WriteResult = {
-          success: true,
-          entity: args.name,
-          category: 'timeline',
-          action: 'deleted',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
+        return toolResult(writeResult(args.name, 'deleted', backupPath));
       } catch (error) {
         console.error('[delete_timeline] failed:', error);
         return toolError(`Error deleting timeline: ${relativeMessage(error, reader.getProjectDir())}`);

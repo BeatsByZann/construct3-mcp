@@ -182,6 +182,14 @@ describe('timeline lookups', () => {
     const refused = await server.callTool('update_timeline', { name: 'Y', loop: true });
     expect(refused.isError).toBe(true);
     expect(await snapshot()).toEqual(before);
+
+    // No timeline file exists for Y, so only its registration goes; the ease file is not touched
+    const deleted = await server.callTool('delete_timeline', { name: 'Y' });
+    expect(deleted.isError).toBeUndefined();
+    expect(JSON.parse(deleted.content[0].text)).toMatchObject({ action: 'deregistered' });
+    expect(await readText('timelines/transitions/Y.json')).toBe(easeText('Y'));
+    expect((await registered()).items).not.toContain('Y');
+    expect(existsSync(file('timelines/transitions/Y.json.bak'))).toBe(false);
   });
 
   it('refuses a timeline name in another letter case, naming the registered one', async () => {
@@ -321,9 +329,39 @@ describe('refusals and errors', () => {
     expect(updated.isError).toBe(true);
     expect(updated.content[0].text.startsWith('Timeline "../escape": ')).toBe(true);
     expect(updated.content[0].text).toMatch(/Nothing was changed\.$/);
+
+    const deleted = await server.callTool('delete_timeline', { name: '../escape' });
+    expect(deleted.isError).toBe(true);
+    expect(deleted.content[0].text.startsWith('Timeline "../escape": ')).toBe(true);
+    expect(deleted.content[0].text).toMatch(/Nothing was changed\.$/);
     expect(await snapshot()).toEqual(before);
   });
 
+  it('reports a failure to read the file in timelines/transitions/ instead of hiding it', async () => {
+    const sample = JSON.parse(await readFile(SAMPLE_TIMELINE, 'utf-8')) as Record<string, unknown>;
+    await mkdir(file('timelines/transitions'), { recursive: true });
+    await writeFile(file('timelines/transitions/Z.json'), JSON.stringify({ ...sample, name: 'Z' }, null, '\t'), 'utf-8');
+    await editProject(project => {
+      (project.timelines as { items: string[] }).items.push('Z');
+    });
+    await load();
+    const before = await snapshot();
+    unreadable.path = file('timelines/transitions/Z.json');
+
+    const details = await server.callTool('get_timeline_details', { name: 'Z' });
+    expect(details.isError).toBe(true);
+    expect(details.content[0].text).toContain('timelines/transitions/Z.json');
+    expect(details.content[0].text).toContain('EACCES');
+    expect(slashed(details.content[0].text)).not.toContain(slashed(dir));
+
+    // It exists, so the registration is not dropped
+    const deleted = await server.callTool('delete_timeline', { name: 'Z' });
+    expect(deleted.isError).toBe(true);
+    expect(deleted.content[0].text).toContain('was not deleted');
+    expect(deleted.content[0].text).toMatch(/Nothing was changed\.$/);
+    unreadable.path = '';
+    expect(await snapshot()).toEqual(before);
+  });
 });
 
 describe('create_timeline', () => {
