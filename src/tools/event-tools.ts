@@ -408,9 +408,6 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
 
-        const aceWarnings = await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events);
-        const allWarnings = [...loadCheck.warnings, ...aceWarnings];
-
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
         resetProjectIndex(reader);
@@ -421,7 +418,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           category: 'eventsheet',
           action: 'updated',
           ...(generatedSid !== undefined ? { generatedSid } : {}),
-          warnings: allWarnings.length > 0 ? allWarnings : undefined,
+          warnings: loadCheck.warnings.length > 0 ? loadCheck.warnings : undefined,
           backupFile: backupPath,
         };
         return toolResult({

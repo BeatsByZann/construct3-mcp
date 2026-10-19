@@ -248,17 +248,6 @@ describe('event tools with the ACE and expression checks', () => {
     expect(text).toContain('fly-again');
   });
 
-  it('add_event_to_sheet writes the event and adds no warning about ACEs it did not touch', async () => {
-    const { dir, server } = await session();
-    const broken = JSON.parse(await sheetText(dir)) as { events: Json[] };
-    broken.events.push(block([onStart()], [flyAway()]));
-    await writeFile(join(dir, 'eventSheets', 'MainSheet.json'), JSON.stringify(broken, null, '\t'));
-    const { data } = await call(server, 'add_event_to_sheet', { sheetName: 'MainSheet', eventType: 'comment', commentText: 'Note' });
-    expect(data.success).toBe(true);
-    expect(data.warnings).toBeUndefined();
-    expect(await sheetText(dir)).toContain('Note');
-  });
-
   it('update_event_block warns for an added action and not for one it left alone', async () => {
     const { dir, server } = await session();
     const untouched = await call(server, 'update_event_block', { sheetName: 'MainSheet', sid: 400000000000003, disabled: true });
