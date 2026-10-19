@@ -129,7 +129,7 @@ When the message names a file ending in `.previous` (or, in a note, a second `.b
 
 **Solution**: Take the files you need from the folders named, then restart the server.
 
-### "Cannot read <archive> as a .c3p archive: ..."
+### "Cannot read <archive> as a .c3p archive: ..." / "<archive> has no project.c3proj at its root ..."
 
 **Cause**: The archive cannot be used. The reason follows: it is not a zip archive, is damaged (a CRC or size does not match), uses encryption, several disks or a compression method other than STORE and DEFLATE, or holds a name that is unsafe (an empty, `.` or `..` path segment, an absolute path, a colon, a name ending in a dot or space, a name Windows reserves for a device) or that would land on one file or folder with another (`appears more than once`, `spells the folder ... two ways`, `is both a file and a folder`). A start on such an archive fails with this message, and no working folder is left behind. A message `has no project.c3proj at its root` means the archive is not a Construct 3 project archive.
 

@@ -6,7 +6,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Added
 
-- A single-file `.c3p` project can be opened: the server takes a `.c3p` path wherever it takes a project path, serves it through a working folder in the system's temp folder, writes the archive back after the tool calls that change the project (the first write-back of a session keeps the archive as it was before it in `<name>.c3p.bak`), and reads it again before a call when it changed on disk while the session has nothing unsaved. The write-back never replaces or deletes a version of the archive another program saved: when the archive changed on disk after the session changed the project, it is not written in that session, and every tool result says so and names the folder that holds the session's changes (#ISSUE).
+- A single-file `.c3p` project can be opened: the server takes a `.c3p` path wherever it takes a project path, serves it through a working folder in the system's temp folder, writes the archive back after the tool calls that change the project (the first write-back of a session keeps the archive as it was before it in `<name>.c3p.bak`; a file already named so is not replaced, and the version is then kept under a second name that the result gives), and reads it again before a call when it changed on disk while the session has nothing unsaved. The write-back never replaces or deletes a version of the archive another program saved: when the archive changed on disk after the session changed the project, it is not written in that session, and every tool result says so and names the folder that holds the session's changes (#ISSUE).
 
 ### Changed
 
