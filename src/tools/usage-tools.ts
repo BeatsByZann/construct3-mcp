@@ -377,14 +377,43 @@ function someNames(names: readonly string[], max = 20): string {
   return names.length > max ? `${names.slice(0, max).join(', ')} and ${names.length - max} more` : names.join(', ');
 }
 
-/** The members of every family, from the index (family name as registered). */
-function familyMembersOf(index: Pick<ProjectIndex, 'familyMembers'>): Map<string, string[]> {
+/**
+ * The text of a caught error with the project folder shown as `<project>` and
+ * any other absolute path (a drive path, a UNC path) as `<path>`, so a reader's
+ * file path never reaches a tool result.
+ */
+function errorText(error: unknown, projectDir: string | undefined): string {
+  let text = error instanceof Error ? error.message : String(error);
+  if (projectDir) {
+    for (const spelling of new Set([projectDir, projectDir.replace(/\\/g, '/'), projectDir.replace(/\//g, '\\')])) {
+      text = text.split(spelling).join('<project>');
+    }
+  }
+  return text.replace(/[A-Za-z]:[\\/][^\s"'<>|*?]*/g, '<path>').replace(/\\\\[^\s"'<>|*?\\]+\\[^\s"'<>|*?]*/g, '<path>');
+}
+
+/**
+ * Exported for tests. The members of every family, from the index (family
+ * name as registered); a family whose member list is not a list has none.
+ */
+export function familyMembersOf(index: Pick<ProjectIndex, 'familyMembers'>): Map<string, string[]> {
   return new Map([...index.familyMembers].map(([family, members]) => [family, Array.isArray(members) ? members.filter(m => typeof m === 'string') : []]));
 }
 
 /** Register the read-only usage and inventory tools. */
 export function registerUsageTools(mcpServer: McpServer, reader: Construct3ProjectReader): void {
   const server = withProjectSync(mcpServer, reader);
+
+  /** An error result "<label>: <message>" for a caught error, without absolute paths. */
+  const failure = (label: string, error: unknown, suffix = '') => {
+    let projectDir: string | undefined;
+    try {
+      projectDir = reader.getProjectDir();
+    } catch {
+      projectDir = undefined;
+    }
+    return toolError(`${label}: ${errorText(error, projectDir)}${suffix}`);
+  };
 
   server.tool(
     'get_project_properties',
@@ -403,7 +432,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           topLevel,
         });
       } catch (error) {
-        return toolError(`Error reading project properties: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('Error reading project properties', error);
       }
     },
   );
@@ -467,7 +496,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           ...status,
         });
       } catch (error) {
-        return toolError(`Error counting instances: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('Error counting instances', error);
       }
     },
   );
@@ -637,7 +666,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
         if (error instanceof NodeLimitExceeded) {
           return toolError('The search exceeded the node limit. Nothing was returned.');
         }
-        return toolError(`Error searching the project: ${error instanceof Error ? error.message : String(error)}. Nothing was returned.`);
+        return failure('Error searching the project', error, '. Nothing was returned.');
       }
     },
   );
@@ -702,10 +731,11 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           eventReferenceCount: eventReferences.length,
           sheets: [...new Set(eventReferences.map(ref => ref.eventSheet))],
           instanceSettings,
+          scriptUsesNotSearched: 'Script actions, script events and script files that use a behavior are not searched; use search_project for those.',
           ...status,
         });
       } catch (error) {
-        return toolError(`Error finding behavior usage: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('Error finding behavior usage', error);
       }
     },
   );
@@ -755,7 +785,6 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
         const scopes = declarationScopes(declarations, members);
         /** Classes that get a wanted effect through a family, with the names, as nameKeys. */
         const viaFamily = declarationScopes(declarations.filter(d => d.ownerKind === 'family'), members);
-        for (const d of declarations) if (d.ownerKind === 'family') viaFamily.delete(nameKey(d.owner));
 
         const layouts = await reader.readAllLayouts();
         for (const [layoutName, layout] of layouts) {
@@ -818,13 +847,14 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           eventReferences,
           eventReferenceCount: eventReferences.length,
           unresolvedEventReferences,
+          scriptUsesNotSearched: 'Script actions, script events and script files that use an effect are not searched; use search_project for those.',
           ...(uses.some(use => use.targetType === 'layer' || use.targetType === 'layout')
             ? { notFollowed: 'Layer and layout effect uses in System actions are not listed.' }
             : {}),
           ...status,
         });
       } catch (error) {
-        return toolError(`Error finding effect usage: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('Error finding effect usage', error);
       }
     },
   );
@@ -861,7 +891,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
             .filter((n): n is string => typeof n === 'string');
           const found = registeredName(own, args.variableName);
           if (found === undefined) {
-            return toolError(`Instance variable "${args.variableName}" not found on ${isFamily ? 'family' : 'object'} "${owner}". Available: ${someNames(own)}. Nothing was returned.`);
+            return toolError(`Instance variable "${args.variableName}" not found on ${isFamily ? 'family' : 'object'} "${owner}". Available: ${someNames(own)}.${isFamily ? '' : ' A variable a family gives the object is asked with familyName.'} Nothing was returned.`);
           }
           variableName = found;
         }
@@ -912,7 +942,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           ...status,
         });
       } catch (error) {
-        return toolError(`Error finding instance variable references: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('Error finding instance variable references', error);
       }
     },
   );

@@ -10,7 +10,7 @@ import { join, dirname } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
-import { registerUsageTools } from '../../src/tools/usage-tools.js';
+import { registerUsageTools, familyMembersOf } from '../../src/tools/usage-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
@@ -35,6 +35,7 @@ interface UsageResult {
   references?: Array<{ eventSheet: string; objectClass: string; name: string; form: string }>;
   storedValues?: Array<{ layout: string; uid: number; type: string; variable: string; value: unknown }>;
   scriptReads?: Array<{ path: string; eventSheet?: string; name: string }>;
+  scriptUsesNotSearched?: string;
   variableUnconfirmed?: boolean;
   owner?: string;
 }
@@ -190,6 +191,7 @@ describe('find_behavior_usage', () => {
     expect(result.sheets).toEqual(['Logic']);
     expect(result.instanceSettings).toEqual([expect.objectContaining({ layout: 'Layout 2', uid: 11, type: 'Sprite', behavior: 'Platform' })]);
     expect(result.complete).toBe(true);
+    expect(result.scriptUsesNotSearched).toBe('Script actions, script events and script files that use a behavior are not searched; use search_project for those.');
     expect(result).not.toHaveProperty('success');
     expect(result).not.toHaveProperty('editorNote');
   });
@@ -280,6 +282,7 @@ describe('find_effect_usage', () => {
     expect(result.instanceStates).toEqual([{ layout: 'Layout 2', uid: 21, type: 'Sprite', effect: 'Glow', isEnabled: false }]);
     expect(result.unresolvedEventReferences).toEqual([]);
     expect(result.complete).toBe(true);
+    expect(result.scriptUsesNotSearched).toBe('Script actions, script events and script files that use an effect are not searched; use search_project for those.');
     expect(result).not.toHaveProperty('notFollowed');
 
     const byName = await call('find_effect_usage', { effectName: 'GLOW' });
@@ -432,7 +435,9 @@ describe('find_instance_variable_references', () => {
     expect(family.content[0].text).toContain('Family "Nope" not found. Available: Foes');
     expect(family.content[0].text.endsWith(' Nothing was returned.')).toBe(true);
     const unknown = await raw('find_instance_variable_references', { objectName: 'Hero', variableName: 'nope' });
-    expect(unknown.content[0].text).toBe('Instance variable "nope" not found on object "Hero". Available: hp, mp. Nothing was returned.');
+    expect(unknown.content[0].text).toBe('Instance variable "nope" not found on object "Hero". Available: hp, mp. A variable a family gives the object is asked with familyName. Nothing was returned.');
+    const onFamily = await raw('find_instance_variable_references', { familyName: 'Foes', variableName: 'nope' });
+    expect(onFamily.content[0].text).toBe('Instance variable "nope" not found on family "Foes". Available: hp. Nothing was returned.');
   });
 
   it('names unparsable sheets and layouts and what a text search of each found, needing both the variable and the owner', async () => {
@@ -496,5 +501,41 @@ describe('find_instance_variable_references', () => {
     const result = await raw('find_instance_variable_references', { familyName: 'Foes', variableName: 'hp' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe('Error finding instance variable references: families gone');
+  });
+});
+
+describe('familyMembersOf', () => {
+  it('keeps the member names of each family and gives a family whose members are not a list none', () => {
+    const members = new Map<string, unknown>([['A', ['x', 'y']], ['B', 'nope'], ['C', ['z', 5, null]]]);
+    expect(familyMembersOf({ familyMembers: members as Map<string, string[]> })).toEqual(new Map([['A', ['x', 'y']], ['B', []], ['C', ['z']]]));
+  });
+});
+
+describe('error results of the usage tools', () => {
+  const cases: Array<{ tool: string; args: Json; spy: () => void; label: string }> = [
+    { tool: 'get_project_properties', args: {}, label: 'Error reading project properties', spy: () => { vi.spyOn(reader, 'getProject').mockImplementation(() => { throw fileError(); }); } },
+    { tool: 'get_instance_counts', args: {}, label: 'Error counting instances', spy: () => { vi.spyOn(reader, 'listObjectTypes').mockRejectedValue(fileError()); } },
+    { tool: 'search_project', args: { query: 'a' }, label: 'Error searching the project', spy: () => { vi.spyOn(reader, 'readAllEventSheets').mockRejectedValue(fileError()); } },
+    { tool: 'find_behavior_usage', args: { behaviorName: 'a' }, label: 'Error finding behavior usage', spy: () => { vi.spyOn(reader, 'readAllObjectTypes').mockRejectedValue(fileError()); } },
+    { tool: 'find_effect_usage', args: { effectName: 'a' }, label: 'Error finding effect usage', spy: () => { vi.spyOn(reader, 'readAllObjectTypes').mockRejectedValue(fileError()); } },
+    { tool: 'find_instance_variable_references', args: { familyName: 'a', variableName: 'b' }, label: 'Error finding instance variable references', spy: () => { vi.spyOn(reader, 'listFamilies').mockRejectedValue(fileError()); } },
+  ];
+
+  /** A reader-style failure that names the project's file, another drive path and a network path. */
+  function fileError(): Error {
+    return new Error(`ENOENT: no such file '${join(tmpDir, 'objectTypes', 'X.json')}', also C:\\Elsewhere\\secret\\y.json and \\\\server\\share\\z.json`);
+  }
+
+  it.each(cases)('$tool shows no absolute path of the project or any drive', async ({ tool, args, spy, label }) => {
+    await startServer();
+    spy();
+    const result = await raw(tool, args);
+    const text = result.content[0].text;
+    expect(result.isError).toBe(true);
+    expect(text.startsWith(`${label}: ENOENT: no such file '<project>`)).toBe(true);
+    expect(text).not.toContain(tmpDir);
+    expect(text).not.toContain('Elsewhere');
+    expect(text).not.toContain('server');
+    expect(text).toContain('<path> and <path>');
   });
 });
