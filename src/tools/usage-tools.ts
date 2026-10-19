@@ -123,7 +123,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
 
   server.tool(
     'get_instance_counts',
-    'Count the instances each object type has on the project\'s layouts, per layout, sub-layers and non-world instances included. Object types with no instance are listed in notPlaced. Layouts or object types that could not be parsed are not counted: the result then has complete false and names them.',
+    'Count the instances each object type has on the project\'s layouts, per layout, sub-layers and non-world instances included. Object types with no instance are listed in notPlaced (with layoutName set, notPlaced lists the types with no instance on that layout). A layout that could not be parsed is not counted. A layout or object type that could not be parsed makes the result complete false and is named.',
     {
       objectName: z.string().max(200).optional().describe('Only this object type (any letter case)'),
       layoutName: z.string().max(200).optional().describe('Only this layout (any letter case)'),
@@ -176,7 +176,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           objects,
           ...(status.complete
             ? { notPlaced }
-            : { notPlacedOmitted: 'Object types with no instance are not listed, because a file that could not be parsed may place them.' }),
+            : { notPlacedOmitted: 'Object types with no instance are not listed, because a file that could not be parsed leaves the list unreliable.' }),
           ...status,
         });
       } catch (error) {

@@ -19,6 +19,8 @@ const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
 type Category = 'objectTypes' | 'eventSheets' | 'layouts';
 
+const OMITTED = 'Object types with no instance are not listed, because a file that could not be parsed leaves the list unreliable.';
+
 let tmpDir: string;
 let reader: Construct3ProjectReader;
 let server: MockServer;
@@ -80,7 +82,7 @@ async function raw(name: string, args: Record<string, unknown> = {}) {
   return server.callTool(name, args);
 }
 
-async function call(name: string, args: Record<string, unknown> = {}): Promise<Record<string, any>> {
+async function call(name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   const result = await raw(name, args);
   expect(result.isError, result.content[0].text).toBeUndefined();
   return JSON.parse(result.content[0].text);
@@ -166,7 +168,7 @@ describe('get_instance_counts', () => {
     ]);
     expect(broken.objects).toEqual([{ name: 'Sprite', total: 1, byLayout: [{ layout: 'Layout 1', instances: 1 }] }]);
     expect(broken).not.toHaveProperty('notPlaced');
-    expect(broken.notPlacedOmitted).toEqual(expect.any(String));
+    expect(broken.notPlacedOmitted).toBe(OMITTED);
 
     await writeFile(path, good);
     await reader.loadProject();
@@ -185,6 +187,42 @@ describe('get_instance_counts', () => {
     const result = await call('get_instance_counts');
     expect(result.complete).toBe(true);
     expect(result).not.toHaveProperty('unscannedFiles');
+  });
+
+  it('is incomplete when an object type file is unparsable, names it and withholds notPlaced', async () => {
+    await addInventory();
+    await writeFile(join(tmpDir, 'objectTypes', 'Enemy.json'), '{ broken');
+    await startServer();
+    const result = await call('get_instance_counts');
+    expect(result.complete).toBe(false);
+    expect(result.unscannedFiles).toEqual([
+      expect.objectContaining({ file: 'objectTypes/Enemy', textSearch: 'not-searched' }),
+    ]);
+    expect(result.totalInstances).toBe(5);
+    expect(result).not.toHaveProperty('notPlaced');
+    expect(result.notPlacedOmitted).toBe(OMITTED);
+  });
+
+  it('describes notPlaced under layoutName in the tool description', async () => {
+    await startServer();
+    expect(server.getTool('get_instance_counts')?.description).toContain('with layoutName set, notPlaced lists the types with no instance on that layout');
+  });
+
+  it('get_project_properties returns a reader failure as an error', async () => {
+    await startServer();
+    vi.spyOn(reader, 'getProject').mockImplementation(() => { throw new Error('project gone'); });
+    const props = await raw('get_project_properties');
+    expect(props.isError).toBe(true);
+    expect(props.content[0].text).toBe('Error reading project properties: project gone');
+  });
+
+  it('get_instance_counts returns a reader failure as an error', async () => {
+    await startServer();
+    vi.spyOn(reader, 'listObjectTypes').mockRejectedValue(new Error('listing failed'));
+    resetProjectIndex(reader);
+    const counts = await raw('get_instance_counts');
+    expect(counts.isError).toBe(true);
+    expect(counts.content[0].text).toBe('Error counting instances: listing failed');
   });
 });
 
