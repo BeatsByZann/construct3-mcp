@@ -63,6 +63,7 @@ interface ToolData {
   count?: number;
   message?: string;
   editorNote?: string;
+  backupFile?: string;
   results?: Array<{ index: number; objectType: string; uid: number; sid: number }>;
   warnings?: string[];
   unscannedFiles?: Array<{ file: string; textSearch: string; names?: string[] }>;
@@ -315,6 +316,38 @@ describe('add_instances_to_layout', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it('does not reuse the UIDs and SIDs a refused call or a dry run took', async () => {
+    const uids: number[] = [];
+    const sids: number[] = [];
+    const generateUid = idGen.generateUid.bind(idGen);
+    const generateSid = idGen.generateSid.bind(idGen);
+    vi.spyOn(idGen, 'generateUid').mockImplementation(async (r) => { const uid = await generateUid(r); uids.push(uid); return uid; });
+    vi.spyOn(idGen, 'generateSid').mockImplementation(async (r) => { const sid = await generateSid(r); sids.push(sid); return sid; });
+
+    expect((await add([sprite(1), sprite(2, { objectType: 'Missing' })])).isError).toBe(true);
+    expect((await add([sprite(1)], { dryRun: true })).success).toBe(true);
+    expect(uids).toHaveLength(2);
+    expect(sids).toHaveLength(2);
+    const takenUids = [...uids];
+    const takenSids = [...sids];
+
+    const data = await add([sprite(1), sprite(2)]);
+    expect(data.success).toBe(true);
+    for (const r of data.results!) {
+      expect(takenUids).not.toContain(r.uid);
+      expect(takenSids).not.toContain(r.sid);
+      expect(r.uid).toBeGreaterThan(Math.max(...takenUids));
+    }
+  });
+
+  it('returns the backup file of a real call and none for a dry run', async () => {
+    const dry = await add([sprite(1)], { dryRun: true });
+    expect(dry.backupFile).toBeUndefined();
+    const real = await add([sprite(1)]);
+    expect(real.backupFile).toEqual(expect.any(String));
+    expect(real.backupFile).toContain('Layout 1');
+  });
+
   it('puts the layout back when its read-back fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const before = await layoutBytes();
@@ -400,6 +433,13 @@ describe('add_instances_to_layout', () => {
       expect(data.warnings![0].startsWith('Items 0, 1: ')).toBe(true);
       expect(data.warnings![0]).toContain('possibly list "Sprite" as a member: families/Foes');
       expect(data.unscannedFiles).toEqual([expect.objectContaining({ file: 'families/Foes', textSearch: 'possible-use' })]);
+    });
+
+    it('lists a warning given by more than five items with the first five and the count of the rest', async () => {
+      const data = await add(Array.from({ length: 12 }, (_, i) => sprite(i)));
+      expect(data.success).toBe(true);
+      expect(data.warnings).toHaveLength(1);
+      expect(data.warnings![0].startsWith('Items 0, 1, 2, 3, 4 and 7 more: ')).toBe(true);
     });
 
     it('keeps every name a family file could declare, with distinct warnings', async () => {

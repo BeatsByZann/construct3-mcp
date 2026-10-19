@@ -178,7 +178,7 @@ server.tool(
 
 ### Adding a New Mutation Tool
 
-1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `animation-tools.ts`, `timeline-tools.ts` or `project-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
+1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `bulk-instance-tools.ts`, `animation-tools.ts`, `timeline-tools.ts` or `project-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
 2. Follow the safety pattern:
    - Validate inputs (use `validateName()`, `validateSubfolder()`)
    - For new object type or family names, check `findObjectClassNameClash()` (names clash ignoring case)
