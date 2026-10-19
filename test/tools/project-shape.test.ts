@@ -20,7 +20,9 @@ import { expectShaped, shapeByHand, type ProjectJson } from '../helpers/project-
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'c3-loadable-minimal');
 
-type Result = { content: Array<{ type: string; text: string }>; isError?: boolean };
+const BOM = '﻿';
+
+type Result ={ content: Array<{ type: string; text: string }>; isError?: boolean };
 
 let dir: string;
 const dirs: string[] = [];
@@ -179,13 +181,14 @@ describe('project.c3proj shape on write', () => {
   });
 
   it('B6w: keeps a BOM, CRLF line ends and the trailing line end', async () => {
-    const styled = '﻿' + JSON.stringify(before, null, '\t').replace(/\n/g, '\r\n') + '\r\n';
+    const styled = BOM + JSON.stringify(before, null, '\t').replace(/\n/g, '\r\n') + '\r\n';
     await writeFile(projectPath, styled, 'utf-8');
     await openFolder();
 
     await ok('update_project_metadata', { name: 'Styled' });
     const text = await readFile(projectPath, 'utf-8');
-    expect(text.startsWith('﻿')).toBe(true);
+    expect(text.startsWith(BOM)).toBe(true);
+    expect(BOM).toHaveLength(1);
     expect(/(?<!\r)\n/.test(text)).toBe(false);
     expect(text.endsWith('\r\n')).toBe(true);
     expectShaped(await onDisk(), before);

@@ -222,7 +222,7 @@ describe('Construct3ProjectWriter — text style preservation', () => {
     ['LF, as Construct 3 saves it', { eol: '\n' as Eol }],
     ['CRLF (git autocrlf checkout)', { eol: '\r\n' as Eol }],
     ['CRLF + trailing newline + BOM', { eol: '\r\n' as Eol, trailing: '\r\n', bom: true }],
-  ])('rewriting unchanged data reproduces the editor-verified fixture byte for byte (%s)', async (_label, style) => {
+  ])('rewriting unchanged data writes project.c3proj in the saved shape and reproduces every other fixture file byte for byte (%s)', async (_label, style) => {
     dir = await createProject(LOADABLE_DIR, style);
     const before = new Map<string, string>();
     for (const f of await listJsonFiles(dir)) before.set(f, await readFile(f, 'utf-8'));

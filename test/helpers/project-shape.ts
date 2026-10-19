@@ -13,6 +13,8 @@ export function expectShaped(project: ProjectJson, before: ProjectJson, options:
   expect(keys[keys.length - 1]).toBe('scriptsType');
   expect(keys.indexOf('uidAllocationMode')).toBe(keys.indexOf('preloadSounds') + 1);
   expect(project.models3d).toEqual({ items: [], subfolders: [] });
+  const scripts = (project.rootFileFolders as { script: { items: Array<Record<string, unknown>> } }).script.items;
+  for (const item of scripts) expect('file-info' in item).toBe(false);
   expect(project.usedAddons as unknown[]).toHaveLength((before.usedAddons as unknown[]).length + (options.addonDelta ?? 0));
   expect(project.savedWithRelease).toBe(before.savedWithRelease);
 }
