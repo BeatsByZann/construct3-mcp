@@ -1321,27 +1321,27 @@ A flowchart is `flowcharts/<name>.json` (`flowcharts/<folder>/.../<name>.json` i
 
 #### File format
 
-As observed in flowcharts saved by Construct 3 r495 (an editor-saved project with 31 flowcharts and 1,539 nodes):
+The fields the tools read and write:
 
 | Field | Meaning |
 |-------|---------|
 | `sid`, `name`, `w`, `h` | Flowchart SID, name and canvas size (20000 x 20000 on a new flowchart) |
 | `preset-nodes` | `{ items, subfolders }` preset-node folder tree |
-| `nodes[].t` | Node type/title. Equal to `c` on 1,170 of the 1,539 nodes; empty on comment boxes |
+| `nodes[].t` | Node type/title. Usually equal to `c`; empty on comment boxes |
 | `nodes[].c` | Node caption. **Not** a color: node and output colors live in the sibling `<name>.uistate.json` |
-| `nodes[].s` | Start node. All 31 flowcharts carry exactly one |
+| `nodes[].s` | Start node. The tools keep exactly one |
 | `nodes[].e` | Enabled |
-| `nodes[].ty` | Value type. Observed values: `dictionary` (1,373) and `comment` (166) |
+| `nodes[].ty` | Value type: `dictionary` or `comment` |
 | `nodes[].n`, `fo`, `fs`, `fb`, `fi`, `fc` | Comment nodes only, after `prfnsid`: body as the editor's HTML (first line plain, later lines in `<div>`, blank lines `<div><br></div>`), font face, font size, bold, italic and `#rrggbb` font color. Comment nodes have no outputs or connections and `t: ""`; their `c` is a separate caption |
 | `nodes[].pi` | Observed values 0, 1 and 2; meaning not determined |
 | `nodes[].pr`, `prfsid`, `prfnsid` | Preset-node markers. Never taken from tool input: new nodes get `false`/`null`/`null` and existing nodes keep whatever they carry |
-| `nodes[].pnSIDs`, `poSIDs` | Strictly parallel, one entry per incoming connection (1,295 of 1,295 pairs valid): `poSIDs[i]` is an output of the node `pnSIDs[i]` |
+| `nodes[].pnSIDs`, `poSIDs` | Strictly parallel, one entry per incoming connection: `poSIDs[i]` is an output of the node `pnSIDs[i]` |
 | `nodes[].nodeSIDs` | Distinct child node SIDs, in an order independent of the `outputs` array order |
 | `nodes[].outputs[]` | `{ sid, cnSID, name, value, enable, default }`; `cnSID` is the connected node SID or `null` |
 
 #### `create_flowchart`
 
-Create an empty flowchart and register it in the same folder of `project.c3proj`, creating the `flowcharts` entry and the folders when they are missing. The file is written first and the registration second. The checks on the name and the folder are made again on the `project.c3proj` the registration is made in, so a name or folder saved in the editor after the first check is refused and nothing is registered. When the write of the file fails after the file was written, or the registration fails, the registration this call made is taken out again (a change saved in the editor meanwhile is kept) and the file is removed again once `project.c3proj` on disk does not register it; the error says so. A file that cannot be removed is named; a file that `project.c3proj` still registers, or whose registration cannot be checked, is kept and named. A folder the write made stays, empty, and the error names it. Refused before anything is written: an unsafe name or folder, a name that is registered already (a name registered in a folder without a name is refused with its own message), a name that differs only in case from a registered one, a folder that differs only in case from an existing one, a file already on disk at the path (also one whose name differs only in case), and a `project.c3proj` that changed on disk after the call read the version its checks used. When the Flowchart plugin is not in `usedAddons` the result carries a warning: a load check of Construct 3 r495.2 showed that the editor opens such a project (and removes the unused plugin), but a Flowchart object is needed to use the flowchart at run time. This tool does not register plugins.
+Create an empty flowchart and register it in the same folder of `project.c3proj`, creating the `flowcharts` entry and the folders when they are missing. The file is written first and the registration second. The checks on the name and the folder are made again on the `project.c3proj` the registration is made in, so a name or folder saved in the editor after the first check is refused and nothing is registered. When the write of the file fails after the file was written, or the registration fails, the registration this call made is taken out again (a change saved in the editor meanwhile is kept) and the file is removed again once `project.c3proj` on disk does not register it; the error says so. A file that cannot be removed is named; a file that `project.c3proj` still registers, or whose registration cannot be checked, is kept and named. A folder the write made stays, empty, and the error names it. Refused before anything is written: an unsafe name or folder, a name that is registered already (a name registered in a folder without a name is refused with its own message), a name that differs only in case from a registered one, a folder that differs only in case from an existing one, a file already on disk at the path (also one whose name differs only in case), and a `project.c3proj` that changed on disk after the call read the version its checks used. When the Flowchart plugin is not in `usedAddons` the result carries a warning that a Flowchart object has to be added in the editor before the flowchart is used at run time. This tool does not register plugins.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1375,12 +1375,12 @@ warning when the flowchart is left without a start node.
 | `enabled` | boolean | No | The `e` field (default: true) |
 | `valueType` | `dictionary` / `comment` | No | The `ty` field (default: `dictionary`). A comment node takes no `outputs`, gets `t: ""` unless `nodeType` is given, and gets the comment keys |
 | `outputs` | array | No | `{ name, value?, enabled?, isDefault? }` pins to create |
-| `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption). Runs of spaces become alternating `&nbsp;` and spaces starting with `&nbsp;`, ending in `&nbsp;` at a line end, and a lone space at a line start or end becomes `&nbsp;`, as in 7,888 of the 7,922 space runs in the comments of an r495 editor-saved project |
+| `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption). Runs of spaces become alternating `&nbsp;` and spaces starting with `&nbsp;`, ending in `&nbsp;` at a line end, and a lone space at a line start or end becomes `&nbsp;` |
 | `commentHtml` | string | No | Comment body as HTML, stored unchanged; give this or `commentText` |
 | `font`, `fontSize`, `bold`, `italic`, `fontColor` | string, number, boolean, boolean, `#rrggbb` | No | Comment formatting (`fo`, `fs`, `fb`, `fi`, `fc`). Missing values take the values most common in editor-saved flowcharts (Calibri, 36, bold, not italic, `#39b530`) with a warning; Construct's own defaults were not observed |
 
 The comment fields are refused on a dictionary node, and a comment node
-cannot be the start node (none of the 166 comment nodes of an r495 editor-saved project is).
+cannot be the start node.
 
 There is no `color` parameter: the node `c` field is the caption, and colors are
 held in the `.uistate.json` file these tools do not write.
@@ -1396,7 +1396,7 @@ preserved. `isStart: true` clears the flag on every other node.
 | `nodeSid` | number | Yes | SID of the node to update |
 | `caption` | string | No | New caption (`c`) |
 | `nodeType` | string | No | New type/title (`t`) |
-| `tags` | string | No | Writes a `tags` key. **Not observed** in any r495 sample flowchart; the result carries a warning saying so |
+| `tags` | string | No | Writes a `tags` key. **Not observed**; the result carries a warning saying so |
 | `isStart` | boolean | No | Set or clear the start flag |
 | `enabled` | boolean | No | The `e` field |
 | `parentIndex` | number | No | The `pi` field (meaning undetermined) |
