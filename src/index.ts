@@ -89,7 +89,7 @@ async function main() {
       registerMutationTools(served, reader, writer, idGen);
 
       // Runtime Control (for live game testing via browser automation)
-      const runtimeTools = registerRuntimeTools({ server: served, reader, writer });
+      const runtimeTools = registerRuntimeTools({ server: served, reader, writer, archive });
 
       // Start transport
       const transport = new StdioServerTransport();

@@ -45,11 +45,12 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import * as nodeFs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { readZipArchive, type ZipReadEntry } from '../runtime/zip-reader.js';
+import { basename, dirname, join, resolve } from 'node:path';
+import { pathKey, readZipArchive, type ZipReadEntry } from '../runtime/zip-reader.js';
 import { crc32, zipBuffer, type ZipEntry } from '../runtime/zip-writer.js';
 import { isPackedProjectFile } from '../runtime/project-files.js';
 import { isFileNotFoundError } from './project-reader.js';
+import { nameKey } from './names.js';
 
 const PROJECT_FILE = 'project.c3proj';
 const SESSION_PREFIX = 'c3p-';
@@ -253,6 +254,30 @@ export class C3pArchive {
     return join(this.sessionDir, 'held');
   }
 
+  /**
+   * What `path` is when a tool must not write a file there: the archive, a
+   * backup of it (<archive>.bak or <archive>.<anything>.bak), or a place in
+   * the session folder. Paths are compared as names.ts compares names
+   * (NFC, ignoring case). Undefined for any other path.
+   */
+  protectedPath(path: string): string | undefined {
+    const keyOf = (p: string): string => pathKey(resolve(p).replaceAll('\\', '/'));
+    const key = keyOf(path);
+    const archiveKey = keyOf(this.resolved);
+    if (key === archiveKey) return `the open archive "${this.archivePath}"`;
+    const sessionKey = keyOf(this.sessionDir);
+    if (key === sessionKey || key.startsWith(`${sessionKey}/`)) {
+      return `inside the server's working folder "${this.sessionDir}" for the open archive "${this.archivePath}"`;
+    }
+    const archiveName = pathKey(basename(this.resolved));
+    const name = pathKey(basename(path));
+    if (key.slice(0, key.length - name.length) === archiveKey.slice(0, archiveKey.length - archiveName.length)
+      && name.startsWith(`${archiveName}.`) && name.endsWith('.bak')) {
+      return `a backup of the open archive "${this.archivePath}"`;
+    }
+    return undefined;
+  }
+
   /** Whether the archive is in conflict, or stopped because the session folder could not be put back. */
   status(): { conflict?: string; stopped?: string } {
     return { ...(this.conflictReason ? { conflict: this.conflictReason } : {}), ...(this.stoppedReason ? { stopped: this.stoppedReason } : {}) };
@@ -281,7 +306,13 @@ export class C3pArchive {
   static async open(archivePath: string, options: C3pArchiveOptions = {}): Promise<C3pArchive> {
     const resolved = resolve(archivePath);
     const reading = new C3pArchive(archivePath, resolved, '', { size: -1, mtimeMs: -1, sha256: '' }, options);
-    const { data, stamp } = await reading.readStamped();
+    let read;
+    try {
+      read = await reading.readStamped();
+    } catch (error) {
+      throw isFileNotFoundError(error) ? await missingArchiveError(archivePath, resolved, options.workRoot ?? tmpdir(), error) : error;
+    }
+    const { data, stamp } = read;
     const content = readArchive(archivePath, data);
     const sessionDir = await nodeFs.mkdtemp(join(options.workRoot ?? tmpdir(), SESSION_PREFIX));
     const archive = new C3pArchive(archivePath, resolved, sessionDir, stamp, options);
@@ -776,6 +807,38 @@ export async function findLeftWorkFolders(workRoot: string = tmpdir()): Promise<
     }
   }
   return left;
+}
+
+/**
+ * The error for an archive path with no file: the original error, unless a
+ * write-back that was stopped part way left the archive's versions beside it
+ * (a `<archive>.<pid>.<n>.previous` file, or a file a session marker under
+ * `workRoot` records for it), in which case the message names them and says
+ * to rename one back.
+ */
+async function missingArchiveError(archivePath: string, resolved: string, workRoot: string, original: unknown): Promise<unknown> {
+  const prefix = `${nameKey(basename(resolved))}.`;
+  const found = new Set<string>();
+  try {
+    for (const name of await nodeFs.readdir(dirname(resolved))) {
+      if (nameKey(name).startsWith(prefix) && /\.previous$/i.test(name)) found.add(join(dirname(resolved), name));
+    }
+  } catch {
+    // A folder that cannot be listed names nothing
+  }
+  for (const session of await findLeftWorkFolders(workRoot)) {
+    if (nameKey(resolve(session.archivePath)) !== nameKey(resolved)) continue;
+    for (const leftover of session.leftovers) {
+      if (leftover.startsWith(`${resolved}.`) && await nodeFs.stat(leftover).then(() => true, () => false)) found.add(leftover);
+    }
+  }
+  if (found.size === 0) return original;
+  return new Error(
+    `"${archivePath}" does not exist, but a write-back to it that stopped part way left ${found.size === 1 ? 'this file' : 'these files'} beside it: `
+    + `${[...found].map(file => `"${file}"`).join(', ')}. `
+    + 'A .previous file is the archive as it was before that write-back; a .tmp file is the new archive that was being put in place. '
+    + `Rename the one you want to "${archivePath}", then start the server again.`,
+  );
 }
 
 const withNotes = (text: string, notes?: string[]): string => (notes?.length ? `${text} Also: ${notes.join('; ')}.` : text);

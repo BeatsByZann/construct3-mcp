@@ -6,9 +6,11 @@
  * whose entries are STORE or DEFLATE (a count of three editor-saved archives
  * found both methods, and a UTF-8 flag on every entry), with backslashes in
  * its paths; a save read in the editor page on r506-2 showed a ZIP64 central
- * directory, DEFLATE entries and backslash names. Encrypted entries, multi-disk archives, other compression methods,
- * entry paths that are unsafe or name their file ambiguously, and two entries
- * that would land on one file or folder are refused rather than guessed at.
+ * directory, DEFLATE entries and backslash names. Encrypted entries,
+ * multi-disk archives, other compression methods, entry paths that are unsafe
+ * or name their file ambiguously, names that carry the UTF-8 flag but are not
+ * valid UTF-8, and two entries that would land on one file or folder are
+ * refused rather than guessed at.
  */
 
 import { inflateRawSync } from 'node:zlib';
@@ -190,6 +192,9 @@ export function readZipArchive(buf: Buffer): { files: ZipReadEntry[]; directorie
     // (0x7075) when its CRC matches these name bytes, else the bytes as
     // UTF-8 when they are valid UTF-8 (writers that store UTF-8 without the
     // flag exist), else code page 437, ZIP's own default
+    if (flags & 0x800 && !isUtf8(nameBytes)) {
+      throw new Error(`Zip central directory entry ${n + 1} has the UTF-8 flag, but its name is not valid UTF-8`);
+    }
     const rawPath = flags & 0x800 ? nameBytes.toString('utf-8')
       : unicodePathField(extra, nameBytes) ?? (isUtf8(nameBytes) ? nameBytes.toString('utf-8') : decodeCp437(nameBytes));
     p += 46 + nameLength + extraLength + commentLength;

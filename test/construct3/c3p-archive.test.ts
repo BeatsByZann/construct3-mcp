@@ -1121,6 +1121,66 @@ describe('sessions a killed process left', () => {
   });
 });
 
+describe('opening a path where a stopped write-back left the archive aside', () => {
+  const previousArchive = () => join(root, 'game.c3p.4242.1.previous');
+  /** The error that opening the archive fails with. */
+  const openFailure = (): Promise<NodeJS.ErrnoException> => openArchive().then(
+    () => { throw new Error('the archive opened'); },
+    (error: NodeJS.ErrnoException) => error,
+  );
+
+  it('names the .previous file beside the missing archive and says to rename it back', async () => {
+    await nodeFs.rename(archivePath, previousArchive());
+    const failure = await openFailure();
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toContain(`"${archivePath}" does not exist`);
+    expect(failure.message).toContain(`"${previousArchive()}"`);
+    expect(failure.message).toContain(`Rename the one you want to "${archivePath}"`);
+    expect(await exists(archivePath)).toBe(false);
+    expect(await exists(previousArchive())).toBe(true);
+  });
+
+  it('finds it in another letter case of the archive name', async () => {
+    const aside = join(root, 'GAME.C3P.4242.1.PREVIOUS');
+    await nodeFs.rename(archivePath, aside);
+    await expect(openArchive()).rejects.toThrow(`"${aside}"`);
+  });
+
+  it('names the staged file a session marker records, when it still exists', async () => {
+    const staging = join(root, 'game.c3p.4242.1.tmp');
+    await nodeFs.writeFile(staging, zipBuffer(variant('staged')));
+    await nodeFs.rm(archivePath);
+    await nodeFs.writeFile(join(work, 'c3p-old.session.json'), JSON.stringify({
+      pid: 0x7fffffff,
+      archive: archivePath,
+      pending: { staging, previousArchive: previousArchive() },
+    }));
+    const failure = await openFailure();
+    expect(failure.message).toContain(`"${staging}"`);
+    // The marker's .previous does not exist, so it is not named
+    expect(failure.message).not.toContain('.previous"');
+  });
+
+  it('does not name files of another archive or a marker for another archive', async () => {
+    await nodeFs.rm(archivePath);
+    await nodeFs.writeFile(join(root, 'other.c3p.4242.1.previous'), 'x');
+    await nodeFs.writeFile(join(root, 'other.c3p.4242.1.tmp'), 'x');
+    await nodeFs.writeFile(join(work, 'c3p-old.session.json'), JSON.stringify({
+      pid: 0x7fffffff,
+      archive: join(root, 'other.c3p'),
+      pending: { staging: join(root, 'other.c3p.4242.1.tmp') },
+    }));
+    await expect(openArchive()).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('leaves the error as it was when nothing lies beside the archive', async () => {
+    await nodeFs.rm(archivePath);
+    const failure = await openFailure();
+    expect(failure.code).toBe('ENOENT');
+    expect(failure.message).not.toContain('Rename');
+  });
+});
+
 describe('describing a result', () => {
   const archive = { archivePath: 'game.c3p', workDir: join('w', 'project') };
 

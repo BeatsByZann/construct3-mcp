@@ -368,6 +368,20 @@ describe('readZip', () => {
       expect(zip.readUInt16LE(centralEntries(zip)[0] + 8)).toBe(0x800);
     });
   });
+
+  describe('names with the UTF-8 flag', () => {
+    const invalid = Buffer.concat([Buffer.from('files/caf'), Buffer.from([0x82]), Buffer.from('.txt')]);
+
+    it('refuses a name that is not valid UTF-8, which would be renamed on write-back', () => {
+      const zip = constructStyleZip64([{ path: 'ignored', nameBytes: invalid, data: Buffer.from('x') }]);
+      expect(() => readZip(zip)).toThrow('has the UTF-8 flag, but its name is not valid UTF-8');
+    });
+
+    it('reads a valid UTF-8 name under the flag', () => {
+      const zip = constructStyleZip64([{ path: 'files/café.txt', data: Buffer.from('x') }]);
+      expect(readZip(zip).map(e => e.path)).toEqual(['files/café.txt']);
+    });
+  });
 });
 
 describe('crc32', () => {

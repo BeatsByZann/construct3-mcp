@@ -120,6 +120,22 @@ describe('startC3pSession', () => {
     }
   });
 
+  it('throws the start error when close() itself rejects', async () => {
+    const archivePath = join(root, 'game.c3p');
+    await nodeFs.writeFile(archivePath, zipBuffer(await fixtureEntries()));
+    let opened: C3pArchive | undefined;
+    try {
+      await expect(startC3pSession(archivePath, async (_projectPath, archive) => {
+        opened = archive;
+        vi.spyOn(archive!, 'close').mockRejectedValue(new Error('close failed'));
+        throw new Error('connect failed');
+      }, { workRoot })).rejects.toThrow('connect failed');
+    } finally {
+      vi.restoreAllMocks();
+      await opened?.close();
+    }
+  });
+
   describe('removes the working folder when the start fails', () => {
     it('when the project cannot be loaded', async () => {
       const archivePath = join(root, 'bad.c3p');

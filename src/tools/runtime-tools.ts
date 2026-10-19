@@ -24,6 +24,7 @@ import { collectProjectFiles } from '../runtime/project-files.js';
 import { jsonTextStyleOf, parseJsonText, serializeJson } from '../construct3/json-format.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { withProjectSync } from './project-sync.js';
+import type { C3pArchive } from '../construct3/c3p-archive.js';
 
 import { PreviewManager, isLoopbackHost } from '../runtime/preview-server.js';
 import { RuntimeConnectionManager } from '../runtime/cdp-client.js';
@@ -189,6 +190,8 @@ interface RuntimeToolDeps {
   server: McpServer;
   reader: Construct3ProjectReader;
   writer: Construct3ProjectWriter;
+  /** The open .c3p when the project is a single-file archive: pack_project does not write onto it, its backups or its working folder */
+  archive?: Pick<C3pArchive, 'protectedPath'>;
 }
 
 /**
@@ -702,7 +705,7 @@ function loadingMessage(install: BridgeInstall): string {
   return 'The project uses classic scripts, where imports are not available; the bridge is listed with purpose none. Loading it that way is not verified: switch the project to module scripts if the bridge does not start.';
 }
 
-export function registerRuntimeTools({ server: mcpServer, reader, writer }: RuntimeToolDeps): RuntimeToolController {
+export function registerRuntimeTools({ server: mcpServer, reader, writer, archive }: RuntimeToolDeps): RuntimeToolController {
   const server = withProjectSync(mcpServer, reader);
   const connections = new RuntimeConnectionManager();
   const previews = new PreviewManager();
@@ -1398,6 +1401,12 @@ print(json.dumps({
     async ({ outputPath, injectBridge }) => {
       try {
         const projectDir = reader.getProjectDir();
+
+        // Before anything is written: the open .c3p, its backups and its working folder are the server's to write
+        const protectedAs = archive?.protectedPath(outputPath);
+        if (protectedAs) {
+          return toolError(`Failed to pack project: the output path "${outputPath}" is ${protectedAs}, which the server must not write over. Nothing was written. Choose another file for the packed project.`);
+        }
 
         // Optionally inject bridge first
         let install: BridgeInstall | undefined;
