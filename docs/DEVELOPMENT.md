@@ -75,6 +75,13 @@ construct3-mcp/
 │   │   ├── c3p-archive.ts          # A .c3p project's working folder: unpack, refresh, write back, conflict
 │   │   ├── project-source.ts       # The project path: a folder, a .c3proj or a .c3p
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
+│   │   ├── ace-types.ts            # Types of the ACE catalogue, addon definitions and the project data the checks read
+│   │   ├── ace-catalog-source.ts   # Builds an ACE catalogue from the editor's files; its cache file, fetch and build script entry
+│   │   ├── ace-catalog-provider.ts # Hands out the catalogue of a release: local copy, cache or fetch, with the fallback release
+│   │   ├── ace-catalog.ts          # Checks a condition or action against a catalogue (validate_project, event tool warnings)
+│   │   ├── addon-definitions.ts    # Third-party addon definitions (addon.json, aces.json) read from folders and .c3addon archives
+│   │   ├── expression-check.ts     # Parses the expressions in ACE parameters and resolves their names
+│   │   ├── event-change-check.ts   # Warnings an event tool adds for the conditions and actions it wrote
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/              # Analysis modules
@@ -120,7 +127,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
-│   │   ├── project-tools.ts        # Project metadata and addon tools (4)
+│   │   ├── project-tools.ts        # Project metadata and addon tools (5)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers
 │       └── workflows.ts            # Workflow prompts (7)
@@ -134,6 +141,7 @@ construct3-mcp/
 │   ├── mocks/                      # Mock MCP server, reader, writer, ID generator
 │   └── fixtures/                   # Small Construct 3 projects used by the tests
 ├── scripts/
+│   ├── build-ace-catalog.mjs       # Developer script: builds one release's ACE catalogue cache file (see ACE Catalogue)
 │   └── derive-minimal-fixture.ts   # Maintainer script: derives the loadable minimal fixture
 ├── docs/                           # Documentation
 ├── dist/                           # Compiled output (gitignored)
@@ -240,6 +248,43 @@ The writer's `afterOwnWrite()` handles all four for its entity writes. The `addT
 **Changes made outside the server (#51).** Register tools, resources and prompts through `withProjectSync(server, reader)` (`tools/project-sync.ts`; every `register*` function does): each handler then runs as a tool call scope and first checks `project.c3proj` on disk (`reader.checkProjectFile()`). The files the caches hold are checked the first time the call uses a bulk read, the index or the ID generator (`reader.ensureCachesFresh()`); a change drops the cached state and moves `reader.getDiskEpoch()`, on which the index and the ID generator rebuild. Inside the scope the writer backs each file up once per call and refuses (`StaleFileError`) to write a file whose state on disk differs from the state the call read it in. Outside a tool call scope (scripts, direct reader use) the caches are not checked by themselves: call `reader.syncWithDisk()` after changing files outside the reader. The writer's check still applies there, against the state the reader last read or wrote the file in. A tool that updates `project.c3proj` without the writer calls `writer.assertProjectFileCurrent()` before its first write (a file written before it would stay when it refuses), and again right before it writes `project.c3proj` when anything that takes time runs in between (the runtime bridge tools do, and undo their earlier writes on a refusal). The writer's own `project.c3proj` updates go through `updateProjectFile()`: they take a change made on disk in (`reader.checkProjectFile()`) and merge into it instead of refusing, because they run after the tool wrote other files. The scope also records each file the call changed through the writer; when a later write of the call is refused as stale, the writer puts those files back from their backups before it throws (`undoCallChanges`), so a refused call changes nothing. Files written through `replaceFile` or `deleteFile` keep a `.bak` but are not put back by `undoCallChanges` when a later write of the call is refused. A tool that writes a project file other than an entity file uses `writer.replaceFile()`, `writer.deleteFile()`, `writer.restoreForCall()` or `writer.updateProject()`, which take the file's one lock (the project lock for `project.c3proj`); `test/tools/direct-write-guard.test.ts` fails on a raw write under `src/tools/`.
 
 `getProjectIndex(reader)` caches one index per reader, so a script, test or embedding can open several projects in one process: give each project its own reader, writer and `IdGenerator` (a generator scans the project of the reader it is first called with), and open each project with one reader only: a second reader on the same project sees the other's writes neither in its caches nor in its index. A write through the writer or the event tools resets only its own project's index; `resetProjectIndex()` without a reader resets every project's index, which tests use between cases. The MCP server opens one project per process.
+
+## ACE Catalogue
+
+`validate_project` and the event tools check conditions, actions and expressions against a catalogue of what Construct defines for one release. No catalogue is committed to this repository, and `.gitignore` keeps one out (`src/construct3/ace-catalog-data.ts`, `/ace-catalog/`): the server builds it on first use and caches it per user. The code is in `ace-catalog-source.ts` (build, fetch, cache), `ace-catalog-provider.ts` (which release, from where) and `ace-catalog.ts` (the checks); see Validation in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+### What the catalogue is (data, source, where it lives)
+
+| Question | Answer |
+|---|---|
+| Content | Per plugin and behavior of one release: each condition and action id with, per parameter, the id, the type and (combo) the item ids; each expression's name, parameter types, a variadic flag and the return type; the common ACEs the editor adds to plugin objects. No display names, descriptions, help text, scripts or code |
+| Source | Three files the editor serves to every browser that opens it: `https://editor.construct.net/<release>/plugins/allAces.json`, `.../behaviors/allAces.json` and `.../main.js` (the common ACEs, read out of object literals by `literalToJson`). Nothing derived from them is committed |
+| When it is built | The first time in a server process that `validate_project` or an event tool's check needs the catalogue for a release, never at server start; one attempt per release per process, success or failure |
+| Which release | The project's `savedWithRelease` (`Construct3Project.savedWithRelease: number`; `49502` is `r495-2`) when the editor serves it. When it is not served, or the project records none, the fallback `FALLBACK_RELEASE = 'r495-2'` (in `ace-catalog-source.ts`), with one info issue saying which release was used and why |
+| Where it lives | One JSON file per release, `<cache>/<release>.json`, `<cache>` being `C3_ACE_CACHE_DIR` when set, else `%LOCALAPPDATA%\construct3-mcp\ace-catalog` (Windows), `~/Library/Caches/construct3-mcp/ace-catalog` (macOS), `$XDG_CACHE_HOME/construct3-mcp/ace-catalog` or `~/.cache/construct3-mcp/ace-catalog` (others): per user, outside every project and the repository |
+| Offline use | `C3_ACE_SOURCE_DIR=<folder>` holding `<release>/plugins/allAces.json`, `<release>/behaviors/allAces.json`, `<release>/main.js` (the URL's own layout): the server then reads only that folder, never the network, and writes no cache. Without it and without network, the ACE and expression checks are skipped with one info issue |
+| Developer tool | `node scripts/build-ace-catalog.mjs <release> [--from <folder>] [--out <file>]` (after `npm run build`) builds the same cache file with the server's own module and prints its counts; it can fill the cache before going offline |
+| Trust | A catalogue is used only when every common-ACE registration the build recognised could be read, the result passes the shape check, and, read back from the cache, its stored digest matches. A redirect is followed only to the same file of the same release on the same host, so a catalogue labelled with a release holds that release's files. The digest detects a damaged or hand-edited cache file, not a deliberate edit by someone who also recomputes it (anyone who can write the cache folder can also run the server) |
+| Currency | The catalogue is what the editor serves for that release at the time it was built; a valid cache file is reused for its release and never refreshed, and deleting it forces a rebuild |
+
+### The cache file
+
+`<cache>/<release>.json` holds `{ format, sourceRelease, digest, catalog }`: `format` is `CACHE_FORMAT` (in `ace-catalog-source.ts`), `sourceRelease` the release the files were fetched for, `digest` the SHA-256 (hex) of the catalogue's JSON, and `catalog` the catalogue. A file is used only when it is at most 16MB, parses, has the current `format`, has `sourceRelease` and `catalog.release` equal to the release asked for, passes the catalogue shape check, and its `digest` matches the catalogue. A file that fails a check is named on stderr, not used even in part, and replaced by the next successful build. A file is written through a temporary file in the same folder and a rename, so another process sees the old file or the new one. Raise `CACHE_FORMAT` whenever the transform's output changes (a field added, removed or read differently), so that files an older transform wrote are rebuilt instead of trusted.
+
+### Building a cache file by hand
+
+```bash
+npm run build
+node scripts/build-ace-catalog.mjs r495-2                      # fetch from editor.construct.net, write the default cache folder
+node scripts/build-ace-catalog.mjs r495-2 --from ./editor-copy # read <folder>/r495-2/... instead; no network
+node scripts/build-ace-catalog.mjs r495-2 --out ./tmp/r495-2.json
+```
+
+The script runs the server's own module (`dist/construct3/ace-catalog-source.js`), so run `npm run build` first. It needs the network unless `--from` is given, and writes only the cache file (`--out` must name a file called `<release>.json`). It prints a `Wrote <path>` line, the size of each source file, the counts of the catalogue and the time it took; it exits 1, without a `Wrote` line, when the sources were refused or the file could not be written, and 2 for a usage error.
+
+### Tests and the catalogue
+
+The tests run on a hand-written copy of the source files, `test/fixtures/ace-source/<release>/` (in the editor's layout), and on `TEST_CATALOG` (`test/fixtures/ace-catalog.ts`), use an injected fetch (`test/construct3/ace-fetch-stub.ts`) and never use the network: `guardNetwork()` makes `globalThis.fetch` throw in the test files that build a provider. `vitest.config.ts` sets `C3_ACE_SOURCE_DIR` to the fixture folder and `C3_ACE_CACHE_DIR` to a temporary folder, so a test that reaches the process's default provider reads the fixture and writes nothing into a user's cache. The fixtures hold only the ACEs, parameters and expressions the tests need; a new test fact is added to both the source fixture and `TEST_CATALOG` by hand.
 
 ## Testing
 

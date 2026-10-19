@@ -13,7 +13,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │  MCP Protocol Layer                                      │  │
 │  │  Resources (9) · Query Tools (9) · Analysis (11)         │  │
-│  │  Mutations (44) · Runtime (19) · Prompts (7)             │  │
+│  │  Mutations (45) · Runtime (19) · Prompts (7)             │  │
 │  └──────────┬───────────────────────────────────────────────┘  │
 │             │                                                  │
 │  ┌──────────▼───────────────────────────────────────────────┐  │
@@ -43,7 +43,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 └────────────────────────────────┘
 ```
 
-The server registers 83 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_addons`, `list_timelines` and `get_timeline_details` count as mutations: they live in the project and timeline modules.
+The server registers 84 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_addons`, `list_timelines` and `get_timeline_details` count as mutations: they live in the project and timeline modules.
 
 ## Core Components
 
@@ -306,13 +306,43 @@ The cross-reference index (`ProjectIndex`) is cached per reader, so projects ope
 | Resources | `resources/project.ts` (6), `resources/docs.ts` (3; the pitfalls text lives in `resources/pitfalls.ts`) | 9 | Read-only data access, Construct 3 docs, curated pitfalls |
 | Query Tools | `tools/query.ts` | 9 | List, search, get details |
 | Analysis Tools | `tools/analysis.ts` | 11 | Deep analysis, validation, event locating, runtime traps |
-| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (12), `layout-tools.ts` (9), `animation-tools.ts` (8), `timeline-tools.ts` (5), `project-tools.ts` (4) | 44 | Safe create, update, delete |
+| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (12), `layout-tools.ts` (9), `animation-tools.ts` (8), `timeline-tools.ts` (5), `project-tools.ts` (5) | 45 | Safe create, update, delete |
 | Runtime Tools | `tools/runtime-tools.ts` | 19 | Runtime bridge (inject, remove, commands), game connection, bridge calls, conditions, event buffers, input, canvas, screenshots, preview server, preview checks, project clone, `.c3p` packing |
 | Prompts | `prompts/workflows.ts` | 7 | Workflow templates |
 
 `tools/mutations.ts` only calls the domain modules' `register*Tools()` functions. Every `register*` function that gets the reader registers through `withProjectSync(server, reader)` (`tools/project-sync.ts`), which wraps each tool, resource and prompt handler: it opens a tool call scope and runs `reader.checkProjectFile()` before the handler; a tool whose `project.c3proj` changed and cannot be read returns that as a tool error. Shared tool code lives in `tools/shared.ts` (name and subfolder validation, `toolResult` / `toolError`, not-found suggestions, the editor reload note) and `tools/event-helpers.ts` (event Zod schemas, builders, validators and the load-time pre-write check).
 
 When the project is a `.c3p`, `index.ts` wraps the server once more with `withArchiveSync(server, archive)` (`tools/archive-sync.ts`), outside `withProjectSync`. A call that starts while no call runs first lets the archive refresh the working folder when the archive changed on disk, and is refused without running when it cannot be read again. After the last running call finishes, and a tool call has run since the last write-back, the archive is written back; new calls wait until that is done. A tool result gets one note about the call's own archive work (the write-back, else the refresh, else a standing conflict; a write-back failure no tool result carried is added to the next one), and `close()` waits for the running calls, refuses new ones and closes the archive once, which is what stopping the server runs.
+
+### 8. Validation (`src/construct3/`)
+
+Conditions, actions and the expressions in their parameters are checked against definitions of what Construct defines, which the server does not ship: it builds them for the project's release when a check first needs them. Seven pieces do this, on the shared types of `ace-types.ts` (catalogue, addon definition, the project data the checks read):
+
+| Module | Purpose |
+|--------|---------|
+| `ace-catalog-source.ts` | Builds a catalogue from the three files the editor serves for a release (the common ACEs are read out of `main.js`), with the fetch rules, the cache file (read, write, default folder) and the entry of the developer script `scripts/build-ace-catalog.mjs` |
+| `ace-catalog-provider.ts` | Hands out the catalogue of a release: a local folder, else the cache file, else a fetch that is then cached; the fallback release; one attempt per release per process |
+| `ace-catalog.ts` | Checks one condition or action against a catalogue or an addon's definitions (`checkAce`), a whole event tree (`checkEventAces`), and tells which ACEs an event tool changed |
+| `addon-definitions.ts` | The registry of third-party addon definitions, and the reading of addon folders and `.c3addon` archives inside the allowed roots |
+| `expression-check.ts` | Parses the expression strings of ACE parameters and resolves their names against the project, the catalogue and the registry |
+| `event-change-check.ts` | The warnings `add_event_block`, `update_event_block_action` and `update_event_block` add for the ACEs and expressions they wrote |
+| `analyzers/integrity.ts` | The checks of `validate_project` that put the other modules to use: `ace-` and `expression-` warnings and their info issues |
+
+The catalogue and the addon registry are always arguments of the checks: `ace-catalog.ts` and `expression-check.ts` hold neither. The registry belongs to one project reader (`addonDefinitionsOf(reader)` keeps it in a `WeakMap`) and keeps the roots it may read from, so projects opened side by side in one process keep their own definitions, and a catalogue provider can be set for a single reader (`setAceCatalogProvider`), which is how tests give a reader a provider with an injected fetch. The default provider (`defaultAceCatalogProvider`) is one per process, because the catalogue of a release does not depend on the project. `src/index.ts` sets the registry's roots and loads `C3_ADDON_DEFINITIONS` when it opens the project; it never calls the provider, so the server makes no request at start.
+
+The path of a catalogue:
+
+```
+check -> aceCatalogProviderFor(reader).catalogFor(project.savedWithRelease)
+  -> the release (49502 is r495-2), tried once per process
+  -> C3_ACE_SOURCE_DIR set?  read <dir>/<release>/ (never fetch, never cache)
+  -> else cache file <cache>/<release>.json, used when format, release, shape and digest match
+  -> else fetch plugins/allAces.json, behaviors/allAces.json, main.js from editor.construct.net
+      (one host, HTTPS, redirects only to the same file of the same release),
+      build the catalogue, write the cache file through a temp file and a rename
+  -> release not served (or none recorded) -> the same path for the fallback release r495-2
+  -> nothing -> a failed lookup with a reason; validate_project reports one info issue
+```
 
 ## Data Flow
 
@@ -408,6 +438,8 @@ The mutation tools provide extra context:
 - **Input validation**: Zod schemas on all tool parameters with length limits
 - **Addon gating**: Unknown third-party plugins/behaviors blocked from auto-registration
 - **Load-time gate**: The five event-editing tools listed under Write Flow reject writes that add an error the editor would refuse at load
+- **Network use**: the server's one request of its own is to editor.construct.net, for the definitions of a Construct release, the first time a check needs them in a process (never at start, and never when `C3_ACE_SOURCE_DIR` is set); see Validation above
+- **Addon definitions**: `load_addon_definitions` reads only inside the project folder (for a `.c3p`, the folder that holds it) and the roots named in `C3_ADDON_DEFINITIONS`, judged by real path, and bounds what it reads (10MB per definition file, 25MB per archive)
 - **Size limits**: 5MB maximum for any generated JSON file, 10MB for entity and script files read. The UID/SID text scan of skipped layouts and object types (again after each change on disk the server did not make) and the name search of the reference checks stream skipped files without a limit
 
 ---

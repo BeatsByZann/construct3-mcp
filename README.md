@@ -136,7 +136,7 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `find_orphaned_objects` | Find objects not used by any event (including object parameters, expressions, script actions and *Create object (by name)* with a literal name) or layout (including sub-layers, non-world instances and object properties of other instances); objects that files it could not parse possibly use are listed as `possiblyUsed` instead, and objects whose own file it could not parse as `unanalysedObjects` |
 | `get_asset_usage` | Track sound, image, font, video and project file usage (used, unused or not analysed) |
 | `analyze_performance` | Heuristic performance audit with categorized issues |
-| `validate_project` | Integrity checks: missing files, required fields, duplicate SIDs/UIDs, repeated layer names, function names shared by several function blocks, broken references and includes, behaviors and instance variables that events use but their object lacks, missing addons, legacy `"behavior-type"` keys, layout instances without behavior entries, hierarchy links to missing instances or one-sided ones, event shapes older versions wrote that the editor never writes, scripts in the one-string shape of older Construct 3 releases, orphaned and backup files, image files named after no object type, plus the rules the C3 editor enforces at load (trigger and else placement, expression syntax limited to unterminated string literals and backslashes outside them, empty expressions, duplicate names/SIDs, family plugins). Rules verified only in part are reported as warnings (details in [API.md](docs/API.md#validate_project)). `valid` means no errors and every registered file was checked; `complete` (and so `valid`) is false when a registered file exists but was not checked (over the 10MB read limit, invalid JSON, unreadable; listed in `unscannedFiles`) |
+| `validate_project` | Integrity checks: missing files, required fields, duplicate SIDs/UIDs, repeated layer names, function names shared by several function blocks, broken references and includes, behaviors and instance variables that events use but their object lacks, missing addons, legacy `"behavior-type"` keys, layout instances without behavior entries, hierarchy links to missing instances or one-sided ones, event shapes older versions wrote that the editor never writes, scripts in the one-string shape of older Construct 3 releases, orphaned and backup files, image files named after no object type, plus the rules the C3 editor enforces at load (trigger and else placement, expression syntax limited to unterminated string literals and backslashes outside them, empty expressions, duplicate names/SIDs, family plugins), and conditions and actions, parameter expressions and third-party addons checked against Construct's own definitions. Rules verified only in part are reported as warnings (details in [API.md](docs/API.md#validate_project)). `valid` means no errors and every registered file was checked; `complete` (and so `valid`) is false when a registered file exists but was not checked (over the 10MB read limit, invalid JSON, unreadable; listed in `unscannedFiles`) |
 | `get_group_settings` | Event group settings (`isActiveOnStart`, disabled) across sheets, filterable by sheet and active state |
 | `locate_event` | Map an editor event number ("es_game, event 72, action 1") to its JSON path, sid, content and neighbouring events |
 | `get_eventsheet_outline` | Readable, paged event sheet outline with editor event numbers (IF/DO/CALL/SCRIPT/GROUP/FUNCTION/VAR) |
@@ -216,6 +216,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_project_metadata` | Update project name, version, author, or description |
 | `register_addon` | Add a plugin, behavior or effect to `usedAddons` |
 | `unregister_addon` | Remove an addon from `usedAddons` (built-ins need `force`) |
+| `load_addon_definitions` | Load a third-party addon's definitions (`addon.json` and `aces.json`, from a folder or a `.c3addon` archive) so that `validate_project` and the event tools can check its conditions, actions and expressions; changes only what this server checks, no project file |
 
 ### Runtime Tools (Live Game Control)
 
@@ -442,7 +443,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 84.
 
 ### Standalone Testing
 
@@ -520,6 +521,13 @@ construct3-mcp/
 │   │   ├── c3p-archive.ts          # A .c3p project's working folder: unpack, refresh, write back, conflict
 │   │   ├── project-source.ts       # The project path: a folder, a .c3proj or a .c3p
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
+│   │   ├── ace-types.ts            # Types of the ACE catalogue, addon definitions and the project data the checks read
+│   │   ├── ace-catalog-source.ts   # Builds an ACE catalogue from the editor's files; its cache file, fetch and build script entry
+│   │   ├── ace-catalog-provider.ts # Hands out the catalogue of a release: local copy, cache or fetch, with the fallback release
+│   │   ├── ace-catalog.ts          # Checks a condition or action against a catalogue (validate_project, event tool warnings)
+│   │   ├── addon-definitions.ts    # Third-party addon definitions (addon.json, aces.json) read from folders and .c3addon archives
+│   │   ├── expression-check.ts     # Parses the expressions in ACE parameters and resolves their names
+│   │   ├── event-change-check.ts   # Warnings an event tool adds for the conditions and actions it wrote
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
@@ -565,7 +573,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
-│   │   ├── project-tools.ts        # Project metadata and addon tools (4)
+│   │   ├── project-tools.ts        # Project metadata and addon tools (5)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/
 │       └── workflows.ts            # Workflow prompts (7)
@@ -693,7 +701,7 @@ We welcome contributions! Here's how to get started:
 - **Editor Holds the Project in Memory**: Close and reopen the project in Construct 3 after MCP edits and before saving there, or the editor can overwrite them
 - **No Rename Refactoring**: Objects, families, event sheets, layouts and timelines cannot be renamed; renaming an event variable (`update_event_variable`) does not update the events that use the old name, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38). `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
 - **Runtime Testing Needs an Export or the Editor's Preview**: Only the Construct editor exports or previews a project, so the runtime tools start from an exported folder (`serve_preview`) or a preview in a browser with a debugging port; they drive Chromium-based browsers (Chrome, Edge) only
-- **No ACE Validation**: Event block conditions/actions are not validated against plugin schemas (the AI caller is expected to know valid ACE IDs). Only the editor load-time rules listed under `validate_project` are checked; triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only. OR blocks are created with `isOrBlock`
+- **ACE Validation**: ACE validation covers the built-in plugins and behaviors of the project's release, built on first use from the files editor.construct.net serves its editor and cached per user, and the addons whose definitions are loaded; findings are warnings; without network access (or a local copy named by C3_ACE_SOURCE_DIR) these checks are skipped and validate_project says so. The editor load-time rules listed under `validate_project` are checked too; triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only. OR blocks are created with `isOrBlock`
 
 ## License
 

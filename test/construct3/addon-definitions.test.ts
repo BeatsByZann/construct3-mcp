@@ -144,6 +144,11 @@ describe('loading folders', () => {
     expect(() => parseAddonDefinition('{"type":"behavior","id":"a"}', '[]', 'x')).toThrow('aces.json is not an object');
   });
 
+  it('refuses an addon whose type defines no conditions or actions', () => {
+    expect(() => parseAddonDefinition('{"type":"effect","id":"a"}', '{}', 'x')).toThrow('declares a type other than plugin or behavior');
+    expect(() => parseAddonDefinition('{"id":"a"}', '{}', 'x')).toThrow('declares a type other than plugin or behavior');
+  });
+
   it('keeps an id such as __proto__ as an own entry and finds nothing under constructor', () => {
     const aces = '{"c":{"actions":[{"id":"__proto__","params":[{"id":"p","type":"string"}]}]}}';
     const definition = parseAddonDefinition('{"type":"plugin","id":"constructor"}', aces, 'x');
