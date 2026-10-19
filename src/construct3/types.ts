@@ -402,6 +402,7 @@ export interface ObjectType {
   sid: number;
   isGlobal?: boolean;
   editorNewInstanceIsReplica?: boolean;
+  editorNewInstanceTemplateName?: string;
   instanceVariables?: InstanceVariable[];
   behaviorTypes?: BehaviorType[];
   effectTypes?: Array<Record<string, unknown>>;
