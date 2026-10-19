@@ -338,15 +338,23 @@ describe('track and keyframe tools', () => {
 
 // ─── value tracks, audio tracks and track folders ─────────
 
-describe('value track, audio track and track folder tools', () => {
+describe('value track, audio track, track folder and ease tools', () => {
   it('registers every new tool', () => {
     const { server } = setup();
     for (const name of [
       'list_timeline_tracks', 'add_value_track', 'add_audio_track',
       'add_timeline_folder', 'rename_timeline_folder', 'delete_timeline_folder', 'move_timeline_track',
+      'list_eases', 'create_ease', 'update_ease', 'delete_ease',
     ]) {
       expect(server.hasTool(name), name).toBe(true);
     }
+  });
+
+  it('refuses a custom ease named like a built-in ease', async () => {
+    const { server } = setup();
+    const result = await server.callTool('create_ease', { name: 'easeinoutsine', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('"easeinoutsine" is one of Construct\'s own ease names; choose another name. Nothing was changed.');
   });
 });
 

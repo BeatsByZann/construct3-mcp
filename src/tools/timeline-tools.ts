@@ -74,6 +74,7 @@ import {
 import { withProjectSync } from './project-sync.js';
 import { registerTimelineInstanceTools } from './timeline-instance-tools.js';
 import { registerTimelineTrackTools } from './timeline-track-tools.js';
+import { registerTimelineEaseTools } from './timeline-ease-tools.js';
 
 export type { Timeline, TimelineFolder };
 
@@ -832,4 +833,5 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
 
   registerTimelineInstanceTools({ server, reader, writer, idGen }, kit);
   registerTimelineTrackTools({ server, reader, writer, idGen }, kit);
+  registerTimelineEaseTools({ server, reader, writer, idGen }, kit);
 }
