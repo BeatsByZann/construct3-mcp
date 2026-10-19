@@ -20,8 +20,8 @@ export function expectShaped(project: ProjectJson, before: ProjectJson, options:
 }
 
 /**
- * A copy of the `c3-loadable-minimal` project.c3proj brought to the r495.2
- * save shape by hand, without the production module: `uidAllocationMode`
+ * A copy of the `c3-loadable-minimal` project.c3proj brought to the save
+ * shape by hand, without the production module: `uidAllocationMode`
  * follows `preloadSounds`, `scriptsType` ends `properties`, script entries
  * carry `script-info`, and an empty `models3d` folder follows `flowcharts`.
  * An independent expectation for tests that need a project already in the

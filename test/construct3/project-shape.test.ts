@@ -1,6 +1,6 @@
 /**
  * Tests for project-shape.ts: bringing a parsed project.c3proj saved by an
- * older Construct release to the shape the r495.2 editor saves.
+ * older Construct release to the save shape.
  */
 
 import { describe, it, expect } from 'vitest';

@@ -63,7 +63,7 @@ construct3-mcp/
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
 │   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert/delete
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
-│   │   ├── project-shape.ts        # The r495.2 save shape of project.c3proj
+│   │   ├── project-shape.ts        # The save shape of project.c3proj
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison

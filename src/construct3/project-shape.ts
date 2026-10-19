@@ -1,15 +1,14 @@
 /**
- * Bring a project.c3proj that an older Construct release saved to the shape
- * the Construct 3 r495.2 editor saves, so that a tool write followed by an
- * editor save does not show a diff the tool did not cause.
+ * Bring a project.c3proj that an older Construct release saved to a fixed
+ * save shape, so that a tool write followed by an editor save shows fewer
+ * differences the tool did not cause.
  *
- * What r495.2 did to a release-44903 project on save, as recorded: script
- * entries carry `script-info` instead of `file-info`, an empty `models3d`
+ * The shape: script entries carry `script-info` instead of `file-info`, an empty `models3d`
  * folder follows `flowcharts`, `uidAllocationMode` follows `preloadSounds`
  * and `scriptsType` ends `properties`. The first two apply to a project of
  * any release; for a file without `flowcharts` the folder goes before
- * `properties`, a placement inferred, not recorded. Projects saved by
- * r495.2 or later keep their editor's own property order.
+ * `properties`, a placement inferred, not recorded. Projects saved at
+ * release 49502 or later keep their editor's own property order.
  *
  * Deliberately not done:
  * - `zAxisScale` and every other setting: left as saved. Construct 3 r506-2
@@ -81,17 +80,17 @@ function moveKey(target: Json, key: string, anchor: string | null): boolean {
 }
 
 /**
- * Apply the r495.2 save shape to a parsed project.c3proj, in place. Returns one
+ * Apply the save shape to a parsed project.c3proj, in place. Returns one
  * line per change; an empty list means the file already had that shape.
  */
 export function upgradeProjectShape(project: Json): string[] {
   const changes: string[] = [];
 
-  // Scripts: the r495.2 editor stores script metadata under script-info.
+  // Scripts: the shape stores script metadata under script-info.
   const roots = project.rootFileFolders;
   if (isObject(roots)) renameScriptInfo(roots.script, 'scripts', changes);
 
-  // models3d: every r495.2 save has the folder, empty when there are no models.
+  // models3d: the shape has the folder, empty when there are no models.
   if (!('models3d' in project)) {
     const keys = Object.keys(project);
     const after = keys.includes('flowcharts') ? keys.indexOf('flowcharts') + 1

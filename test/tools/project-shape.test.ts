@@ -1,6 +1,6 @@
 /**
- * A write to project.c3proj through the writer leaves the file in the shape
- * the r495.2 editor saves. Real reader, writer and ID generator on a copy of
+ * A write to project.c3proj through the writer leaves the file in the save
+ * shape. Real reader, writer and ID generator on a copy of
  * the c3-loadable-minimal fixture (saved by release 44903).
  */
 
@@ -21,7 +21,7 @@ import { expectShaped, shapeByHand, type ProjectJson } from '../helpers/project-
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'c3-loadable-minimal');
 
-const BOM = '﻿';
+const BOM = '\uFEFF';
 
 type Result ={ content: Array<{ type: string; text: string }>; isError?: boolean };
 
