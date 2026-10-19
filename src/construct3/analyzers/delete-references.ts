@@ -707,3 +707,11 @@ export function namesVisibleToOtherSheets(event: object, topLevel: boolean): str
 export function countDeleteReferences(report: DeleteReferenceReport): number {
   return [...report.functions, ...report.variables].reduce((n, entry) => n + entry.references.length, 0);
 }
+
+// ─── Shared with variable-renames.ts ─────────────────────────
+
+// The walk and the lookup the reference checks use, for the rename of an
+// event variable (variable-renames.ts), which must bind each use exactly as
+// these checks do.
+export { childList, declarationOf, functionParameterRecords, globalVariableDeclarations, isRecord, mentionsAny, referenceAt, variableNamesUsedBy, walkAces };
+export type { AceSite, EventRecord };
