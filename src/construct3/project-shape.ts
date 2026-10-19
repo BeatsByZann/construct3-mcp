@@ -13,8 +13,9 @@
  *
  * Deliberately not done:
  * - `zAxisScale` and every other setting: left as saved. Construct 3 r506-2
- *   updated a legacy "normalized" itself when it opened such a project; a
- *   tool that changed it while writing something else would hide that.
+ *   updated a legacy "normalized" itself when it opened a release-44903
+ *   project in one recorded check; a tool that changed it while writing
+ *   something else would hide that.
  * - `usedAddons` pruning: it removes entries a project may still use.
  * - Property order for a project saved at 49502 or later: the order depends
  *   on the editor's release (49700 puts `zAxisScale` after

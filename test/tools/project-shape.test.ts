@@ -220,6 +220,7 @@ describe('project.c3proj shape on write', () => {
     await ok('inject_runtime_bridge');
     const project = await onDisk();
     expect(firstScript(project).name).toBe('c3-runtime-bridge.js');
+    expect(Object.keys(firstScript(project))).toContain('script-info');
     expect('models3d' in project).toBe(false);
     expect(Object.keys(project.properties as Record<string, unknown>)).toEqual(Object.keys(before.properties as Record<string, unknown>));
     expect((project.properties as Record<string, unknown>).zAxisScale).toBe('normalized');
