@@ -82,8 +82,8 @@ import type {
   ObjectReference,
   Layout,
   FileFolder,
-  FileFolderSubfolder,
 } from '../types.js';
+import { registeredScriptFiles } from '../script-files.js';
 import {
   createByNameTarget,
   functionsObjectName,
@@ -414,17 +414,7 @@ async function readScriptFileMemberReads(
   }
   if (!folder || typeof reader.readScriptFile !== 'function') return { reads, unreadable };
 
-  const paths: string[] = [];
-  const walk = (f: FileFolder | FileFolderSubfolder, prefix: string, depth: number) => {
-    if (depth > MAX_DEPTH) return;
-    for (const item of Array.isArray(f.items) ? f.items : []) {
-      if (item && typeof item.name === 'string' && item.name !== '') paths.push(prefix + item.name);
-    }
-    for (const sub of Array.isArray(f.subfolders) ? f.subfolders : []) {
-      if (sub && typeof sub.name === 'string') walk(sub, `${prefix}${sub.name}/`, depth + 1);
-    }
-  };
-  walk(folder, '', 0);
+  const paths = registeredScriptFiles(folder).files.map(f => f.path);
 
   for (const path of paths) {
     let source: string;
