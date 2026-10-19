@@ -42,7 +42,7 @@ describe('validateBrushData', () => {
   });
 
   /**
-   * Revert check (e): removing the dimension checks makes every case here
+   * Removing the dimension checks makes every case here
    * pass silently.
    */
   it('rejects the wrong number of rows or columns', () => {

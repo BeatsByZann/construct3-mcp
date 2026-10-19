@@ -119,6 +119,17 @@ describe('list_tilemap_brushes', () => {
     expect(result.warnings).toBeUndefined();
   });
 
+  it('gives a patch brush its own size, and a brush without readable data an unknown one', async () => {
+    const patch = { width: 3, height: 2, data: [[1, 2, 3], [4, 5, 6]] };
+    await writeFile(at(TILES_BRUSH_PATH), JSON.stringify([
+      { name: 'P', type: 'patch', data: patch },
+      { name: 'Broken', type: 'patch', data: 5 },
+      { name: 'Odd', type: 'other', data: [] },
+    ]));
+    const result = await ok('list_tilemap_brushes', { objectName: 'Tiles' });
+    expect((result.brushes as Array<{ size: string }>).map(b => b.size)).toEqual(['3x2', 'unknown', 'unknown']);
+  });
+
   it('reports an object type without a brush file as an empty list', async () => {
     const result = await ok('list_tilemap_brushes', { objectName: 'Walls' });
     expect(result.fileExists).toBe(false);
@@ -184,6 +195,16 @@ describe('update_tilemap_brush', () => {
     const result = await call('update_tilemap_brush', { objectName: 'Tiles', name: 'Brush 0', data: [[1, 2, 3, 4]] });
     expect(result.isError).toBe(true);
     expect(result.text).toContain('exactly 4 row(s), got 1');
+    expect(await brushBytes(TILES_BRUSH_PATH)).toBe(BRUSH_0_TEXT);
+  });
+
+  it('refuses a new name that is not a valid name', async () => {
+    const replace = vi.spyOn(writer, 'replaceFile');
+    const result = await call('update_tilemap_brush', { objectName: 'Tiles', name: 'Brush 0', newName: '..' });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('Name must start with a letter');
+    expect(result.text.endsWith(ENDING)).toBe(true);
+    expect(replace).not.toHaveBeenCalled();
     expect(await brushBytes(TILES_BRUSH_PATH)).toBe(BRUSH_0_TEXT);
   });
 
@@ -545,6 +566,12 @@ describe('a write that goes wrong', () => {
     expectNoFolder(a.text);
     expect(await brushBytes(TILES_BRUSH_PATH)).toBe(BRUSH_0_TEXT);
     before.mockRestore();
+
+    // A cause that ends in full stops does not double them before the ending
+    const dots = wrapReplaceFile(async () => { throw new Error('EBUSY...'); });
+    const dotted = await call('add_tilemap_brush', addArgs('Tiles'));
+    expect(dotted.text).toBe(`EBUSY. ${ENDING}`);
+    dots.mockRestore();
 
     // (b) the write happened, then the call failed: the file holds the new list
     let spy = failWith('read-back failed');

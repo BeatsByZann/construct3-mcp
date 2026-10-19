@@ -325,7 +325,7 @@ async function writeBrushFile(
   } catch (error) {
     // A file another program saved after it was read is refused by the writer and untouched
     if (error instanceof StaleFileError) return { failure: toolError(error.message) };
-    return { failure: toolError(await failedWriteMessage(location, read, text, causeWithoutPaths(error, projectDir))) };
+    return { failure: toolError(await failedWriteMessage(location, read, text, causeWithoutPaths(error, projectDir).replace(/[.\s]+$/, ''))) };
   }
 }
 
