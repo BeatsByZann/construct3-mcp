@@ -57,7 +57,7 @@ cd construct3-mcp
 npm ci    # installs dependencies and builds dist/ (prepare script)
 ```
 
-Connect it to Claude Code with absolute paths to `dist/index.js` and to your project folder (the folder that contains `project.c3proj`; `.c3p` files cannot be opened):
+Connect it to Claude Code with absolute paths to `dist/index.js` and to your project folder (the folder that contains `project.c3proj`, or a single-file `.c3p` project):
 
 ```bash
 claude mcp add construct3 --scope user -- node /absolute/path/to/construct3-mcp/dist/index.js "/absolute/path/to/My Game"
@@ -280,6 +280,8 @@ Mutation tools follow a strict safety protocol (exceptions below):
 
 **Changes made outside the server are picked up.** Every tool call, resource read and prompt starts from the project as it is on disk: the server checks `project.c3proj`, and the files its caches hold the first time the call uses them, by modification time, size and file id, and reads again what changed, for example after `git restore` or a save in the Construct 3 editor. There is no need to reconnect. A write never replaces a change it did not read: when an event sheet, layout, object type or family file changed on disk after the tool call read it, the write is refused with a message that names the file, and the file keeps that change; run the tool again. A call refused this way after it had written other files puts back the entity files and `project.c3proj` it had changed first; an image, timeline or script file it wrote earlier in the call is not put back: it stays as written, and its `.bak` holds the state from before the call. The server's own updates of `project.c3proj` (registering or removing an entity, addon auto-registration, project metadata) read the file right before they write it and keep a change made there; the addon tools merge a `project.c3proj` changed during the call into their update; the timeline tools (`create_timeline`, `delete_timeline`) refuse one changed before their first write and merge into the update that follows; the runtime-bridge tools refuse one that changed since they read it, before they write anything and again right before they write `project.c3proj`, putting back what they wrote before. Of two parallel tool calls that change the same event sheet, layout, object type or family file, the second one is refused the same way; the animation tools and the `project.c3proj` updates above run one after the other. Changes that keep a file's size, modification time and file id (possible on file systems with coarse timestamps) are not seen. The check costs one file status per file the server has read when a call uses cached data: about 100 ms on a project of 3,000 files.
 
+**Single-file projects.** With a `.c3p` path the server unpacks the archive into a new folder under the system's temp folder, works on the `project` folder inside it (the working folder; the server logs its path at start) and writes the archive back. A call that starts while no other call runs first reads the archive again when it changed on disk and the working folder holds nothing the archive lacks. When the last running call finishes and a tool call has run since the last write-back, the archive is written back if the working folder changed, and the tool result says `Saved the project to "<archive>"`; calls that start meanwhile wait until the write is done. The first write-back of a session keeps the archive as it was before it in `<name>.c3p.bak`; a file already named so is never replaced, and the previous version is then kept under a second name that the result gives. The server never replaces or deletes a version of the archive another program saved: it compares the archive's content, not only its size and time, before it writes, and it moves the archive aside and places the new file without replacing a file at its path. When the archive changed on disk after the session changed the project (a save in the Construct 3 editor, for example), it is not written, every tool result says `The project was NOT saved` and names the working folder that holds the session's changes, and the server has to be restarted to load the archive as it is. A call made while the archive changed on disk and cannot be read again (a save under way) is refused without running; try it again. During a write-back the archive's path is empty for the time it takes to place the new file; a server stopped in that moment leaves the previous version beside the archive as `<name>.c3p.<pid>.<n>.previous`, named at the next start of the server on a `.c3p`. When the server stops it writes back what is left and removes the working folder; it keeps the folder when the archive was not written or no longer exists. Working folders left by a server that was killed are named in the log and in the first tool result of the next session on a `.c3p`. A folder whose name ends in `.c3p` is a folder project. See the [User Guide](docs/USER-GUIDE.md#single-file-c3p-projects).
+
 Every project file a tool writes through the project writer is backed up once per call (step 2) and written through a temp file (step 4): objects, families, event sheets, layouts, animations, project metadata, addon registration, timelines, the runtime bridge files and images. Step 5 is a read-back compared byte for byte, and for entity files and `project.c3proj` updates made through `updateProject` it is also re-parsed. The JSON check before a write (`validateJsonData`) runs only for those files too. Each write, delete and restore of a file through the writer takes the file's one lock (the project lock for `project.c3proj`); renaming image files (`renameImageFiles`) and deleting one (`deleteImageFile`) take no file lock and make no backup, and every rename of image files runs under the animation lock instead (the animation tools hold it for their whole call; `delete_object` holds it around its renames, its delete and its rollback, and checks references outside it). The differences:
 - `register_addon` and `unregister_addon` update `project.c3proj` through the writer: it is backed up once per call, the result is read back, and a change saved in the editor during the call is merged in, not refused.
 - The timeline tools back up their files once per call, write them through a temp file and read them back.
@@ -325,7 +327,7 @@ Detailed documentation is available in the `/docs` folder:
 
 - **Node.js** >= 18.0.0
 - **npm** or **yarn**
-- A Construct 3 project saved in **folder format** (.c3proj, not .c3p)
+- A Construct 3 project saved in **folder format** (.c3proj) or as a **single file** (.c3p)
 
 ### Install Dependencies
 
@@ -351,7 +353,7 @@ npm run build
 
 Step-by-step instructions for each client are in the [User Guide](docs/USER-GUIDE.md#connect-your-ai-tool).
 
-The server finds its project in this order: the first argument after `dist/index.js` (a project folder or the `.c3proj` file), the `C3_PROJECT_PATH` environment variable, the working directory it is started in. A folder must contain the `.c3proj` file directly; subfolders and parent folders are not searched. Most clients do not start the server in your project folder, so pass the project path.
+The server finds its project in this order: the first argument after `dist/index.js` (a project folder, the `.c3proj` file or a `.c3p` file), the `C3_PROJECT_PATH` environment variable, the working directory it is started in. A folder must contain the `.c3proj` file directly; subfolders and parent folders are not searched. Most clients do not start the server in your project folder, so pass the project path.
 
 **MCP config** (Claude Desktop, Antigravity, Windsurf and a hand-written Claude Code `.mcp.json`; Cursor and VS Code need `"type": "stdio"`, and VS Code uses a different top-level key, see below):
 ```json
@@ -452,6 +454,9 @@ node /path/to/construct3-mcp/dist/index.js
 # Or pass explicit path
 node dist/index.js /path/to/project.c3proj
 node dist/index.js /path/to/project-folder
+
+# Or a single-file project
+node dist/index.js /path/to/game.c3p
 ```
 
 On success the server prints `Construct3 MCP Server ready` (on stderr) and then waits silently for an MCP client on stdin; that is not a hang. Press Ctrl+C to stop it. On a wrong path it prints `Failed to start server: ...` and exits with code 1.
@@ -491,7 +496,7 @@ Once the MCP server is running, ask Claude:
 ```
 construct3-mcp/
 ├── src/
-│   ├── index.ts                    # Entry point: project path, server setup, registration, shutdown
+│   ├── index.ts                    # Entry point: project path (a folder, a .c3proj or a .c3p), server setup, registration, shutdown
 │   ├── construct3/
 │   │   ├── project-reader.ts       # Project file reads, caches, checks for changes on disk
 │   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify), project.c3proj updates, undo of a tool call's writes
@@ -512,6 +517,8 @@ construct3-mcp/
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
+│   │   ├── c3p-archive.ts          # A .c3p project's working folder: unpack, refresh, write back, conflict
+│   │   ├── project-source.ts       # The project path: a folder, a .c3proj or a .c3p
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
 │   │   ├── types.ts                # TypeScript type definitions
@@ -542,13 +549,16 @@ construct3-mcp/
 │   │   ├── bridge.ts               # Injectable runtime bridge script generator
 │   │   ├── cdp-client.ts           # CDP client: game connections, bridge calls, input, screenshots
 │   │   ├── preview-server.ts       # Loopback server for exported games, browser launch
-│   │   └── zip-writer.ts           # Zero-dep ZIP writer for .c3p packing
+│   │   ├── project-files.ts        # The files of a folder project (pack_project, .c3p write-back)
+│   │   ├── zip-reader.ts           # Zero-dep ZIP reader for .c3p archives (ZIP64, DEFLATE, backslash paths)
+│   │   └── zip-writer.ts           # Zero-dep ZIP writer for .c3p archives (pack_project, .c3p write-back)
 │   ├── tools/
 │   │   ├── query.ts                # Query tools (9)
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
+│   │   ├── archive-sync.ts         # withArchiveSync: a .c3p refreshed before the calls, written back after
 │   │   ├── object-tools.ts         # Object and family tools (6)
 │   │   ├── event-tools.ts          # Event sheet tools (12)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
@@ -672,14 +682,14 @@ We welcome contributions! Here's how to get started:
 - [x] Byte-faithful writes (line endings, BOM, file-name case)
 
 ### Phase 7: Advanced Features
-- [ ] Opening .c3p (zipped) projects directly
+- [x] Opening .c3p (zipped) projects directly
 - [ ] Rename with reference updates (dry-run preview)
 - [ ] Bulk operations
 - [ ] Plugin development assistance
 
 ## Known Limitations
 
-- **Folder Format Only**: Works with .c3proj folder projects; `pack_project` can write a .c3p, but .c3p files cannot be opened
+- **Single-file projects through a working folder**: a `.c3p` project is unpacked into a folder in the system's temp folder, which the tools work on; the archive is written back after the tool calls that change the project (the first write-back of a session keeps the archive as it was before it in `<name>.c3p.bak`; a file already named so is not replaced) and read again when it changes on disk while the session has nothing unsaved. The server never replaces or deletes a version of the archive another program saved: when the archive changed on disk after the session changed the project, it is not written, every tool result says so and names the working folder that holds the session's changes. During a write-back the archive's path is empty for the time it takes to place the new file; a server stopped in that moment leaves the previous version beside the archive, named at the next start. Entries the packer leaves out, `*.tmp` files and `*.bak` files are kept unchanged and are not visible to the tools. Archives are written uncompressed, with at most 65,535 files and 4 GiB. Each write-back reads every file of the project twice (to build the archive and to check it) and reads the archive and its copies several times (before the write-back, the staged copy, the copy moved aside, and after), so it takes longer for large projects.
 - **Editor Holds the Project in Memory**: Close and reopen the project in Construct 3 after MCP edits and before saving there, or the editor can overwrite them
 - **No Rename Refactoring**: Objects, families, event sheets, layouts and timelines cannot be renamed; renaming an event variable (`update_event_variable`) does not update the events that use the old name, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38). `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
 - **Runtime Testing Needs an Export or the Editor's Preview**: Only the Construct editor exports or previews a project, so the runtime tools start from an exported folder (`serve_preview`) or a preview in a browser with a debugging port; they drive Chromium-based browsers (Chrome, Edge) only

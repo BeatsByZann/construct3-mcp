@@ -4,8 +4,13 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- A single-file `.c3p` project can be opened: the server takes a `.c3p` path wherever it takes a project path, serves it through a working folder in the system's temp folder, writes the archive back after the tool calls that change the project (the first write-back of a session keeps the archive as it was before it in `<name>.c3p.bak`), and reads it again before a call when it changed on disk while the session has nothing unsaved. The write-back never replaces or deletes a version of the archive another program saved: when the archive changed on disk after the session changed the project, it is not written in that session, and every tool result says so and names the folder that holds the session's changes (#ISSUE).
+
 ### Changed
 
+- `pack_project` marks the names of archive entries that hold characters outside ASCII as UTF-8 (flag bit 11), as ZIP readers expect (#ISSUE).
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
 - `register_addon`, `unregister_addon`, `replace_sprite_image`, the timeline tools and the runtime bridge tools write project files through the project writer: each file is backed up once per tool call (`<file>.bak`), written through a temp file and read back. `register_addon` and `unregister_addon` merge a `project.c3proj` saved in the editor during the call instead of refusing it; the runtime bridge tools refuse to write over one (#ISSUE).
 - Images are backed up under the first free `.bak` name (`<file>.bak`, `<file>.1.bak`, ...), so placeholder writes and `replace_sprite_image` never replace an image the frame tools kept as `.bak`; a failed batch of placeholder images puts back an image it wrote over. Image backups accumulate, one more for each call that writes the image, and nothing removes them (#ISSUE).

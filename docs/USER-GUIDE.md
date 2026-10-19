@@ -31,11 +31,11 @@ construct3-mcp is a small program (an "MCP server") that your AI tool starts in 
 - **Read and explain**: list objects, layouts, event sheets, families, timelines and addons, show an event sheet as a readable outline with the editor's event numbers, find where an object is used, map functions, find unused objects and assets.
 - **Check**: `validate_project` runs 29 checks, including rules the Construct 3 editor enforces when it opens a project. `find_runtime_traps` looks for logic that loads fine but hangs or does nothing.
 - **Edit**: create, change and delete objects, families, event sheets and events, layouts, layers, instances, animations and timelines, and change the project metadata (name, version, author, description). Names and references are checked before anything is written, and most rewritten files get a `.bak` copy (exceptions under [.bak files](#bak-files)).
+- **Open your project as saved**: it opens projects saved as a folder and single-file `.c3p` projects (through a working folder: see [Single-file `.c3p` projects](#single-file-c3p-projects)).
 - **Test the running game**: add a "bridge" script to your project, serve an export of the game, and let the AI read variables, call functions, wait for states, click, type and take screenshots in the running game.
 
 What it does **not** do:
 
-- It cannot open `.c3p` single-file projects, only projects saved as a folder.
 - The Construct 3 editor does not notice its changes. You close and reopen the project yourself (see [the safe editing workflow](#the-safe-editing-workflow)).
 - It does not know Construct's list of conditions and actions or their parameter names, and it does not parse full expressions. A misspelled action id or an expression like `Player.X +` is written without complaint.
 - It does not download the Construct 3 manual. The documentation resources only return links.
@@ -48,11 +48,25 @@ What it does **not** do:
 - **Node.js 18 or newer.** Node 22 or 24 (both LTS releases) is recommended. Check with `node --version`. The server was built and run with Node 22.23.2 and with Node 18.20.8. Node 18 prints harmless `EBADENGINE` warnings for `vite` and `vitest` (test tools only). Node 18 is end-of-life.
 - **git**, to download the server.
 - **An MCP client**: Claude Code, Claude Desktop, Cursor, VS Code with GitHub Copilot, or another tool that supports local (stdio) MCP servers.
-- **A Construct 3 project saved as a folder.** The folder contains `project.c3proj` next to folders such as `eventSheets/`, `layouts/` and `objectTypes/`.
+- **A Construct 3 project saved as a folder, or as a single `.c3p` file.** The folder contains `project.c3proj` next to folders such as `eventSheets/`, `layouts/` and `objectTypes/`.
 
-### Converting a .c3p project to a folder project
+### Single-file `.c3p` projects
 
-A `.c3p` file will not load (see [Troubleshooting](#troubleshooting-and-faq)). Convert it once. According to the Construct 3 manual and Scirra's tutorials (not clicked through for this guide):
+Pass the `.c3p` file as the project path (see [Tell the server which project to open](#tell-the-server-which-project-to-open)). A folder whose name ends in `.c3p` is a folder project, not an archive.
+
+**The working folder.** The tools work on folder projects, so the server unpacks the archive into a new folder under your system's temp folder (its name starts with `c3p-`) and works on the `project` folder inside it. The server logs `Opened <archive> in the working folder <path>` when it starts. Entries the packer leaves out (`.git`, `node_modules`, `.DS_Store` and similar), `*.tmp` files and `*.bak` files go into a second folder beside it that no tool writes; they are packed back unchanged and the tools do not see them.
+
+**Writing the archive back.** When the last running call finishes, and a tool call has run since the last write-back, the server writes the archive back if the working folder changed. The tool result then says `Saved the project to "<archive>"` with the number of files. Calls that start meanwhile wait until the write is done. Archives are written uncompressed, with at most 65,535 files and 4 GiB; a larger project cannot be written back (the result says `The project was NOT saved` and gives the reason). Each write-back reads every file of the project twice (to build the archive and to check it) and reads the archive and its copies several times, so it takes longer for large projects.
+
+**Reading it again.** When the archive changed on disk, for example after a save in the Construct 3 editor, and the working folder holds nothing the archive lacks, the next call that starts while no call runs reads the project again from the archive and says so in its result. When the archive changed and cannot be read again (a save under way, for example), the call is refused without running; run it again.
+
+**It never replaces a save of another program.** The server decides by the archive's content, not by its size and time alone, whether the archive is still the version it read or wrote. When the archive changed on disk after the session changed the project, the archive is not written: every tool result says `The project was NOT saved`, names the working folder that holds the session's changes, and the same stands until the server stops. Tool calls still work on the working folder. To resolve it, copy what you need from the working folder (an ordinary folder project), then restart the server, which loads the archive as it is. Even when no one saved, the server places the new archive by moving the old one aside and putting the new file where no file is: a file that appears at the archive's path meanwhile is kept, never replaced. The archive's path is empty for the time it takes to place the new file; a server stopped in that moment leaves the previous version beside the archive as `<name>.c3p.<pid>.<n>.previous`, and the next server started on a `.c3p` names it.
+
+**The backup.** The first write-back of a session keeps the archive as it was before it in `<name>.c3p.bak` next to it. A file already named so is never replaced: the previous version is then kept under a second name, which the result gives. Later write-backs of the same session keep nothing more.
+
+**Leftover folders.** A server that is stopped normally writes back what is left and removes its working folder (it keeps the folder when the archive was not written or no longer exists, and says so in its log). A server that is killed leaves its working folder in the temp folder; the next server started on a `.c3p` names such folders in its log and in its first tool result, because they may hold changes never written back. It never removes them.
+
+**Converting to a folder project.** For work under git (see [the safe editing workflow](#the-safe-editing-workflow)) a folder project is still the better choice. According to the Construct 3 manual and Scirra's tutorials (not clicked through for this guide):
 
 - In Construct 3 in Chrome or Edge (or Construct installed as an app from those browsers), open the project and choose **Menu > Project > Save as > Save as project folder...**, then pick an **empty** folder. Firefox and Safari do not offer this option.
 - Or rename `MyGame.c3p` to `MyGame.zip` and extract it. A `.c3p` is a ZIP archive.
@@ -149,7 +163,7 @@ In our tests the first start took one to two minutes (download and build), later
 
 One server process works on exactly one project. It looks for the project in this order (the first match wins):
 
-1. **The first argument** after `dist/index.js`: the project folder, or the `.c3proj` file itself.
+1. **The first argument** after `dist/index.js`: the project folder, the `.c3proj` file itself, or a `.c3p` file.
 2. **The environment variable `C3_PROJECT_PATH`.**
 3. **The working directory** the server was started in.
 
@@ -688,7 +702,7 @@ More cases are in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 The server printed the reason to stderr and exited. Run the exact command from your configuration in a terminal to see it. In Claude Code, `claude mcp list` then shows `✘ Failed to connect — CONNECTION_CLOSED: Connection closed`. On Windows, Claude Code also logs the server's messages in `%LOCALAPPDATA%\claude-cli-nodejs\Cache\<start-folder>\mcp-logs-construct3\`, where `<start-folder>` is named after the folder you started `claude` in. Open the newest file there. Claude Desktop logs them in `mcp-server-construct3.log` (see [Claude Desktop](#claude-desktop)).
 
 **`Failed to start server: No .c3proj file found in directory: <path>`**
-The path does not exist, points to a `.c3p` file, or is a folder that does not contain the `.c3proj` directly (for example a parent folder, or the `layouts` subfolder). Without a path in the configuration the server searches the folder it was started in, which in Claude Code is the folder where you started `claude`. Pass the project folder explicitly, and convert `.c3p` projects to folder projects.
+The path does not exist, or is a folder that does not contain the `.c3proj` directly (for example a parent folder, or the `layouts` subfolder). Without a path in the configuration the server searches the folder it was started in, which in Claude Code is the folder where you started `claude`. Pass the project folder or the `.c3p` file explicitly.
 
 **`Failed to start server: Invalid Construct3 project file: <path>`**
 The `.c3proj` path does not exist or the file is not valid Construct 3 project JSON. Check the path and re-save the project from Construct 3.
@@ -737,7 +751,7 @@ Install it and add one object that uses the addon in the Construct 3 editor, sav
 
 ## Limits
 
-- Folder projects only. `.c3p` files cannot be opened (`pack_project` can write one).
+- A `.c3p` project is served through a working folder in the system's temp folder and written back to the archive after the calls that change it; the archive is not written when another program saved it after the session changed the project, and entries the packer leaves out, `*.tmp` and `*.bak` files are kept unchanged but invisible to the tools. Archives are written uncompressed, with at most 65,535 files and 4 GiB. See [Single-file `.c3p` projects](#single-file-c3p-projects).
 - One project per server process.
 - Construct 3 does not see changes while the project is open. Close it before, or close without saving and reopen after.
 - No check of condition and action ids, parameter names or full expression syntax. Only the editor load-time rules listed under [`validate_project`](API.md#validate_project) are checked.
