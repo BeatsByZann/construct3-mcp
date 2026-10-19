@@ -412,3 +412,15 @@ export function newDuplicateFunctionNames(
   for (const f of before) countBefore.set(nameKey(f.name), (countBefore.get(nameKey(f.name)) ?? 0) + 1);
   return duplicateFunctionNames(after).filter(g => g.length > (countBefore.get(nameKey(g[0].name)) ?? 0));
 }
+
+/**
+ * True when `ch` (one UTF-16 code unit) can be part of an event variable
+ * name: not a control character, not whitespace the editor's name cleanup
+ * removes, not one of DISALLOWED_NAME_CHARACTERS. Expressions read a name
+ * as a run of such characters that does not start with a digit.
+ */
+export function isEventVariableNameCharacter(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  if (code < 0x20 || code === 0x7f) return false;
+  return !NAME_WHITESPACE.has(ch) && !DISALLOWED_NAME_CHARACTERS.has(ch);
+}
