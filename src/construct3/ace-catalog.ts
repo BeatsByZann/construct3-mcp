@@ -14,7 +14,7 @@ import type { Construct3ProjectReader } from './project-reader.js';
 import { UNKNOWN_PARAM_TYPE, releaseFromSaved, releaseLabel, releaseNumber } from './ace-catalog-source.js';
 import { nameKey } from './names.js';
 import { unscannedFilesOf } from './analyzers/unscanned-uses.js';
-import { LEGACY_BEHAVIOR_TYPE_KEY, isBehaviorName } from './analyzers/legacy-behavior-keys.js';
+import { hasOnlyLegacyBehaviorKey } from './analyzers/legacy-behavior-keys.js';
 import type { AceCatalog, AceParam, AceSet, AddonLookup, ProjectData } from './ace-types.js';
 
 export type { AceCatalog, AceParam, AceSet, AddonLookup, ExpressionDef, ProjectData } from './ace-types.js';
@@ -293,7 +293,7 @@ export function checkEventAces(
           if (typeof ace.callFunction === 'string' || typeof ace.customAction === 'string') continue;
           const sid = typeof ace.sid === 'number' ? ace.sid : undefined;
           if (only && (sid === undefined || !only.has(sid))) continue;
-          if (isBehaviorName(ace[LEGACY_BEHAVIOR_TYPE_KEY]) && !isBehaviorName(ace.behaviorType)) continue;
+          if (hasOnlyLegacyBehaviorKey(ace)) continue;
           const owner = aceOwner(ace, context);
           if (!owner) continue;
           for (const p of checkAce(kind, { id: ace.id, parameters: ace.parameters }, owner, addons, catalog)) {

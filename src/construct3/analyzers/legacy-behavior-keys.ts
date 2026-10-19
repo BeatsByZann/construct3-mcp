@@ -131,6 +131,14 @@ export function isBehaviorName(value: unknown): value is string {
 }
 
 /**
+ * The ACE names its behavior only under the legacy "behavior-type" key. Construct 3
+ * does not read that key and fails to open the project (issue #16).
+ */
+export function hasOnlyLegacyBehaviorKey(ace: Record<string, unknown>): boolean {
+  return isBehaviorName(ace[LEGACY_BEHAVIOR_TYPE_KEY]) && !isBehaviorName(ace[BEHAVIOR_TYPE_KEY]);
+}
+
+/**
  * True when the ACE holds a behavior name only under the legacy key and has
  * no usable "behaviorType" — the issue #16 shape Construct 3 cannot load.
  */

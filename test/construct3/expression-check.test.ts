@@ -106,9 +106,9 @@ function projectData(sheets: Record<string, unknown[]> = { Main: MAIN_EVENTS }, 
   };
 }
 
-function contextOf(data: ProjectData, functionsName?: string): { ace: AceContext; ctx: ExpressionContext & { complete: boolean; unreadable: string[] } } {
+function contextOf(data: ProjectData): { ace: AceContext; ctx: ExpressionContext & { complete: boolean; unreadable: string[] } } {
   const ace = buildAceContext(data);
-  return { ace, ctx: buildExpressionContext(data, ace, functionsName) };
+  return { ace, ctx: buildExpressionContext(data, ace) };
 }
 
 const base = contextOf(projectData());
@@ -193,11 +193,27 @@ describe('name resolution', () => {
     expect(messages('Functions.CallMapped("map", "key")')).toEqual([]);
     expect(messages('Functions.CallMapped()')).toEqual(['"Functions.CallMapped" takes at least 1 argument(s); 0 given.']);
     expect(messages('Ghost.X.Y.Z')).toEqual(['"Ghost" is not an object type or family of this project.']);
-    const renamed = contextOf(projectData(), 'Fn');
-    expect(checkExpression('Fn.Total(1, 2)', renamed.ctx, undefined, undefined, TEST_CATALOG).map(p => p.message)).toEqual([]);
+    // The Functions object is the project's object of the Function plugin, whatever it is called.
+    const renamed = contextOf(projectData({ Main: MAIN_EVENTS }, [objectType('Fn', 'Function')]));
+    expect(renamed.ctx.functionsName).toBe('Fn');
+    expect(base.ctx.functionsName).toBe('Functions');
+    const inRenamed = (text: string) => checkExpression(text, renamed.ctx, undefined, undefined, TEST_CATALOG).map(p => p.message);
+    expect(inRenamed('Fn.Total(1, 2) + Fn.ParamCount')).toEqual([]);
+    expect(inRenamed('Fn.Missing(1)')).toEqual(['No function named "Missing" is defined in any event sheet.']);
+    expect(inRenamed('Fn.Param()')).toEqual(['"Fn.Param" takes 1 argument(s); 0 given.']);
     expect(messages('Self.hp + Self.X', 'Sprite')).toEqual([]);
     expect(messages('Self.hp', 'Enemy')).toEqual(['"Enemy" has no expression, instance variable or behavior named "hp".']);
     expect(checkExpression('thisAmount * 2', base.ctx, undefined, undefined, TEST_CATALOG, scopeOf('thisamount'))).toEqual([]);
+  });
+
+  it('resolves the Function plugin\'s own expressions under the functions namespace', () => {
+    expect(messages('Functions.Param(0) + Functions.ParamCount + functions.param(1)')).toEqual([]);
+    expect(messages('Functions.Param()')).toEqual(['"Functions.Param" takes 1 argument(s); 0 given.']);
+    // A name found in no sheet and not in the catalogue's list is unknown only as far as the catalogue goes.
+    const noFunctionPlugin = clone(TEST_CATALOG);
+    delete (noFunctionPlugin.plugins as Record<string, unknown>).Function;
+    expect(checkExpression('Functions.Param(0) + Functions.Whatever', base.ctx, undefined, undefined, noFunctionPlugin)).toEqual([]);
+    expect(checkExpression('Functions.Total(1)', base.ctx, undefined, undefined, noFunctionPlugin).map(p => p.code)).toEqual(['expression-argument-count']);
   });
 
   it('leaves an object of a plugin without definitions alone', () => {
@@ -265,22 +281,25 @@ describe('catalogue-dependent findings and the release hedge', () => {
   }
 
   it('marks and hedges what rests on the catalogue and nothing else', () => {
-    const [unknownFunction, unknownMember, unknownName, count] = found(['newfunc(1)', 'Sprite.NoSuchExpr', 'Whatsit', 'distance(1)']);
-    for (const p of [unknownFunction, unknownMember, unknownName, count]) {
+    const [unknownFunction, unknownMember, unknownName, count, namespaced, paramCount] = found([
+      'newfunc(1)', 'Sprite.NoSuchExpr', 'Whatsit', 'distance(1)', 'Functions.NewThing(1)', 'Functions.Param()',
+    ]);
+    for (const p of [unknownFunction, unknownMember, unknownName, count, namespaced, paramCount]) {
       expect(p.fromCatalog).toBe(true);
       expect(describeEventExpressionProblem(p, 'r495-2', 50602)).toMatch(new RegExp(`${hedge.replace(/\./g, '\\.')}$`));
       expect(describeEventExpressionProblem(p, 'r495-2', 49502)).not.toContain('saved with release');
       expect(describeEventExpressionProblem(p, 'r495-2')).not.toContain('saved with release');
     }
-    expect([unknownFunction.code, unknownMember.code, unknownName.code, count.code]).toEqual([
+    expect([unknownFunction.code, unknownMember.code, unknownName.code, count.code, namespaced.code, paramCount.code]).toEqual([
       'expression-unknown-function', 'expression-unknown-member', 'expression-unknown-name', 'expression-argument-count',
+      'expression-unknown-function', 'expression-argument-count',
     ]);
   });
 
   it('does not mark grammar, an unknown object, a sheet function, an instance variable or a behavior name', () => {
-    const problems = found(['1 +', 'Hero.x', 'Functions.Calc(1, 2)', 'Functions.Missing(1)', 'Sprite.hp(1)', 'Sprite.Platform']);
+    const problems = found(['1 +', 'Hero.x', 'Functions.Calc(1, 2)', 'Sprite.hp(1)', 'Sprite.Platform']);
     expect(problems.map(p => p.code)).toEqual([
-      'expression-grammar', 'expression-unknown-object', 'expression-argument-count', 'expression-unknown-function', 'expression-argument-count', 'expression-unknown-member',
+      'expression-grammar', 'expression-unknown-object', 'expression-argument-count', 'expression-argument-count', 'expression-unknown-member',
     ]);
     for (const p of problems) {
       expect({ code: p.code, fromCatalog: p.fromCatalog }).toEqual({ code: p.code, fromCatalog: false });
@@ -337,6 +356,13 @@ describe('checkEventExpressions', () => {
     expect(describeEventExpressionProblem(problems[1], 'r495-2')).toBe('Action "set-position" on "Sprite" (SID 3), parameter "y" = "Enemy.hp": "Enemy" has no expression, instance variable or behavior named "hp".');
     expect(EXPRESSION_PARAM_TYPES.has('layout')).toBe(false);
     expect(EXPRESSION_PARAM_TYPES.has('layer')).toBe(true);
+  });
+
+  it('reads Self in a call that names no object as nothing to resolve, and as the ACE\'s object otherwise', () => {
+    const call = (extra: Record<string, unknown>) => [block(1, [{ callFunction: 'Total', sid: 2, parameters: ['Self.hp'], ...extra }])];
+    expect(checkEventExpressions(call({}), base.ctx, base.ace, undefined, TEST_CATALOG)).toEqual([]);
+    expect(checkEventExpressions(call({ objectClass: 'Sprite' }), base.ctx, base.ace, undefined, TEST_CATALOG)).toEqual([]);
+    expect(checkEventExpressions(call({ objectClass: 'Enemy' }), base.ctx, base.ace, undefined, TEST_CATALOG).map(p => p.code)).toEqual(['expression-unknown-member']);
   });
 
   it('limits itself to the given SIDs', () => {
@@ -548,6 +574,17 @@ describe('lexical scope', () => {
   it('resolves a custom action parameter inside the custom action', () => {
     const problems = reported(projectData({ A: sheetA }));
     for (const sid of [71, 73]) expect(problems).not.toContainEqual(['A', sid]);
+  });
+
+  it('does not show a variable declared among an event\'s sub-events to that event\'s own actions', () => {
+    // This follows the scope rule of the base reference walk (delete-references walkAces): a variable is visible to
+    // the events beside it and below them. It was not observed in the editor, so this pins the rule as stated, not as verified.
+    const sheet: unknown[] = [{
+      eventType: 'block', conditions: [], sid: 1,
+      actions: [use(2, 'Tmp')],
+      children: [variable('Tmp'), block(3, [use(4, 'Tmp')]), { eventType: 'block', conditions: [], actions: [use(5, 'Tmp')], children: [], sid: 6 }],
+    }];
+    expect(reported(projectData({ A: sheet }))).toEqual([['A', 2]]);
   });
 
   it('reports none of them while a sheet could not be read, whatever their scope', () => {

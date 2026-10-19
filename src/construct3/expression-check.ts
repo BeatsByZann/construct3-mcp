@@ -33,7 +33,7 @@ import { aceOwner, releaseHedge } from './ace-catalog.js';
 import type { AceContext, AceOwner } from './ace-catalog.js';
 import type { AceCatalog, AceParam, AddonLookup, ExpressionDef, ProjectData } from './ace-types.js';
 import { globalVariableNames } from './analyzers/delete-references.js';
-import { LEGACY_BEHAVIOR_TYPE_KEY, isBehaviorName } from './analyzers/legacy-behavior-keys.js';
+import { hasOnlyLegacyBehaviorKey } from './analyzers/legacy-behavior-keys.js';
 import { lintExpression } from './analyzers/load-rules.js';
 import { DEFAULT_FUNCTIONS_OBJECT_NAME } from './event-shapes.js';
 import { nameKey } from './names.js';
@@ -252,9 +252,9 @@ function contextFromDeclarations(
     instanceVariables(name) {
       const hit = byKey.get(nameKey(name));
       if (!hit) return [];
-      const own = hit.decl.instanceVariables;
-      if (hit.kind === 'family') return own;
-      return [...own, ...familiesOf(hit.decl.name).flatMap(f => f.instanceVariables)];
+      const declared = hit.decl.instanceVariables;
+      if (hit.kind === 'family') return declared;
+      return [...declared, ...familiesOf(hit.decl.name).flatMap(f => f.instanceVariables)];
     },
     behaviorOf: (name, behaviorName) => ace.behaviorOf(name, behaviorName),
     behaviorNameOf(name, behaviorName) {
@@ -280,18 +280,19 @@ function contextFromDeclarations(
  * false, and `unreadable` lists the files as `<category>/<name>`, when an
  * object type, family or event sheet could not be parsed: names declared in
  * such a file are unknown, so the checks that depend on declarations stand
- * down. `functionsName` is the project's name for the Functions object.
+ * down. The Functions object is the object type of the Function plugin, by
+ * its declared name ("Functions" when the project declares none).
  */
 export function buildExpressionContext(
   data: ProjectData,
   aceContext: AceContext,
-  functionsName: string = DEFAULT_FUNCTIONS_OBJECT_NAME,
 ): ExpressionContext & { complete: boolean; unreadable: string[] } {
   const types = [...data.objects].map(([name, type]) => declaredType(name, type as unknown as Record<string, unknown>));
   const families = [...data.families].map(([name, family]) => declaredType(name, family));
   const functions = new Map<string, number>();
   for (const sheet of data.sheets.values()) collectFunctions(sheet.events, functions);
   const globals = globalVariableNames(new Map<string, unknown>([...data.sheets].map(([name, sheet]): [string, unknown] => [name, sheet.events])));
+  const functionsName = types.find(t => t.pluginId === 'Function')?.name ?? DEFAULT_FUNCTIONS_OBJECT_NAME;
   const unreadable = [...data.unreadable.objectTypes, ...data.unreadable.families, ...data.unreadable.eventSheets];
   return {
     ...contextFromDeclarations(types, families, functions, globals, aceContext, functionsName),
@@ -481,8 +482,10 @@ class Parser {
     }
 
     // A dotted path: the head is an object type, a family, or Self.
-    let owner = head.text.toLowerCase() === 'self' && this.selfClass ? this.ctx.classify(this.selfClass) : this.ctx.classify(head.text);
-    if (!owner) {
+    const isSelf = head.text.toLowerCase() === 'self';
+    let owner = isSelf ? (this.selfClass ? this.ctx.classify(this.selfClass) : undefined) : this.ctx.classify(head.text);
+    // "Self" in a call that names no object has nothing to resolve against.
+    if (!owner && !(isSelf && !this.selfClass)) {
       this.report('expression-unknown-object', `"${head.text}" is not an object type or family of this project.`, false);
       owner = undefined;
     }
@@ -548,7 +551,11 @@ class Parser {
     return undefined;
   }
 
-  /** Functions.Name(args): a function defined in a sheet, or the system's CallMapped under that namespace. */
+  /**
+   * Functions.Name(args): a function defined in a sheet, the system's CallMapped
+   * under that namespace, or an expression the Function plugin lists in the
+   * catalogue (such as Param and ParamCount).
+   */
   private functionCall(name: string, args: number | undefined): void {
     const lower = name.toLowerCase();
     const count = this.ctx.functions.get(lower);
@@ -562,7 +569,14 @@ class Parser {
       if (entry) this.checkArity(`"${this.ctx.functionsName}.${entry.def.name}"`, entry.def, args, true);
       return;
     }
-    this.report('expression-unknown-function', `No function named "${name}" is defined in any event sheet.`, false);
+    const table = expressionsOf({ kind: 'plugin', id: 'Function' }, this.addons, this.catalog);
+    if (!table) return; // nothing lists the Function plugin's expressions: a name cannot be called unknown
+    const listed = table.entries.get(lower);
+    if (listed) {
+      this.checkArity(`"${this.ctx.functionsName}.${listed.def.name}"`, listed.def, args, listed.fromCatalog);
+      return;
+    }
+    this.report('expression-unknown-function', `No function named "${name}" is defined in any event sheet.`, table.absenceFromCatalog);
   }
 
   private bareName(name: string, args: number | undefined): void {
@@ -635,6 +649,8 @@ interface ExpressionSite {
   text: string;
   aceId: string;
   objectClass: string;
+  /** The object "Self" means: the ACE's own object, or undefined for a call that names none. */
+  selfClass: string | undefined;
   scope: ExpressionScope;
 }
 
@@ -700,12 +716,13 @@ function walkExpressionSites(
             if (!Array.isArray(given)) continue;
             for (let i = 0; i < given.length; i++) {
               const value: unknown = given[i];
-              if (typeof value === 'string' && visit({ kind, ace, parameter: `#${i}`, text: value, aceId: label, objectClass, scope })) return true;
+              if (typeof value === 'string' && visit({ kind, ace, parameter: `#${i}`, text: value, aceId: label, objectClass, selfClass: typeof ace.objectClass === 'string' ? ace.objectClass : undefined, scope })) return true;
             }
             continue;
           }
+          // Narrows the types for what follows; an ACE without either is skipped by the owner lookup in any case.
           if (typeof ace.id !== 'string' || typeof ace.objectClass !== 'string') continue;
-          if (isBehaviorName(ace[LEGACY_BEHAVIOR_TYPE_KEY]) && !isBehaviorName(ace.behaviorType)) continue;
+          if (hasOnlyLegacyBehaviorKey(ace)) continue;
           const owner = aceOwner(ace, aceContext);
           if (!owner) continue;
           const types = paramTypes(kind, ace.id, owner, addons, catalog);
@@ -715,7 +732,7 @@ function walkExpressionSites(
             if (typeof value !== 'string') continue;
             const type = typeOf.get(key);
             if (!type || !EXPRESSION_PARAM_TYPES.has(type)) continue;
-            if (visit({ kind, ace, parameter: key, text: value, aceId: ace.id, objectClass: ace.objectClass, scope })) return true;
+            if (visit({ kind, ace, parameter: key, text: value, aceId: ace.id, objectClass: ace.objectClass, selfClass: ace.objectClass, scope })) return true;
           }
         }
       }
@@ -749,7 +766,7 @@ export function checkEventExpressions(
   const problems: EventExpressionProblem[] = [];
   walkExpressionSites(events, aceContext, addons, catalog, only, site => {
     const linted = lintExpression(site.text) !== null;
-    for (const p of checkExpression(site.text, ctx, site.objectClass, addons, catalog, site.scope)) {
+    for (const p of checkExpression(site.text, ctx, site.selfClass, addons, catalog, site.scope)) {
       if (linted && p.code === 'expression-grammar') continue;
       if (ctx.complete === false && DECLARATION_CODES.has(p.code)) continue;
       const sid = typeof site.ace.sid === 'number' ? site.ace.sid : undefined;

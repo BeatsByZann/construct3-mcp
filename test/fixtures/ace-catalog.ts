@@ -20,6 +20,14 @@ export const TEST_CATALOG: AceCatalog = {
       },
       expressions: {},
     },
+    Function: {
+      conditions: {},
+      actions: {},
+      expressions: {
+        param: { name: 'Param', params: ['number'], returns: 'any' },
+        paramcount: { name: 'ParamCount', params: [], returns: 'number' },
+      },
+    },
     Sprite: {
       conditions: {},
       actions: {

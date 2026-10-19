@@ -47,7 +47,7 @@
  * numbers are 1-based. These are stated in tool notes and docs/API.md.
  */
 
-import { BEHAVIOR_TYPE_KEY, LEGACY_BEHAVIOR_TYPE_KEY, isBehaviorName } from './legacy-behavior-keys.js';
+import { hasOnlyLegacyBehaviorKey } from './legacy-behavior-keys.js';
 
 const MAX_NODES = 100_000;
 const MAX_DEPTH = 50;
@@ -165,15 +165,6 @@ function aceTarget(ace: Raw): string {
   const objectClass = typeof ace.objectClass === 'string' ? ace.objectClass : '?';
   const behavior = ace.behaviorType ?? ace['behavior-type'];
   return typeof behavior === 'string' && behavior ? `${objectClass}[${behavior}]` : objectClass;
-}
-
-/**
- * The ACE names its behavior only under the legacy "behavior-type" key. Construct 3
- * does not read that key and fails to open the project (issue #16), so the outline
- * marks it instead of showing it like a working behavior ACE.
- */
-function hasOnlyLegacyBehaviorKey(ace: Raw): boolean {
-  return isBehaviorName(ace[LEGACY_BEHAVIOR_TYPE_KEY]) && !isBehaviorName(ace[BEHAVIOR_TYPE_KEY]);
 }
 
 const LEGACY_MARK = ' [legacy behavior-type]';

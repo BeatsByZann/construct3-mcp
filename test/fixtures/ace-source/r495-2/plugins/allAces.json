@@ -97,6 +97,21 @@
       ]
     }
   },
+  "Function": {
+    "calls": {
+      "expressions": [
+        {
+          "id": "param",
+          "expressionName": "Param",
+          "returnType": "any",
+          "params": [
+            { "id": "index", "type": "number" }
+          ]
+        },
+        { "id": "paramcount", "expressionName": "ParamCount", "returnType": "number" }
+      ]
+    }
+  },
   "Sprite": {
     "properties": {
       "expressions": [

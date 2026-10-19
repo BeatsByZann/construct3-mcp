@@ -55,10 +55,10 @@ describe('buildCatalog', () => {
 
   it('counts what the catalogue holds', () => {
     expect(catalogCounts(TEST_CATALOG)).toEqual({
-      plugins: 3,
+      plugins: 4,
       behaviors: 1,
       aces: 7,
-      expressions: 13,
+      expressions: 15,
       commonAces: 4,
       commonExpressions: 5,
     });
