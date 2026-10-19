@@ -86,7 +86,11 @@ function isOwn(path: string, ext: 'tmp' | 'old' | 'link'): boolean {
   return new RegExp(`^\\.c3mcp-[0-9a-f]{16}\\.${ext}$`).test(basename(path));
 }
 
-/** Whether `path` is the temp file of a write to `file`: <file>.tmp, or a .c3mcp-*.tmp beside it. */
+/**
+ * Whether `path` is the temp file of a write to `file`: a .c3mcp-*.tmp beside
+ * it, or <file>.tmp, the temp name atomicReplace used before it drew one per
+ * write, so the same faults reach a server that still uses that name.
+ */
 function isTempFor(path: string, file: string): boolean {
   return dirname(path) === dirname(file) && (path === `${file}.tmp` || isOwn(path, 'tmp'));
 }

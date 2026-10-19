@@ -1,9 +1,9 @@
 /**
  * Atomic file replacement that keeps an existing file's name on disk.
  *
- * Files are replaced by writing a temp file beside them and renaming it onto
- * <file>. On a
- * case-insensitive file system (Windows, default macOS) the path can name an
+ * Files are replaced by writing a temp file beside them and
+ * renaming it onto <file>. On a case-insensitive file system
+ * (Windows, default macOS) the path can name an
  * existing file whose name differs in case — "layout1.json" finds
  * "Layout1.json" when project.c3proj spells the entity "layout1" — and the
  * rename would silently change the name on disk to the path's spelling. With
