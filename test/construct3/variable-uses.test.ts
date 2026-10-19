@@ -258,6 +258,15 @@ describe('variableScriptReads', () => {
     expect(variableScriptReads(sheets, local, false).reads.map(r => r.line)).toEqual(['localVars.Count = localVars.Count + 1;']);
   });
 
+  it('says when the event limit stopped it, and lists nothing past the limit', () => {
+    const global = v('Score', 9);
+    const wide = Array.from({ length: 100_000 }, () => block([]));
+    const found = variableScriptReads(new Map([['Wide', [global, ...wide, block([script(['runtime.globalVars.Score = 1;'])])]]]), global, true);
+    expect(found.complete).toBe(false);
+    expect(found.limit).toBe('events');
+    expect(found.reads).toEqual([]);
+  });
+
   it('says when a traversal limit stopped it', () => {
     let events: unknown[] = [block([script(['runtime.globalVars.Score = 1;'])])];
     for (let i = 0; i < 60; i++) events = [block([], events)];
