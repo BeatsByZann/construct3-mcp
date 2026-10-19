@@ -188,6 +188,14 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, visibility, tags, instance variables of its object and families) |
 | `delete_instance_from_layout` | Remove a placed instance by UID (layers, sub-layers and non-world instances); its hierarchy children stay without a parent, and its parent no longer lists it |
 
+**Instance templates**
+
+| Tool | Description |
+|------|-------------|
+| `list_templates` | List every template instance (layout, UID, object type) with the number of replicas that follow it, the replicas whose template was not found, and the layouts that could not be parsed |
+| `set_instance_template` | Make a layout instance a template, a replica of a named template, or neither; the template block is built from the instance's own properties, instance variables, behaviors and effects; a failed write is rolled back |
+| `set_default_template` | Set or clear the template an object type's new instances are created from; a failed write is rolled back |
+
 **Sprite animations**
 
 | Tool | Description |
@@ -440,7 +448,7 @@ Note: Antigravity doesn't set a working directory per-project, so pass the proje
 
 ### With Windsurf
 
-Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 83.
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. Its Cascade agent allows at most 100 tools in total, and this server alone brings 86.
 
 ### Standalone Testing
 
@@ -556,6 +564,7 @@ construct3-mcp/
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
+│   │   ├── template-tools.ts       # Instance template tools (3)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/
 │       └── workflows.ts            # Workflow prompts (7)

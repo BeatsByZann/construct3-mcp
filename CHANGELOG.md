@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `list_templates`, `set_instance_template` and `set_default_template` read and write a layout instance's `template` block (template, replica or neither) and an object type's default template; layouts are named as registered, a failed write is rolled back, and layouts that could not be parsed are reported instead of skipped.
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
