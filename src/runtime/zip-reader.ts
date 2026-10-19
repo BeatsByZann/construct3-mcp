@@ -159,6 +159,10 @@ export interface ZipReadOptions {
   maxKept?: number;
   /** The most bytes the kept entries may declare in all */
   maxKeptBytes?: number;
+  /** The most entries the central directory may list; checked before any entry is read */
+  maxEntries?: number;
+  /** The most folders deep an entry's path may be (its separators); checked before the path is processed */
+  maxPathDepth?: number;
 }
 
 /** A size in whole megabytes for a message (limits are whole megabytes). */
@@ -180,6 +184,9 @@ export function readZipArchive(buf: Buffer, options?: ZipReadOptions): { files: 
   const eocd = findEocd(buf);
   const { count, offset: cdOffset, size: cdSize, end } = centralDirectory(buf, eocd);
   if (cdOffset + cdSize > end) throw new Error('The zip central directory lies outside the archive');
+  if (options?.maxEntries !== undefined && count > options.maxEntries) {
+    throw new Error(`The archive lists more than ${options.maxEntries} entries`);
+  }
 
   const entries: ZipReadEntry[] = [];
   const skipped: string[] = [];
@@ -222,6 +229,10 @@ export function readZipArchive(buf: Buffer, options?: ZipReadOptions): { files: 
     const rawPath = flags & 0x800 ? nameBytes.toString('utf-8')
       : unicodePathField(extra, nameBytes) ?? (isUtf8(nameBytes) ? nameBytes.toString('utf-8') : decodeCp437(nameBytes));
     p += 46 + nameLength + extraLength + commentLength;
+    // Before the folder bookkeeping below, whose cost grows with the number of folders in a path
+    if (options?.maxPathDepth !== undefined && (rawPath.match(/[\\/]/g)?.length ?? 0) > options.maxPathDepth) {
+      throw new Error(`The archive holds a path more than ${options.maxPathDepth} folders deep`);
+    }
 
     if (rawPath.endsWith('/') || rawPath.endsWith('\\')) {
       const directory = checkEntryPath(rawPath.slice(0, -1));
@@ -263,8 +274,11 @@ export function readZipArchive(buf: Buffer, options?: ZipReadOptions): { files: 
     keptBytes += size;
 
     let data: Buffer;
-    if (method === 0) data = Buffer.from(raw);
-    else if (method === 8) {
+    if (method === 0) {
+      // Refuse before the copy: a stored entry's extent is its size
+      if (compressedSize !== size) throw new Error(`Zip entry "${path}" is ${compressedSize} bytes, but the archive says ${size}`);
+      data = Buffer.from(raw);
+    } else if (method === 8) {
       try {
         data = inflateRawSync(raw, { maxOutputLength: Math.max(size, 1) });
       } catch (error) {

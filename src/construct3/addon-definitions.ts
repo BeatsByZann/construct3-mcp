@@ -16,7 +16,7 @@
  * never carry text from a file.
  */
 
-import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { open, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { readZipArchive, type ZipReadEntry } from '../runtime/zip-reader.js';
 import { flatten } from './ace-catalog-source.js';
@@ -30,6 +30,58 @@ export const MAX_ARCHIVE_BYTES = 25 * 1024 * 1024;
 
 /** The definition files an archive may hold: the root or one folder deep. */
 const ARCHIVE_DEFINITION_FILE = /^(?:[^/]+\/)?(?:addon|aces)\.json$/;
+
+/** The most entries a .c3addon archive may list, far above any real addon. */
+export const MAX_ARCHIVE_ENTRIES = 10000;
+
+/** The most folders deep an entry of a .c3addon archive may be, far above any real addon. */
+export const MAX_ARCHIVE_PATH_DEPTH = 16;
+
+/** Fixed reasons for what the zip reader can refuse, tried in order against its message; entry names are archive text and never reach a report. */
+const ARCHIVE_FAILURES: Array<[test: (message: string) => boolean, reason: string]> = [
+  [m => m.endsWith('is larger than 10MB'), 'the archive holds a definition file larger than 10MB'],
+  [m => m.includes('addon definition files') && m.includes('together hold more than'), 'the definition files in the archive together hold more than 20MB'],
+  [m => m.startsWith('The archive holds more than 4 addon definition files'), 'the archive holds more than 4 definition files'],
+  [m => m.startsWith('The archive lists more than'), 'the archive lists too many entries'],
+  [m => m.startsWith('The archive holds a path more than'), 'the archive holds a path nested too deeply'],
+  [m => /, but the archive says \d+$/.test(m), 'a definition file is not the size the archive says'],
+  [m => m.endsWith('has a damaged local header') || m.endsWith('runs past the end of the archive') || /damaged$|lies outside the archive$/.test(m), 'the archive is damaged'],
+  [m => m.endsWith('is both a file and a folder') || m.endsWith('appears more than once') || m.includes('two ways ('), 'the archive has entries with conflicting names'],
+  [m => m.endsWith('is encrypted') || m.includes('uses compression method') || m.includes('Multi-disk'), 'the archive uses a zip feature that is not supported'],
+  [m => m.includes('path segment') || m.endsWith('is an absolute path') || m.endsWith('has an empty name') || m.endsWith('contains a NUL character') ||
+    m.endsWith('which Windows drops') || m.endsWith('in its name') || m.endsWith('reserves for a device') || m.includes('UTF-8'), 'the archive has an entry name that is not accepted'],
+  [m => m.endsWith('fails its CRC check'), 'a definition file fails its checksum'],
+];
+
+/** The report's reason for a failed read of an archive: fixed text chosen by kind, never the reader's message. */
+function archiveFailureReason(error: unknown): string {
+  if (error instanceof Error) {
+    const code = (error as { code?: string }).code;
+    if (typeof code === 'string' && code.startsWith('Z_')) return 'a definition file holds damaged data';
+    for (const [matches, reason] of ARCHIVE_FAILURES) if (matches(error.message)) return reason;
+  }
+  return 'the archive could not be read as a zip archive';
+}
+
+/** Read an archive file whole, refusing one over 25MB without reading it, and one that grows past its size while it is read. */
+async function readArchiveFile(real: string): Promise<Buffer> {
+  const handle = await open(real, 'r');
+  try {
+    const { size } = await handle.stat();
+    if (size > MAX_ARCHIVE_BYTES) throw new DefinitionProblem(`the archive is larger than 25MB. ${NOTHING_LOADED}`);
+    const buffer = Buffer.alloc(size + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > size) throw new DefinitionProblem(`the archive changed while it was read. ${NOTHING_LOADED}`);
+    return buffer.subarray(0, total);
+  } finally {
+    await handle.close();
+  }
+}
 
 /** True for the name of a .c3addon archive. */
 function isArchiveName(name: string): boolean {
@@ -182,8 +234,8 @@ export class AddonDefinitions implements AddonLookup {
   }
 
   /**
-   * Load the definitions at `path`: an addon folder, or a folder holding
-   * several (one level deep). The path must lie inside an allowed root once
+   * Load the definitions at `path`: an addon folder, a .c3addon archive, or
+   * a folder holding several folders and archives (one level deep). The path must lie inside an allowed root once
    * its links are resolved. Every failure is reported and does not stop the
    * other entries.
    */
@@ -211,7 +263,7 @@ export class AddonDefinitions implements AddonLookup {
       return report;
     }
     if (!isDirectory) {
-      if (isArchiveName(name)) await this.attemptArchive(name, real, report);
+      if (isArchiveName(name) && await this.isFile(real)) await this.attemptArchive(name, real, report);
       else report.skipped.push({ name, reason: 'not an addon folder' });
       return report;
     }
@@ -278,9 +330,7 @@ export class AddonDefinitions implements AddonLookup {
    */
   private async attemptArchive(label: string, real: string, report: LoadReport): Promise<void> {
     try {
-      const info = await stat(real);
-      if (info.size > MAX_ARCHIVE_BYTES) throw new DefinitionProblem(`the archive is larger than 25MB. ${NOTHING_LOADED}`);
-      const buffer = await readFile(real);
+      const buffer = await readArchiveFile(real);
       let files: ZipReadEntry[];
       try {
         files = readZipArchive(buffer, {
@@ -288,11 +338,11 @@ export class AddonDefinitions implements AddonLookup {
           maxEntryBytes: MAX_DEFINITION_BYTES,
           maxKept: 4,
           maxKeptBytes: 2 * MAX_DEFINITION_BYTES,
+          maxEntries: MAX_ARCHIVE_ENTRIES,
+          maxPathDepth: MAX_ARCHIVE_PATH_DEPTH,
         }).files;
       } catch (error) {
-        // Entry names come from the archive: keep the wording, drop the quoted names
-        const message = error instanceof Error ? error.message.replace(/"[^"]*"/g, '"an entry"') : 'the archive could not be read';
-        throw new DefinitionProblem(`the archive could not be read: ${message}`);
+        throw new DefinitionProblem(archiveFailureReason(error));
       }
       const addons = files.filter(file => file.path.endsWith('addon.json'));
       const aces = files.filter(file => file.path.endsWith('aces.json'));

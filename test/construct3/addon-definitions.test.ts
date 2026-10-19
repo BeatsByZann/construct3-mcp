@@ -4,13 +4,15 @@
  * out, oversized files), and what a report may carry (base names only).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile, readFile, open, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, open, realpath, stat } from 'node:fs/promises';
 import { symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, sep } from 'node:path';
 import {
   AddonDefinitions,
   MAX_ARCHIVE_BYTES,
+  MAX_ARCHIVE_ENTRIES,
+  MAX_ARCHIVE_PATH_DEPTH,
   MAX_DEFINITION_BYTES,
   addonDefinitionsOf,
   addonRootsFor,
@@ -19,11 +21,11 @@ import {
   type LoadReport,
 } from '../../src/construct3/addon-definitions.js';
 import { guardNetwork } from './ace-fetch-stub.js';
-import { zipWithDeflate, paddedJson, type FixtureEntry } from '../runtime/zip-fixtures.js';
+import { zipWithDeflate, paddedJson, centralEntryOffsets, localOffsetOf, type FixtureEntry } from '../runtime/zip-fixtures.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, readFile: vi.fn(actual.readFile), realpath: vi.fn(actual.realpath) };
+  return { ...actual, readFile: vi.fn(actual.readFile), realpath: vi.fn(actual.realpath), stat: vi.fn(actual.stat) };
 });
 
 const FIXTURE = join(__dirname, '..', 'fixtures', 'addons', 'probe-timer');
@@ -47,6 +49,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.mocked(realpath).mockReset();
   vi.mocked(readFile).mockReset();
+  vi.mocked(stat).mockReset();
   await rm(tmp, { recursive: true, force: true });
 });
 
@@ -330,20 +333,20 @@ describe('.c3addon archives', () => {
   it('refuses a definition file whose declared size is over 10MB before inflating it', async () => {
     const [addon, aces] = await definitionEntries();
     const path = await writeArchive(join(project, 'declared.c3addon'), [addon, { ...aces, declaredSize: 10 * MB + 1 }]);
-    expect(await reasonsFor(path)).toEqual(['the archive could not be read: Zip entry "an entry" is larger than 10MB']);
+    expect(await reasonsFor(path)).toEqual(['the archive holds a definition file larger than 10MB']);
   });
 
   it('refuses a definition file that inflates past its declared size', async () => {
     const [addon] = await definitionEntries();
     const path = await writeArchive(join(project, 'bomb.c3addon'), [addon, { path: 'aces.json', data: Buffer.alloc(MB), method: 8, declaredSize: 100 }]);
-    expect(await reasonsFor(path)).toEqual(['the archive could not be read: Zip entry "an entry" is more than 100 bytes, but the archive says 100']);
+    expect(await reasonsFor(path)).toEqual(['a definition file is not the size the archive says']);
   });
 
   it('refuses an archive of thousands of definition files before inflating the fifth', async () => {
     const data = paddedJson('{"type":"plugin","id":"Padded"}', MB);
     const entries: FixtureEntry[] = Array.from({ length: 2000 }, (_, i) => ({ path: `f${i}/addon.json`, data, method: 8, damage: i >= 4 }));
     const path = await writeArchive(join(project, 'many.c3addon'), entries);
-    expect(await reasonsFor(path)).toEqual(['the archive could not be read: The archive holds more than 4 addon definition files']);
+    expect(await reasonsFor(path)).toEqual(['the archive holds more than 4 definition files']);
   });
 
   it('refuses definition files that together pass 20MB before inflating the one that passes it', async () => {
@@ -353,7 +356,7 @@ describe('.c3addon archives', () => {
       { path: 'a/aces.json', data: nine, method: 8 },
       { path: 'b/addon.json', data: nine, method: 8, damage: true },
     ]);
-    expect(await reasonsFor(path)).toEqual(['the archive could not be read: The addon definition files in the archive together hold more than 20MB']);
+    expect(await reasonsFor(path)).toEqual(['the definition files in the archive together hold more than 20MB']);
   });
 
   it('carries no entry name from the archive in a report', async () => {
@@ -366,6 +369,70 @@ describe('.c3addon archives', () => {
     expect(reasons).toHaveLength(3);
     expect(JSON.stringify(reasons)).not.toContain(secret);
     expect(JSON.stringify(reasons)).not.toContain(tmp);
+  });
+
+  it('gives a fixed reason for an entry name that holds a quote and a newline, whatever the reader says', async () => {
+    const [addon] = await definitionEntries();
+    const name = 'a"SECRET\nTAIL';
+    const zip = zipWithDeflate([{ ...addon, path: `${name}/addon.json` }]);
+    zip.writeUInt32LE(0, localOffsetOf(zip, centralEntryOffsets(zip)[0]));
+    const damaged = join(project, 'quoted.c3addon');
+    await writeFile(damaged, zip);
+    const unsafe = await writeArchive(join(project, 'quoted-unsafe.c3addon'), [{ ...addon, path: `${name}"/../addon.json` }]);
+    expect(await reasonsFor(damaged)).toEqual(['the archive is damaged']);
+    expect(await reasonsFor(unsafe)).toEqual(['the archive has an entry name that is not accepted']);
+  });
+
+  it('gives a fixed reason for damaged deflate data', async () => {
+    const [addon, aces] = await definitionEntries();
+    const path = await writeArchive(join(project, 'z.c3addon'), [addon, { ...aces, damage: true }]);
+    expect(await reasonsFor(path)).toEqual(['a definition file holds damaged data']);
+  });
+
+  it('refuses an archive that lists more than 10000 entries before reading any of them', async () => {
+    const dirs = (count: number): FixtureEntry[] => Array.from({ length: count }, (_, i) => ({ path: `d${i}/`, data: Buffer.alloc(0), method: 0 }));
+    const over = await writeArchive(join(project, 'over.c3addon'), dirs(MAX_ARCHIVE_ENTRIES + 1));
+    expect(await reasonsFor(over)).toEqual(['the archive lists too many entries']);
+    const atLimit = await writeArchive(join(project, 'at.c3addon'), [...dirs(MAX_ARCHIVE_ENTRIES - 2), ...await definitionEntries()]);
+    const defs = await registryWith(project);
+    expect((await defs.load(atLimit)).loaded.map(d => d.id)).toEqual(['ProbeTimer']);
+  });
+
+  it('refuses an entry path nested more than 16 folders deep before the folders are processed', async () => {
+    const deep = (folders: number): string => `${Array.from({ length: folders }, (_, i) => `f${i}`).join('/')}/x.bin`;
+    const over = await writeArchive(join(project, 'deep-over.c3addon'), [...await definitionEntries(), { path: deep(MAX_ARCHIVE_PATH_DEPTH + 1), data: Buffer.alloc(1), method: 0 }]);
+    expect(await reasonsFor(over)).toEqual(['the archive holds a path nested too deeply']);
+    const ok = await writeArchive(join(project, 'deep-ok.c3addon'), [...await definitionEntries(), { path: deep(MAX_ARCHIVE_PATH_DEPTH), data: Buffer.alloc(1), method: 0 }]);
+    const defs = await registryWith(project);
+    expect((await defs.load(ok)).loaded.map(d => d.id)).toEqual(['ProbeTimer']);
+  });
+
+  it('does not read a path named .c3addon that is neither a folder nor a regular file', async () => {
+    const path = await writeArchive(join(project, 'odd.c3addon'), await definitionEntries());
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    vi.mocked(stat).mockImplementation((async (target: string, ...rest: unknown[]) => {
+      if (String(target).endsWith(`${sep}odd.c3addon`)) return { isDirectory: () => false, isFile: () => false, size: 0 };
+      return (actual.stat as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as unknown as typeof stat);
+    const defs = await registryWith(project);
+    const report = await defs.load(path);
+    expect(report.loaded).toEqual([]);
+    expect(report.skipped).toEqual([{ name: 'odd.c3addon', reason: 'not an addon folder' }]);
+  });
+
+  it('skips a scanned .c3addon entry whose stat fails and still loads the others, without throwing', async () => {
+    const folder = join(project, 'addons');
+    await writeArchive(join(folder, 'good.c3addon'), await definitionEntries('', 'GoodTimer'));
+    await writeArchive(join(folder, 'flaky.c3addon'), await definitionEntries('', 'FlakyTimer'));
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    vi.mocked(stat).mockImplementation((async (path: string, ...rest: unknown[]) => {
+      if (String(path).endsWith(`${sep}flaky.c3addon`)) throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
+      return (actual.stat as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as unknown as typeof stat);
+    const defs = await registryWith(project);
+    const report = await defs.load(folder);
+    expect(report.loaded.map(d => d.id)).toEqual(['GoodTimer']);
+    expect(JSON.stringify(report)).not.toContain(tmp);
   });
 });
 

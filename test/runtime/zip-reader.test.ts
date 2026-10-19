@@ -508,6 +508,27 @@ describe('bounded inflation', () => {
   });
 });
 
+describe('entry count and path depth limits', () => {
+  it('refuses more listed entries than maxEntries, and reads that many', () => {
+    const zip = zipBuffer(Array.from({ length: 5 }, (_, i) => ({ path: `d${i}/`, data: Buffer.alloc(0) })));
+    expect(() => readZipArchive(zip, { maxEntries: 4 })).toThrow('The archive lists more than 4 entries');
+    expect(readZipArchive(zip, { maxEntries: 5 }).directories).toHaveLength(5);
+  });
+
+  it('refuses a path nested deeper than maxPathDepth before the folders are processed, for files and directories', () => {
+    const file = zipBuffer([{ path: 'a/b/c/x.bin', data: png }]);
+    expect(() => readZipArchive(file, { maxPathDepth: 2 })).toThrow('The archive holds a path more than 2 folders deep');
+    expect(readZipArchive(file, { maxPathDepth: 3 }).files).toHaveLength(1);
+    const directory = zipBuffer([{ path: 'a/b/c/', data: Buffer.alloc(0) }]);
+    expect(() => readZipArchive(directory, { maxPathDepth: 2 })).toThrow('more than 2 folders deep');
+  });
+
+  it('applies no limit without the options', () => {
+    const zip = zipBuffer([{ path: 'a/b/c/d/e/f/g/h/x.bin', data: png }]);
+    expect(readZip(zip)).toHaveLength(1);
+  });
+});
+
 describe('zipBuffer', () => {
   it('refuses more entries than a zip without ZIP64 can count', () => {
     const entries = Array.from({ length: 0x10000 }, (_, i) => ({ path: `f${i}`, data: Buffer.alloc(0) }));
