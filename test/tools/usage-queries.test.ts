@@ -564,7 +564,7 @@ describe('error results of the usage tools', () => {
   it('removes a drive path or network path that contains spaces whole, and keeps a URL', async () => {
     await startServer();
     vi.spyOn(reader, 'readAllObjectTypes').mockRejectedValue(new Error(
-      "cannot read C:\\Users\\Primary User\\Documents\\My Game\\a b.json, then 'D:/Program Files/App Name/x.json' "
+      "cannot read C:\\Users\\Sample User\\Documents\\My Game\\a b.json, then 'D:/Program Files/App Name/x.json' "
       + 'and \\\\file server\\team share\\Game Files\\y.json; see https://example.com/help',
     ));
     const result = await raw('find_behavior_usage', { behaviorName: 'a' });
