@@ -21,6 +21,7 @@ import { registerEffectTools } from './effect-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 import { registerObjectRenameTools } from './object-rename.js';
 import { registerEntityRenameTools } from './entity-rename.js';
+import { registerFlowchartTools } from './flowchart-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -43,4 +44,5 @@ export function registerMutationTools(
   registerTimelineTools(deps);
   registerObjectRenameTools(deps);
   registerEntityRenameTools(deps);
+  registerFlowchartTools(deps);
 }

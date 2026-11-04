@@ -75,6 +75,8 @@ construct3-mcp/
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
+│   │   ├── flowchart-model.ts      # Flowchart file shape and the in-memory changes of the flowchart tools
+│   │   ├── flowchart-files.ts      # Reading, writing, creating and deleting flowchart files and their project.c3proj entry
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
 │   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
@@ -150,6 +152,7 @@ construct3-mcp/
 │   │   ├── timeline-writes.ts      # Refusals, relative paths and rollback for the timeline tools
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
+│   │   ├── flowchart-tools.ts      # Flowchart tools (13)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers
 │       └── workflows.ts            # Workflow prompts (7)
@@ -213,7 +216,7 @@ server.tool(
 
 ### Adding a New Mutation Tool
 
-1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `bulk-instance-tools.ts`, `animation-tools.ts`, `timeline-tools.ts` or `project-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
+1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `bulk-instance-tools.ts`, `animation-tools.ts`, `timeline-tools.ts`, `flowchart-tools.ts` or `project-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
 2. Follow the safety pattern:
    - Validate inputs (use `validateName()`, `validateSubfolder()`)
    - For new object type or family names, check `findObjectClassNameClash()` (names clash ignoring case)
@@ -241,7 +244,7 @@ Key things to know when working with Construct 3 project files:
 
 - **SIDs** are ~15-digit random integers. The editor refuses to open a project in which two object types or families share a SID, and its loader also checks function parameter SIDs; duplicates among events, conditions, actions and layout instances are common in editor-saved projects and open fine (see `classifySidDuplicate()` in `load-rules.ts`). New SIDs from `IdGenerator` are still checked against every SID in the project; events moved by `move_events_between_sheets` keep theirs, copies get new ones. Look events up with `findEventsBySid` / `resolveEventBySid` in `src/tools/event-helpers.ts`, never with a first-match `find(e => e.sid === sid)`
 - **UIDs** are sequential integers, only on layout instances and singleglobal-inst objects
-- **Names**: the editor compares event sheet, layout, object type/family, layer, animation, event variable and project-bar folder names ignoring case (timeline names exactly); entity files are named after the entity, so names that differ only in case share one file on Windows and macOS. Compare with `findNameClash` / `findFolderPathClash` in `names.ts`
+- **Names**: the editor compares event sheet, layout, object type/family, layer, animation, event variable and project-bar folder names ignoring case (timeline names exactly; the flowchart tools take flowchart names only as registered, since the editor's comparison is not recorded); entity files are named after the entity, so names that differ only in case share one file on Windows and macOS. Compare with `findNameClash` / `findFolderPathClash` in `names.ts`
 - **Cross-references are by NAME** — event sheets reference objects as `"objectClass": "Name"`, layouts as `"type": "Name"`
 - **c3proj containers** use `{ items: string[], subfolders: Subfolder[] }` recursive structure
 - **usedAddons** in c3proj must list every plugin, behavior, and effect used
@@ -252,6 +255,7 @@ Key things to know when working with Construct 3 project files:
 - **Event shapes** follow editor-saved sheets (`event-shapes.ts`): Else is a System `else` condition at index 0 (conditions after it make an else-if), an OR block has `"isOrBlock": true` on the event, a function call is `{ callFunction, sid, parameters: [positional arguments] }` without `id`/`objectClass`, and a script action is `{ type: "script", language: "javascript", script: [lines] }`. Never write the block-level `isElse` or per-condition `isOr` keys older versions wrote
 - **Behavior conditions/actions** name their behavior under `behaviorType`; a condition or action that names its behavior only under the legacy `behavior-type` key makes the editor refuse to open the project (a leftover `behavior-type` next to a valid `behaviorType` is ignored)
 - **Timelines** are stored under `timelines/`, in folders that mirror their project-bar folders. The first nameless first-level subfolder of the container is the editor's Transitions folder: its items are transitions, stored in `timelines/transitions/` (`timeline-folders.ts`); a nameless folder anywhere else is malformed
+- **Flowcharts** are stored under `flowcharts/`, in folders that mirror their project-bar folders, and registered in the `flowcharts` container of `project.c3proj`. They are not entity files of the writer: `flowchart-files.ts` reads them through the reader and writes them with `replaceFile` and the state they were read in, and registers them with `updateProject`. A folder without a name is not resolved.
 - **JSON formatting**: C3 uses tab indentation (`\t`), LF line endings, no trailing newline and no BOM. Existing files keep whatever style they have on disk (e.g. CRLF from a git `core.autocrlf` checkout)
 - **Field naming**: Mostly camelCase for object properties (`isGlobal`, `behaviorTypes`), kebab-case for some identifiers (`plugin-id`, `initially-visible`)
 
@@ -326,6 +330,7 @@ Tests prove what the files look like, not that Construct 3 accepts them. Before 
 - [ ] `add_animation_to_sprite` on an existing Sprite
 - [ ] `update_animation_properties` (speed, looping, ping-pong)
 - [ ] `create_timeline` in a subfolder, then `update_timeline` and `delete_timeline`
+- [ ] `create_flowchart`, `add_flowchart_node`, `add_flowchart_output`, `connect_flowchart_nodes`, then `delete_flowchart`
 - [ ] Verify `.bak` backup files are created
 - [ ] Verify written files keep their line endings (no whole-file diffs in git)
 - [ ] Verify all read tools still work after writes
