@@ -117,7 +117,7 @@ import {
   createIncludeEvent,
 } from '../construct3/templates.js';
 import { withProjectSync } from './project-sync.js';
-import { checkEventChange } from '../construct3/event-change-check.js';
+import { checkEventChange, warmAceCatalog } from '../construct3/event-change-check.js';
 
 /** Per-sheet cap on change details returned by fix_legacy_behavior_keys. */
 const MAX_REPORTED_CHANGES = 100;
@@ -464,6 +464,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
     },
     async (args) => {
       try {
+        // The catalogue first: a fetch must not run between the read and the write
+        if (args.conditions.length > 0 || args.actions.length > 0 || args.children.length > 0) await warmAceCatalog(reader);
         // Read the target event sheet
         let sheet: EventSheet;
         try {
@@ -998,6 +1000,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
     },
     async (args) => {
       try {
+        await warmAceCatalog(reader);
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
@@ -1439,6 +1442,10 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, removeActionIndices, removeConditionIndices.');
         }
 
+        // The catalogue first: a fetch must not run between the read and the write
+        if (args.updateActions?.length || args.updateConditions?.length || args.addActions?.length || args.addConditions?.length) {
+          await warmAceCatalog(reader);
+        }
         // Read the event sheet
         let sheet: EventSheet;
         try {

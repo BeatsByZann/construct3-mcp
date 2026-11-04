@@ -37,6 +37,21 @@ export function withSheetEvents(data: ProjectData, sheetName: string, events: un
 }
 
 /**
+ * Obtain the catalogue for the project's release now, so that the first fetch
+ * of a release (up to 60 seconds) is not spent between an event tool's read of
+ * the sheet and its write. The outcome is kept by the provider; a failure is
+ * not reported here, `checkEventChange` reports it. Never throws.
+ */
+export async function warmAceCatalog(reader: Construct3ProjectReader): Promise<void> {
+  try {
+    const release = (reader.getProject() as { savedWithRelease?: unknown }).savedWithRelease;
+    await aceCatalogProviderFor(reader).catalogFor(release);
+  } catch {
+    // checkEventChange asks again and reports what it finds.
+  }
+}
+
+/**
  * Warnings for the conditions and actions an event tool added or changed:
  * `before` is the snapshot taken before the change, `after` the sheet's
  * events. Unchanged ACEs are not checked. Checks ACEs against the catalogue

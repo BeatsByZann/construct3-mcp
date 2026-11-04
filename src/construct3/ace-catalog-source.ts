@@ -1,8 +1,8 @@
 /**
- * Turn the ACE definitions a Construct release serves to its own editor into
+ * Turn the ACE definitions that the server requests for a Construct release into
  * the catalogue ACE validation uses.
  *
- * Three files of the editor are read, from editor.construct.net or from a local
+ * Three files are read, requested from editor.construct.net or taken from a local
  * copy, and stored as a per-user cache file:
  *   plugins/allAces.json    every built-in plugin's own conditions and actions
  *   behaviors/allAces.json  every built-in behavior's conditions and actions

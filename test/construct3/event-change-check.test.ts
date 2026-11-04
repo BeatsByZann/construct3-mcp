@@ -4,6 +4,7 @@
  * No network.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, cp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +15,7 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { AceCatalogProvider, setAceCatalogProvider } from '../../src/construct3/ace-catalog-provider.js';
 import { checkEventChange } from '../../src/construct3/event-change-check.js';
 import { registerEventTools } from '../../src/tools/event-tools.js';
-import { guardNetwork } from './ace-fetch-stub.js';
+import { fetchStub, fixtureRoutes, guardNetwork } from './ace-fetch-stub.js';
 
 const MINIMAL = join(__dirname, '..', 'fixtures', 'minimal-project');
 const SOURCE = join(__dirname, '..', 'fixtures', 'ace-source');
@@ -285,5 +286,52 @@ describe('event tools with the ACE and expression checks', () => {
     expect(result.isError).toBe(true);
     expect(result.text).not.toContain('fly-away');
     expect(await sheetText(dir)).toBe(before);
+  });
+
+  describe('when the first fetch of a release is slow and the sheet is saved meanwhile', () => {
+    const MARK = 'saved in the editor during the fetch';
+
+    /** A session whose provider fetches from the fixtures, and whose first request changes the sheet on disk, as an editor save would. */
+    async function slowFetchSession(): Promise<Session & { fetched: () => number }> {
+      const { dir, reader } = await open();
+      const sheetFile = join(dir, 'eventSheets', 'MainSheet.json');
+      const routes = fixtureRoutes();
+      let changed = false;
+      for (const url of Object.keys(routes)) {
+        const answer = routes[url];
+        routes[url] = () => {
+          if (!changed) {
+            changed = true;
+            const sheet = JSON.parse(readFileSync(sheetFile, 'utf8')) as { events: Json[] };
+            sheet.events.push({ eventType: 'comment', text: MARK, sid: nextSid() });
+            writeFileSync(sheetFile, JSON.stringify(sheet, null, '\t'));
+          }
+          return answer();
+        };
+      }
+      const stub = fetchStub(routes);
+      setAceCatalogProvider(reader, new AceCatalogProvider({ cacheDir: await tempDir(), fetch: stub }));
+      const server = new MockServer();
+      registerEventTools({ server: server as never, reader, writer: new Construct3ProjectWriter(reader, new IdGenerator()), idGen: new IdGenerator() });
+      return { dir, server, fetched: () => stub.calls.length };
+    }
+
+    const cases: Array<[string, Json]> = [
+      ['add_event_block', { sheetName: 'MainSheet', conditions: [], actions: [{ id: 'fly-away', objectClass: 'Sprite' }] }],
+      ['update_event_block', { sheetName: 'MainSheet', sid: 400000000000003, addActions: [{ id: 'fly-away', objectClass: 'Sprite' }] }],
+      ['update_event_block_action', { sheetName: 'MainSheet', blockSid: 400000000000003, actionIndex: 0, parameters: { x: '1', y: '2', z: '3' } }],
+    ];
+
+    for (const [tool, args] of cases) {
+      it(`${tool} writes as it would without the check, keeps the saved change and still warns`, async () => {
+        const { dir, server, fetched } = await slowFetchSession();
+        const result = await call(server, tool, args);
+        expect(result.text).not.toContain('changed on disk');
+        expect(result.data.success).toBe(true);
+        expect(result.data.warnings!.length).toBeGreaterThan(0);
+        expect(fetched()).toBeGreaterThan(0);
+        expect(await sheetText(dir)).toContain(MARK);
+      });
+    }
   });
 });
