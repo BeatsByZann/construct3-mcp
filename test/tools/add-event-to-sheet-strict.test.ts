@@ -76,3 +76,36 @@ describe('add_event_to_sheet keeps what it took before (#ISSUE)', () => {
     expect((await lastEvent()).initialValue).toBe('0');
   });
 });
+
+describe('add_event_block and update_event_block take the keys added to them since they became strict', () => {
+  const setPosition = { id: 'set-position', objectClass: 'Sprite', parameters: { x: '1', y: '2' } };
+
+  async function sheetEvents(): Promise<Array<Record<string, unknown>>> {
+    return (JSON.parse(await readFile(sheetPath(), 'utf-8')) as { events: Array<Record<string, unknown>> }).events;
+  }
+
+  it('add_event_block places a block among the sub-events of a group by parentSid, and names parentSid among its arguments', async () => {
+    const added = await server.callTool('add_event_to_sheet', { sheetName: 'MainSheet', eventType: 'group', title: 'Movement' });
+    const groupSid = (JSON.parse(added.content[0].text) as { generatedSid: number }).generatedSid;
+    const result = await server.callTool('add_event_block', { sheetName: 'MainSheet', parentSid: groupSid, actions: [setPosition] });
+    expect(result.isError, result.content[0].text).toBeUndefined();
+    const group = (await lastEvent()) as { children: Array<Record<string, unknown>> };
+    expect(group.children).toHaveLength(1);
+    expect(group.children[0].eventType).toBe('block');
+    // The refusal of an unknown key lists the arguments the tool takes; the text is the ZodError's JSON, in which quotes are escaped
+    await expect(server.callTool('add_event_block', { sheetName: 'MainSheet', notAnArgument: true }))
+      .rejects.toThrow(/add_event_block takes [^"\\]*\bparentSid\b/);
+  });
+
+  it('update_event_block inserts an action at an index with insertActions, and names insertActions among its arguments', async () => {
+    const result = await server.callTool('update_event_block', {
+      sheetName: 'MainSheet', sid: 400000000000003, insertActions: [{ index: 1, action: setPosition }],
+    });
+    expect(result.isError, result.content[0].text).toBeUndefined();
+    const block = (await sheetEvents())[0] as { actions: Array<Record<string, unknown>> };
+    expect(block.actions).toHaveLength(2);
+    expect(block.actions[1].id).toBe('set-position');
+    await expect(server.callTool('update_event_block', { sheetName: 'MainSheet', sid: 400000000000003, notAnArgument: true }))
+      .rejects.toThrow(/update_event_block takes [^"\\]*\binsertActions\b/);
+  });
+});
