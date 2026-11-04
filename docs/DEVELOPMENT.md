@@ -135,7 +135,7 @@ construct3-mcp/
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── container-tools.ts      # Container tools (4)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
-│   │   ├── layer-order.ts          # Layer and instance order tools (3)
+│   │   ├── layer-order.ts          # Layer and instance order tools (4)
 │   │   ├── entity-rename.ts        # Event sheet and layout renames with their references (2)
 │   │   ├── bulk-instance-tools.ts  # Bulk instance tools (3)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)

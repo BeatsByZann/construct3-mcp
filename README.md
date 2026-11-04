@@ -207,6 +207,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `add_instance_to_layout` | Place an object instance on a layout layer or sub-layer with full property control; writes a value for every instance variable of the object and its families and refuses names they do not have |
 | `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, visibility, tags, instance variables of its object and families) |
 | `move_instance` | Move a placed instance to another layer or sub-layer, or to another place in its layer's instances |
+| `move_instances` | Move many placed instances of one layout in one write, each as `move_instance` moves one, in order; all refused when one move is |
 | `delete_instance_from_layout` | Remove a placed instance by UID (layers, sub-layers and non-world instances); its hierarchy children stay without a parent, and its parent no longer lists it |
 | `set_instance_parent` | Make an instance the hierarchy child of another (both sides written, across layers), or take it off its parent; refuses loops and shared UIDs |
 | `remove_instance_children` | Take every hierarchy child off an instance |
@@ -618,7 +619,7 @@ construct3-mcp/
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── container-tools.ts      # Container tools (4)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
-│   │   ├── layer-order.ts          # Layer and instance order tools (3)
+│   │   ├── layer-order.ts          # Layer and instance order tools (4)
 │   │   ├── entity-rename.ts        # Event sheet and layout renames with their references (2)
 │   │   ├── bulk-instance-tools.ts  # Bulk instance tools (3)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
