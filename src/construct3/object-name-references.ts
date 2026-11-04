@@ -36,7 +36,9 @@
  * of a flowchart node that is the name (what "c" holds is not known), and
  * the "objectClass" of an object-valued "instance-variable" parameter
  * ({ name, objectClass }) unless `instanceVariableObjects` is "rewrite"
- * (Construct 3 r506-2, Free edition, guest, rewrote it on a rename).
+ * (Construct 3 r506-2, Free edition, guest, rewrote it on a rename). The action
+ * observed to hold this form is System Sort Z order; set-instvar-value takes
+ * the string form (a project with the object form on it did not open).
  */
 
 import type { C3Event, EventSheet, Layout } from './types.js';
@@ -73,7 +75,10 @@ export interface ObjectNameUse {
   definite: boolean;
 }
 
-/** Whether the object-valued "instance-variable" parameter kind is rewritten (an editor save showed it) or only listed. */
+/**
+ * Whether the object-valued "instance-variable" parameter kind is rewritten (an editor save of System
+ * Sort Z order, Construct 3 r506-2, Free edition, showed it) or only listed.
+ */
 export type InstanceVariableObjects = 'rewrite' | 'list';
 
 /** The kinds of use a rename can rewrite; every other kind is only listed. */
@@ -208,6 +213,8 @@ interface WalkContext {
   variableNames: ReadonlySet<string>;
   /** Which rewritable kinds are rewritten */
   policy: Readonly<Record<RewritableObjectUseKind, boolean>>;
+  /** Parameter keys whose whole value is never an object; the index's NON_OBJECT_PARAMETER_KEYS when absent */
+  nonObjectKeys?: ReadonlySet<string>;
 }
 
 /** The walk's policy: OBJECT_REWRITE_POLICY, with the instance-variable kind as the caller's setting says. */
@@ -284,7 +291,7 @@ function walkSheet(sheet: EventSheet, file: string, objectName: string, context:
     parameter({ eventPath, ace }, { key: parameter, value, named, set }) {
       const at = { ...base, eventPath, ace, parameter };
       const whole = value.trim();
-      const nameKeyed = named && NON_OBJECT_PARAMETER_KEYS.has(parameter);
+      const nameKeyed = named && (context.nonObjectKeys ?? NON_OBJECT_PARAMETER_KEYS).has(parameter);
       // A parameter whose key is the name: what it means is not known, so it is listed and its key never changed
       if (named && same(parameter)) uses.push({ ...at, kind: 'possible expression', value: parameter, definite: false });
       if (same(whole)) {
@@ -364,6 +371,23 @@ export function renameObjectInSheetWithPolicy(
 ): number {
   return walkSheet(sheet, '', objectName, { variableNames, policy }, newName).filter(u => u.definite).length;
 }
+
+/**
+ * The uses of `objectName` in one sheet, deciding as findObjectNameUsesWithPolicy
+ * does with the variable names of the whole project given by the caller;
+ * with `newName`, the definite ones are rewritten in memory by the same
+ * walk, so the report and the rewrite cannot differ. `file` labels the uses.
+ */
+export function objectNameUsesInSheet(
+  sheet: EventSheet, file: string, objectName: string, variableNames: ReadonlySet<string>,
+  policy: Readonly<Record<RewritableObjectUseKind, boolean>>, newName?: string,
+  nonObjectKeys: ReadonlySet<string> = NON_OBJECT_PARAMETER_KEYS,
+): ObjectNameUse[] {
+  return walkSheet(sheet, file, objectName, { variableNames, policy, nonObjectKeys }, newName);
+}
+
+/** Parameter keys that hold a timeline, property, function or file name: never an object, whatever the name is. */
+export const OTHER_NAME_PARAMETER_KEYS: ReadonlySet<string> = new Set(['timeline', 'property', 'function', 'file']);
 
 /** The event variable and function parameter names of the project's sheets, for renameObjectInSheet. */
 export function projectVariableNames(sheets: ReadonlyMap<string, EventSheet>): Set<string> {

@@ -26,7 +26,7 @@ This guide is for Construct 3 developers who want to use the server with Claude 
 
 ## What it does and what it doesn't
 
-construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 85 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
+construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 87 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
 
 - **Read and explain**: list objects, layouts, event sheets, families, timelines, flowcharts and addons, show an event sheet as a readable outline with the editor's event numbers, find where an object is used, map functions, find unused objects and assets.
 - **Check**: `validate_project` runs 30 checks, including rules the Construct 3 editor enforces when it opens a project. `find_runtime_traps` looks for logic that loads fine but hangs or does nothing.
@@ -370,12 +370,12 @@ Confirm the trust prompt when the server starts. Logs: Command Palette > **MCP: 
 
 *From each vendor's documentation, not tested for this guide.* Always pass an explicit project path.
 
-- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 85, so disable other servers or tools you don't need if you hit the limit.
+- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 87, so disable other servers or tools you don't need if you hit the limit.
 - **Antigravity**: open the file through the Agent panel > **MCP Servers** > **Manage MCP Servers** > **View raw config**. Current documentation names `~/.gemini/config/mcp_config.json` (global) and `.agents/mcp_config.json` (per workspace).
 
 ### Check that it works
 
-Your client should show `construct3` with 85 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
+Your client should show `construct3` with 87 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
 
 > Give me an overview of this project.
 
@@ -634,10 +634,11 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Tilemaps: `get_tilemap_data`, `list_tilemap_brushes`
 - Runtime read: `get_canvas_size` (the canvas geometry of a game you connected to with `connect_to_game`; it sends nothing to the game)
 
-**Tools that write files (49)**, review before approving:
+**Tools that write files (51)**, review before approving:
 
 - Objects, families and containers: `create_object`, `update_object_properties`, `delete_object`, `rename_object_type`, `create_family`, `update_family`, `update_instance_variable`, `reorder_behaviors`, `delete_family`, `rename_family`, `create_container`, `update_container`, `delete_container`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `add_custom_action`, `update_function`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `update_event_group`, `update_comment`, `update_script_event`, `move_events_between_sheets`, `move_event_block`, `move_event_block_items`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `rename_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
+- Find and replace: `replace_object_in_events`, `replace_in_expressions`
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `rename_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `add_instances_to_layout`, `update_instance`, `update_instances`, `move_instance`, `move_instances`, `delete_instance_from_layout`, `delete_instances_from_layout`, `set_instance_parent`, `remove_instance_children`
 - Templates: `set_instance_template`, `set_default_template`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `create_animation_folder`, `move_animation_to_folder`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`, `replace_object_image`
@@ -787,4 +788,4 @@ Install it and add one object that uses the addon in the Construct 3 editor, sav
 - Third-party addons must be installed and added in the editor; `register_addon` only edits the addon list.
 - The documentation resources only return links to the Construct 3 manual.
 - The runtime tools need Node.js 22 or later and Chrome or Edge, start from an export or the editor's preview (the server cannot export), and the bridge must be removed before you ship.
-- Windsurf / Devin Desktop allows 100 tools in total; this server uses 85 of them.
+- Windsurf / Devin Desktop allows 100 tools in total; this server uses 87 of them.

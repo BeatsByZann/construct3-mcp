@@ -25,6 +25,7 @@ import { registerFlowchartTools } from './flowchart-tools.js';
 import { registerTilemapDataTools } from './tilemap-data-tools.js';
 import { registerTilemapBrushTools } from './tilemap-brush-tools.js';
 import { registerTemplateTools } from './template-tools.js';
+import { registerReplaceTools } from './replace-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -51,4 +52,5 @@ export function registerMutationTools(
   registerTilemapDataTools(deps);
   registerTilemapBrushTools(deps);
   registerTemplateTools(deps);
+  registerReplaceTools(deps);
 }

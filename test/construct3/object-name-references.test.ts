@@ -3,10 +3,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   findFamilyMemberUses, findFlowchartNodeUses, findInstanceTypeUses, findObjectNameUsesInSheets, findObjectNameUsesWithPolicy,
-  OBJECT_REWRITE_POLICY, objectNameInExpression, objectNameUseLocation, projectVariableNames, renameFamilyMember, renameInstanceTypes,
+  OBJECT_REWRITE_POLICY, objectNameInExpression, objectNameUseLocation, objectNameUsesInSheet, OTHER_NAME_PARAMETER_KEYS, projectVariableNames, renameFamilyMember, renameInstanceTypes,
   renameObjectInSheet, renameObjectInSheetWithPolicy, renameSingleGlobalInstanceType, scriptReadsObject, TIMELINE_TRACK_PATH,
   timelineTrackUses,
 } from '../../src/construct3/object-name-references.js';
+import { NON_OBJECT_PARAMETER_KEYS } from '../../src/construct3/analyzers/index-builder.js';
 import type { EventSheet, Layout } from '../../src/construct3/types.js';
 
 const sheet = (events: unknown[]): EventSheet => ({ name: 'S', events, sid: 1 } as unknown as EventSheet);
@@ -285,5 +286,83 @@ describe('layouts, families, scripts and timelines', () => {
     const after = JSON.parse(JSON.stringify(data));
     expect(after.events[0].actions[0]).toEqual({ id: 'set-x', objectClass: 'Gamma', parameters: { x: 'Alpha.X + 1' } });
     expect(JSON.stringify(data)).not.toBe(before);
+  });
+});
+
+describe('objectNameUsesInSheet', () => {
+  const block = (actions: unknown[]) => ({ eventType: 'block', conditions: [], actions });
+  const mainEvents = () => [
+    block([
+      { id: 'set-x', objectClass: 'Alpha', parameters: { x: 'Alpha.X + 1' } },
+      { id: 'create-object', objectClass: 'System', parameters: { 'object-to-create': 'Alpha', layer: '"Alpha"' } },
+      { id: 'set-text', objectClass: 'Txt', parameters: { text: '"Alpha"' } },
+      { customAction: 'Hit', objectClass: 'Beta', customActionObjectClass: 'Beta', parameters: ['Alpha'] },
+      { type: 'script', script: ['runtime.objects.Alpha.getFirstInstance();'] },
+    ]),
+  ];
+  const otherEvents = () => [
+    { eventType: 'variable', name: 'Alpha', type: 'number', initialValue: '0' },
+    block([{ id: 'set-y', objectClass: 'Alpha', parameters: { y: 'Alpha.Y' } }]),
+  ];
+
+  it('reports the same uses as the whole-project finder when given the project\'s variable names', () => {
+    const sheets = new Map([['Main', sheet(mainEvents())], ['Other', sheet(otherEvents())]]);
+    const whole = findObjectNameUsesWithPolicy(sheets, 'Alpha', OBJECT_REWRITE_POLICY);
+    const variableNames = projectVariableNames(sheets);
+    for (const [name, data] of sheets) {
+      expect(objectNameUsesInSheet(data, name, 'Alpha', variableNames, OBJECT_REWRITE_POLICY)).toEqual(whole.filter(u => u.file === name));
+    }
+    // The shared variable name changed a whole-value parameter of Main from definite to possible
+    expect(whole.find(u => u.file === 'Main' && u.parameter === '0')?.kind).toBe('possible expression');
+  });
+
+  it('with newName it rewrites exactly the definite uses it reports', () => {
+    const data = sheet(mainEvents());
+    const uses = objectNameUsesInSheet(data, 'Main', 'Alpha', new Set(), OBJECT_REWRITE_POLICY, 'Gamma');
+    expect(uses.filter(u => u.definite).map(u => u.kind).sort()).toEqual(['expression', 'object parameter', 'object parameter', 'objectClass']);
+    expect(uses.filter(u => !u.definite).map(u => u.kind).sort()).toEqual(['script', 'string literal', 'string literal']);
+    const action = (index: number) => (data.events[0] as unknown as { actions: Array<Record<string, unknown>> }).actions[index];
+    expect(action(0)).toEqual({ id: 'set-x', objectClass: 'Gamma', parameters: { x: 'Gamma.X + 1' } });
+    expect(action(1).parameters).toEqual({ 'object-to-create': 'Gamma', layer: '"Alpha"' });
+    expect(action(2).parameters).toEqual({ text: '"Alpha"' });
+    expect(action(3).parameters).toEqual(['Gamma']);
+    expect(action(4)).toEqual({ type: 'script', script: ['runtime.objects.Alpha.getFirstInstance();'] });
+    // Without newName nothing is changed
+    const untouched = sheet(mainEvents());
+    objectNameUsesInSheet(untouched, 'Main', 'Alpha', new Set(), OBJECT_REWRITE_POLICY);
+    expect(untouched).toEqual(sheet(mainEvents()));
+  });
+
+  it('a variable of the same name keeps a whole-value parameter a possible use', () => {
+    const argument = (variableNames: ReadonlySet<string>) => objectNameUsesInSheet(sheet(mainEvents()), 'Main', 'Alpha', variableNames, OBJECT_REWRITE_POLICY)
+      .filter(u => u.parameter === '0').map(u => [u.kind, u.definite]);
+    expect(argument(new Set())).toEqual([['object parameter', true]]);
+    expect(argument(new Set(['Alpha']))).toEqual([['possible expression', false]]);
+  });
+
+  it('it walks only the sheet it is given', () => {
+    const first = sheet([block([{ id: 'a', objectClass: 'Alpha' }]), block([{ id: 'b', objectClass: 'Alpha' }])]);
+    const second = sheet([block([{ id: 'c', objectClass: 'Alpha' }])]);
+    const uses = objectNameUsesInSheet(first, 'First', 'Alpha', new Set(), OBJECT_REWRITE_POLICY);
+    expect(uses.map(u => [u.file, u.eventPath])).toEqual([['First', 'events[0]'], ['First', 'events[1]']]);
+    expect(objectNameUsesInSheet(second, 'Second', 'Alpha', new Set(), OBJECT_REWRITE_POLICY).map(u => u.file)).toEqual(['Second']);
+  });
+
+  it('a name-keyed parameter that is not an object is neither reported nor rewritten when its key is in nonObjectKeys', () => {
+    const keyed = () => sheet([block([
+      { id: 'run', objectClass: 'System', parameters: { timeline: 'Player', property: 'Player', function: 'Player', file: 'Player', object: 'Player' } },
+    ])]);
+    const keys = new Set([...NON_OBJECT_PARAMETER_KEYS, ...OTHER_NAME_PARAMETER_KEYS]);
+    const parametersOf = (data: EventSheet) => (data.events[0] as unknown as { actions: Array<{ parameters: unknown }> }).actions[0].parameters;
+
+    const data = keyed();
+    const uses = objectNameUsesInSheet(data, 'Main', 'Player', new Set(), OBJECT_REWRITE_POLICY, 'Hero', keys);
+    expect(uses.map(u => `${u.parameter}:${u.kind}`)).toEqual(['object:object parameter']);
+    expect(parametersOf(data)).toEqual({ timeline: 'Player', property: 'Player', function: 'Player', file: 'Player', object: 'Hero' });
+
+    // Without the argument the index's keys decide, as the rename tools use them
+    const defaulted = keyed();
+    objectNameUsesInSheet(defaulted, 'Main', 'Player', new Set(), OBJECT_REWRITE_POLICY, 'Hero');
+    expect(parametersOf(defaulted)).toEqual({ timeline: 'Hero', property: 'Hero', function: 'Hero', file: 'Hero', object: 'Hero' });
   });
 });
