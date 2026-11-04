@@ -491,7 +491,14 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
           await writer.assertEntityFileCurrent('objectTypes', args.name, subfolder);
           if (renames.length > 0) await writer.renameImageFiles(renames);
           try {
-            const backup = await deleteRegisteredEntity(writer, 'objectTypes', args.name);
+            // The registration and every container membership leave project.c3proj in one update,
+            // built from the file as it is right before the write: the editor does not open a project
+            // whose container lists a missing object type, and a save in between cannot bring one back
+            const backup = await deleteRegisteredEntity(writer, 'objectTypes', args.name, {
+              alsoChange: project => {
+                containers = removeContainerMember(project, args.name, { dropUnderTwo: SMALL_CONTAINER_RULE === 'removed' });
+              },
+            });
             return { images: planned, backupPath: backup };
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

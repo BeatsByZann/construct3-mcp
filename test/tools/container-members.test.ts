@@ -157,16 +157,25 @@ describe('delete_object and containers', () => {
     expect(Buffer.compare(await readFile(objectPath('Gem')), objectBefore)).toBe(0);
   });
 
+  it('puts the registration and the membership back when the file delete fails after the update', async () => {
+    const projectBefore = await readFile(projectPath());
+    const objectBefore = await readFile(objectPath('Gem'));
+    writer.deleteEntityFile = async () => { throw Object.assign(new Error('EPERM: operation not permitted, unlink'), { code: 'EPERM' }); };
+    const data = await call('delete_object', { name: 'Gem' });
+    expect(data.isError).toBe(true);
+    expect(Buffer.compare(await readFile(projectPath()), projectBefore)).toBe(0);
+    expect(Buffer.compare(await readFile(objectPath('Gem')), objectBefore)).toBe(0);
+  });
+
   it('builds the update on project.c3proj as found on disk, not on the reader\'s copy', async () => {
-    // The editor opened the project before the call and saves it (with a change of its own) after the file delete,
-    // before the update starts: the update reads that save, so it never needs a retry round (the next test does)
+    // The editor opened the project before the call and saves it (with a change of its own) before the update
+    // starts: the update reads that save, so it never needs a retry round (the next test does)
     const snapshot = await readProject();
     const saved = JSON.stringify({ ...snapshot, name: 'Saved in the editor' }, null, '\t');
-    const deleteEntityFile = writer.deleteEntityFile.bind(writer);
-    writer.deleteEntityFile = async (...args) => {
-      const backup = await deleteEntityFile(...args);
+    const removeFromProject = writer.removeFromProject.bind(writer);
+    writer.removeFromProject = async (...args) => {
       await writeFile(projectPath(), saved);
-      return backup;
+      return removeFromProject(...args);
     };
     const data = await call('delete_object', { name: 'Gem' });
     expect(data.success).toBe(true);

@@ -118,6 +118,10 @@ export function toolError(message: string) {
  *   anything is written;
  * - take the name out of project.c3proj;
  * - delete the file, backed up.
+ * `options.alsoChange` edits the parsed project.c3proj in the same update
+ * that takes the name out, so the registration and what `alsoChange` changes
+ * (the container memberships of a deleted object type) leave in one write,
+ * built from the file as it is right before that write.
  * A failed step never leaves a name registered without its file. When a step
  * fails, the writer puts back what the call changed (undoToolCall; after a
  * refusal as stale it has done so already), and one Error is thrown that
@@ -132,13 +136,14 @@ export async function deleteRegisteredEntity(
   writer: Construct3ProjectWriter,
   category: EntityCategory,
   name: string,
+  options?: { alsoChange?: (project: Record<string, unknown>) => void },
 ): Promise<string> {
   const subfolder = writer.getSubfolderForEntity(category, name);
   const file = entityFilePath(category, subfolder ?? '', name);
   await writer.assertEntityFileCurrent(category, name, subfolder);
   let backupPath: string;
   try {
-    await writer.removeFromProject(category, name);
+    await writer.removeFromProject(category, name, { alsoChange: options?.alsoChange });
     backupPath = await writer.deleteEntityFile(category, name, subfolder);
   } catch (error) {
     const undo = error instanceof StaleFileError ? undefined : await writer.undoToolCall();
