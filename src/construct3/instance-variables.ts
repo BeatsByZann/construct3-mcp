@@ -190,6 +190,42 @@ export function isDefaultInstanceVariableValue(value: unknown): boolean {
 }
 
 /**
+ * Move the value an instance holds for instance variable `from` to `to`,
+ * in the same place among its values (update_instance_variable). A value it
+ * held for `to` already (left by a hand edit or an older write; the
+ * variable did not exist) gives way and comes back as `dropped`.
+ * `modified` is false when it holds no value for `from`.
+ */
+export function renameInstanceVariableValue(
+  instance: Record<string, unknown>, from: string, to: string,
+): { modified: boolean; dropped?: unknown } {
+  const values = instance.instanceVariables;
+  if (from === to || !isRecord(values) || !Object.hasOwn(values, from)) return { modified: false };
+  const hadTo = Object.hasOwn(values, to);
+  const dropped = hadTo ? values[to] : undefined;
+  instance.instanceVariables = Object.fromEntries(Object.entries(values)
+    .filter(([name]) => name !== to)
+    .map(([name, value]) => [name === from ? to : name, value]));
+  return hadTo ? { modified: true, dropped } : { modified: true };
+}
+
+/**
+ * After instance variable `name` became of `type`: a value of another type
+ * gets the type's default (0, "" or false), since what the editor makes of
+ * it is not verified. Returns the value it replaced; undefined when the
+ * instance holds no value or the value fits.
+ */
+export function retypeInstanceVariableValue(
+  instance: Record<string, unknown>, name: string, type: string,
+): { replaced: unknown } | undefined {
+  const values = instance.instanceVariables;
+  if (!isRecord(values) || !Object.hasOwn(values, name) || fitsInstanceVariableType(values[name], type)) return undefined;
+  const replaced = values[name];
+  values[name] = defaultInstanceVariableValue(type);
+  return { replaced };
+}
+
+/**
  * Remove the effect entries named in `drop` that are no longer expected
  * (`expected`: the effects the instance's object type and families still
  * have) from an instance's `effects`. Returns the names and entries removed.
