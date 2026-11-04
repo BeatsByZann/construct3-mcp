@@ -2778,6 +2778,96 @@ Only the string values of condition and action parameters are visited, never com
 
 **Result.** `{ success, action ("replaced" or "dry-run"), find, replace, sheetsScanned, totalMatches, parametersChanged, bySheet, changes, changesTruncated, filesWritten, dryRun, complete?, warnings?, unscannedFiles? }`. `bySheet` is `[{ sheet, parameters, matches }]` for the sheets with changes. `changes` is `[{ sheet, eventSid, path, key, before, after }]`, up to `maxReported`, in the order of the sheet: the sheets in the order scanned, and within a sheet each event's conditions, then its actions, then its sub-events, each in index order (a positional argument by its index as a number, the parameters of one condition or action by key name). `path` is the JSON path of the parameter, such as `events[0].actions[1].parameters.value` or `events[3].conditions[0].parameters[0]`. `changesTruncated` is true when `changes` lists fewer parameters than `parametersChanged`.
 
+### Project Bar structure
+
+`move_project_item` moves an item to another Project Bar folder together with its files. `duplicate_layout`, `duplicate_layer`, `duplicate_event_sheet`, `duplicate_object_type` and `duplicate_timeline` copy an entity under a new name. All six take names as the project registers them, in that letter case; the refusal of another spelling of an object type, family, layout, layer, event sheet or flowchart name gives the registered one. A refusal before the first write changes nothing and ends "Nothing was changed."; a call that fails after it wrote something is rolled back, and its message says what is on disk (see Failures, below).
+
+**Project Bar folders.** `project.c3proj` stores each tree as `{ "items": [...], "subfolders": [...] }` and each folder as `{ "items", "subfolders", "name" }`, in that key order. The tools keep an item's file path in step with its folder: an item in folder `Enemies/Bosses` has its entity file at `<category folder>/Enemies/Bosses/<name>.json`, with `<name>.uistate.json` beside it for a layout, an event sheet or a flowchart, `layouts/uistate/Enemies/Bosses/<name>.instancesBar.json` for a layout, and an object type's tilemap brush file at `tilemapBrushes/objectTypes/Enemies/Bosses/<name>.brush.json`. Scripts and imported project files follow the same rule under `scripts/` and `files/`. This is the layout of files the tools produce. In a live check, Construct 3 r506-2 (Free edition, guest) opened a project laid out this way after moves and copies by these tools, listed the folders with the items in them, and wrote its own save at the same paths (entity files, `.uistate.json`, `.instancesBar.json` and images). Not checked: the editor moving an item itself, and moved flowcharts, families, scripts, imported project files and tilemap brush files. Folders keep their order; a folder the call creates is appended after its siblings, and a moved item is appended to its destination folder.
+
+#### `move_project_item`
+
+Move an existing item to another folder, or to the root.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `category` | enum | Yes | `objectType`, `family`, `layout`, `eventSheet`, `flowchart`, `script` or `file` (an imported project file under `files/`) |
+| `name` | string | Yes | Item name, as registered; for scripts and files, the file name (`main.js`) |
+| `folder` | string | No | Destination path such as `Enemies/Bosses`, spelled as an existing folder is; empty (default) moves to the root |
+| `sourceFolder` | string | No | Scripts and files: the current folder, when the file name exists in more than one folder |
+| `createFolders` | boolean | No | Create a missing destination path (default `true`) |
+
+**What moves.** The entity file; for a layout, an event sheet or a flowchart its `<name>.uistate.json`; for a layout also its `.instancesBar.json`; for an object type its tilemap brush file when one exists at the object type's own folder (a Tilemap object type without one draws a warning, and the move goes on); for a script or an imported project file, the file. The view-state files (`.uistate.json`, `.instancesBar.json`) are moved after `project.c3proj` was updated and the old files were deleted, and a failure to move one is a warning: the call is not rolled back for it. A view-state file that already exists at the new place with other content is left as it is, with a warning. A view-state file is moved as bytes and is not read: in the live check on Construct 3 r506-2 (Free edition, guest), the editor read three moved view-state files at their new paths and kept their values, but refused to open a project whose layout `.uistate.json` had no `grid` object (2 of 2 attempts).
+
+**Order of writes.** The files are created at their new paths first, each as a file of the call and refused when a file is already there, in any letter case. Every source is then checked once more for a change since it was read. `project.c3proj` is updated next: the item leaves its old folder and is appended to the destination, with any missing folders created. The old files are deleted next (the view-state files are moved after that), each kept as `<file>.bak` and named in `oldFilesKeptAs`. An old file that changed after the call copied it is not deleted: the result warns and says that the new file holds it as it was before that change. An old file that cannot be deleted is a warning too, because the project already names the new place. The emptied source folder is kept, with a warning. Moving a script warns that import statements naming its path are not rewritten. Timelines cannot be moved.
+
+**Refused, changing nothing:** an item that is not registered, or is registered in another letter case; an item that exists in more than one folder when `sourceFolder` does not choose one; a destination that is the folder the item is in; a destination folder that differs from a sibling only in letter case (the message names the existing spelling, because on Windows and macOS the two are one directory); a folder segment Windows cannot store (a leading space, a trailing space or dot, `< > : " | ? *` or a control character, a reserved device name such as `CON` or `LPT1`, `..`); a missing destination with `createFolders: false`; a script or file whose name is already in the destination folder; a destination file that already exists; a registered file that is missing on disk; a file that cannot be read (the message gives the reason, never a path); and a project with no tree for the category.
+
+**Result.** `{ success, entity, category, action ("moved"), from, to, foldersCreated, filesMoved, oldFilesKeptAs, warnings?, backupFile }`. `filesMoved` is `[{ from, to }]` with project-relative paths, the view-state files included once they moved.
+
+#### Duplicates
+
+A copy gets fresh SIDs throughout: every `sid` in it is new, and one old SID maps to the same new SID everywhere inside the copy. The new name must be usable (it must start with a letter or underscore, as for the create tools) and is compared with the names in use without regard to letter case (a layout, event sheet, object type or timeline name becomes a file name; a layer name is compared among the layers of its layout). A file already at the target path, in any letter case and registered or not, refuses the call. The editor's view-state files (`*.uistate.json`, `*.instancesBar.json`) are never copied; in the live check on Construct 3 r506-2 (Free edition, guest) the editor opened the copies without them, used view settings of its own and wrote such files beside each copy when it saved. A copy is written through the same check as every entity the writer writes: JSON generated for it over 5MB is refused before anything is changed (`Generated JSON for "<name>" is too large`). A copy that cannot be made faithful is refused with the reason.
+
+The copy's entity file is created first and registered right after its source, in the source's folder (`duplicate_layer` instead writes the layout that holds the layer). An object type's image files and tilemap brush file are created after that. The new JSON files are written with the line endings of the project.
+
+**Failures.** This applies to `duplicate_layout`, `duplicate_event_sheet`, `duplicate_object_type`, `duplicate_timeline` and `move_project_item`. `duplicate_layer` writes one file, the layout, and puts the layout back when its write fails and says so, as the other layout tools do (the message ends "The call was rolled back: layouts/<layout>.json is as before the call."). If a step fails after the first write, the call puts back `project.c3proj` and then removes the files it created, but only once `project.c3proj` no longer names the copy. If `project.c3proj` still names it, the created files are kept and named ("kept: project.c3proj still registers what this call added, so the file stays"), so that the project never names a file the rollback removed. The message ends with the form `The call was rolled back: <files> is/are as before the call.` when everything was put back (a created file is listed as `removed: the call had created it`). When the rollback itself fails, the message says the writes could not be undone and names the files that may be left as the call wrote them. Folders the call made for new files may remain after a rollback. `move_project_item` uses the same rollback; it also keeps the copies of a move that fails while `project.c3proj` still names the new folder.
+
+#### `duplicate_layout`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout to copy, as registered |
+| `newName` | string | Yes | Name of the copy |
+
+Every layer and instance, world and non-world, is copied. Instances get UIDs above the highest UID in the project, and `sceneGraphData.uid`, `parent-uid`, `children[].uid` and a replica list are remapped through the same map; the `instanceFolderItem` and `scene-graphs-folder-root` entries that address an instance by SID, where the layout file has them, follow their instance's new SID (Construct 3 r506-2, Free edition, guest, saved neither key in the live check, so the layouts it saves have none; the hierarchy remap was confirmed there: the editor showed and saved the copy's link on the copy's UIDs). The copy keeps the source's `eventSheet`.
+
+Refused, changing nothing: a layout that holds a template instance (`template.mode: "template"`, since a template name can exist only once per object type; replicas copy normally); hierarchy links to instances outside the layout; a name another layout has, ignoring case; a layout that cannot be read; and a project whose files cannot all be scanned for UIDs (the message gives the UID generator's reason and names the files).
+
+Warnings: the layout places a global object type (the copy places another instance of it); an object type could not be read, so that was not checked; a timeline addresses an instance of the source by UID (it still addresses the original and was not duplicated); an event sheet picks an instance of the source by a fixed `unique-id` (it still picks the original); a timeline or event sheet could not be read or parsed, so the check for those two could not be made, and it is named. The check looks at every timeline file (to a depth of 64 levels) and every event sheet (to a depth of 128 levels).
+
+#### `duplicate_layer`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout that owns the layer, as registered |
+| `layerName` | string | Yes | Layer to copy, as registered |
+| `newName` | string | Yes | Name of the new layer, unique in the layout ignoring case |
+
+The copy is inserted directly after the source layer in its sibling list. Its instances get new UIDs and SIDs, and each `scene-graphs-folder-root` entry of a copied instance, where the layout file has them, gets a copy after it (Construct 3 r506-2, Free edition, guest, saves no such entries). The layout file is written once, with a backup, and a failed write puts it back. Timelines and event sheets that address the original layer's instances by UID are not scanned: they keep addressing the originals.
+
+Refused, changing nothing: a layer with sub-layers (their names would repeat in the layout); template instances; hierarchy links to instances on other layers; a name another layer of the layout has, ignoring case; a layout that cannot be read; and a project whose files cannot all be scanned for UIDs. Warnings: the same global object type warnings as `duplicate_layout`.
+
+#### `duplicate_event_sheet`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet to copy, as registered |
+| `newName` | string | Yes | Name of the copy |
+
+Refused, changing nothing: a sheet that declares a group, a function, a custom action or a global (top-level) variable, since the copy would declare the name twice (the first ten are named in the message); events nested deeper than 64 levels, which the scan for those names does not follow; a name another event sheet has, ignoring case; a sheet that cannot be read. The copy is attached to no layout and included by no sheet; the result says so in a warning.
+
+#### `duplicate_object_type`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Object type to copy, as registered |
+| `newName` | string | Yes | Name of the copy; an object type or a family with that name, ignoring case, refuses the call |
+
+Behaviors, instance variables, effects and animations are copied with fresh SIDs, and every animation frame gets a fresh `imageSpriteId`. The frames' image files in `images/` are copied under the lower-case name of the same frame of the copy, keeping the extension, and a tilemap brush file at the object type's folder is copied beside the original. No instance is placed. A copied object type keeps the source's default template (`editorNewInstanceIsReplica` and `editorNewInstanceTemplateName`), and the result warns when it names a template, which belongs to the source. Family and container membership is not copied; the result warns and names the families.
+
+Refused, changing nothing: a single-global object type (Keyboard, Mouse, ...); a target in `images/` that already exists or that two files would share; a brush file that already exists at the new name; an image, brush or object file that cannot be read (the message gives the reason, never a path). A frame with no image file is a warning, and the copy has no file for it.
+
+#### `duplicate_timeline`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline at the root of the timelines tree, as registered |
+| `newName` | string | Yes | Name of the copy |
+
+Writes `timelines/<newName>.json`, the source with only `name` changed, and registers it right after the source. The copy's tracks address the same instances by UID, so a warning says that playing both at once makes them compete (not given for a timeline without tracks).
+
+Refused, changing nothing: a timeline in a folder; a custom ease (a transition); a name another timeline or transition has, ignoring case; a file at the target that is not registered, in any letter case; a source file that cannot be read or is not a JSON object.
+
 ---
 
 ## Runtime Tools

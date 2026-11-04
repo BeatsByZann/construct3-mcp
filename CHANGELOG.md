@@ -42,6 +42,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 - The server has 90 tools (83 before).
 - `list_templates`, `set_instance_template` and `set_default_template` read and write a layout instance's `template` block (template, replica or neither) and an object type's default template; layouts are named as registered, a failed write is rolled back, and layouts that could not be parsed are reported instead of skipped. `set_instance_template` refuses a template or replica on a non-world instance: Construct 3 r506-2 (Free edition, guest) refused to open a project with one on an Array object type's instance.
 - `replace_object_in_events` swaps one object type or family for another of the same plugin in one event sheet or all of them, branch by branch, only where the replacement has the behaviors, instance variables and effects the events use, and lists what it leaves; `replace_in_expressions` finds and replaces text in condition and action parameters, leaving name and combo parameters alone, with `dryRun`. Both write the changed sheets together and roll the call back when a write fails.
+- `move_project_item` moves an object type, family, layout, event sheet, flowchart, script or project file to another Project Bar folder with its files, and `duplicate_layout`, `duplicate_layer`, `duplicate_event_sheet`, `duplicate_object_type` and `duplicate_timeline` copy an entity with fresh SIDs and UIDs, refusing a copy that would not be valid; a failed call is rolled back and the message says what is on disk.
 
 ### Changed
 

@@ -735,9 +735,12 @@ export class Construct3ProjectWriter {
   }
 
   /**
-   * Validate JSON data before writing — ensures we won't write garbage.
+   * Validate JSON data before writing — ensures we won't write garbage:
+   * an object, under the size limit, that parses again. Returns the
+   * tab-indented text. Tools that create a file through createFileForCall
+   * run it first, as writeEntityFile does.
    */
-  private validateJsonData(data: unknown, entityName: string): string {
+  validateJsonData(data: unknown, entityName: string): string {
     if (data === null || data === undefined) {
       throw new Error(`Cannot write null/undefined data for "${entityName}"`);
     }

@@ -26,6 +26,8 @@ import { registerTilemapDataTools } from './tilemap-data-tools.js';
 import { registerTilemapBrushTools } from './tilemap-brush-tools.js';
 import { registerTemplateTools } from './template-tools.js';
 import { registerReplaceTools } from './replace-tools.js';
+import { registerStructureTools } from './structure-tools.js';
+import { registerDuplicateTools } from './duplicate-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -53,4 +55,6 @@ export function registerMutationTools(
   registerTilemapBrushTools(deps);
   registerTemplateTools(deps);
   registerReplaceTools(deps);
+  registerStructureTools(deps);
+  registerDuplicateTools(deps);
 }

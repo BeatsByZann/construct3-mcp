@@ -234,6 +234,17 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `set_instance_template` | Make a layout instance a template, a replica of a named template, or neither; the template block is built from the instance's own properties, instance variables, behaviors and effects; a failed write is rolled back |
 | `set_default_template` | Set or clear the template an object type's new instances are created from; a failed write is rolled back |
 
+**Project Bar structure**
+
+| Tool | Description |
+|------|-------------|
+| `move_project_item` | Move an object type, family, layout, event sheet, flowchart, script or imported project file to another Project Bar folder with its files; the old files are kept as `.bak`; refuses a destination folder that differs from a sibling only in case |
+| `duplicate_layout` | Copy a layout with fresh SIDs and new UIDs (hierarchy links remapped); refuses a layout with template instances; warns about timelines and event sheets that address its instances by UID |
+| `duplicate_layer` | Copy a layer next to its source with fresh SIDs and new UIDs; refuses a layer with sub-layers, template instances or hierarchy links to other layers |
+| `duplicate_event_sheet` | Copy an event sheet with fresh SIDs; refuses a sheet that declares groups, functions, custom actions or global variables |
+| `duplicate_object_type` | Copy an object type with fresh SIDs and image IDs, its image files and its tilemap brush file; no instances, families or containers |
+| `duplicate_timeline` | Copy a timeline at the root of the timelines list next to its source; the copy addresses the same instances |
+
 **Sprite animations**
 
 | Tool | Description |
@@ -610,6 +621,7 @@ construct3-mcp/
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
 │   │   ├── instance-variables.ts   # Instance variable values and effect entries on layout instances
 │   │   ├── object-name-references.ts # Where an object type or a family is named (rename_object_type, rename_family)
+│   │   ├── entity-copies.ts        # Fresh SIDs, UIDs and image IDs for a copied entity, the checks that refuse an unfaithful copy, an object type's image copies (duplicate tools)
 │   │   ├── hierarchy.ts            # Hierarchy (scene graph) links between layout instances
 │   │   ├── containers.ts           # Containers in project.c3proj: members, a deleted object type taken out, a container under two members removed
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
@@ -638,6 +650,7 @@ construct3-mcp/
 │   │   ├── ease-params.ts          # Custom eases inside event sheet ease parameters
 │   │   ├── registered-file-entries.ts # Scripts, sounds and music files the project registers
 │   │   ├── tilemap-data.ts         # Codec for a Tilemap instance's tile data string
+│   │   ├── project-tree.ts         # Project Bar trees: finding, creating and registering folders and items, folder path checks (move and duplicate tools)
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
 │   │       ├── index-builder.ts    # Cross-reference index (cached per reader)
@@ -676,9 +689,12 @@ construct3-mcp/
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── object-rename.ts        # Object type and family renames with their references (2)
 │   │   ├── replace-tools.ts        # Replace object and find-and-replace tools (2)
+│   │   ├── structure-tools.ts      # Project Bar move tool (1)
+│   │   ├── duplicate-tools.ts      # Duplicate tools (5)
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
-│   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), their rollback, script file search
+│   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), file creation for a call (createFileForCall), their rollback, script file search
+│   │   ├── side-files.ts           # Rollback of a Project Bar move or copy: created files are removed only once project.c3proj is back
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── archive-sync.ts         # withArchiveSync: a .c3p refreshed before the calls, written back after
 │   │   ├── object-tools.ts         # Object and family tools (8)
