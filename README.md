@@ -179,6 +179,9 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `add_custom_action` | Add a custom action definition to an object type or family (at the top level, in a group with `groupPath` or `parentSid`, or beside an event with `siblingSid` and `position`, and only where every event above it is a group); refuses a second custom action of one name on one owner; calls are `{ customAction, objectClass, parameters }` actions in `add_event_block` and `update_event_block`, which also edits the definition's body |
 | `update_function` | Change a function's or custom action's name, options and parameters, and a function's return type; calls and function maps are rewritten with `updateCallers`, `Functions.Name(...)` expressions and unparsed sheets block without `force`; dry run |
 | `delete_event_sheet` | Delete an event sheet (with reference checking and optional force): includes, layout bindings, and uses in other sheets of the functions and global variables it defines |
+| `update_event_group` | Change a group's title, description, *Active on start*, disabled state and colours in place, keeping its SID and sub-events; refuses a title another group in the same list has, and (without `force`) a rename while a `group-name` parameter or an unparsed sheet may name the old title |
+| `update_comment` | Change a comment event's text and colours in place, by container and index (comments have no SID); a comment row among a block's actions is changed with `update_event_block` |
+| `update_script_event` | Replace a script event's lines, enable or disable it, or remove it, by container and index; a removal needs the script's first line as `expectedText` |
 | `fix_legacy_behavior_keys` | Rename legacy `"behavior-type"` keys (written by older versions) to `"behaviorType"` in all event sheets, checking each name against the object's behaviors (dry-run by default) |
 | `fix_legacy_event_shapes` | Convert event shapes written by older versions into the editor's own (block `isElse` to a System else condition, condition `isOr` to `isOrBlock`, old-shape function calls to positional arguments, one-string scripts, as older Construct 3 releases also saved them, to lines) where the result is unambiguous; reports the rest and which conversions can change how an event runs (dry-run by default) |
 
@@ -584,7 +587,7 @@ construct3-mcp/
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (8)
 │   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families
-│   │   ├── event-tools.ts          # Event sheet tools (16)
+│   │   ├── event-tools.ts          # Event sheet tools (19)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)

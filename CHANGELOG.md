@@ -23,6 +23,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 - `update_function`: change a function block or custom action block and, with `updateCallers`, the calls that run it (#ISSUE).
 - `move_event_block_items`: move, reorder or copy conditions or actions within and between blocks of a sheet, with the object class check against the target (a warning for "Set return value" moved out of a function block, as `add_event_block` gives) and a scope check that refuses, without `force`, a move or copy that takes a use out of its variable's or parameter's scope or makes it find another one of the same name (#ISSUE).
 - `update_event_block`: `insertActions`, `insertConditions` and `replaceConditions` (#ISSUE).
+- `update_event_group`, `update_comment` and `update_script_event` change a group's title, description, *Active on start*, disabled state and colours, a comment's text and colours, and a script event's lines, disabled state or removal, in place: a group by SID, a comment or script event by container and index. A title another group in the same list has is refused; a rename that a `group-name` parameter or an unparsed event sheet may need is refused without `force`, and its uses are listed, never rewritten; a removal needs the script's first line as `expectedText`; an update to the values an event already has writes nothing (#ISSUE).
 
 ### Changed
 

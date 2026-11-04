@@ -100,6 +100,7 @@ import {
   collectFunctionSignatures,
   resolveCallName,
   functionsObjectName,
+  toScriptLines,
   type FunctionArgument,
 } from '../construct3/event-shapes.js';
 import {
@@ -3250,16 +3251,306 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       }
     }
   );
+
+  // ─── update_event_group ───────────────────────────────────
+
+  server.registerTool(
+    'update_event_group',
+    {
+      description: 'Update a group event in place: title, description, "Active on start", disabled, and its colours. Its sub-events and SID stay. A new title is refused when another group in the same list has it, and (unless force=true) while a System "set-group-active" or "is-group-active" parameter ("group-name") or an event sheet that could not be parsed may name the old title: those uses are listed and never rewritten. An update to the values the group already has changes nothing.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        sid: z.number().int().positive().describe('SID of the group'),
+        eventPath: eventPathSchema,
+        title: z.string().max(500).optional().describe('New title'),
+        description: z.string().max(2000).optional().describe('New description'),
+        isActiveOnStart: z.boolean().optional().describe('The editor\'s "Active on start"'),
+        disabled: z.boolean().optional().describe('Disable or enable the group'),
+        backgroundColor: commentColorSchema.nullable().optional().describe('The background colour [red, green, blue, alpha], each 0-1, written as "background-color"; null removes it'),
+        textColor: commentColorSchema.nullable().optional().describe('The text colour [red, green, blue, alpha], each 0-1, written as "text-color"; null removes it'),
+        force: z.boolean().optional().default(false).describe('Rename even while parameters or unparsed sheets may name the old title (they are listed and left as they are)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of update_event_group', 'update_event_group takes sheetName, sid, eventPath, title, description, isActiveOnStart, disabled, backgroundColor, textColor and force.'),
+      }).strict(),
+    },
+    async (args) => {
+      try {
+        const given = [args.title, args.description, args.isActiveOnStart, args.disabled, args.backgroundColor, args.textColor].some(v => v !== undefined);
+        if (!given) return toolError(nothingChanged('No update given. Give at least one of title, description, isActiveOnStart, disabled, backgroundColor, textColor.'));
+        if (args.title !== undefined && args.title.trim() === '') return toolError(nothingChanged('title is empty.'));
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        const found = resolveEventBySid(events, args.sid, { sheetName: args.sheetName, action: 'update', eventPath: args.eventPath });
+        if ('error' in found) return toolError(nothingChanged(found.error));
+        const group = found.match.event;
+        if (group.eventType !== 'group') return toolError(nothingChanged(`The event with SID ${args.sid} ${typeof group.eventType === 'string' ? `is a "${group.eventType}"` : 'has no eventType'}, ${typeof group.eventType === 'string' ? 'not a group' : 'so it is not a group'}.`));
+        const oldTitle = String(group.title ?? '');
+        const warnings: string[] = [];
+        const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        let uses: GroupNameUse[] = [];
+        let unscanned: UnscannedFileReport[] = [];
+        const newTitle = args.title !== undefined && args.title !== oldTitle ? args.title : undefined;
+
+        if (newTitle !== undefined) {
+          // A sibling with that title, exactly or once outer whitespace is ignored, makes group paths ambiguous
+          const sibling = found.match.parentArray.find(e => e !== group && e.eventType === 'group' && typeof e.title === 'string'
+            && (e.title === newTitle || e.title.trim() === newTitle.trim()));
+          if (sibling) {
+            return toolError(nothingChanged(`Group "${String(sibling.title)}" (SID ${String(sibling.sid)}) has that title in the same list, so a group path could not tell them apart.`));
+          }
+          const elsewhere = groupTitledElsewhere(sheets, newTitle, group);
+          if (elsewhere) {
+            warnings.push(`Another group of the project has the title "${elsewhere.title}" (sheet "${elsewhere.sheet}", SID ${String(elsewhere.sid)}); "set-group-active" and "is-group-active" name a group by its title.`);
+          }
+          const scan = groupNameUses(sheets, oldTitle);
+          uses = scan.uses;
+          const usesChecked = `"group-name" parameters that name "${oldTitle}"`;
+          const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'))
+            .filter(f => f.name !== args.sheetName);
+          unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [[nameTerm(oldTitle)]] }]);
+          const limitReasons = groupNameSearchLimitReasons(usesChecked, scan.stopped);
+          if ((uses.length > 0 || blocksWithoutForce(unscanned) || limitReasons.length > 0) && !args.force) {
+            const listed = uses.slice(0, 10).map(u => `${u.sheet} ${u.path}${u.sid !== undefined ? ` (SID ${u.sid})` : ''}: ${u.value}`);
+            const reasons = [
+              ...(uses.length > 0 ? [`${uses.length} "group-name" parameter(s) name the group "${oldTitle}" or may name it: ${listed.join('; ')}${uses.length > 10 ? `; and ${uses.length - 10} more` : ''}. They are not rewritten.`] : []),
+              ...(blocksWithoutForce(unscanned) ? [unscannedRefusal(unscanned)] : []),
+              ...limitReasons,
+            ];
+            return toolResult({
+              success: false, entity: args.sheetName, category: 'eventsheet', action: 'rename_blocked',
+              message: nothingChanged(`${reasons.join(' ')} Change them first, or use force=true to rename anyway.`),
+              references: uses,
+              ...unscannedFields(unscanned),
+            }, { projectWritten: false });
+          }
+          if (uses.length > 0) {
+            warnings.push(`Renamed with force=true: ${uses.length} "group-name" parameter(s) still name "${oldTitle}" and were left as they are; set them to "${newTitle}".`);
+          }
+          warnings.push(...limitReasons.map(reason => `Renamed with force=true: ${reason}`));
+          warnings.push(...unscannedWarnings(unscanned, 'Renamed'));
+        }
+
+        try {
+          if (newTitle !== undefined) setKeyInOrder(group, 'title', newTitle, GROUP_KEY_ORDER);
+          if (args.description !== undefined) setKeyInOrder(group, 'description', args.description, GROUP_KEY_ORDER);
+          if (args.isActiveOnStart !== undefined) setKeyInOrder(group, 'isActiveOnStart', args.isActiveOnStart, GROUP_KEY_ORDER);
+          if (args.disabled !== undefined) setKeyInOrder(group, 'disabled', args.disabled, GROUP_KEY_ORDER);
+          for (const [key, value] of [['background-color', args.backgroundColor], ['text-color', args.textColor]] as const) {
+            if (value === undefined) continue;
+            if (value === null) delete group[key];
+            else setKeyInOrder(group, key, [...value], GROUP_KEY_ORDER);
+          }
+        } catch (error) {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+        }
+
+        const path = found.match.path;
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', updatedSid: args.sid, eventPath: path, title: group.title }, { projectWritten: false });
+        }
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        } catch (error) {
+          sheet.events = beforeEvents;
+          throw error;
+        }
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', updatedSid: args.sid, eventPath: path, title: group.title,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(uses.length > 0 ? { references: uses } : {}),
+          ...unscannedFields(unscanned),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[update_event_group] failed:', error);
+        return toolError(`Error updating group: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── update_comment ───────────────────────────────────────
+
+  server.registerTool(
+    'update_comment',
+    {
+      description: 'Update a comment event in place: its text and colours. Comments have no SID, so give its container (the top level, groupPath, or parentSid for the sub-events of an event) and its 0-based index among all events there (get_eventsheet_details lists them). A comment row among a block\'s actions is edited with update_event_block instead.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        groupPath: locatorShape.groupPath,
+        parentSid: locatorShape.parentSid,
+        parentEventPath: locatorShape.parentEventPath,
+        index: z.number().int().min(0).describe('Index of the comment among all events of its container'),
+        text: z.string().max(10_000).optional().describe('New text'),
+        textColor: commentColorSchema.nullable().optional().describe('Text colour [red, green, blue, alpha], each 0-1, written as "text-color"; null removes it'),
+        backgroundColor: commentColorSchema.nullable().optional().describe('Background colour, written as "background-color"; null removes it'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of update_comment', 'update_comment takes sheetName, groupPath, parentSid, parentEventPath, index, text, textColor and backgroundColor. A comment is addressed by its container and index.'),
+      }).strict(),
+    },
+    async (args) => {
+      try {
+        if (args.text === undefined && args.textColor === undefined && args.backgroundColor === undefined) {
+          return toolError(nothingChanged('No update given. Give at least one of text, textColor, backgroundColor.'));
+        }
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        const found = indexedEvent(events, args.sheetName, args, 'comment');
+        if ('error' in found) return toolError(nothingChanged(found.error));
+        const eventPath = eventPathOf(events, found.event);
+        try {
+          editCommentRowInPlace(found.event, { text: args.text, 'text-color': args.textColor, 'background-color': args.backgroundColor }, 'eventType');
+        } catch (error) {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+        }
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', eventPath }, { projectWritten: false });
+        }
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        } catch (error) {
+          sheet.events = beforeEvents;
+          throw error;
+        }
+        resetProjectIndex(reader);
+        return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', eventPath, backupFile: backupPath });
+      } catch (error) {
+        console.error('[update_comment] failed:', error);
+        return toolError(`Error updating comment: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── update_script_event ──────────────────────────────────
+
+  server.registerTool(
+    'update_script_event',
+    {
+      description: 'Replace the JavaScript of a script event, enable or disable it, or remove it. Script events have no SID, so give the container (the top level, groupPath, or parentSid) and the 0-based index among all events there. Give exactly one of script, disabled and remove; remove also needs expectedText, the first line of the script event to remove, and is refused when the script event at that index starts otherwise. A script action among a block\'s actions is changed with update_event_block instead. Removing one runs the load-time gate (an else block after it may change the block it follows).',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        groupPath: locatorShape.groupPath,
+        parentSid: locatorShape.parentSid,
+        parentEventPath: locatorShape.parentEventPath,
+        index: z.number().int().min(0).describe('Index of the script event among all events of its container'),
+        script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional().describe('New JavaScript: one string (split into lines) or an array of lines'),
+        disabled: z.boolean().optional().describe('Disable or enable the script event'),
+        remove: z.boolean().optional().describe('Remove the script event; needs expectedText'),
+        expectedText: z.string().max(10_000).optional().describe('With remove: the first line of the script event to remove, which must match'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of update_script_event', 'update_script_event takes sheetName, groupPath, parentSid, parentEventPath, index, script, disabled, remove and expectedText. A script event is addressed by its container and index.'),
+      }).strict(),
+    },
+    async (args) => {
+      try {
+        const chosen = [args.script !== undefined, args.disabled !== undefined, args.remove === true].filter(Boolean).length;
+        if (chosen !== 1) return toolError(nothingChanged('Give exactly one of script, disabled and remove.'));
+        if (args.remove && args.expectedText === undefined) {
+          return toolError(nothingChanged('remove needs expectedText, the first line of the script event to remove.'));
+        }
+        if (!args.remove && args.expectedText !== undefined) {
+          return toolError(nothingChanged('expectedText is only used with remove.'));
+        }
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        const found = indexedEvent(events, args.sheetName, args, 'script');
+        if ('error' in found) return toolError(nothingChanged(found.error));
+        const eventPath = eventPathOf(events, found.event);
+        const warnings: string[] = [];
+        if (args.remove) {
+          const stored = found.event.script;
+          // A list entry may hold a line break, which the editor shows as two lines
+          const firstLine = String((typeof stored === 'string' || Array.isArray(stored) ? toScriptLines(stored as string | string[]) : [])[0] ?? '').split(/\r?\n/)[0];
+          if (firstLine !== args.expectedText) {
+            return toolError(nothingChanged(`The script event at index ${args.index} of ${found.where} starts with "${firstLine}", not "${args.expectedText}". Read the sheet again and give the index of the script event to remove.`));
+          }
+        }
+        try {
+          if (args.remove) {
+            found.list.splice(args.index, 1);
+            const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+            if (loadCheck.errors.length > 0) {
+              sheet.events = beforeEvents;
+              return toolError(nothingChanged(loadRuleErrorMessage(loadCheck.errors)));
+            }
+            warnings.push(...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events));
+          } else if (args.script !== undefined) {
+            found.event.script = toScriptLines(args.script);
+          } else if (args.disabled) {
+            setKeyAfterSid(found.event, 'disabled', true);
+          } else {
+            delete found.event.disabled;
+          }
+        } catch (error) {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+        }
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', eventPath }, { projectWritten: false });
+        }
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        } catch (error) {
+          sheet.events = beforeEvents;
+          throw error;
+        }
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: args.remove ? 'deleted' : 'updated', eventPath,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[update_script_event] failed:', error);
+        return toolError(`Error updating script event: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
 }
 
 /**
- * Edit a comment row in place: its text and colours keep their place, a new
- * colour goes where the editor writes it ({ type, text, "text-color",
- * "background-color" }), and null removes a colour.
+ * Edit a comment row or comment event in place: its text and colours keep
+ * their place, a new colour goes where the editor writes it ({ type, text,
+ * "text-color", "background-color" } for a row among the actions, { eventType,
+ * text, ... } for a comment event; `typeKey` names the first), and null
+ * removes a colour.
  */
 function editCommentRowInPlace(
   row: Record<string, unknown>,
   edit: { text?: string; 'text-color'?: number[] | null; 'background-color'?: number[] | null },
+  typeKey: 'type' | 'eventType' = 'type',
 ): void {
   if (edit.text !== undefined) row.text = edit.text;
   for (const key of ['text-color', 'background-color'] as const) {
@@ -3271,7 +3562,7 @@ function editCommentRowInPlace(
       row[key] = [...color];
     } else {
       // After the keys the editor writes before it
-      const before = key === 'text-color' ? ['type', 'text'] : ['type', 'text', 'text-color'];
+      const before = key === 'text-color' ? [typeKey, 'text'] : [typeKey, 'text', 'text-color'];
       const entries = Object.entries(row);
       let at = 0;
       entries.forEach(([k], i) => { if (before.includes(k)) at = i + 1; });
@@ -3280,6 +3571,168 @@ function editCommentRowInPlace(
       for (const [k, v] of entries) row[k] = v;
     }
   }
+}
+
+/**
+ * The key order Construct 3 r506-2 (Free edition) saved a group in: eventType
+ * first, sid after children, and the colour keys last, text-color before
+ * background-color.
+ */
+const GROUP_KEY_ORDER = ['eventType', 'disabled', 'title', 'description', 'isActiveOnStart', 'children', 'sid', 'text-color', 'background-color'];
+
+/** Set `key` on `target` in place when it is there, else insert it after the keys `order` puts before it. */
+function setKeyInOrder(target: Record<string, unknown>, key: string, value: unknown, order: readonly string[]): void {
+  if (key in target) {
+    target[key] = value;
+    return;
+  }
+  const before = new Set(order.slice(0, order.indexOf(key)));
+  const entries = Object.entries(target);
+  let at = 0;
+  entries.forEach(([k], i) => { if (before.has(k)) at = i + 1; });
+  entries.splice(at, 0, [key, value]);
+  for (const k of Object.keys(target)) delete target[k];
+  for (const [k, v] of entries) target[k] = v;
+}
+
+/** A condition or action parameter "group-name" that names, or may name, a group title. */
+interface GroupNameUse {
+  sheet: string;
+  /** "events[2] > action:0", in the event path form */
+  path: string;
+  sid?: number;
+  value: string;
+  /** True when the value is the title as a plain quoted string, exactly; false for anything that may give it */
+  definite: boolean;
+}
+
+/**
+ * The "group-name" parameters in `sheets` (sheet name to events) that name
+ * `title`: a quoted string equal to it (definite), equal to it ignoring case,
+ * or any value that is not a plain quoted string (possible, since an
+ * expression may give the title). `stopped` says which limit the walk hit,
+ * the node limit (`events`) or the depth limit (`depth`): a use past it is
+ * unknown.
+ */
+function groupNameUses(sheets: ReadonlyMap<string, readonly unknown[]>, title: string): { uses: GroupNameUse[]; stopped: GroupNameSearchStops } {
+  const uses: GroupNameUse[] = [];
+  const quoted = /^"((?:[^"]|"")*)"$/;
+  const stopped: GroupNameSearchStops = { events: false, depth: false };
+  let nodes = 0;
+  for (const [sheet, events] of sheets) {
+    const stack: Array<{ list: readonly unknown[]; path: string; depth: number }> = [{ list: events, path: 'events', depth: 0 }];
+    while (stack.length > 0) {
+      const { list, path, depth } = stack.pop()!;
+      if (depth > MAX_SEARCH_DEPTH) {
+        stopped.depth = true;
+        continue;
+      }
+      list.forEach((ev, i) => {
+        if (typeof ev !== 'object' || ev === null) return;
+        if (++nodes > MAX_SEARCH_NODES) {
+          stopped.events = true;
+          return;
+        }
+        const event = ev as Record<string, unknown>;
+        const eventPath = `${path}[${i}]`;
+        for (const kind of ['condition', 'action'] as const) {
+          const aces = kind === 'condition' ? event.conditions : event.actions;
+          (Array.isArray(aces) ? aces : []).forEach((ace, j) => {
+            const params = typeof ace === 'object' && ace !== null ? (ace as Record<string, unknown>).parameters : undefined;
+            const value = typeof params === 'object' && params !== null ? (params as Record<string, unknown>)['group-name'] : undefined;
+            if (typeof value !== 'string') return;
+            const literal = quoted.exec(value)?.[1]?.replace(/""/g, '"');
+            if (literal !== undefined && literal !== title && literal.toLowerCase() !== title.toLowerCase()) return;
+            uses.push({ sheet, path: `${eventPath} > ${kind}:${j}`, ...(typeof event.sid === 'number' ? { sid: event.sid } : {}), value, definite: literal === title });
+          });
+        }
+        if (Array.isArray(event.children)) stack.push({ list: event.children, path: `${eventPath}.children`, depth: depth + 1 });
+      });
+    }
+  }
+  return { uses, stopped };
+}
+
+/** Which limit a groupNameUses walk hit. */
+interface GroupNameSearchStops {
+  events: boolean;
+  depth: boolean;
+}
+
+/**
+ * Why a groupNameUses walk that hit a limit refuses a rename without force:
+ * one sentence per limit it hit, naming the search's own limits.
+ */
+function groupNameSearchLimitReasons(checked: string, stopped: GroupNameSearchStops): string[] {
+  return [
+    ...(stopped.events
+      ? [`The check for ${checked} stopped at its traversal limit (${MAX_SEARCH_NODES.toLocaleString('en-US')} events across all event sheets), so uses further on are unknown.`]
+      : []),
+    ...(stopped.depth
+      ? [`The check for ${checked} stopped at its nesting-depth limit (events nested more than ${MAX_SEARCH_DEPTH} deep), so uses further on are unknown.`]
+      : []),
+  ];
+}
+
+/**
+ * The first group of `sheets` (sheet name to events), other than `except`,
+ * whose title equals `title` once outer whitespace and letter case are
+ * ignored. Sheets in their order, each list before the lists below it.
+ */
+function groupTitledElsewhere(
+  sheets: ReadonlyMap<string, readonly unknown[]>,
+  title: string,
+  except: Record<string, unknown>,
+): { sheet: string; title: string; sid?: number } | undefined {
+  const wanted = title.trim().toLowerCase();
+  for (const [sheet, events] of sheets) {
+    const lists: Array<readonly unknown[]> = [events];
+    for (let next = 0; next < lists.length; next++) {
+      for (const ev of lists[next]) {
+        if (typeof ev !== 'object' || ev === null) continue;
+        const event = ev as Record<string, unknown>;
+        if (event !== except && event.eventType === 'group' && typeof event.title === 'string' && event.title.trim().toLowerCase() === wanted) {
+          return { sheet, title: event.title, ...(typeof event.sid === 'number' ? { sid: event.sid } : {}) };
+        }
+        if (Array.isArray(event.children)) lists.push(event.children);
+      }
+    }
+  }
+  return undefined;
+}
+
+/** An event that has no SID (a comment or script event), found by its container and index. */
+interface IndexedEvent {
+  event: Record<string, unknown>;
+  list: Record<string, unknown>[];
+  /** Where it stands, for messages: "the top level", 'group "G"' or "the sub-events of SID 12" */
+  where: string;
+}
+
+/**
+ * Resolve the container and index of an event that has no SID (a comment or
+ * script event) and check it is of the `wanted` type. Changes nothing.
+ */
+function indexedEvent(
+  events: Record<string, unknown>[],
+  sheetName: string,
+  args: { groupPath?: string; parentSid?: number; parentEventPath?: string; index: number },
+  wanted: 'comment' | 'script',
+): IndexedEvent | { error: string } {
+  const resolution = resolveContainer(events, sheetName, { groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath, position: 'end' });
+  if ('error' in resolution) return { error: resolution.error };
+  const { targetEvents: list, owner, kind } = resolution.container;
+  const where = owner === undefined
+    ? 'the top level'
+    : kind === 'group' ? `group "${String(owner.title)}"` : `the sub-events of SID ${String(owner.sid)}`;
+  if (args.index >= list.length) return { error: `Index ${args.index} is out of range: ${where} holds ${list.length} event(s), indexes 0-${Math.max(0, list.length - 1)}.` };
+  const event = list[args.index];
+  if (event.eventType !== wanted) {
+    const noun = wanted === 'comment' ? 'comment' : 'script event';
+    const what = typeof event.eventType === 'string' ? `is a "${event.eventType}", not a ${noun}` : `has no eventType, so it is not a ${noun}`;
+    return { error: `The event at index ${args.index} of ${where} ${what}; indexes count every event of the container.` };
+  }
+  return { event, list, where };
 }
 
 /** SIDs listed in the copied-SIDs warning; the rest are counted. */
