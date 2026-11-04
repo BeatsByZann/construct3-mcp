@@ -90,6 +90,7 @@ construct3-mcp/
 │   │   ├── timeline-result-modes.ts # Which result mode is in force for a keyframe, and how stored values follow a change
 │   │   ├── ease-params.ts          # Custom eases inside event sheet ease parameters
 │   │   ├── registered-file-entries.ts # Scripts, sounds and music files the project registers
+│   │   ├── tilemap-data.ts         # Codec for a Tilemap instance's tile data string
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/              # Analysis modules
 │   │       ├── index-builder.ts    # Cross-reference index (cached per reader)
@@ -150,6 +151,9 @@ construct3-mcp/
 │   │   ├── timeline-ease-tools.ts  # Custom ease tools (4)
 │   │   ├── timeline-kit.ts         # Types the timeline tool modules share
 │   │   ├── timeline-writes.ts      # Refusals, relative paths and rollback for the timeline tools
+│   │   ├── tilemap-data-tools.ts   # Tilemap tile data tools (3)
+│   │   ├── tilemap-brush-tools.ts  # Tilemap brush tools (4)
+│   │   ├── tilemap-support.ts      # Refusals, name checks and path-free messages the tilemap tools share
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   ├── flowchart-tools.ts      # Flowchart tools (13)
@@ -216,7 +220,7 @@ server.tool(
 
 ### Adding a New Mutation Tool
 
-1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `bulk-instance-tools.ts`, `animation-tools.ts`, `timeline-tools.ts`, `flowchart-tools.ts` or `project-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
+1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `bulk-instance-tools.ts`, `animation-tools.ts`, `timeline-tools.ts`, `flowchart-tools.ts`, `tilemap-data-tools.ts`, `tilemap-brush-tools.ts` or `project-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
 2. Follow the safety pattern:
    - Validate inputs (use `validateName()`, `validateSubfolder()`)
    - For new object type or family names, check `findObjectClassNameClash()` (names clash ignoring case)

@@ -1,0 +1,78 @@
+{
+  "source": "Construct 3 r506-2 (Free edition), a throwaway project; 2026-10-19",
+  "width": 4,
+  "height": 2,
+  "strings": {
+    "tool": "1,0,2,4h,2,4v,3,4hd",
+    "editor": "1,1vd,1h,0,1hd,0,1hv,0"
+  },
+  "sizes": {
+    "tool": [
+      4,
+      2
+    ],
+    "editor": [
+      4,
+      2
+    ]
+  },
+  "cells": {
+    "tool": [
+      [
+        0,
+        1,
+        1,
+        2
+      ],
+      [
+        null,
+        {
+          "tile": 3,
+          "flipX": true
+        },
+        {
+          "tile": 3,
+          "flipY": true
+        },
+        {
+          "tile": 3,
+          "flipX": true,
+          "flipDiagonal": true
+        }
+      ]
+    ],
+    "editor": [
+      [
+        0,
+        {
+          "tile": 0,
+          "flipX": true
+        },
+        {
+          "tile": 0,
+          "flipX": true,
+          "flipDiagonal": true
+        },
+        {
+          "tile": 0,
+          "flipX": true,
+          "flipY": true
+        }
+      ],
+      [
+        {
+          "tile": 0,
+          "flipY": true,
+          "flipDiagonal": true
+        },
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "bytesMatch": {
+    "tool": true,
+    "editor": true
+  }
+}

@@ -22,6 +22,8 @@ import { registerTimelineTools } from './timeline-tools.js';
 import { registerObjectRenameTools } from './object-rename.js';
 import { registerEntityRenameTools } from './entity-rename.js';
 import { registerFlowchartTools } from './flowchart-tools.js';
+import { registerTilemapDataTools } from './tilemap-data-tools.js';
+import { registerTilemapBrushTools } from './tilemap-brush-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -45,4 +47,6 @@ export function registerMutationTools(
   registerObjectRenameTools(deps);
   registerEntityRenameTools(deps);
   registerFlowchartTools(deps);
+  registerTilemapDataTools(deps);
+  registerTilemapBrushTools(deps);
 }

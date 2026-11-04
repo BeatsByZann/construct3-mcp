@@ -278,6 +278,18 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `connect_flowchart_nodes` | Connect an output pin to a node |
 | `disconnect_flowchart_nodes` | Disconnect an output pin, leaving other connections between the same two nodes |
 
+**Tilemaps**
+
+| Tool | Description |
+|------|-------------|
+| `get_tilemap_data` | Read the painted tiles of a placed Tilemap instance as rows[y][x] |
+| `set_tilemap_tiles` | Paint, flip or erase single cells or fill a rectangle; other cells are kept |
+| `set_tilemap_data` | Replace all tile data of a Tilemap instance from rows[y][x], resizing the instance by default |
+| `list_tilemap_brushes` | List a Tilemap object type's editor brushes (auto16, auto47, patch) in its brush file |
+| `add_tilemap_brush` | Add one of a Tilemap object type's editor brushes (auto16, auto47, patch) to its brush file |
+| `update_tilemap_brush` | Rename, retype or replace one of a Tilemap object type's editor brushes (auto16, auto47, patch) in its brush file |
+| `delete_tilemap_brush` | Delete one of a Tilemap object type's editor brushes (auto16, auto47, patch) from its brush file |
+
 **Project and addons**
 
 | Tool | Description |
@@ -610,6 +622,7 @@ construct3-mcp/
 │   │   ├── timeline-result-modes.ts # Which result mode is in force for a keyframe, and how stored values follow a change
 │   │   ├── ease-params.ts          # Custom eases inside event sheet ease parameters
 │   │   ├── registered-file-entries.ts # Scripts, sounds and music files the project registers
+│   │   ├── tilemap-data.ts         # Codec for a Tilemap instance's tile data string
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
 │   │       ├── index-builder.ts    # Cross-reference index (cached per reader)
@@ -670,6 +683,9 @@ construct3-mcp/
 │   │   ├── timeline-ease-tools.ts  # Custom ease tools (4)
 │   │   ├── timeline-kit.ts         # Types the timeline tool modules share
 │   │   ├── timeline-writes.ts      # Refusals, relative paths and rollback for the timeline tools
+│   │   ├── tilemap-data-tools.ts   # Tilemap tile data tools (3)
+│   │   ├── tilemap-brush-tools.ts  # Tilemap brush tools (4)
+│   │   ├── tilemap-support.ts      # Refusals, name checks and path-free messages the tilemap tools share
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   ├── flowchart-tools.ts      # Flowchart tools (13)

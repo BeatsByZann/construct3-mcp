@@ -149,7 +149,7 @@ To see the tool list without any AI tool, use the MCP Inspector in CLI mode:
 npx -y @modelcontextprotocol/inspector --cli node "C:/Tools/construct3-mcp/dist/index.js" "C:/Games/My Game" --method tools/list
 ```
 
-This prints a JSON list of 85 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools` (that figure was measured on the 83-tool server); both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
+This prints a JSON list of 85 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line, which is harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
 
 ### Alternative: run from GitHub without cloning
 
@@ -449,6 +449,8 @@ The UID is what `update_instance` and `delete_instance_from_layout` need later. 
 
 "Put these twenty enemies on Layout 1" calls `add_instances_to_layout` once, with a list of the twenty placements. That is one tool call, one read and one write of the layout and one backup of it, instead of twenty of each. If one placement is refused (an object type that does not exist, say), none is made and the message names the placement by its number, counting from 0. `update_instances` and `delete_instances_from_layout` do the same for many updates and many removals. As for every write, a project that is open in Construct 3 must be closed there and reopened before you save, or the editor can overwrite the change.
 
+To paint a Tilemap, first make a Tilemap object type in the Construct 3 editor (`create_object` does not create one) and place an instance of it with `add_instance_to_layout`, then paint it by cell. "Paint tile 3 at column 1, row 0 and mirror tile 3 at column 2, row 0 of the Tilemap with UID 5 on Layout 1" calls `set_tilemap_tiles {"layoutName": "Layout 1", "uid": 5, "tiles": [{"x": 1, "y": 0, "value": 3}, {"x": 2, "y": 0, "value": {"tile": 3, "flipX": true}}]}`. Tiles are numbered as the Tilemap Bar of Construct 3 r506-2 (Free edition) numbers them, the first tile of the tileset being 0, and cells are `rows[y][x]`; `get_tilemap_data` reads them back. A bare instance with no tile data gets a grid sized from the instance; `set_tilemap_data` replaces the whole grid and, unless you pass `resizeInstance: false`, sizes the instance to it. A call that is refused changes nothing. Each write returns the `editorNote` like the others: if the project is open in Construct 3, close and reopen it there before saving, or the editor can overwrite these changes. The brush tools (`list_tilemap_brushes`, `add_tilemap_brush`, `update_tilemap_brush`, `delete_tilemap_brush`) manage the editor brushes of a Tilemap object type in its brush file, with the same note. [`docs/API.md`](API.md) lists the grids each brush type takes.
+
 "Give Player a number instance variable health" calls `update_object_properties {"name": "Player", "addVariables": [{"name": "health", "type": "number"}]}`. The tool sets name and type only, not a start value: every instance already placed gets the type's default (`0`, `""` or `false`), which you can change per instance with `update_instance`.
 
 "Add a global number variable Score" calls `add_event_to_sheet {"sheetName": "MainSheet", "eventType": "variable", "variableName": "Score", "variableType": "number", "initialValue": "0"}`.
@@ -629,6 +631,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
 - Runtime helpers that only return text: `get_bridge_commands`, `generate_bridge_eval_script`
+- Tilemaps: `get_tilemap_data`, `list_tilemap_brushes`
 - Runtime read: `get_canvas_size` (the canvas geometry of a game you connected to with `connect_to_game`; it sends nothing to the game)
 
 **Tools that write files (49)**, review before approving:
@@ -640,6 +643,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Effects of object types, families, layouts and layers: `add_effect`, `update_effect`, `remove_effect`, `reorder_effects`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`, `add_timeline_track`, `remove_timeline_track`, `add_property_track`, `remove_property_track`, `set_keyframe`, `delete_keyframe`, `update_track`, `add_value_track`, `add_audio_track`, `add_timeline_folder`, `rename_timeline_folder`, `delete_timeline_folder`, `move_timeline_track`, `create_ease`, `update_ease`, `delete_ease`
 - Flowcharts: `create_flowchart`, `delete_flowchart`, `add_flowchart_node`, `update_flowchart_node`, `delete_flowchart_node`, `add_flowchart_output`, `update_flowchart_output`, `delete_flowchart_output`, `reorder_flowchart_outputs`, `connect_flowchart_nodes`, `disconnect_flowchart_nodes`
+- Tilemaps: `set_tilemap_tiles`, `set_tilemap_data`, `add_tilemap_brush`, `update_tilemap_brush`, `delete_tilemap_brush`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
 
