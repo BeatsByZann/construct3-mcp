@@ -59,9 +59,11 @@ construct3-mcp/
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
 │   │   ├── instance-variables.ts   # Instance variable values and effect entries on layout instances
+│   │   ├── object-name-references.ts # Where an object type or a family is named (rename_object_type, rename_family)
 │   │   ├── hierarchy.ts            # Hierarchy (scene graph) links between layout instances
 │   │   ├── containers.ts           # Containers in project.c3proj: members, a deleted object type taken out, a container under two members removed
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
+│   │   ├── event-strings.ts        # Strings of an event sheet that can name something (events, parameters, script lines)
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
 │   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert, delete, reorder and duplicate
 │   │   ├── file-size-limit.ts      # The size limit: C3MCP_MAX_FILE_MB, 10MB by default, whole megabytes up to 128
@@ -108,8 +110,10 @@ construct3-mcp/
 │   │   ├── query.ts                # Query tools (9)
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
+│   │   ├── object-rename.ts        # Object type and family renames with their references (2)
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
+│   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), their rollback, script file search
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (8)
 │   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families

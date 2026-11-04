@@ -269,7 +269,7 @@ export function unscannedWarnings(reports: readonly UnscannedFileReport[], done:
 }
 
 /** "a, b, c" or "a, b, c, d, e and 3 more" */
-function listSome(items: readonly string[], max = 5): string {
+export function listSome(items: readonly string[], max = 5): string {
   const shown = items.slice(0, max).join(', ');
   return items.length > max ? `${shown} and ${items.length - max} more` : shown;
 }

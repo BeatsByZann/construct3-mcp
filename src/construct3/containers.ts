@@ -143,6 +143,28 @@ export function removeContainerMember(
   return removal;
 }
 
+/**
+ * Rename `objectName` (matched ignoring case) to `newName` in every
+ * container of a parsed project.c3proj, in place, inside a writer update
+ * (renameInProject's alsoChange, so the registration and the members
+ * change in one write). Entries that are not containers, and members that
+ * are not names, stay as they are. Returns the containers that changed,
+ * with their member names after the change. A container that lists the
+ * name twice (in two letter cases) gets `newName` twice.
+ */
+export function renameContainerMember(project: { containers?: unknown }, objectName: string, newName: string): ContainerEntry[] {
+  const changed: ContainerEntry[] = [];
+  if (!Array.isArray(project.containers)) return changed;
+  const key = nameKey(objectName);
+  project.containers.forEach((entry: unknown, index: number) => {
+    if (!isRecord(entry) || !Array.isArray(entry.members)) return;
+    if (!entry.members.some(member => typeof member === 'string' && nameKey(member) === key)) return;
+    entry.members = entry.members.map(member => (typeof member === 'string' && nameKey(member) === key ? newName : member));
+    changed.push({ index, members: (entry.members as unknown[]).filter((m): m is string => typeof m === 'string') });
+  });
+  return changed;
+}
+
 /** The delete_object warning for a removal, or undefined when no container changed. */
 export function describeContainerRemoval(removal: ContainerRemoval): string | undefined {
   const quoted = (names: string[]) => names.map(name => `"${name}"`).join(', ');

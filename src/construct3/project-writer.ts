@@ -80,6 +80,9 @@ export function newProjectFolder(name: string): Subfolder {
   return { items: [], subfolders: [], name };
 }
 
+/** A rename's project update found project.c3proj no longer as the rename was planned on (thrown before anything is written). */
+export class RenameConflictError extends Error {}
+
 /**
  * writeEntityFile failed after it backed the file up, while or after
  * replacing it: the file may hold the new content (e.g. the post-write check
@@ -442,11 +445,16 @@ export class Construct3ProjectWriter {
    * bridge script), backed up once per tool call first, under the file's
    * one lock. A missing file is not an error. Returns the backup path, or
    * undefined when there was no file. project.c3proj cannot be deleted.
+   * Refused (StaleFileError) when `expected` is given and the file is no
+   * longer in that state.
    */
-  async deleteFile(path: string): Promise<string | undefined> {
+  async deleteFile(path: string, options: { expected?: FileState } = {}): Promise<string | undefined> {
     const filePath = await existingSpelling(path);
     if (fileKey(filePath) === fileKey(this.reader.getProjectPath())) throw new Error('project.c3proj cannot be deleted by a tool.');
     return this.underLockOf(filePath, async () => {
+      if (options.expected !== undefined && !sameFileState(await statFileState(filePath), options.expected)) {
+        throw new StaleFileError(staleFileMessage(this.projectRelative(filePath)), this.projectRelative(filePath));
+      }
       const backup = await this.backupForCall(filePath);
       try {
         await unlink(filePath);
@@ -1143,6 +1151,85 @@ export class Construct3ProjectWriter {
       }
     });
     // The change above never returns false, so the file was written
+    return backupPath as string;
+  }
+
+  /**
+   * Rename an entity in its project.c3proj container (objectTypes,
+   * eventSheets, layouts, families), where it keeps its place in the
+   * project bar: the same folder, the same position. The name is matched as
+   * registered, letter case included. A renamed layout that is the startup
+   * layout ("firstLayout", at the top level or in "properties", compared
+   * ignoring case as the editor compares layout names) stays the startup
+   * layout. `alsoChange` edits the same parsed file in the same update (the
+   * containers of a renamed object type), so both land in one write; it
+   * runs again on each retry round. The project file is read again for
+   * the update (an editor save since is merged), so the checks the tool
+   * made are made again on what is read, before anything is written:
+   * throws (RenameConflictError) when the name is no longer registered,
+   * when it is registered in another folder than `expectedFolder` (moved
+   * during the call), or when a category of `clashesWith` (default: the
+   * entity's own) registers another entry whose name equals `newName`
+   * ignoring case. Returns the backup path.
+   */
+  async renameInProject(
+    category: EntityCategory,
+    name: string,
+    newName: string,
+    options: {
+      alsoChange?: (project: Record<string, unknown>) => void;
+      /** The folder path the entry was found in when the tool planned the rename ([] for the root) */
+      expectedFolder?: readonly string[];
+      /** The categories whose names the new name must not equal, ignoring case (object types and families share one) */
+      clashesWith?: readonly EntityCategory[];
+    } = {},
+  ): Promise<string> {
+    const backupPath = await this.updateProjectFile(project => {
+      type Folder = { items?: unknown; subfolders?: unknown; name?: unknown };
+      // A project the reader loaded has this tree shape; the update parses the file fresh, so a file saved since could differ.
+      const registered = (folder: Folder, path: string[], out: Array<{ name: string; path: string[] }>) => {
+        if (Array.isArray(folder.items)) for (const item of folder.items) if (typeof item === 'string') out.push({ name: item, path });
+        if (Array.isArray(folder.subfolders)) {
+          for (const sub of folder.subfolders as Folder[]) registered(sub, [...path, String(sub.name)], out);
+        }
+        return out;
+      };
+      for (const other of options.clashesWith ?? [category]) {
+        const taken = registered(project[other] as Folder, [], []).find(e => nameKey(e.name) === nameKey(newName) && !(other === category && e.name === name));
+        if (taken) {
+          throw new RenameConflictError(`project.c3proj now registers "${taken.name}" (${other}), which the new name "${newName}" equals ignoring case `
+            + '(saved in the Construct 3 editor during this call?).');
+        }
+      }
+      const renameIn = (folder: Folder, path: string[]): boolean => {
+        const { items, subfolders } = folder;
+        if (Array.isArray(items)) {
+          // Only the first registration of the name is renamed; the editor lists a name once
+          const index = items.indexOf(name);
+          if (index !== -1) {
+            if (options.expectedFolder !== undefined && path.join('/') !== options.expectedFolder.join('/')) {
+              throw new RenameConflictError(`"${name}" was moved in project.c3proj during this call (now in ${path.length > 0 ? `folder "${path.join('/')}"` : 'the root'}).`);
+            }
+            items[index] = newName;
+            return true;
+          }
+        }
+        return Array.isArray(subfolders) && (subfolders as Folder[]).some(sub => renameIn(sub, [...path, String(sub.name)]));
+      };
+      if (!renameIn(project[category] as Folder, [])) {
+        throw new RenameConflictError(`"${name}" is no longer registered in project.c3proj (${category}).`);
+      }
+      if (category === 'layouts') {
+        for (const holder of [project, project.properties]) {
+          if (typeof holder === 'object' && holder !== null && typeof holder.firstLayout === 'string'
+            && nameKey(holder.firstLayout) === nameKey(name)) {
+            holder.firstLayout = newName;
+          }
+        }
+      }
+      options.alsoChange?.(project);
+    });
+    // The change above renames or throws, so the file was written
     return backupPath as string;
   }
 

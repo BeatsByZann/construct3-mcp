@@ -18,6 +18,7 @@ import { registerHierarchyTools } from './hierarchy-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
 import { registerEffectTools } from './effect-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
+import { registerObjectRenameTools } from './object-rename.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -37,4 +38,5 @@ export function registerMutationTools(
   registerAnimationTools(deps);
   registerEffectTools(deps);
   registerTimelineTools(deps);
+  registerObjectRenameTools(deps);
 }

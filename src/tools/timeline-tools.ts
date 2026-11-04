@@ -33,6 +33,7 @@ import {
   type ProjectFolderNode,
 } from '../construct3/timeline-folders.js';
 import { withProjectSync } from './project-sync.js';
+import { readForRename, type ReadForRename } from './rename-files.js';
 
 type Writer = MutationToolDeps['writer'];
 
@@ -238,6 +239,59 @@ function locatedFilePath(projectDir: string, name: string, location: TimelineLoc
 /** Project-relative path of the file for a located name, for messages. */
 function locatedFileLabel(name: string, location: TimelineLocation): string {
   return ['timelines', ...locationDirs(location), `${name}.json`].join('/');
+}
+
+/** A registered timeline as a rename reads it: its file, read for a later replace, and its data. */
+export interface RegisteredTimeline {
+  name: string;
+  /** Project-relative path of its file, for messages */
+  file: string;
+  read: ReadForRename;
+  data: Timeline;
+}
+
+/**
+ * Every registered timeline (not the transitions), read from its file with
+ * the file's state and bytes for a later replace (rename_layout and
+ * rename_object_type). A registered timeline whose file exists but cannot
+ * be read or parsed is listed in `unreadable` (project-relative paths): it
+ * may name what is renamed. So is a name in a folder the timeline tools
+ * cannot resolve to a file (locateTimelines' `unresolved`), named
+ * "timelines/<name> (in a folder the timeline tools cannot resolve)". A
+ * missing file is skipped (validate_project reports it).
+ */
+export async function readRegisteredTimelines(
+  projectDir: string,
+  container: unknown,
+): Promise<{ timelines: RegisteredTimeline[]; unreadable: string[] }> {
+  const timelines: RegisteredTimeline[] = [];
+  const { timelines: located, unresolved } = locateTimelines(container as TimelineFolderNode | undefined);
+  const unreadable: string[] = [...unresolved].map(name => `timelines/${name} (in a folder the timeline tools cannot resolve)`);
+  for (const [name, location] of located) {
+    const file = locatedFileLabel(name, location);
+    let read: ReadForRename;
+    try {
+      read = await readForRename(locatedFilePath(projectDir, name, location));
+    } catch {
+      unreadable.push(file);
+      continue;
+    }
+    if (read.bytes === null) continue;
+    try {
+      const data: unknown = parseJsonText(read.bytes.toString('utf-8'));
+      if (typeof data !== 'object' || data === null || Array.isArray(data)) throw new Error('not a JSON object');
+      timelines.push({ name, file, read, data: data as Timeline });
+    } catch {
+      unreadable.push(file);
+    }
+  }
+  return { timelines, unreadable };
+}
+
+/** The text a timeline file is written with: the existing file's text style, or the project's for a new one. */
+export async function timelineFileText(filePath: string, data: Timeline, projectPath: string): Promise<string> {
+  const target = await existingSpelling(filePath);
+  return serializeJson(data, await resolveJsonTextStyle(target, projectPath, dirname(target)));
 }
 
 /** Whether two project-bar folder paths are the same folder (names compared ignoring case). */

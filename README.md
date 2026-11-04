@@ -151,6 +151,8 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `create_object` | Create a new object type (Sprite, Text, TiledBg, global plugins, etc.); refuses names that clash with an object type, a family, System or the Functions object, ignoring case |
 | `update_object_properties` | Add/remove instance variables and behaviors, change global status; removing one that events still use is refused, listing the uses, unless forced |
 | `delete_object` | Delete an object; refused while anything uses it (events, instances on any layer or sub-layer, families), listing where, unless forced; its image files are kept as `.bak` |
+| `rename_object_type` | Rename an object type with its event sheet uses, layout instances, family and container memberships, frame image files and its tilemap brush file (dry run, force); lists timeline tracks, strings and scripts that may name it, never changes them |
+| `rename_family` | Rename a family with its event sheet uses (dry run, force) |
 | `create_family` | Create a family; refuses name clashes and members of mixed plugins (load-time checked) |
 | `update_family` | Add/remove members and shared instance variables; refuses member changes that mix plugins (load-time checked), and removing an instance variable or member through which events still use the family's instance variables, behaviors or effects, unless forced |
 | `update_instance_variable` | Rename an instance variable of an object type or family, or change its type or description, with the values on placed instances; refuses a rename events use, unless forced |
@@ -533,9 +535,11 @@ construct3-mcp/
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
 │   │   ├── instance-variables.ts   # Instance variable values and effect entries on layout instances
+│   │   ├── object-name-references.ts # Where an object type or a family is named (rename_object_type, rename_family)
 │   │   ├── hierarchy.ts            # Hierarchy (scene graph) links between layout instances
 │   │   ├── containers.ts           # Containers in project.c3proj: members, a deleted object type taken out, a container under two members removed
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
+│   │   ├── event-strings.ts        # Strings of an event sheet that can name something (events, parameters, script lines)
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
 │   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert, delete, reorder and duplicate
 │   │   ├── file-size-limit.ts      # The size limit: C3MCP_MAX_FILE_MB, 10MB by default, whole megabytes up to 128
@@ -582,8 +586,10 @@ construct3-mcp/
 │   │   ├── query.ts                # Query tools (9)
 │   │   ├── analysis.ts             # Analysis tools (11)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
+│   │   ├── object-rename.ts        # Object type and family renames with their references (2)
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
 │   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
+│   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), their rollback, script file search
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (8)
 │   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families
@@ -723,7 +729,7 @@ We welcome contributions! Here's how to get started:
 
 - **Folder Format Only**: Works with .c3proj folder projects; `pack_project` can write a .c3p, but .c3p files cannot be opened
 - **Editor Holds the Project in Memory**: Close and reopen the project in Construct 3 after MCP edits and before saving there, or the editor can overwrite them
-- **No Rename Refactoring**: Objects, families, event sheets, layouts and timelines cannot be renamed; renaming an event variable (`update_event_variable`) does not update the events that use the old name, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38); `rename_layer` renames it in several layouts in one call. `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
+- **No Rename Refactoring**: Event sheets, layouts and timelines cannot be renamed (`rename_object_type` and `rename_family` rename object types and families with what names them); renaming an event variable (`update_event_variable`) does not update the events that use the old name, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38); `rename_layer` renames it in several layouts in one call. `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
 - **Runtime Testing Needs an Export or the Editor's Preview**: Only the Construct editor exports or previews a project, so the runtime tools start from an exported folder (`serve_preview`) or a preview in a browser with a debugging port; they drive Chromium-based browsers (Chrome, Edge) only
 - **No ACE Validation**: Event block conditions/actions are not validated against plugin schemas (the AI caller is expected to know valid ACE IDs). Only the editor load-time rules listed under `validate_project` are checked; triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only. OR blocks are created with `isOrBlock`
 
