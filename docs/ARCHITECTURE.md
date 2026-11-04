@@ -307,7 +307,7 @@ The cross-reference index (`ProjectIndex`) is cached per reader, so projects ope
 | Resources | `resources/project.ts` (6), `resources/docs.ts` (3; the pitfalls text lives in `resources/pitfalls.ts`) | 9 | Read-only data access, Construct 3 docs, curated pitfalls |
 | Query Tools | `tools/query.ts` | 9 | List, search, get details |
 | Analysis Tools | `tools/analysis.ts` | 11 | Deep analysis, validation, event locating, runtime traps |
-| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (15), `layout-tools.ts` (9), `layer-rename.ts` (1), `layer-order.ts` (3), `animation-tools.ts` (8), `effect-tools.ts` (5), `container-tools.ts` (4), `timeline-tools.ts` (5), `project-tools.ts` (4), `hierarchy-tools.ts` (2) | 45 | Safe create, update, delete |
+| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (16), `layout-tools.ts` (9), `layer-rename.ts` (1), `layer-order.ts` (3), `animation-tools.ts` (8), `effect-tools.ts` (5), `container-tools.ts` (4), `timeline-tools.ts` (5), `project-tools.ts` (4), `hierarchy-tools.ts` (2) | 45 | Safe create, update, delete |
 | Runtime Tools | `tools/runtime-tools.ts` | 19 | Runtime bridge (inject, remove, commands), game connection, bridge calls, conditions, event buffers, input, canvas, screenshots, preview server, preview checks, project clone, `.c3p` packing |
 | Prompts | `prompts/workflows.ts` | 7 | Workflow templates |
 
@@ -357,7 +357,7 @@ Claude → create_object({ name: "Enemy", pluginId: "Sprite" })
   → toolResult(WriteResult)         ← adds the editorNote
 ```
 
-Event sheet writes (`add_event_block`, `update_event_block`, `add_event_to_sheet`, `update_event_block_action`, `move_events_between_sheets`) run one more step before `writeEntityFile`: `checkLoadRulesBeforeWrite()` (for moves, `checkLoadRulesBeforeSheetPairWrite()`) compares the sheet's editor load-time issues before and after the change. A new error refuses the write; new warnings are returned with the result.
+Event sheet writes (`add_event_block`, `update_event_block`, `add_event_to_sheet`, `update_event_block_action`, `move_events_between_sheets`, `move_event_block_items`) run one more step before `writeEntityFile`: `checkLoadRulesBeforeWrite()` (for moves, `checkLoadRulesBeforeSheetPairWrite()`) compares the sheet's editor load-time issues before and after the change. A new error refuses the write; new warnings are returned with the result.
 
 ### Analysis Flow
 

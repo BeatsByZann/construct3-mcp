@@ -174,6 +174,7 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `update_event_variable` | Rename a variable or change its type, initial value, static or constant flag; a new name is checked like in the editor |
 | `move_events_between_sheets` | Copy or move top-level events between sheets by SID (optionally into a group); load-time checked, so copying an event that breaks a load-time rule is refused; a copy or move that would clash event variable names (e.g. a copied global variable) is refused, and so is (without `force`) a move that takes a used variable out of scope, e.g. a global variable moved into a group |
 | `delete_event_from_sheet` | Delete an event from a sheet by SID or include name (dry-run, force); refuses while functions or event variables it removes are still referenced elsewhere (by calls, function maps, System variable ACEs or by name in expressions); warns about an else block the delete leaves behind |
+| `move_event_block_items` | Move, reorder or copy conditions or actions within or between blocks of a sheet (copies of items that have a SID get new ones); refuses moving an else condition and (without `force`) a move that takes a used variable or parameter out of scope, and warns when "Set return value" leaves a function block. `update_event_block` also inserts conditions and actions at an index and replaces conditions in place |
 | `remove_event_from_sheet` | Remove an include from a sheet by included sheet name |
 | `add_custom_action` | Add a custom action definition to an object type or family (at the top level, in a group with `groupPath` or `parentSid`, or beside an event with `siblingSid` and `position`, and only where every event above it is a group); refuses a second custom action of one name on one owner; calls are `{ customAction, objectClass, parameters }` actions in `add_event_block` and `update_event_block`, which also edits the definition's body |
 | `update_function` | Change a function's or custom action's name, options and parameters, and a function's return type; calls and function maps are rewritten with `updateCallers`, `Functions.Name(...)` expressions and unparsed sheets block without `force`; dry run |
@@ -583,7 +584,7 @@ construct3-mcp/
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (8)
 │   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families
-│   │   ├── event-tools.ts          # Event sheet tools (15)
+│   │   ├── event-tools.ts          # Event sheet tools (16)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)

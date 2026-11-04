@@ -67,6 +67,7 @@ import {
   type PlacedEventKind,
   eventPathSchema,
   collectEventSids,
+  MAX_ITEMS_PER_BLOCK,
   eventSidsMatchingSeveral,
   countDescendants,
   summarizeEvents,
@@ -2043,13 +2044,208 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
     }
   );
 
+  // ─── move_event_block_items ───────────────────────────────
+
+  /** Event types that hold conditions and actions. */
+  const ITEM_HOLDERS: ReadonlySet<string> = new Set(['block', 'function-block', 'custom-ace-block']);
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
+    'move_event_block_items',
+    {
+      description: 'Move, reorder or copy conditions or actions within a block, function block or custom action block, or into another one of the same event sheet. A move keeps the items\' SIDs; copies (copy=true) get new SIDs and the source keeps its items. Refused, changing nothing: a System "else" condition (it stays first in its block) and an item put before one, indexes that do not fit, a target that would hold more than 100 items, an object class that is no object type, family, System or the Functions object, a new load-time error, and (unless force=true) a move after which an item uses an event variable or function parameter outside its scope. "Set return value" moved out of a function block is written with a warning, as add_event_block gives it.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        sourceBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items are in'),
+        sourceEventPath: z.string().max(500).optional().describe('Only when sourceBlockSid matches several events: the path of the one you mean'),
+        targetBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items go to (the same SID to reorder)'),
+        targetEventPath: z.string().max(500).optional().describe('Only when targetBlockSid matches several events: the path of the one you mean'),
+        itemType: z.enum(['actions', 'conditions']).describe('Which list the items are in'),
+        indices: z.array(z.number().int().min(0)).min(1).max(100).describe('Indexes of the items in the source, each once; they keep their order'),
+        targetIndex: z.number().int().min(0).describe('Where the items go in the target; within one block, counted after the items are taken out'),
+        copy: z.boolean().optional().default(false).describe('Copy instead of move: the copies get new SIDs, the source keeps its items'),
+        force: z.boolean().optional().default(false).describe('Move even when an item then uses an event variable or function parameter outside its scope (the uses are listed in "references" and a warning)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of move_event_block_items', 'move_event_block_items takes sheetName, sourceBlockSid, sourceEventPath, targetBlockSid, targetEventPath, itemType, indices, targetIndex, copy and force.'),
+      }).strict(),
+    },
+    async (args) => {
+      // Set once the events are read: puts them back as they were read
+      let restoreSheet: (() => void) | undefined;
+      let writeStarted = false;
+      try {
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        restoreSheet = () => { sheet.events = beforeEvents; };
+        const refuse = (message: string) => {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(message));
+        };
+        const source = resolveEventBySid(events, args.sourceBlockSid, { sheetName: args.sheetName, action: 'take items from', eventPath: args.sourceEventPath, argument: 'sourceEventPath' });
+        if ('error' in source) return refuse(`Source: ${source.error}`);
+        const target = resolveEventBySid(events, args.targetBlockSid, { sheetName: args.sheetName, action: 'put items into', eventPath: args.targetEventPath, argument: 'targetEventPath' });
+        if ('error' in target) return refuse(`Target: ${target.error}`);
+        const from = source.match.event;
+        const to = target.match.event;
+        for (const [role, ev, sid] of [['Source', from, args.sourceBlockSid], ['Target', to, args.targetBlockSid]] as const) {
+          if (!ITEM_HOLDERS.has(String(ev.eventType))) {
+            return refuse(`${role} event with SID ${sid} is a "${String(ev.eventType)}", not a block, function block or custom action block.`);
+          }
+        }
+        if (!Array.isArray(from[args.itemType])) from[args.itemType] = [];
+        if (!Array.isArray(to[args.itemType])) to[args.itemType] = [];
+        const sourceItems = from[args.itemType] as Record<string, unknown>[];
+        const targetItems = to[args.itemType] as Record<string, unknown>[];
+        const kind = args.itemType === 'actions' ? 'action' : 'condition';
+
+        if (new Set(args.indices).size !== args.indices.length) return refuse('indices lists an index more than once.');
+        const outOfRange = args.indices.find(i => i >= sourceItems.length);
+        if (outOfRange !== undefined) return refuse(`Index ${outOfRange} is out of range: the source has ${sourceItems.length} ${kind}(s).`);
+        const sameBlock = from === to;
+        const room = sameBlock && !args.copy ? sourceItems.length - args.indices.length : targetItems.length;
+        if (args.targetIndex > room) return refuse(`targetIndex ${args.targetIndex} is out of range: the target has ${room} ${kind}(s) there, so 0-${room}.`);
+        if ((args.copy || !sameBlock) && targetItems.length + args.indices.length > MAX_ITEMS_PER_BLOCK) {
+          return refuse(`The target would hold ${targetItems.length + args.indices.length} ${kind}s (max ${MAX_ITEMS_PER_BLOCK}).`);
+        }
+        if (args.itemType === 'conditions') {
+          if (args.indices.some(i => isElseCondition(sourceItems[i]))) {
+            return refuse(`An else condition cannot be ${args.copy ? 'copied' : 'moved'}: it stays first in its own block. ${args.copy ? 'Copy' : 'Move'} the other conditions instead.`);
+          }
+          if (args.targetIndex === 0 && isElseCondition(targetItems[0])) {
+            return refuse('The else condition of the target block stays first (also when it is disabled); use targetIndex 1 or later.');
+          }
+        }
+        const ordered = [...args.indices].sort((x, y) => x - y);
+        const selected = ordered.map(i => sourceItems[i]);
+
+        // Object classes, against the destination's function context: the target block (upstream warns when
+        // "Set return value" stands outside a function block)
+        const refs: ObjectRef[] = [];
+        collectObjectRefs(args.itemType === 'conditions' ? selected as Array<Record<string, unknown> & { objectClass: string }> : [],
+          args.itemType === 'actions' ? selected : [], [], refs);
+        const classWarnings: string[] = [];
+        if (refs.length > 0) {
+          const { errors, warnings: found } = await validateObjectClasses(reader, refs, { insideFunction: isInFunctionBlock(events, to) });
+          if (errors.length > 0) return refuse(`Object class validation failed:\n${errors.join('\n')}`);
+          classWarnings.push(...found);
+        }
+
+        // The declaration each use of this sheet's variables and parameters finds now
+        const sheetsNow = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        const declared = new Map(listEventVariableDeclarations(sheet.events).map(d => [d.name.toLowerCase(), d.name] as const));
+        const bindingsBefore = recordVariableBindings(sheetsNow, declared);
+
+        let moved: Record<string, unknown>[];
+        const copies = new Map<object, object>();
+        if (args.copy) {
+          moved = [];
+          for (const item of selected) {
+            const copy = JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
+            if (typeof copy.sid === 'number') copy.sid = await idGen.generateSid(reader);
+            copies.set(copy, item);
+            moved.push(copy);
+          }
+          targetItems.splice(args.targetIndex, 0, ...moved);
+        } else if (sameBlock) {
+          const keep = sourceItems.filter((_item, i) => !ordered.includes(i));
+          keep.splice(args.targetIndex, 0, ...selected);
+          sourceItems.splice(0, sourceItems.length, ...keep);
+          moved = selected;
+        } else {
+          for (const i of [...ordered].reverse()) sourceItems.splice(i, 1);
+          targetItems.splice(args.targetIndex, 0, ...selected);
+          moved = selected;
+        }
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({
+            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged',
+            sourceBlockSid: args.sourceBlockSid, targetBlockSid: args.targetBlockSid, itemType: args.itemType, copy: args.copy,
+            sids: moved.map(m => m.sid).filter((s): s is number => typeof s === 'number'), targetIndex: args.targetIndex,
+          }, { projectWritten: false });
+        }
+
+        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+        if (loadCheck.errors.length > 0) return refuse(loadRuleErrorMessage(loadCheck.errors));
+        const warnings = [...classWarnings, ...loadCheck.warnings];
+        // Only a move out of another block empties the source: a reorder puts the items back and a copy leaves them
+        if (args.itemType === 'conditions' && sourceItems.length === 0) {
+          // A function block or custom action block has no parent to run it: it runs when it is called
+          const runsWhen = from.eventType === 'function-block' ? 'it now runs on every call of the function.'
+            : from.eventType === 'custom-ace-block' ? 'it now runs on every call of the custom action.'
+              : 'it now runs whenever its parent runs (every tick at the top level, every call in a function or custom action).';
+          warnings.push(`All conditions of the source (SID ${args.sourceBlockSid}) were moved: ${runsWhen}`);
+        }
+
+        // A copy is compared with the item it was copied from
+        const { lost, rebound } = findVariableBindingChanges(bindingsBefore, sheetsNow, ace => copies.get(ace) ?? ace);
+        const lostCount = countDeleteReferences(lost);
+        const reboundCount = countDeleteReferences(rebound);
+        const whereLost = 'where it is no longer in scope after the move';
+        const whereRebound = 'where the name now finds another event variable or function parameter after the move';
+        const checked = 'uses of the event variables and function parameters of this sheet';
+        if ((lostCount > 0 || reboundCount > 0 || !lost.complete) && !args.force) {
+          sheet.events = beforeEvents;
+          const reasons = [
+            ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
+            ...(reboundCount > 0 ? [`${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`] : []),
+            ...(!lost.complete ? [traversalLimitReason(checked, lost.limit)] : []),
+          ];
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'move_blocked',
+            message: nothingChanged(`${reasons.join(' ')} ${lostCount > 0 || reboundCount > 0 ? 'Move them to a place where the same declaration is in scope, or use force=true to move anyway.' : 'Use force=true to move anyway.'}`),
+            references: danglingReferenceList(lost),
+            ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          }, { projectWritten: false });
+        }
+        if (lostCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
+        }
+        if (reboundCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`);
+        }
+        if (!lost.complete) warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
+
+        writeStarted = true;
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated',
+          sourceBlockSid: args.sourceBlockSid, targetBlockSid: args.targetBlockSid, itemType: args.itemType, copy: args.copy,
+          sids: moved.map(m => m.sid).filter((s): s is number => typeof s === 'number'), targetIndex: args.targetIndex,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
+          ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[move_event_block_items] failed:', error);
+        if (restoreSheet) {
+          restoreSheet();
+          if (!writeStarted) {
+            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          }
+        }
+        return toolError(`Error moving items: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
   // ─── update_event_block ─────────────────────────────────────
 
   // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
   server.registerTool(
     'update_event_block',
     {
-      description: 'Update an existing block, function block or custom action block in an event sheet — modify action parameters, add/remove actions or conditions, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
+      description: 'Update an existing block, function block or custom action block in an event sheet — modify action parameters, add/remove actions or conditions, insert them at an index, replace conditions in place, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. A trigger condition added to a block that holds a function block or a custom action block, at any depth below it, is refused by the load-time check. Unknown arguments and keys are refused, never dropped.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
         sid: z.number().int().positive().describe('SID of the block, function block or custom action block to update'),
@@ -2076,15 +2272,36 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }, {
           errorMap: unknownKeysErrorMap('an updateConditions entry', 'An entry has index, parameters, isInverted and disabled; to change anything else, remove the condition (removeConditionIndices) and add a new one (addConditions).'),
         }).strict()).optional().describe('Conditions to update by index'),
+        insertActions: z.array(z.object({
+          index: z.number().int().min(0).describe('Where the action goes: its index in the actions after removeActionIndices, before this call\'s other inserts and addActions'),
+          action: actionSchema.describe('The action, in the shapes of add_event_block'),
+        }, {
+          errorMap: unknownKeysErrorMap('an insertActions entry', 'An entry has index and action.'),
+        }).strict()).max(100).optional().describe('Insert actions at indexes; two inserts at one index are refused'),
+        insertConditions: z.array(z.object({
+          index: z.number().int().min(0).describe('Where the condition goes: its index in the conditions after removeConditionIndices, before this call\'s other inserts and addConditions'),
+          condition: conditionSchema.describe('The condition'),
+        }, {
+          errorMap: unknownKeysErrorMap('an insertConditions entry', 'An entry has index and condition.'),
+        }).strict()).max(100).optional().describe('Insert conditions at indexes; a System "else" condition in first place stays first'),
+        replaceConditions: z.array(z.object({
+          index: z.number().int().min(0).describe('Index of the condition to replace (before this call\'s removals)'),
+          condition: conditionSchema.describe('The new condition; it gets a new SID'),
+        }, {
+          errorMap: unknownKeysErrorMap('a replaceConditions entry', 'An entry has index and condition.'),
+        }).strict()).max(100).optional().describe('Replace conditions in place'),
         addActions: z.array(actionSchema).optional().describe('Append new actions to the block (same shapes as add_event_block)'),
         addConditions: z.array(conditionSchema).optional().describe('Append new conditions to the block'),
         removeActionIndices: z.array(z.number().int().min(0)).optional().describe('Remove actions by index (0-based, applied before adds)'),
         removeConditionIndices: z.array(z.number().int().min(0)).optional().describe('Remove conditions by index (0-based, applied before adds)'),
       }, {
-        errorMap: unknownKeysErrorMap('the arguments of update_event_block', 'update_event_block takes sheetName, sid, eventPath, disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, removeActionIndices and removeConditionIndices. It does not add sub-events.'),
+        errorMap: unknownKeysErrorMap('the arguments of update_event_block', 'update_event_block takes sheetName, sid, eventPath, disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices and removeConditionIndices. It does not add sub-events.'),
       }).strict(),
     },
     async (args) => {
+      // Set once the sheet is changed in memory: puts the events back as they were read
+      let restoreSheet: (() => void) | undefined;
+      let writeStarted = false;
       try {
         // Validate at least one update is provided
         const hasUpdate = args.disabled !== undefined
@@ -2094,11 +2311,14 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           || (args.updateConditions && args.updateConditions.length > 0)
           || (args.addActions && args.addActions.length > 0)
           || (args.addConditions && args.addConditions.length > 0)
+          || (args.insertActions && args.insertActions.length > 0)
+          || (args.insertConditions && args.insertConditions.length > 0)
+          || (args.replaceConditions && args.replaceConditions.length > 0)
           || (args.removeActionIndices && args.removeActionIndices.length > 0)
           || (args.removeConditionIndices && args.removeConditionIndices.length > 0);
 
         if (!hasUpdate) {
-          return toolError('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, removeActionIndices, removeConditionIndices.');
+          return toolError('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices, removeConditionIndices.');
         }
 
         // Read the event sheet
@@ -2158,8 +2378,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // (normalizes the deprecated behavior-type alias; throws on conflicting keys before anything changes)
         const addRefs: ObjectRef[] = [];
         collectObjectRefs(
-          args.addConditions ?? [],
-          (args.addActions ?? []) as Array<Record<string, unknown>>,
+          [...(args.addConditions ?? []), ...(args.insertConditions ?? []).map(i => i.condition), ...(args.replaceConditions ?? []).map(r => r.condition)],
+          [...(args.addActions ?? []), ...(args.insertActions ?? []).map(i => i.action)] as Array<Record<string, unknown>>,
           [],
           addRefs,
         );
@@ -2175,7 +2395,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
         // The deprecated per-condition isOr flag is never written: it only
         // passes when the block ends up an OR block anyway.
-        if ((args.addConditions ?? []).some(c => c.isOr === true)) {
+        if ([...(args.addConditions ?? []), ...(args.insertConditions ?? []).map(i => i.condition), ...(args.replaceConditions ?? []).map(r => r.condition)].some(c => c.isOr === true)) {
           const willBeOrBlock = args.isOrBlock ?? event.isOrBlock === true;
           if (!willBeOrBlock) {
             return toolError('isOr on a condition is not written: Construct 3 ORs a whole event. Set isOrBlock: true to make this block an OR block.');
@@ -2189,6 +2409,67 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           functions ??= await loadFunctionSignatures(reader);
           return functions.get(name.toLowerCase());
         };
+
+        // Check inserts and replacements before anything changes
+        // A removal index past the end is named before the inserts are counted, which count the list after the removals
+        const badConditionRemoval = (args.removeConditionIndices ?? []).find(i => i < 0 || i >= conditions.length);
+        if (badConditionRemoval !== undefined) {
+          return toolError(nothingChanged(`Condition index ${badConditionRemoval} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`));
+        }
+        const badActionRemoval = (args.removeActionIndices ?? []).find(i => i < 0 || i >= actions.length);
+        if (badActionRemoval !== undefined) {
+          return toolError(nothingChanged(`Action index ${badActionRemoval} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`));
+        }
+        const removedConditionCount = new Set(args.removeConditionIndices ?? []).size;
+        const removedActionCount = new Set(args.removeActionIndices ?? []).size;
+        const conditionsAfterRemoval = conditions.length - removedConditionCount;
+        const actionsAfterRemoval = actions.length - removedActionCount;
+        const insertProblem = (kind: 'Action' | 'Condition', items: ReadonlyArray<{ index: number }>, length: number): string | undefined => {
+          const seen = new Set<number>();
+          for (const item of items) {
+            if (item.index > length) {
+              return `${kind} insert index ${item.index} is out of range: after the removals the block has ${length} ${kind.toLowerCase()}(s), so indexes 0-${length}.`;
+            }
+            if (seen.has(item.index)) return `Two ${kind.toLowerCase()} inserts at index ${item.index}; give each insert its own index.`;
+            seen.add(item.index);
+          }
+          return undefined;
+        };
+        const insertError = insertProblem('Condition', args.insertConditions ?? [], conditionsAfterRemoval)
+          ?? insertProblem('Action', args.insertActions ?? [], actionsAfterRemoval);
+        if (insertError) return toolError(nothingChanged(insertError));
+        const replaced = new Set<number>();
+        for (const r of args.replaceConditions ?? []) {
+          if (r.index >= conditions.length) {
+            return toolError(nothingChanged(`Condition index ${r.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`));
+          }
+          if (replaced.has(r.index)) return toolError(nothingChanged(`replaceConditions names condition ${r.index} twice.`));
+          if ((args.removeConditionIndices ?? []).includes(r.index)) return toolError(nothingChanged(`Condition ${r.index} is both replaced and removed.`));
+          if ((args.updateConditions ?? []).some(u => u.index === r.index)) return toolError(nothingChanged(`Condition ${r.index} is both updated and replaced; replace it with the condition you want.`));
+          replaced.add(r.index);
+        }
+        // The list the inserts go into: the conditions after this call's replacements and removals
+        const replacementAt = new Map((args.replaceConditions ?? []).map(r => [r.index, r.condition as unknown] as const));
+        const removedConditionIndices = new Set(args.removeConditionIndices ?? []);
+        const keptConditions = conditions.map((c, i) => replacementAt.get(i) ?? c).filter((_c, i) => !removedConditionIndices.has(i));
+        // With isElse: false the else condition is taken out at the end, so an insert in front of it is a valid way to put a condition first
+        if (isElseCondition(keptConditions[0]) && args.isElse !== false && (args.insertConditions ?? []).some(i => i.index === 0)) {
+          return toolError(nothingChanged('Condition 0 of this block is a System "else" condition, which stays first (also when it is disabled); insert at index 1 or later.'));
+        }
+        // A block that starts with an else condition (or gets one through isElse: true) holds Else once, first
+        const startsWithElse = args.isElse !== false && (args.isElse === true || isElseCondition(keptConditions[0]));
+        // The cap applies to a call that adds items; a block already over it can still be edited otherwise.
+        // isElse: true adds the else condition unless the block's first condition is one then.
+        const firstCondition = (args.insertConditions ?? []).find(i => i.index === 0)?.condition ?? keptConditions[0] ?? args.addConditions?.[0];
+        const elseAdded = args.isElse === true && !isElseCondition(firstCondition) ? 1 : 0;
+        const tooMany = (kind: string, after: number, added: number) => (added > 0 && after + added > MAX_ITEMS_PER_BLOCK
+          ? `${where} would hold ${after + added} ${kind} (max ${MAX_ITEMS_PER_BLOCK}).` : undefined);
+        const sizeError = tooMany('conditions', conditionsAfterRemoval, (args.insertConditions?.length ?? 0) + (args.addConditions?.length ?? 0) + elseAdded)
+          ?? tooMany('actions', actionsAfterRemoval, (args.insertActions?.length ?? 0) + (args.addActions?.length ?? 0));
+        if (sizeError) return toolError(nothingChanged(sizeError));
+
+        // From here the sheet changes in memory: a failure before the write puts the events back
+        restoreSheet = () => { sheet.events = beforeEvents; };
 
         // ── Apply block-level toggles (in the editor's key order: disabled right after sid) ──
         if (args.disabled !== undefined) {
@@ -2302,6 +2583,18 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         }
 
+        // Replace conditions in place (a new SID each)
+        for (const r of args.replaceConditions ?? []) {
+          // isElse: true puts an else condition back in front, so the block stays an else block
+          if (r.index === 0 && isElseCondition(conditions[0]) && !isElseCondition(r.condition) && args.isElse !== true) {
+            warnings.push(`${where}: condition 0 was the System "else" condition; replacing it makes the block an ordinary block.`);
+          }
+          if (isElseCondition(r.condition) && r.index !== 0) {
+            warnings.push(misplacedElseWarning(where, 'a replacing', r.index, args.isElse, startsWithElse));
+          }
+          conditions[r.index] = buildCondition(r.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>;
+        }
+
         // ── Remove conditions by index (descending order to avoid index shifting) ──
         let removedConditions = false;
         if (args.removeConditionIndices && args.removeConditionIndices.length > 0) {
@@ -2324,6 +2617,23 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             }
             actions.splice(idx, 1);
           }
+        }
+
+        // The else condition the block starts with, which isElse: false takes out even when an insert at 0 put another condition in front of it
+        const leadingElse = isElseCondition(conditions[0]) ? conditions[0] : undefined;
+        // Insert at indexes counted after the removals (highest first, so each index counts in that list)
+        for (const insert of [...(args.insertConditions ?? [])].sort((x, y) => y.index - x.index)) {
+          if (isElseCondition(insert.condition) && insert.index !== 0) {
+            warnings.push(misplacedElseWarning(where, 'an inserted', insert.index, args.isElse, startsWithElse));
+          }
+          conditions.splice(insert.index, 0, buildCondition(insert.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>);
+        }
+        if ((args.insertActions ?? []).length > 0) {
+          const insertCtx = { warnings, functions };
+          for (const insert of [...(args.insertActions ?? [])].sort((x, y) => y.index - x.index)) {
+            actions.splice(insert.index, 0, await buildAction(reader, idGen, insert.action, insertCtx, where) as unknown as Record<string, unknown>);
+          }
+          functions = insertCtx.functions;
         }
 
         // ── Add new conditions (validated up front) ──
@@ -2359,9 +2669,12 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           delete event.isElse;
           if (args.isElse && !isElseCondition(conditions[0])) {
             conditions.unshift(createElseCondition(await idGen.generateSid(reader)));
-          } else if (!args.isElse && isElseCondition(conditions[0])) {
-            conditions.shift();
-            removedConditions = true;
+          } else if (!args.isElse) {
+            const at = leadingElse !== undefined && conditions.includes(leadingElse) ? conditions.indexOf(leadingElse) : isElseCondition(conditions[0]) ? 0 : -1;
+            if (at >= 0) {
+              conditions.splice(at, 1);
+              removedConditions = true;
+            }
           }
           if (hadLegacyFlag) {
             warnings.push(`${where}: dropped the block-level "isElse" key written by older versions (Construct 3 marks an else block with a System "else" first condition instead).`);
@@ -2395,6 +2708,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         warnings.push(...loadCheck.warnings);
 
         // Write back
+        writeStarted = true;
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
         resetProjectIndex(reader);
@@ -2410,6 +2724,12 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         return toolResult({ ...result, eventPath: path });
       } catch (error) {
         console.error('[update_event_block] failed:', error);
+        if (restoreSheet) {
+          restoreSheet();
+          if (!writeStarted) {
+            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          }
+        }
         return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -3096,6 +3416,21 @@ function sameSheetNameClashMessage(sheetName: string, clashes: readonly NewEvent
   if (clashes.length > 10) lines.push(`- and ${clashes.length - 10} more`);
   return 'Moving the event would put names that Construct 3 treats as the same (ignoring case) into one event variable scope:\n' +
     `${lines.join('\n')}\n\nRename one of them first (update_event_variable).`;
+}
+
+/**
+ * The warning for a System "else" condition that update_event_block inserts or
+ * puts in place of a condition anywhere but first. `startsWithElse` is true
+ * when the block starts with an else condition or gets one through isElse:
+ * true; the advice to use isElse: true then does not apply, because Else is
+ * saved once, as the first condition.
+ */
+function misplacedElseWarning(where: string, what: 'an inserted' | 'a replacing', index: number, isElse: boolean | undefined, startsWithElse: boolean): string {
+  const start = `${where}: ${what} System "else" condition is condition ${index}, but `;
+  if (startsWithElse) {
+    return `${start}this block ${isElse === true ? 'gets an else condition first through isElse: true' : 'already starts with one'}, and Construct 3 saves Else once, as the first condition.`;
+  }
+  return `${start}Construct 3 saves Else as the first condition. Use isElse: true instead.`;
 }
 
 /**

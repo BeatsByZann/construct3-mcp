@@ -247,6 +247,54 @@ describe('checkEventLoadRules — trigger placement', () => {
     expect(issues[0].message).toContain('custom action Player.Jump');
   });
 
+  it('rejects a function block or a custom action block inside a triggered event, at any depth', () => {
+    const fn = { eventType: 'function-block', functionName: 'DoIt', sid: 10, conditions: [], actions: [] };
+    const custom = { eventType: 'custom-ace-block', aceType: 'action', aceName: 'Jump', objectClass: 'Player', sid: 20, conditions: [], actions: [] };
+    for (const [root, label] of [[fn, 'function "DoIt" (sid 10)'], [custom, 'custom action Player.Jump (sid 20)']] as const) {
+      const direct = check([block(1, [cond('on-start-of-layout', 2)], [], { children: [root] })]);
+      expect(direct).toHaveLength(1);
+      expect(direct[0].severity).toBe('error');
+      expect(direct[0].rule).toBe('trigger-placement');
+      expect(direct[0].location).toContain(label);
+      expect(direct[0].message).toContain('block (sid 1)');
+      expect(direct[0].message).toContain('cannot add another trigger to event branch');
+
+      // Below a group and a block that has no trigger of its own, the trigger above still counts
+      const deep = check([block(1, [cond('on-start-of-layout', 2)], [], {
+        children: [{ eventType: 'group', title: 'G', sid: 3, children: [block(4, [], [], { children: [root] })] }],
+      })]);
+      expect(deep).toHaveLength(1);
+      expect(deep[0].location).toContain(label);
+    }
+  });
+
+  it('rejects a function block or a custom action block inside a function block or a custom action block', () => {
+    const inner = { eventType: 'function-block', functionName: 'Inner', sid: 30, conditions: [], actions: [] };
+    const issues = check([{ eventType: 'function-block', functionName: 'Outer', sid: 1, conditions: [], actions: [], children: [block(2, [], [], { children: [inner] })] }]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('error');
+    expect(issues[0].location).toContain('function "Inner" (sid 30)');
+    expect(issues[0].message).toContain('function "Outer" (sid 1)');
+  });
+
+  it('accepts a function block or a custom action block at the top level, in groups and under blocks without a trigger', () => {
+    const fn = { eventType: 'function-block', functionName: 'DoIt', sid: 10, conditions: [], actions: [] };
+    const custom = { eventType: 'custom-ace-block', aceType: 'action', aceName: 'Jump', objectClass: 'Player', sid: 20, conditions: [], actions: [] };
+    expect(check([fn, custom, { eventType: 'group', title: 'G', sid: 3, children: [fn, custom] }])).toEqual([]);
+    expect(check([block(1, [cond('compare-eventvar', 2)], [], { children: [fn, custom] })])).toEqual([]);
+    // An OR block without a trigger holds none either
+    expect(check([block(1, [cond('is-visible', 2, 'Sprite1')], [], { isOrBlock: true, children: [fn] })])).toEqual([]);
+  });
+
+  it('warns, and does not reject, a function block under a block whose only trigger is a third-party one', () => {
+    const origin: AceOriginResolver = (ace) => (ace.objectClass === 'NGIO' ? 'addon' : 'builtin');
+    const fn = { eventType: 'function-block', functionName: 'DoIt', sid: 10, conditions: [], actions: [] };
+    const issues = check([block(1, [cond('on-login-success', 2, 'NGIO')], [], { children: [fn] })], origin);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].location).toContain('function "DoIt" (sid 10)');
+  });
+
   it('downgrades violations involving third-party or unknown triggers to warnings', () => {
     const origin: AceOriginResolver = (ace) => (ace.objectClass === 'NGIO' ? 'addon' : 'builtin');
     const issues = check([block(1, [cond('compare-eventvar', 2), cond('on-login-success', 3, 'NGIO')])], origin);
