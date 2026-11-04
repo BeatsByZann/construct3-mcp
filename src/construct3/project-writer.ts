@@ -19,6 +19,7 @@ import { generatePlaceholderPng, getImageFileName } from './png-generator.js';
 import { applyJsonTextStyle, jsonTextStyleOf, parseJsonText, resolveJsonTextStyle } from './json-format.js';
 import { freeBackupName, simulateImageRenames } from './animation-rename.js';
 import { nameKey } from './names.js';
+import { fileErrorText } from './fs-errors.js';
 import {
   currentToolCall,
   fileKey,
@@ -55,6 +56,9 @@ const PROPERTIES_KEY_MAP: Record<keyof ProjectProperties, true> = {
   exportFileStructure: true, uidAllocationMode: true,
 };
 const ALLOWED_PROPERTIES = new Set(Object.keys(PROPERTIES_KEY_MAP));
+
+/** The errors of an image rename itself (not of the folder listing before it), for renameImageFiles' wording. */
+const renameCallErrors = new WeakSet<object>();
 
 type EntityCategory = 'objectTypes' | 'eventSheets' | 'layouts' | 'families';
 
@@ -310,7 +314,7 @@ export class Construct3ProjectWriter {
         scope?.backups.set(key, { path: backupPath, existed: false, state: null });
         return backupPath;
       }
-      throw new Error(`Cannot access file for backup: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`Cannot access file for backup: ${fileErrorText(e, p => this.projectRelative(p))}`, { cause: e });
     }
     // File exists — backup must succeed or we abort
     if (options.freeName) {
@@ -500,13 +504,16 @@ export class Construct3ProjectWriter {
   }
 
   /**
-   * Put an image this call wrote back as it was before the call: from its
-   * backup when it existed, else removed. Under the file's one lock. False,
-   * and the image is left as it is, when it changed on disk after this call
-   * wrote it (saved in the editor) or its backup no longer is the one made
-   * before the call, as in putBack and restoreForCall.
+   * Put an image this call wrote back as it was before the call, under the
+   * file's one lock: from its backup when a file was there ('restored'; the
+   * backup stays), else removed ('removed'). False, and the image is left
+   * as it is, when this call has no confirmed write of its own recorded for
+   * it, when it changed on disk after this call wrote it (saved in the
+   * editor), or when its backup no longer is the one made before the call,
+   * as in putBack and restoreForCall. For writeImageFiles' rollback and for
+   * a tool rolling back an image it wrote through replaceFile.
    */
-  private async putBackImage(filePath: string): Promise<boolean> {
+  async putBackImage(filePath: string): Promise<'removed' | 'restored' | false> {
     return this.underLockOf(filePath, async () => {
       const key = fileKey(filePath);
       const scope = currentToolCall();
@@ -518,11 +525,11 @@ export class Construct3ProjectWriter {
         const bytes = await readFile(backup.path);
         await this.atomicWrite(filePath, bytes);
         await this.afterToolWrite(filePath, bytes);
-      } else {
-        await unlink(filePath);
-        await this.afterToolWrite(filePath, null);
+        return 'restored';
       }
-      return true;
+      await unlink(filePath);
+      await this.afterToolWrite(filePath, null);
+      return 'removed';
     });
   }
 
@@ -786,7 +793,7 @@ export class Construct3ProjectWriter {
       content = await readFile(filePath, 'utf-8');
       parseJsonText(content);
     } catch (e) {
-      throw new Error(`Post-write verification failed for "${entityName}": file may be corrupted. A .bak backup exists. Error: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`Post-write verification failed for "${entityName}": file may be corrupted. A .bak backup exists. Error: ${fileErrorText(e, p => this.projectRelative(p))}`, { cause: e });
     }
     if (content !== expected) {
       throw new ConcurrentWriteError(`Post-write verification failed for "${entityName}": the file was changed by another write during this one (concurrent writes to the same file?). It holds valid JSON, but not this call's changes. Re-read it and retry.`);
@@ -1286,7 +1293,7 @@ export class Construct3ProjectWriter {
         for (const path of writtenPaths) {
           let putBack = false;
           try {
-            putBack = await this.putBackImage(path);
+            putBack = (await this.putBackImage(path)) !== false;
           } catch {
             // Best-effort: an image that cannot be put back stays as it is, and is named below
           }
@@ -1302,27 +1309,6 @@ export class Construct3ProjectWriter {
         throw new Error(`${cause}. These image files could not be put back as they were before this call: ${notPutBack.join(', ')}.`, { cause: error });
       }
     });
-  }
-
-  /**
-   * Delete a file directly in images/ (`name` relative to that folder).
-   * Returns false when there is no such file; a name that cannot be a file
-   * directly in images/ (a path separator, "." or "..") names none.
-   */
-  async deleteImageFile(name: string): Promise<boolean> {
-    let filePath: string;
-    try {
-      filePath = this.imageFilePath(name);
-    } catch {
-      return false;
-    }
-    try {
-      await unlink(filePath);
-      return true;
-    } catch (e: unknown) {
-      if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') return false;
-      throw e;
-    }
   }
 
   /** Names of the entries in the project's images/ folder (none when there is no such folder). */
@@ -1342,9 +1328,15 @@ export class Construct3ProjectWriter {
    * when a `to` is taken by another file at the point its rename runs, also
    * one whose name differs only in case (on Windows and macOS that is the
    * same file); a name an earlier rename of the list moved away is free, so
-   * files can move along a chain (002 → 003, then 001 → 002). `to` may differ
-   * from `from` only in case. To undo a call, rename each `to` back to its
-   * `from` in reverse order.
+   * files can move along a chain (002 to 003, then 001 to 002). `to` may
+   * differ from `from` only in case. Each rename runs under the lock of its
+   * target (renameImageUnderLock), one lock at a time, so a write of that
+   * name through the writer that took the lock first is finished and seen,
+   * never renamed over; renaming back takes the lock of the name it renames
+   * back to. The lock orders writes one way only: a write that starts after
+   * a rename returned lands on the renamed file. `from` is not locked. The
+   * error names files by their path in the project. To undo a call, rename
+   * each `to` back to its `from` in reverse order.
    */
   async renameImageFiles(renames: ReadonlyArray<{ from: string; to: string }>): Promise<void> {
     const moves = renames.map(r => ({ ...r, fromPath: this.imageFilePath(r.from), toPath: this.imageFilePath(r.to) }));
@@ -1357,25 +1349,60 @@ export class Construct3ProjectWriter {
     }
 
     const done: typeof moves = [];
+    let current: (typeof moves)[number] | undefined;
     try {
       for (const move of moves) {
-        await rename(move.fromPath, move.toPath);
+        current = move;
+        await this.renameImageUnderLock(move.from, move.to, move.fromPath, move.toPath);
         done.push(move);
       }
     } catch (error) {
       const notRestored: string[] = [];
-      for (const move of done.reverse()) {
+      for (const move of [...done].reverse()) {
         try {
-          await rename(move.toPath, move.fromPath);
+          await this.renameImageUnderLock(move.to, move.from, move.toPath, move.fromPath);
         } catch {
           notRestored.push(`images/${move.to} (was images/${move.from})`);
         }
       }
-      const cause = error instanceof Error ? error.message : String(error);
-      throw new Error(notRestored.length === 0
-        ? `Renaming image files failed: ${cause}. The files renamed before were renamed back.`
-        : `Renaming image files failed: ${cause}. These files could not be renamed back: ${notRestored.join(', ')}.`);
+      // An fs error's message holds absolute paths: name the files by their path in the project instead. The
+      // rename wording is for an error of the rename itself; any other fs error (the folder listing) is named as it is
+      const code = typeof error === 'object' && error !== null && 'code' in error ? (error as { code?: unknown }).code : undefined;
+      const cause = typeof code === 'string' && current !== undefined && typeof error === 'object' && error !== null && renameCallErrors.has(error)
+        ? `${code} renaming images/${current.from} to images/${current.to}`
+        : fileErrorText(error, path => this.projectRelative(path)).replace(/\.$/, '');
+      const after = done.length === 0
+        ? 'No image file was renamed.'
+        : notRestored.length === 0
+          ? 'The files renamed before were renamed back.'
+          : `These files could not be renamed back: ${notRestored.join(', ')}.`;
+      throw new Error(`Renaming image files failed: ${cause}. ${after}`);
     }
+  }
+
+  /**
+   * Rename one file in images/ under the lock of its target (`toPath`),
+   * after checking there, in the folder's listing, that no file other than
+   * `from` has the target name by nameKey (ignoring case and Unicode
+   * normalization, the planner's rule): on Windows and macOS such a file
+   * would be replaced, on a case-sensitive file system it would be a second
+   * file of one name. A file another program writes after this check is
+   * not covered.
+   */
+  private async renameImageUnderLock(from: string, to: string, fromPath: string, toPath: string): Promise<void> {
+    await this.underLockOf(toPath, async () => {
+      const occupant = (await this.listImageFiles())
+        .find(file => nameKey(file) === nameKey(to) && file.normalize() !== from.normalize());
+      if (occupant !== undefined) {
+        throw new Error(`Cannot rename images/${from} to images/${to}: images/${occupant} already exists`);
+      }
+      try {
+        await rename(fromPath, toPath);
+      } catch (error) {
+        if (typeof error === 'object' && error !== null) renameCallErrors.add(error);
+        throw error;
+      }
+    });
   }
 
   /**

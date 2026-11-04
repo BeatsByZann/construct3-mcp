@@ -256,3 +256,36 @@ describe('image backups never replace a file', () => {
     expect(await readFile(image + '.1.bak', 'utf-8')).toBe('frame 2');
   });
 });
+
+describe('putBackImage', () => {
+  const frame = (frameIndex: number) => ({ objectName: 'Hero', animationName: 'Animation 1', frameIndex, pluginId: 'Sprite' });
+
+  it('puts back an image a write replaced, from its backup, removes one the call created, and says which it did', async () => {
+    const images = join(dir, 'images');
+    await mkdir(images, { recursive: true });
+    const first = join(images, getImageFileName('Hero', 'Animation 1', 0, 'Sprite'));
+    const second = join(images, getImageFileName('Hero', 'Animation 1', 1, 'Sprite'));
+    await writeFile(first, 'old');
+    const results = await runInToolCall(async () => {
+      await writer.writeImageFiles([frame(0), frame(1)]);
+      return [await writer.putBackImage(first), await writer.putBackImage(second)];
+    });
+    expect(results).toEqual(['restored', 'removed']);
+    expect(await readFile(first, 'utf-8')).toBe('old');
+    expect(existsSync(second)).toBe(false);
+  });
+
+  it('leaves an image saved again after the call wrote it, and one the call did not write', async () => {
+    const images = join(dir, 'images');
+    await mkdir(images, { recursive: true });
+    const first = join(images, getImageFileName('Hero', 'Animation 1', 0, 'Sprite'));
+    await writeFile(first, 'old');
+    const results = await runInToolCall(async () => {
+      await writer.writeImageFiles([frame(0)]);
+      await writeFile(first, 'editor');
+      return [await writer.putBackImage(first), await writer.putBackImage(join(images, 'hero-animation 1-005.png'))];
+    });
+    expect(results).toEqual([false, false]);
+    expect(await readFile(first, 'utf-8')).toBe('editor');
+  });
+});

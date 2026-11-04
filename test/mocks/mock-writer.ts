@@ -167,9 +167,10 @@ export class MockWriter {
     return { restored: [], left: [] };
   }
 
-  async deleteImageFile(name: string): Promise<boolean> {
-    this.calls.push({ method: 'deleteImageFile', args: [name] });
-    return false;
+  /** The mock writes no images, so every image it is asked to put back was its own new one */
+  async putBackImage(path: string): Promise<'removed' | 'restored' | false> {
+    this.calls.push({ method: 'putBackImage', args: [path] });
+    return 'removed';
   }
 
   /** Runs `fn` right away (the real writer runs the calls one at a time) */

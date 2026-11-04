@@ -69,6 +69,7 @@ construct3-mcp/
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
+│   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips

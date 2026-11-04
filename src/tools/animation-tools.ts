@@ -8,12 +8,13 @@ import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, ObjectType, Animation, AnimationFrame } from '../construct3/types.js';
 import { toolResult, toolError, notFoundError } from './shared.js';
-import { findNameClash } from '../construct3/names.js';
+import { findNameClash, nameKey } from '../construct3/names.js';
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
-import { describeCharacter, getImageFileName, invalidImageNameCharacter } from '../construct3/png-generator.js';
+import { describeCharacter, generatePlaceholderPng, getImageFileName, invalidImageNameCharacter } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { EntityWriteError, failedWriteLeftReason, filesLeftClause } from '../construct3/project-writer.js';
 import { StaleFileError } from '../construct3/disk-state.js';
+import { fileErrorText } from '../construct3/fs-errors.js';
 import {
   animationsSharingImageFiles,
   countAnimationNameParameters,
@@ -21,6 +22,7 @@ import {
   everyAnimation,
   familiesContaining,
   findAnimation,
+  frameImageExtension,
   planFrameImageRenames,
   planFrameImageShift,
   renameInitialAnimation,
@@ -564,37 +566,28 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
           ...createAnimationFrame(frameWidth, frameHeight, imageSpriteId),
           duration: args.duration,
         };
+        const before = JSON.parse(JSON.stringify(anim.frames)) as AnimationFrame[];
         anim.frames.splice(insertAt, 0, newFrame);
         const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
 
         // Image files first (renamed back by the writer if one fails), then the
-        // placeholder PNG in the freed name, then the object; a failure there
-        // undoes everything before it
+        // placeholder PNG in the freed name, written create-only, then the
+        // object; a failure there is recovered by recoverFrameChange
+        const placeholderName = getImageFileName(imageObjectName, anim.name, insertAt, 'Sprite');
+        const placeholder: NewFrameImage = {
+          name: placeholderName, path: resolveProjectPath(reader.getProjectDir(), 'images', placeholderName),
+        };
+        const written: NewFrameImage[] = [];
         if (images.renames.length > 0) await writer.renameImageFiles(images.renames);
         let backupPath: string;
         let otherWrite = false;
         try {
-          await writer.writeImageFiles([{
-            objectName: imageObjectName,
-            animationName: anim.name,
-            frameIndex: insertAt,
-            pluginId: 'Sprite',
-            width: 1,
-            height: 1,
-          }]);
+          await writeNewFrameImages(writer, [placeholder], written, async () => generatePlaceholderPng(1, 1));
           backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
         } catch (error) {
-          const kept = await frameChangeAfterOtherWrite(reader, args.objectName, anim.name, error,
-            frames => frames.length === frameCount + 1 && frames[insertAt]?.imageSpriteId === imageSpriteId);
-          if (kept !== true) {
-            // A refusal of the writer ends with a full stop already
-            const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
-            throw new Error(`${cause}. ${await rollBackFrameChange(writer, error, images.renames, {
-              newFrameFile: images.newFrameFile, kept,
-            })}`);
-          }
-          backupPath = (error as EntityWriteError).backupPath;
-          otherWrite = true;
+          ({ backupPath, otherWrite } = await recoverFrameChangeOrThrow(writer, reader, error, {
+            objectName: args.objectName, animationName: anim.name, before, after: anim.frames, renames: images.renames, newImages: written,
+          }));
         }
 
         const warnings = frameImageWarnings(images, anim.name);
@@ -666,8 +659,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
             + `after it cannot be renamed one index down (${someOf(images.clashes, 3)}). Nothing was changed. Check these files in images/.`);
         }
 
-        const frameCount = anim.frames.length;
-        const deletedId = anim.frames[args.frameIndex]?.imageSpriteId;
+        const before = JSON.parse(JSON.stringify(anim.frames)) as AnimationFrame[];
         anim.frames.splice(args.frameIndex, 1);
         const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
 
@@ -679,16 +671,9 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         try {
           backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
         } catch (error) {
-          const kept = await frameChangeAfterOtherWrite(reader, args.objectName, anim.name, error,
-            frames => frames.length === frameCount - 1
-              && (deletedId === undefined || !frames.some(frame => frame?.imageSpriteId === deletedId)));
-          if (kept !== true) {
-            // A refusal of the writer ends with a full stop already
-            const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
-            throw new Error(`${cause}. ${await rollBackFrameChange(writer, error, images.renames, { kept })}`);
-          }
-          backupPath = (error as EntityWriteError).backupPath;
-          otherWrite = true;
+          ({ backupPath, otherWrite } = await recoverFrameChangeOrThrow(writer, reader, error, {
+            objectName: args.objectName, animationName: anim.name, before, after: anim.frames, renames: images.renames,
+          }));
         }
 
         const warnings = frameImageWarnings(images, anim.name);
@@ -960,105 +945,329 @@ function storedObjectName(obj: ObjectType, requested: string): string {
   return typeof obj.name === 'string' && obj.name !== '' ? obj.name : requested;
 }
 
-/**
- * For an add_frame_to_animation or delete_frame_from_animation whose object
- * write failed because another write to the object file landed during it (the
- * post-write check found other valid JSON there, see
- * EntityWriteError.changedByOtherWrite): whether the file now has this call's
- * frame change, `hasChange` telling from the animation's frames, i.e. the
- * other write was made on top of it. undefined for any other failure and when
- * the file cannot be read; the change is then rolled back as usual.
- */
-async function frameChangeAfterOtherWrite(
-  reader: MutationToolDeps['reader'],
-  objectName: string,
-  animationName: string,
-  error: unknown,
-  hasChange: (frames: ReadonlyArray<{ imageSpriteId?: unknown } | null | undefined>) => boolean,
-): Promise<boolean | undefined> {
-  if (!(error instanceof EntityWriteError) || !error.changedByOtherWrite) return undefined;
-  try {
-    const current = await reader.readObjectType(objectName);
-    const anim = findAnimation<{ frames?: unknown }>(current.animations, animationName)?.animation;
-    return anim !== undefined && Array.isArray(anim.frames) && hasChange(anim.frames);
-  } catch {
-    return undefined;
-  }
-}
-
-/** Warning for a frame change that another write kept (frameChangeAfterOtherWrite). */
+/** Warning for a frame change that another write kept (recoverFrameChange). */
 function otherWriteKeptWarning(change: string): string {
   return `Another write changed the object file right after this one (a tool call running in parallel?). The file still has ${change}, `
     + 'so the image files stay as renamed, but the other write may have been made on older content: re-read the object to check it.';
 }
 
 /**
- * Undo an add_frame_to_animation or delete_frame_from_animation whose writes
- * after the image renames failed: put back the object file from its backup
- * when its write failed after replacing it and the file still holds that
- * write's own content (restoreFailedWrite), remove the new frame's
- * placeholder image (`newFrameFile`), then rename the image files back, last
- * first. The placeholder's name was free before the call (see
- * planFrameImageShift), so a file there, also one a failed write left part
- * written, is removed. When another write replaced the object file during
- * this one (EntityWriteError.changedByOtherWrite), the file is left as that
- * write left it, never restored over, and the image files are renamed back to
- * match the object as it was: `kept` (frameChangeAfterOtherWrite) false says
- * that write lacks this call's change, undefined that the file could not be
- * read again to tell. Returns a sentence for the error message.
+ * An image a frame tool writes for its new frame (add_frame_to_animation's
+ * placeholder, duplicate_frame's copy), for recoverFrameChange.
  */
-async function rollBackFrameChange(
+interface NewFrameImage {
+  /** Its name in images/ */
+  name: string;
+  /** Its path */
+  path: string;
+}
+
+/** What a frame tool changed, for recoverFrameChange. */
+interface FrameChange {
+  objectName: string;
+  animationName: string;
+  /** The animation's frames as the call read them (a copy) */
+  before: readonly AnimationFrame[];
+  /** The frames this call wrote */
+  after: readonly AnimationFrame[];
+  /** The image renames that ran, in order */
+  renames: readonly ImageFileRename[];
+  /** The new frame's images whose write started (writeNewFrameImages) */
+  newImages?: readonly NewFrameImage[];
+  /** How the message names a new image ("placeholder image" by default) */
+  imageNoun?: string;
+}
+
+/**
+ * Write a frame tool's new images in images/ create-only, so none replaces a
+ * file or becomes a second file of one name: a name that a file has when its
+ * write runs, by nameKey in the folder's listing (the planner's rule, so
+ * also another letter case on a case-sensitive file system) or at the exact
+ * path under the file's lock (replaceFile with expected: null), such as a
+ * file that appeared after the renames were planned (written by another
+ * program, or saved in the editor), refuses that write, and nothing is
+ * written or backed up for it. `written` collects each image from the
+ * moment its write starts, so the recovery also checks a write that did not
+ * confirm (putBackImage leaves it when it is not known to be this call's);
+ * a refused one is taken out again. `bytesOf` gives an image's content.
+ */
+async function writeNewFrameImages(
   writer: MutationToolDeps['writer'],
+  images: readonly NewFrameImage[],
+  written: NewFrameImage[],
+  bytesOf: (image: NewFrameImage) => Promise<Buffer>,
+): Promise<void> {
+  const appeared = (name: string) => new Error(`images/${name} appeared after this call planned the frame image renames (written by `
+    + 'another program, or saved in the editor?), so the new frame\'s image was not written over it');
+  for (const image of images) {
+    const bytes = await bytesOf(image);
+    const occupant = (await writer.listImageFiles()).find(file => nameKey(file) === nameKey(image.name));
+    if (occupant !== undefined) throw appeared(occupant);
+    written.push(image);
+    try {
+      await writer.replaceFile(image.path, bytes, { expected: null });
+    } catch (error) {
+      if (!(error instanceof StaleFileError)) throw error;
+      written.pop();
+      throw appeared(image.name);
+    }
+  }
+}
+
+/**
+ * Whether `frames`, as an object file holds them, are `expected`'s frames in
+ * that order, each bound to the same image file: the same frame (by
+ * imageSpriteId when every expected frame has its own, else by its whole
+ * content) and the same image file extension (frameImageExtension of its
+ * fileType; another fileType compared as it is).
+ */
+function hasFrameBinding(frames: readonly unknown[], expected: readonly AnimationFrame[]): boolean {
+  if (frames.length !== expected.length) return false;
+  const binding = (fileType: unknown) => frameImageExtension(fileType) ?? `other:${String(fileType)}`;
+  const ids = expected.map(frame => frame.imageSpriteId);
+  const byId = ids.every(id => typeof id === 'number') && new Set(ids).size === ids.length;
+  return frames.every((frame, i) => {
+    const current = (typeof frame === 'object' && frame !== null ? frame : {}) as { imageSpriteId?: unknown; fileType?: unknown };
+    if (binding(current.fileType) !== binding(expected[i].fileType)) return false;
+    return byId ? current.imageSpriteId === ids[i] : JSON.stringify(frame) === JSON.stringify(expected[i]);
+  });
+}
+
+/**
+ * Which frames the object file holds for the animation after a frame tool's
+ * object write failed, read again from disk (hasFrameBinding): 'before' (the
+ * frames as the call read them), 'after' (the frames this call wrote),
+ * 'other' (neither, or no such animation) or 'unreadable'.
+ */
+async function frameStateAfterFailure(
+  reader: MutationToolDeps['reader'],
+  objectName: string,
+  animationName: string,
+  before: readonly AnimationFrame[],
+  after: readonly AnimationFrame[],
+): Promise<'before' | 'after' | 'other' | 'unreadable'> {
+  let frames: unknown;
+  try {
+    const current = await reader.readObjectType(objectName);
+    frames = findAnimation<{ frames?: unknown }>(current.animations, animationName)?.animation.frames;
+  } catch {
+    return 'unreadable';
+  }
+  if (!Array.isArray(frames)) return 'other';
+  if (hasFrameBinding(frames, before)) return 'before';
+  if (hasFrameBinding(frames, after)) return 'after';
+  return 'other';
+}
+
+/**
+ * The net effect of image renames run in order: each file's name before
+ * them and after them, chains and temporary names followed; files that end
+ * under their first name are left out.
+ */
+function netRenames(renames: readonly ImageFileRename[]): ImageFileRename[] {
+  const where = new Map<string, ImageFileRename>(); // by nameKey of the file's name now
+  for (const { from, to } of renames) {
+    const entry = where.get(nameKey(from)) ?? { from, to: from };
+    where.delete(nameKey(from));
+    where.set(nameKey(to), { from: entry.from, to });
+  }
+  return [...where.values()].filter(r => nameKey(r.from) !== nameKey(r.to));
+}
+
+/**
+ * Rename back the image files a frame tool renamed (`renames`, in the order
+ * they ran), last first; undefined when every file has its old name again.
+ * When the whole list cannot be renamed back (a file is in the way, or a
+ * rename fails; renameImageFiles then renamed none of it), the renames that
+ * can run are made, following the list in order on the files as they are
+ * now: a rename runs when its file is there, also one an earlier rename of
+ * the list put there, and its old name is free. Each file is followed by
+ * identity through the renames that ran (netRenames), and the clause
+ * returned says, checked against a fresh listing, where each file that is
+ * not back is and what holds its old name. It never asks for a rename onto
+ * a taken name.
+ */
+async function renameImagesBack(writer: MutationToolDeps['writer'], renames: readonly ImageFileRename[]): Promise<string | undefined> {
+  if (renames.length === 0) return undefined;
+  const back = renames.map(r => ({ from: r.to, to: r.from })).reverse();
+  let cause: string;
+  try {
+    await writer.renameImageFiles(back);
+    return undefined;
+  } catch (e) {
+    cause = (e instanceof Error ? e.message : String(e)).replace(/\.$/, '');
+  }
+  const present = new Map<string, number>();
+  const count = (name: string, n: number) => present.set(nameKey(name), (present.get(nameKey(name)) ?? 0) + n);
+  for (const file of await writer.listImageFiles()) count(file, 1);
+  const doable: ImageFileRename[] = [];
+  for (const r of back) {
+    if ((present.get(nameKey(r.from)) ?? 0) > 0 && (present.get(nameKey(r.to)) ?? 0) === 0) {
+      doable.push(r);
+      count(r.from, -1);
+      count(r.to, 1);
+    }
+  }
+  let ran = false;
+  if (doable.length > 0) {
+    try {
+      await writer.renameImageFiles(doable);
+      ran = true;
+    } catch {
+      // None of them ran (renameImageFiles renames back what it renamed); reported below
+    }
+  }
+  // The first attempt renamed none; the clause below says the second one renamed some, so the two do not contradict
+  if (ran) cause = cause.replace(/\. No image file was renamed$/, '');
+  const net = netRenames(ran ? [...renames, ...doable] : renames);
+  const files = await writer.listImageFiles();
+  const holder = (name: string) => files.find(file => nameKey(file) === nameKey(name));
+  const unsure = net.some(r => holder(r.to) === undefined);
+  const left = net.map(r => {
+    const taken = holder(r.from);
+    return `images/${r.to} holds the file that was images/${r.from} before the call`
+      + (taken !== undefined ? `, and images/${r.from} is taken by images/${taken}` : '');
+  });
+  if (left.length === 0 && !unsure) return undefined;
+  const parts = [
+    cause,
+    ...(ran ? ['the files whose old names were free were renamed back'] : []),
+    ...left,
+    ...(unsure ? ['not every image file is where this call expected it, so compare images/ with the frames by hand'] : []),
+  ];
+  return `image files (${parts.join('; ')})`;
+}
+
+/**
+ * Recover a frame tool whose object write failed (`error`), by the image
+ * rollback rule. First the object file is restored from its backup when its
+ * write failed after replacing it and the file still holds that write's own
+ * content (restoreFailedWrite); then it is read again
+ * (frameStateAfterFailure). Only when it holds the frames from before the
+ * call are the image files undone: the new frame's images put back
+ * (putBackImage removes them; one that is not known to be this call's is
+ * left and named) and the renames reversed (renameImagesBack). When it holds
+ * this call's frames, the images stay with them: after another write made
+ * on top of this one (EntityWriteError.changedByOtherWrite) the call keeps
+ * its change ({ kept: true }), otherwise the error says so. When it holds
+ * neither or cannot be read, the images stay as this call left them and the
+ * error says recovery is unresolved and where each file is. Returns the
+ * sentences for the error message, or kept.
+ */
+async function recoverFrameChange(
+  writer: MutationToolDeps['writer'],
+  reader: MutationToolDeps['reader'],
   error: unknown,
-  renames: ImageFileRename[],
-  options: { newFrameFile?: string; kept?: boolean } = {},
-): Promise<string> {
-  const failed: string[] = [];
+  change: FrameChange,
+): Promise<{ kept: true } | { message: string; complete: boolean }> {
+  const relative = (path: string) => writer.projectRelative(path);
   const otherWrite = error instanceof EntityWriteError && error.changedByOtherWrite;
-  const restore = error instanceof EntityWriteError && !otherWrite;
+  const objectFile = error instanceof EntityWriteError
+    ? relative(error.backupPath.replace(/\.bak$/, ''))
+    : reader.getEntityRelativePath('objectTypes', change.objectName);
   let restoredFile = false;
-  if (restore) {
+  let notRestored: string | undefined;
+  if (error instanceof EntityWriteError && !otherWrite) {
     try {
       const { restored, label, reason } = await writer.restoreFailedWrite(error);
       if (restored) restoredFile = true;
-      else failed.push(`${label} (${failedWriteLeftReason(reason)}; it was left as it is)`);
-    } catch {
-      failed.push(writer.projectRelative(error.backupPath.replace(/\.bak$/, '')));
-    }
-  }
-  let placeholderRemoved = false;
-  if (options.newFrameFile !== undefined) {
-    try {
-      placeholderRemoved = await writer.deleteImageFile(options.newFrameFile);
-    } catch {
-      failed.push(`images/${options.newFrameFile}`);
-    }
-  }
-  if (renames.length > 0) {
-    try {
-      await writer.renameImageFiles(renames.map(r => ({ from: r.to, to: r.from })).reverse());
+      else notRestored = `${label} (${failedWriteLeftReason(reason)}; it was left as it is)`;
     } catch (e) {
-      failed.push(`image files (${e instanceof Error ? e.message : String(e)})`);
+      notRestored = `restoring ${objectFile} from its backup failed (${fileErrorText(e, relative).replace(/\.$/, '')})`;
     }
   }
-  const unchecked = otherWrite && options.kept !== false;
-  const otherWriteNote = !otherWrite ? '' : unchecked
-    ? 'Another write replaced the object file during this one (a tool call running in parallel?), and the file could not be read again '
-      + 'to tell whether it kept this call\'s change; it was left as that write left it: re-read the object to check its frames. '
-    : 'Another write replaced the object file during this one (a tool call running in parallel?) without this call\'s change; '
-      + 'the object file was left as that write left it. ';
-  if (failed.length > 0) {
-    return `${otherWriteNote}Rolling back failed for: ${failed.join('; ')}. Check these (the .bak file holds the previous object JSON).`;
+  const state = await frameStateAfterFailure(reader, change.objectName, change.animationName, change.before, change.after);
+  if (state === 'after' && otherWrite) return { kept: true };
+  const noun = change.imageNoun ?? 'placeholder image';
+  const notRestoredNote = notRestored !== undefined ? `The object file was not restored: ${notRestored}. ` : '';
+
+  if (state !== 'before') {
+    // The object file is not the one the images had their old names for: they stay, and the error says where they are
+    const otherWriteNote = otherWrite
+      ? 'Another write replaced the object file during this one (a tool call running in parallel?); it was left as that write left it. '
+      : '';
+    const files = [
+      ...netRenames(change.renames).map(r => `images/${r.to} (was images/${r.from})`),
+      ...(change.newImages ?? []).map(image => `images/${image.name} (the new ${noun})`),
+    ];
+    const list = files.length > 0 ? `: ${files.join(', ')}` : '';
+    const outcome = state === 'after'
+      ? `${objectFile} holds this call's frames, so the image files keep the names this call gave them${list}. `
+        + 'Check the object file before you run the tool again.'
+      : `${objectFile} ${state === 'unreadable' ? 'could not be read again to tell which frames it holds' : 'holds neither the frames from before the call nor this call\'s'}, `
+        + `so the image files were left as this call left them${list}. Recovery is unresolved: check the frames of "${change.animationName}" `
+        + 'against images/ before you run the tool again.';
+    return { message: `${otherWriteNote}${notRestoredNote}${outcome}`, complete: false };
   }
+
+  // The object file holds the frames from before the call: undo the images
+  const failed: string[] = [];
+  let removed = 0;
+  const putBack: string[] = [];
+  for (const image of change.newImages ?? []) {
+    const label = `images/${image.name}`;
+    try {
+      const outcome = await writer.putBackImage(image.path);
+      if (outcome === 'removed') removed++;
+      else if (outcome === 'restored') putBack.push(`${label} has the file it had before the call again (its .bak stays)`);
+      else if ((await writer.listImageFiles()).some(file => nameKey(file) === nameKey(image.name))) {
+        failed.push(`${label} (it is not known to hold what this call wrote, or it changed on disk after this call wrote it, so it was left as it is)`);
+      }
+    } catch (e) {
+      failed.push(`${label} (${fileErrorText(e, relative).replace(/\.$/, '')}; it was left as it is)`);
+    }
+  }
+  const imagesLeft = await renameImagesBack(writer, change.renames);
+  if (imagesLeft !== undefined) failed.push(imagesLeft);
+
+  const otherWriteNote = otherWrite
+    ? 'Another write replaced the object file during this one (a tool call running in parallel?) without this call\'s change; '
+      + 'the object file was left as that write left it. '
+    : '';
+  // What was undone: the image files are claimed only when none is left (imagesLeft names those that are)
   const undone = [
-    ...(renames.length > 0 ? ['the image files have their old names again'] : []),
-    ...(placeholderRemoved ? ['the placeholder image was removed'] : []),
-    ...(restoredFile ? ['the object file was restored from its backup'] : []),
+    ...(change.renames.length > 0 && imagesLeft === undefined ? ['the image files have their old names again'] : []),
+    ...(removed === 1 ? [`the ${noun} was removed`] : removed > 1 ? [`the ${removed} ${noun}s were removed`] : []),
+    ...putBack,
+    ...(restoredFile ? [`${objectFile} was restored from its backup (its .bak stays)`] : []),
   ];
-  const nothing = unchecked ? 'The rest was rolled back' : 'Nothing was changed';
-  return otherWriteNote + (undone.length === 0
-    ? `${nothing}.`
-    : `${nothing}: ${undone.slice(0, -1).join(', ')}${undone.length > 1 ? ' and ' : ''}${undone[undone.length - 1]}.`);
+  const undoneList = `${undone.slice(0, -1).join(', ')}${undone.length > 1 ? ' and ' : ''}${undone[undone.length - 1]}`;
+  if (failed.length > 0) {
+    const inPart = undone.length > 0 ? `The change was rolled back only in part: ${undoneList}. ` : '';
+    return {
+      message: `${otherWriteNote}${notRestoredNote}${inPart}Rolling back failed for: ${failed.join('; ')}. Check these before you run the tool again.`,
+      complete: false,
+    };
+  }
+  const lead = restoredFile || putBack.length > 0 ? 'The change was rolled back' : 'Nothing was changed';
+  return {
+    message: otherWriteNote + notRestoredNote + (undone.length === 0 ? `${lead}.` : `${lead}: ${undoneList}.`),
+    complete: true,
+  };
+}
+
+/**
+ * The tail of a frame tool's failed writes: recover with
+ * recoverFrameChange and either return the object file's backup path for a
+ * change another write kept on top of this one (the call then succeeds with
+ * a warning), or throw the error with the recovery's sentences after its
+ * cause (fileErrorText: an fs error by its code and path in the project).
+ */
+async function recoverFrameChangeOrThrow(
+  writer: MutationToolDeps['writer'],
+  reader: MutationToolDeps['reader'],
+  error: unknown,
+  change: FrameChange,
+): Promise<{ backupPath: string; otherWrite: true }> {
+  const outcome = await recoverFrameChange(writer, reader, error, change);
+  if ('message' in outcome) {
+    // A refusal of the writer ends with a full stop already
+    let cause = fileErrorText(error, path => writer.projectRelative(path)).replace(/\.$/, '');
+    // A stale refusal tells to run the tool again; after anything but a full rollback the recovery sentences say what to check first
+    if (!outcome.complete) cause = cause.replace(/ Run the tool again: it reads the files? as (?:it is|they are) now$/, '');
+    throw new Error(`${cause}. ${outcome.message}`);
+  }
+  return { backupPath: (error as EntityWriteError).backupPath, otherWrite: true };
 }
 
 /**

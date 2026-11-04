@@ -746,41 +746,57 @@ describe('add_frame_to_animation', () => {
     expect(writer.calls).toHaveLength(0);
   });
 
+  /** A rename that moves the entries of writer.imageFiles, as the real writer's does, and is recorded like the mock's. */
+  function renamingImages(writer: MockWriter): void {
+    writer.renameImageFiles = async (renames) => {
+      writer.calls.push({ method: 'renameImageFiles', args: [renames.map(r => ({ ...r }))] });
+      for (const { from, to } of renames) writer.imageFiles = writer.imageFiles.map(file => (file === from ? to : file));
+    };
+  }
+
   it('renames the image files from the index on one index up, then writes the placeholder and the object', async () => {
     const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
     writer.imageFiles = ['hero-animation 1-000.png'];
+    renamingImages(writer);
     await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
-    expect(writer.calls.map(c => c.method)).toEqual(['listImageFiles', 'renameImageFiles', 'writeImageFiles', 'writeEntityFile']);
+    expect(writer.calls.map(c => c.method)).toEqual(['listImageFiles', 'renameImageFiles', 'listImageFiles', 'replaceFile', 'writeEntityFile']);
     expect(writer.callsFor('renameImageFiles')[0].args[0]).toEqual([{ from: 'hero-animation 1-000.png', to: 'hero-animation 1-001.png' }]);
-    expect((writer.callsFor('writeImageFiles')[0].args[0] as Array<{ frameIndex: number }>)[0].frameIndex).toBe(0);
+    const [path, , options] = writer.callsFor('replaceFile')[0].args as [string, Buffer, { expected?: null }];
+    expect(path.endsWith('hero-animation 1-000.png')).toBe(true);
+    expect(options).toEqual({ expected: null });
   });
 
-  it('names what could not be rolled back when the rollback fails', async () => {
+  it('names what could not be rolled back when the object file could not be restored', async () => {
     const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
     writer.imageFiles = ['hero-animation 1-000.png'];
+    renamingImages(writer);
+    let renameCalls = 0;
+    const renameImageFiles = writer.renameImageFiles.bind(writer);
+    writer.renameImageFiles = async (renames) => { renameCalls++; return renameImageFiles(renames); };
     writer.writeEntityFile = async () => {
       throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
     };
     writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
-    let renameCalls = 0;
-    writer.renameImageFiles = async () => {
-      if (++renameCalls === 2) throw new Error('EBUSY');
-    };
 
     const result = await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Post-write verification failed for "Hero". Rolling back failed for: '
-      + 'objectTypes/Hero.json; image files (EBUSY).');
+    // The mock reader hands back the object the tool changed, so after the failed restore it holds this call's frames and the images stay
+    expect(result.content[0].text).toContain('Post-write verification failed for "Hero". The object file was not restored: restoring '
+      + 'objectTypes/Hero.json from its backup failed (EPERM). objectTypes/Hero.json holds this call\'s frames, so the image files keep the names '
+      + 'this call gave them');
     // The file is named by its project-relative path, never an absolute one
     expect(result.content[0].text).not.toContain('/mock/backup');
+    // Nothing is renamed back: the one rename is the forward one
+    expect(renameCalls).toBe(1);
   });
 
   it.each([
     ['changed', 'another write changed it after this call\'s write failed'],
     ['unreadable', 'it could not be read'],
-  ] as const)('lists an object file the restore left as it is (%s) under what failed, not as restored', async (reason, why) => {
+  ] as const)('names an object file the restore left as it is (%s) in a note, not as restored', async (reason, why) => {
     const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
     writer.imageFiles = ['hero-animation 1-000.png'];
+    renamingImages(writer);
     writer.writeEntityFile = async () => {
       throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
     };
@@ -790,8 +806,8 @@ describe('add_frame_to_animation', () => {
     const result = await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
-    expect(text).toContain(`Post-write verification failed for "Hero". Rolling back failed for: objectTypes/Hero.json (${why}; it was left as it is). `
-      + 'Check these (the .bak file holds the previous object JSON).');
+    expect(text).toContain(`Post-write verification failed for "Hero". The object file was not restored: objectTypes/Hero.json (${why}; it was left as it is). `
+      + 'objectTypes/Hero.json holds this call\'s frames');
     expect(text).not.toContain('the object file was restored from its backup');
     expect(restoreCalls).toBe(1);
   });
