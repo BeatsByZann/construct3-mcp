@@ -2659,6 +2659,78 @@ between the same two nodes survives untouched.
 | `flowchartName` | string | Yes | Flowchart name |
 | `outputSid` | number | Yes | Output pin to disconnect |
 
+### Instance template tools
+
+A template is a layout instance whose `template` block has `mode: "template"`; the instances that follow it are its replicas, whose blocks have `mode: "replica"` and name it. The state of an instance is its `template` block in `layouts/<name>.json`; there is no separate registry. Construct 3 r506-2 (Free edition, guest) saved the template an object type creates new instances from in `editorNewInstanceIsReplica` and `editorNewInstanceTemplateName` on the object type. Instances are found on every layer and sub-layer and among the non-world instances, but `set_instance_template` writes a block on a world instance only. Construct 3 r506-2 (Free edition, guest) opened a project in which `set_instance_template` had written a template, a replica of it and a replica of a template that does not exist on Text instances, and `set_default_template` the default, and saved all of them with the text that was written.
+
+Template names are compared exactly, with their letter case and Unicode form, and the tools identify a template by its object type and name. Construct 3 r506-2 (Free edition, guest) accepted a template `herot` next to `HeroT`, and a name next to its Unicode-normalisation twin, and saved them as separate templates. A name in another letter case is therefore a different template: `set_default_template` warns that no such template exists, and `set_instance_template` writes the name as given.
+
+Layout and object type names must be given as registered in `project.c3proj`, in that letter case. A name that differs only in letter case is refused with the registered spelling named (`Layout "level 1" not found: names are matched with their letter case. Did you mean "Level 1"?`). The two write tools end every refusal that happens before a write with `Nothing was changed.` `list_templates` changes nothing and answers an unknown object type with the plain not-found text.
+
+**The `template` block.** `set_instance_template` writes the block in the shape Construct 3 r506-2 (Free edition, guest) saved for a template and for a replica on Text and Sprite instances (other plugins were not checked): `mode`, `templateName`, `sourceTemplateName`, three hierarchy flags, `components` and `replicasUIDs`. The editor saved `replicasUIDs` as `null`, on a template that has a replica as well, and the tool writes `null`. `components` always holds the five ids `plugin`, `instance-variable`, `behavior`, `effect` and `world-instance`, in that order, built from the instance itself:
+
+| Component | Derived from | Notes |
+|---|---|---|
+| `plugin` | the keys of the instance's `properties` | `live-preview` is left out, as the editor leaves it out |
+| `instance-variable` | the keys of `instanceVariables` | written as `{ iv, state }` records |
+| `behavior` | one entry per key of `behaviors` | lists that behavior's own property keys, without `live-preview` |
+| `effect` | one entry per key of `effects` | lists the effect's parameters, then `<<effect-template-enable>>` |
+| `world-instance` | a fixed list of 24 keys, in the order the editor saves them | `x` and `y` are `false`, every other key `true` |
+
+### `list_templates`
+
+List every template instance in the project.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectType` | string | No | Only list templates of this object type (as registered, in that letter case) |
+
+Returns `templates`, one row per template instance with `templateName`, `objectType`, `layout`, `uid` and `replicaCount`, and `count`. A replica names its template, not the template's UID, so the count is the number of replicas of the same object type whose `sourceTemplateName` equals the name exactly. A replica whose template is in none of the layouts that could be read is listed under `orphanedReplicas` (`objectType`, `layout`, `uid`, `sourceTemplateName`), with `orphanedReplicaCount`. Construct 3 r506-2 (Free edition, guest) opened a project with such a replica without a message, showed its Template source blank and kept the source name through a save. At most 50 orphaned replicas are listed; when there are more, `orphanedReplicasTruncated` is `true` and a warning gives the total.
+
+Layouts that could not be parsed are not searched. When there are any, the result carries `complete: false`, `unscannedFiles` (`file` and `reason`, for example `layouts/Level 2` and `not valid JSON`) and a warning that counts and orphans may be wrong. Error text carries no absolute path.
+
+### `set_instance_template`
+
+Make a layout instance a template, a replica of a named template, or neither.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout holding the instance (as registered, in that letter case) |
+| `uid` | number | Yes | Instance UID (found on every layer and sub-layer, and among the non-world instances; `template` and `replica` are refused for a non-world instance) |
+| `mode` | enum | Yes | `none`, `template` or `replica` |
+| `templateName` | string | For `template` | Template name |
+| `sourceTemplateName` | string | For `replica` | Name of the template to follow |
+
+- `none` removes the `template` block. An instance with no block is refused.
+- `template` builds the block with `mode: "template"`. A name that another instance of the same object type already has as a template, in any readable layout, is refused: `Instance UID 7 in layout "Level 2" is already a template named "T" for object type "Player". Template names must be unique per object type.`
+- `replica` builds the block with `mode: "replica"` and the source name. It is written even when no instance of the object type is a template of that name, with a warning. An instance that is itself the template of that name is refused.
+- A non-world instance is refused for `template` and `replica`, before anything is written: Construct 3 r506-2 (Free edition, guest) refused to open a project with a template block (and again with a replica block) on the non-world instance of an Array object type, in 2 of 2 attempts ("Failed to open project"); it opened the same project with those blocks removed, and with only the blocks on world instances kept. `none` is not affected.
+- A layout that cannot be parsed, an unknown layout and an unknown UID are refused. A missing `templateName` or `sourceTemplateName` is refused before anything is read.
+- The layout is written once and backed up to `<file>.bak` (`backupFile`). If the write or its read-back fails, the layout is put back as it was before the call and the error says what is on disk.
+
+The result is `success`, `entity` (`<layout>#<uid>`), `category: "template"`, `action` (`template removed`, `template created` or `replica linked`), `warnings` and `backupFile`. The warnings, in the wording of the tool:
+
+| When | Warning |
+|---|---|
+| a replica names a template that no instance of the object type has | `No instance of "Player" is a template named "T". The replica is written anyway; it has no template to follow until one of that name exists.` |
+| the instance already had a block of the same mode | `The instance's existing template block was rebuilt from its current properties, instance variables, behaviors and effects; sync settings changed in the editor were reset.` (`replica` for a replica) |
+| the call removes a template, renames it or turns it into a replica, and replicas follow the old name | `2 replica(s) of "Player" follow the template "T", which no instance is any more; list_templates lists them as orphanedReplicas.` |
+| the same call, and the object type's default template is the old name | `Object type "Player" creates new instances from the template "T"; clear or change it with set_default_template.` (`Whether object type "Player" creates new instances from "T" could not be checked (...)` when the object type cannot be read) |
+| layouts could not be parsed | the consequence, then the layouts, for example `Whether another instance of "Player" is already a template named "T" could not be checked in every layout. Layouts that could not be parsed: layouts/Level 2 (not valid JSON).` |
+
+Construct 3 r506-2 (Free edition, guest) also offered no template properties on the Array object type and saved its non-world instance with no `template` key. Other non-world plugin types, other tiers and r495 were not checked.
+
+### `set_default_template`
+
+Set or clear the template a new instance of an object type is created from.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Object type name (as registered, in that letter case) |
+| `templateName` | string \| null | Yes | Template to create new instances from, or `null` to clear it. An empty string is rejected |
+
+Setting a name writes `editorNewInstanceIsReplica: true` and `editorNewInstanceTemplateName` on the object type. Construct 3 r506-2 (Free edition, guest) saved a cleared default as `editorNewInstanceIsReplica: true` with no `editorNewInstanceTemplateName`, and `null` writes exactly that. If no instance of the object type is a template of that name, in a layout that could be read, the name is saved as given with the warning `No instance of "Player" is a template named "T". Create one with set_instance_template first.`; layouts that could not be parsed are named in a second warning. An object type file that cannot be parsed is refused. Only the object type file is written, with a `.bak` backup; a failed write or read-back puts it back and the error says what is on disk. The result is `success`, `entity`, `category: "objecttype"`, `action` (`default template set` or `default template cleared`), `warnings` and `backupFile`.
+
 ---
 
 ## Runtime Tools

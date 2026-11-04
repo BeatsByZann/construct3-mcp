@@ -219,6 +219,14 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_instances` | Update many placed instances of one layout in one write, each as `update_instance` does |
 | `delete_instances_from_layout` | Remove many placed instances of one layout by UID in one write, hierarchy links removed as `delete_instance_from_layout` removes them |
 
+**Instance templates**
+
+| Tool | Description |
+|------|-------------|
+| `list_templates` | List every template instance (layout, UID, object type) with the number of replicas that follow it, the replicas whose template was not found, and the layouts that could not be parsed |
+| `set_instance_template` | Make a layout instance a template, a replica of a named template, or neither; the template block is built from the instance's own properties, instance variables, behaviors and effects; a failed write is rolled back |
+| `set_default_template` | Set or clear the template an object type's new instances are created from; a failed write is rolled back |
+
 **Sprite animations**
 
 | Tool | Description |
@@ -689,6 +697,7 @@ construct3-mcp/
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   ├── flowchart-tools.ts      # Flowchart tools (13)
+│   │   ├── template-tools.ts       # Instance template tools (3)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/
 │       └── workflows.ts            # Workflow prompts (7)

@@ -626,7 +626,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 **Read-only tools (27)**, safe to auto-approve:
 
-- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `list_timeline_tracks`, `list_eases`, `list_flowcharts`, `search_objects`
+- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `list_timeline_tracks`, `list_eases`, `list_flowcharts`, `list_templates`, `search_objects`
 - Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`, `get_flowchart_details`
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
@@ -639,6 +639,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Objects, families and containers: `create_object`, `update_object_properties`, `delete_object`, `rename_object_type`, `create_family`, `update_family`, `update_instance_variable`, `reorder_behaviors`, `delete_family`, `rename_family`, `create_container`, `update_container`, `delete_container`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `add_custom_action`, `update_function`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `update_event_group`, `update_comment`, `update_script_event`, `move_events_between_sheets`, `move_event_block`, `move_event_block_items`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `rename_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `rename_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `add_instances_to_layout`, `update_instance`, `update_instances`, `move_instance`, `move_instances`, `delete_instance_from_layout`, `delete_instances_from_layout`, `set_instance_parent`, `remove_instance_children`
+- Templates: `set_instance_template`, `set_default_template`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `create_animation_folder`, `move_animation_to_folder`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`, `replace_object_image`
 - Effects of object types, families, layouts and layers: `add_effect`, `update_effect`, `remove_effect`, `reorder_effects`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`, `add_timeline_track`, `remove_timeline_track`, `add_property_track`, `remove_property_track`, `set_keyframe`, `delete_keyframe`, `update_track`, `add_value_track`, `add_audio_track`, `add_timeline_folder`, `rename_timeline_folder`, `delete_timeline_folder`, `move_timeline_track`, `create_ease`, `update_ease`, `delete_ease`

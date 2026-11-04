@@ -157,6 +157,7 @@ construct3-mcp/
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   ├── flowchart-tools.ts      # Flowchart tools (13)
+│   │   ├── template-tools.ts       # Instance template tools (3)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers
 │       └── workflows.ts            # Workflow prompts (7)
