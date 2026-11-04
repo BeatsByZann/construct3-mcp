@@ -19,7 +19,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 │  ┌──────────▼───────────────────────────────────────────────┐  │
 │  │  Business Logic Layer                                    │  │
 │  │  ProjectReader · ProjectWriter · IdGenerator             │  │
-│  │  Templates · Analyzers (17) · Cross-Reference Index      │  │
+│  │  Templates · Analyzers (18) · Cross-Reference Index      │  │
 │  │  Runtime bridge · CDP client · Preview server            │  │
 │  │  ZIP writer · PNG generator                              │  │
 │  └──────────┬───────────────────────────────────────────────┘  │
@@ -275,7 +275,7 @@ Supporting modules next to the templates:
 
 ### 6. Analyzers (`src/construct3/analyzers/`)
 
-A shared cross-reference index and seventeen analysis modules, several of which build on the index:
+A shared cross-reference index and eighteen analysis modules, several of which build on the index:
 
 | Module | Purpose |
 |--------|---------|
@@ -290,6 +290,7 @@ A shared cross-reference index and seventeen analysis modules, several of which 
 | `legacy-behavior-keys.ts` | Scan and repair of the legacy `"behavior-type"` key |
 | `legacy-event-shapes.ts` | Scan and repair of event shapes older versions wrote (block `isElse`, condition `isOr`, old function calls, one-string scripts) |
 | `delete-references.ts` | Calls, function map registrations and variable uses that deleting an event or a whole event sheet would leave pointing at nothing (`delete_event_from_sheet`, `delete_event_sheet`) |
+| `variable-renames.ts` | The uses of one event variable that find it (through the walk and lookup of `delete-references.ts`), which of them a rename can update, and the analysis of what `update_event_variable`'s rename changes |
 | `unscanned-uses.ts` | Possible uses in registered files the bulk reads skipped (over the size limit (10MB by default), not valid JSON): the index lists these files (`unscannedFiles`), and the reference checks and `find_orphaned_objects` / `get_object_dependencies` search them as text; a match or an unreadable file refuses without force |
 | `behavior-refs.ts` | Behavior name checks against objects and families |
 | `effect-uses.ts` | Conditions and actions that name an effect of their object (`"effect"` parameters), for the family effect checks of `delete_family` and `update_family` |

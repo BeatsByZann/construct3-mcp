@@ -21,6 +21,7 @@
  */
 
 import type { Condition, FunctionCallAction } from './types.js';
+import { isEventVariableNameCharacter } from './event-variable-names.js';
 
 const MAX_NODES = 100_000;
 const MAX_DEPTH = 50;
@@ -228,20 +229,23 @@ export function findExpressionCalls(expr: string, functionsObject: string): Arra
   return calls;
 }
 
-const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*/y;
 const NUMBER = /[0-9][0-9A-Za-z_.]*/y;
 
 /**
- * Bare names in a C3 expression, lower-cased, one entry per use: the names
- * that can refer to an event variable or a function parameter, such as
- * `Score` in `Score * 2` or `max(Score, 1)`. Not returned: anything inside
- * string literals, numbers, names after "." (`Sprite.Score`, `Functions.Name`)
- * and names followed by "." or "(" (object names as in `Sprite.X`, system
- * expressions and calls as in `max(...)`). Parameterless system expressions
- * such as `dt` are returned like any other name.
+ * The bare names of a C3 expression with their positions, one entry per
+ * use: the names that can refer to an event variable or a function
+ * parameter, such as `Score` in `Score * 2` or `max(Score, 1)`. A name is a
+ * run of the characters an event variable name may hold
+ * (isEventVariableNameCharacter) that does not start with a digit, so
+ * names with letters outside ASCII are read whole. Not returned: anything
+ * inside string literals, numbers, names after "." (`Sprite.Score`,
+ * `Functions.Name`) and names followed by "." or "(" (object names as in
+ * `Sprite.X`, system expressions and calls as in `max(...)`).
+ * Parameterless system expressions such as `dt` are returned like any
+ * other name. `start` and `end` index `expr`.
  */
-export function findExpressionIdentifiers(expr: string): string[] {
-  const names: string[] = [];
+export function expressionIdentifierSpans(expr: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
   let previous = ''; // last character before the current token, spaces aside
   let i = 0;
   while (i < expr.length) {
@@ -253,7 +257,7 @@ export function findExpressionIdentifiers(expr: string): string[] {
       previous = '"';
       continue;
     }
-    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+    if (/\s/.test(ch)) {
       i++;
       continue;
     }
@@ -264,20 +268,43 @@ export function findExpressionIdentifiers(expr: string): string[] {
       previous = '0';
       continue;
     }
-    IDENTIFIER.lastIndex = i;
-    const word = IDENTIFIER.exec(expr);
-    if (!word) {
+    if (!isEventVariableNameCharacter(ch)) {
       previous = ch;
       i++;
       continue;
     }
-    i += word[0].length;
+    const start = i;
+    while (i < expr.length && isEventVariableNameCharacter(expr[i])) i++;
     let next = i;
     while (next < expr.length && /\s/.test(expr[next])) next++;
-    if (previous !== '.' && expr[next] !== '.' && expr[next] !== '(') names.push(word[0].toLowerCase());
+    if (previous !== '.' && expr[next] !== '.' && expr[next] !== '(') spans.push({ start, end: i });
     previous = 'a';
   }
-  return names;
+  return spans;
+}
+
+/**
+ * Bare names in a C3 expression, lower-cased, one entry per use (see
+ * expressionIdentifierSpans for which names count).
+ */
+export function findExpressionIdentifiers(expr: string): string[] {
+  return expressionIdentifierSpans(expr).map(({ start, end }) => expr.slice(start, end).toLowerCase());
+}
+
+/**
+ * `expr` with every bare name (expressionIdentifierSpans) that is `name`,
+ * ignoring case, replaced by `newName`, and how many were.
+ */
+export function renameExpressionIdentifier(expr: string, name: string, newName: string): { text: string; count: number } {
+  const key = name.toLowerCase();
+  let text = expr;
+  let count = 0;
+  for (const { start, end } of expressionIdentifierSpans(expr).reverse()) {
+    if (expr.slice(start, end).toLowerCase() !== key) continue;
+    text = text.slice(0, start) + newName + text.slice(end);
+    count++;
+  }
+  return { text, count };
 }
 
 /** Expression parameters of an ACE: `parameters` is an object (ACEs) or an array (function calls). */

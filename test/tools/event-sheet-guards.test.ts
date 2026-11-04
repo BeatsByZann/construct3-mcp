@@ -357,9 +357,9 @@ describe('sheet names that differ from the registered name in case (#38)', () =>
       .toContain(MEANT_MAIN_SHEET);
     expect(await files()).toEqual(before);
 
-    // Spelled as registered, the delete is refused for the use and the case-only rename goes through
+    // Spelled as registered, the delete is refused for the use; the case-only rename is refused too (a Sprite parameter holds the name in an expression), and goes through with force
     expect((await call('delete_event_from_sheet', { sheetName: 'MainSheet', sid: SCORE_SID, dryRun: true })).action).toBe('delete_blocked');
-    expect((await call('update_event_variable', { sheetName: 'MainSheet', sid: SCORE_SID, newName: 'SCORE' })).success).toBe(true);
+    expect((await call('update_event_variable', { sheetName: 'MainSheet', sid: SCORE_SID, newName: 'SCORE', force: true })).success).toBe(true);
   });
 });
 

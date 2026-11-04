@@ -92,6 +92,7 @@ construct3-mcp/
 │   │       ├── legacy-behavior-keys.ts # Legacy "behavior-type" key scan and repair
 │   │       ├── legacy-event-shapes.ts # Legacy isElse/isOr/function call/script shape scan and repair
 │   │       ├── delete-references.ts # Function and variable names an event or sheet delete would leave dangling
+│   │       ├── variable-renames.ts # The uses of an event variable a rename updates, and those it lists
 │   │       ├── unscanned-uses.ts   # Possible uses in registered files the bulk reads skipped
 │   │       ├── behavior-refs.ts    # Behavior name checks against objects and families
 │   │       ├── effect-uses.ts      # Conditions and actions that name an effect of their object (family effect checks)
