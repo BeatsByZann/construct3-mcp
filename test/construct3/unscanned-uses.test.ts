@@ -29,7 +29,7 @@ describe('unscannedFilesOf', () => {
     ]);
     const files = unscannedFilesOf('layouts', ['Ok', 'Big', 'Broken', 'Denied', 'Ghost', 'Unknown'], new Map([['Ok', {}]]), failures);
     expect(files.map(f => [f.file, f.reason])).toEqual([
-      ['layouts/Big', 'over the 10MB read limit'],
+      ['layouts/Big', 'over the 10MB size limit'],
       ['layouts/Broken', 'not valid JSON'],
       ['layouts/Denied', 'could not be read'],
       ['layouts/Unknown', 'not read'],
@@ -90,20 +90,20 @@ describe('checkUnscannedFiles', () => {
   });
 
   it('no match does not block, and is reported as searched as text only', async () => {
-    const reports = [{ file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'no-match' as const }];
+    const reports = [{ file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'no-match' as const }];
     expect(blocksWithoutForce(reports)).toBe(false);
     expect(unscannedRefusal(reports)).toBe('');
     expect(unscannedWarnings(reports, 'Deleted')).toEqual([
-      'layouts/Big (over the 10MB read limit) could not be parsed and was only searched as text; the search found no possible use.',
+      'layouts/Big (over the 10MB size limit) could not be parsed and was only searched as text; the search found no possible use.',
     ]);
   });
 
   it('names possible uses as possible, in the refusal and in the forced warning', () => {
     const reports = [
-      { file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'possible-use' as const, names: ['Enemy'] },
+      { file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'possible-use' as const, names: ['Enemy'] },
     ];
     expect(unscannedRefusal(reports)).toBe(
-      'There are possible uses in files that could not be parsed: layouts/Big (over the 10MB read limit), whose text names "Enemy". ' +
+      'There are possible uses in files that could not be parsed: layouts/Big (over the 10MB size limit), whose text names "Enemy". ' +
       'They were found by a text search, which cannot tell a use from the same name in another string.');
     expect(unscannedWarnings(reports, 'Deleted')[0]).toMatch(/^Deleted with force=true: There are possible uses .* NOT changed\.$/);
   });
@@ -112,7 +112,7 @@ describe('checkUnscannedFiles', () => {
 describe('ownFileReports and mergeUnscannedReports', () => {
   const skipped: UnscannedFile[] = [
     { category: 'families', name: 'Foes', file: 'families/Foes', reason: 'not valid JSON' },
-    { category: 'layouts', name: 'Big', file: 'layouts/Big', reason: 'over the 10MB read limit' },
+    { category: 'layouts', name: 'Big', file: 'layouts/Big', reason: 'over the 10MB size limit' },
   ];
 
   it('reports the file that defines what a check is about as not searched, and blocks on it', () => {
@@ -131,7 +131,7 @@ describe('ownFileReports and mergeUnscannedReports', () => {
   });
 
   it('a file an analysis did not search for anything does not block', () => {
-    expect(blocksWithoutForce([{ file: 'layouts/Big', reason: 'over the 10MB read limit', textSearch: 'not-searched' }])).toBe(false);
+    expect(blocksWithoutForce([{ file: 'layouts/Big', reason: 'over the 10MB size limit', textSearch: 'not-searched' }])).toBe(false);
   });
 
   it('merges several searches of one file: the weightiest outcome, with all the names', () => {

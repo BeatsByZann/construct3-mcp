@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `C3MCP_MAX_FILE_MB`, a setting of whoever starts the server (whole megabytes, 1 to 128; default 10), sets the size limit for the object type, family, event sheet, layout and script files the server reads, for the project files, flowcharts and timelines the analysis tools read, and for the entity files and `project.c3proj` it writes. Another value keeps the default, and the refusals say it was ignored. Memory use grows with the whole project; TROUBLESHOOTING has measurements (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).
@@ -17,6 +21,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 - `delete_layout`, `delete_event_sheet`, `delete_family` and `delete_object` check the entity file, take the name out of `project.c3proj`, then delete the file, and undo the call when a step fails. Before, a `project.c3proj` update that failed for another reason than a change on disk (a file held by another program, or read-only) left the file deleted and the name registered, a `file-existence` error in `validate_project`; `delete_object` restored its file from the backup instead. Now such a call puts back what it changed, so it changes nothing unless a file cannot be put back, and its error says what is on disk afterwards: `project.c3proj` missing or unreadable, whether it lists the entity, and whether the file is there. A delete that finds `project.c3proj` saved again during the call and listing the entity is reported as an error instead of a success (#ISSUE).
 - A writer update of `project.c3proj` that reads the file again because it changed on disk, before the call first wrote it, backs it up again, so undoing the call keeps that change (#ISSUE).
 - A write whose temp-file rename failed with `EEXIST` no longer deletes the file it replaces, or a file another write put at its name: the file is renamed aside, the new content is linked into its place, and the file is linked back when that fails. A link never replaces an existing name, so when something else took the name meanwhile, or putting the file back fails, nothing is removed and the error names the `.old` and `.tmp` files that hold the two contents. Behavior change: this path needs hard links. In a folder that cannot make them, a write that gets `EEXIST` now fails with the file untouched, where before the file was deleted and the rename retried. Temp files are now named `.c3mcp-<16 hex digits>.tmp` and created exclusively, so a write never writes over a file an earlier one left, and the name's length no longer depends on the file's; the fallback's other files are `.c3mcp-<16 hex digits>.old` and `.link` (see TROUBLESHOOTING). Before, the file was deleted first, so a failed second rename left it missing, with no change recorded for the tool call's undo (#ISSUE).
+- The write limit is the read limit and counts the UTF-8 bytes of the text written (line endings and BOM included). Before, a file between 5 and 10MB could be read but its entity writes were refused, and the check counted characters of the LF JSON, not the bytes written (#ISSUE).
 
 ## [1.10.0] - 2026-09-30
 

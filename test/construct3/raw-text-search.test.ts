@@ -1,7 +1,7 @@
 /**
  * Text search of files the bulk reads skip (issue #55): whole-word names
  * ignoring case, numbers, bounded patterns, matches across chunk boundaries,
- * and files over the reader's 10MB cap.
+ * and files over the reader's size limit (10MB by default).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -188,7 +188,7 @@ describe('searchFileText', () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 3 });
   });
 
-  it('reads a file over the 10MB read cap to the end, and across the 1MB stream chunks', async () => {
+  it('reads a file over the default 10MB size limit to the end, and across the 1MB stream chunks', async () => {
     const path = join(dir, 'big.json');
     const chunk = 1024 * 1024;
     // "Enemy" straddles the first chunk boundary; "Boss" is past 10MB

@@ -1,6 +1,6 @@
 /**
  * Text search in project files the bulk reads skip (issue #55): a registered
- * layout, event sheet, object type or family over the reader's 10MB cap, not
+ * layout, event sheet, object type or family over the reader's size limit (10MB by default), not
  * valid JSON, or otherwise not parsed. The cross-reference index cannot see
  * the uses inside such a file, so the reference checks search its raw text
  * for the names they look for instead.

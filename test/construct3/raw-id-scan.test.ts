@@ -46,7 +46,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 });
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
-/** Must match MAX_FILE_SIZE in src/construct3/project-reader.ts */
+/** The default size limit: DEFAULT_MAX_FILE_MB in src/construct3/file-size-limit.ts (the suite clears C3MCP_MAX_FILE_MB) */
 const READER_SIZE_CAP = 10 * 1024 * 1024;
 /** Stands in for the ~512MB a JavaScript string can hold */
 const LOWERED_STRING_LIMIT = READER_SIZE_CAP + 64 * 1024;
@@ -110,7 +110,7 @@ async function registerLayout(name: string): Promise<void> {
   await writeFile(c3projPath, JSON.stringify(project, null, '\t'));
 }
 
-/** A layout over the read cap: its highest UID comes after a string of spaces that pushes it past the cap (or `padding` spaces). */
+/** A layout over the size limit: its highest UID comes after a string of spaces that pushes it past the limit (or `padding` spaces). */
 function bigLayoutText(name: string, highUid: number, padding = READER_SIZE_CAP + 128 * 1024): string {
   return `{"name":${JSON.stringify(name)},"layers":[{"name":"Main","sid":610000000000001,"instances":[` +
     `{"type":"Sprite","uid":7,"sid":610000000000002,"properties":{},"tags":"${' '.repeat(padding)}"},` +
@@ -230,7 +230,7 @@ describe('UID scan of files in other encodings', () => {
   const SIDS = [610000000000001, 610000000000002, 610000000000003, 610000000000004];
 
   it('reads UTF-16 without a byte order mark, and UTF-16BE, dropping the NUL bytes around the ASCII characters', async () => {
-    // Under the read limit: the reader skips them as not valid JSON
+    // Under the size limit: the reader skips them as not valid JSON
     const text = bigLayoutText('Wide', 60046, 1);
     const files: Array<[string, Buffer]> = [
       ['LeNoBom', Buffer.from(text, 'utf16le')],
@@ -265,7 +265,7 @@ describe('UID scan of files in other encodings', () => {
     expect(await new IdGenerator().generateUid(reader)).toBe(70047);
   });
 
-  it('allocates above the UIDs of a layout over the read limit with a NUL character in it', async () => {
+  it('allocates above the UIDs of a layout over the size limit with a NUL character in it', async () => {
     await registerLayout('BigNul');
     const text = bigLayoutText('BigNul', 80046);
     await writeFile(join(tmpDir, 'layouts', 'BigNul.json'), text.replace('    ', '  ' + String.fromCharCode(0) + ' '));

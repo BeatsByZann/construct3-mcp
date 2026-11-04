@@ -24,6 +24,7 @@ import {
   stampOf,
   type FileState,
 } from './disk-state.js';
+import { describeFileSizeLimit, describeSize, fileSizeLimit } from './file-size-limit.js';
 
 /**
  * Scan raw JSON text for "uid"/"parent-uid"/"sid" values without parsing it (the scan
@@ -33,7 +34,6 @@ import {
  */
 export { scanIdsInText } from './raw-text-search.js';
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 /** Limits for listing flowcharts/ and timelines/ */
 const MAX_DATA_FOLDER_DEPTH = 20;
 const MAX_DATA_FILES = 5000;
@@ -89,7 +89,7 @@ const ENTITY_KINDS: Record<EntityCategory, string> = {
  * never on message text.
  */
 export type ReadFailureCode =
-  | 'E_FILE_TOO_LARGE'   // exists but exceeds MAX_FILE_SIZE; contents were NOT scanned
+  | 'E_FILE_TOO_LARGE'   // exists but exceeds the size limit (file-size-limit.ts); contents were NOT scanned
   | 'E_FILE_NOT_FOUND'   // ENOENT on stat/read; the file provably holds no data
   | 'E_INVALID_JSON'     // read fine, JSON.parse threw
   | 'E_READ_ERROR';      // anything else (EACCES, EISDIR, ...)
@@ -201,10 +201,11 @@ export class Construct3ProjectReader {
     // Taken before the read: a change while reading makes the state older than the text, never newer
     const state = stampOf(stats);
     this.noteRead(filePath, state);
-    if (stats.size > MAX_FILE_SIZE) {
+    const limit = fileSizeLimit();
+    if (stats.size > limit.bytes) {
       throw new ProjectReadError(
         'E_FILE_TOO_LARGE',
-        `File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB exceeds 10MB limit)`
+        `File too large (${describeSize(stats.size, limit)} exceeds ${describeFileSizeLimit(limit)})`
       );
     }
     return { text: stripBom(await readFile(filePath, 'utf-8')), state };
@@ -556,7 +557,7 @@ export class Construct3ProjectReader {
   /**
    * Raw ID scan of an entity file that bypasses the size cap and JSON parsing.
    * Used to recover the UID high-water mark (and SIDs) from files the normal
-   * reader refuses (over 10MB) or cannot parse: layout instances and
+   * reader refuses (over the size limit) or cannot parse: layout instances and
    * objectTypes' singleglobal-inst carry UIDs. Recovers uid/sid only;
    * imageSpriteIds are not recovered (random 7-digit, collision-negligible).
    * The file is streamed (scanFileIds in raw-text-search.ts), so its size is
