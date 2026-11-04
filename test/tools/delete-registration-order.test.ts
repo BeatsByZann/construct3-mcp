@@ -11,10 +11,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, cp, readFile, rm, unlink, rename } from 'fs/promises';
+import { mkdtemp, cp, readFile, rm, unlink, rename, link } from 'fs/promises';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
@@ -23,10 +23,10 @@ import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.
 import { registerAnalysisTools } from '../../src/tools/analysis.js';
 import { registerMutationTools } from '../../src/tools/mutations.js';
 
-// rename passes through unless a test queues a failure (test I drives atomicReplace's EEXIST fallback)
+// rename and link pass through unless a test queues a failure (test I drives atomicReplace's EEXIST fallback)
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
-  return { ...actual, rename: vi.fn(actual.rename) };
+  return { ...actual, rename: vi.fn(actual.rename), link: vi.fn(actual.link) };
 });
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
@@ -51,6 +51,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  // Back to the real rename and link after a test that faulted them by their arguments
+  vi.mocked(rename).mockReset();
+  vi.mocked(link).mockReset();
   await rm(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -244,21 +247,38 @@ describe('what a failed delete can leave, and edge cases (#ISSUE)', () => {
     expect(existsSync(onDisk('layouts/Level.json'))).toBe(false);
   });
 
-  it('I: reports a missing project.c3proj when its replacement deleted it and then failed', async () => {
+  it('I: puts project.c3proj back when its replacement fails after the first rename', async () => {
     await ok('create_layout', { name: 'Level' });
-    // atomicReplace's Windows fallback: the first rename fails with EEXIST, the destination is deleted, the second rename fails
-    vi.mocked(rename)
-      .mockImplementationOnce(async () => { throw Object.assign(new Error('EEXIST: file already exists, rename'), { code: 'EEXIST' }); })
-      .mockImplementationOnce(async () => { throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }); });
+    const projectPath = join(dir, 'project.c3proj');
+    const before = await readFile(projectPath);
+    const actualFs = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    const isTemp = (path: unknown) => /^\.c3mcp-[0-9a-f]{16}\.tmp$/.test(basename(String(path)));
+    // An EEXIST on the first replace, then a failed link-in
+    let renameFailed = false;
+    vi.mocked(rename).mockImplementation(async (from, to) => {
+      if (!renameFailed && String(to) === projectPath) {
+        renameFailed = true;
+        throw Object.assign(new Error('EEXIST: file already exists, rename'), { code: 'EEXIST' });
+      }
+      return actualFs.rename(from, to);
+    });
+    let linkFailed = false;
+    vi.mocked(link).mockImplementation(async (from, to) => {
+      if (!linkFailed && isTemp(from) && String(to) === projectPath) {
+        linkFailed = true;
+        throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+      }
+      return actualFs.link(from, to);
+    });
 
     const result = await call('delete_layout', { name: 'Level' });
 
+    expect(renameFailed).toBe(true);
     expect(result.isError).toBe(true);
-    expect(result.text).toContain('EPERM: operation not permitted, rename. project.c3proj is missing: ' +
-      'put it back from project.c3proj.bak (its last backup) before you open the project.');
-    expect(result.text).not.toContain('still lists');
-    expect(existsSync(join(dir, 'project.c3proj'))).toBe(false);
-    expect(existsSync(join(dir, 'project.c3proj.bak'))).toBe(true);
+    expect(linkFailed).toBe(true);
+    expect(result.text.endsWith('project.c3proj still lists "Level", and layouts/Level.json is on disk.')).toBe(true);
+    expect(await readFile(projectPath)).toEqual(before);
+    expect(isRegistered('layouts', 'Level')).toBe(true);
     expect(existsSync(onDisk('layouts/Level.json'))).toBe(true);
   });
 
