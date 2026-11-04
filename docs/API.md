@@ -588,6 +588,67 @@ Delete a family. The member object types are kept. The layout instances of its m
 - Member instances in layouts lose the values of the family's instance variables and the entries for its behaviors and effects; entries and values they lack for their other behaviors and instance variables are added. A warning names the removed values other than the default and the removed effect entries (layout, UID, name and value, the first ten), since only the layout's `.bak` keeps them, until the layout is written again.
 - Refuses when the JSON file changed on disk since it was read; then removes the name from `project.c3proj` and deletes the file (kept as `.bak`). When either step fails, the call is undone; when `project.c3proj` was saved again meanwhile and cannot be put back, the error says what is on disk: if it no longer lists the name, the file is left on disk unregistered. If `project.c3proj` lists the name again after the file was deleted, the call is an error
 
+### `list_containers`
+
+List the containers of `project.c3proj`, in the order of their `containers` list. A container makes object types be created, picked and destroyed together. It has no name, so each container is identified by its `index` (its position in the list) and its `members`. Read-only.
+
+**Returns:** `{ containers: [{ index, members, notObjectTypes? }], count }`. `notObjectTypes` is listed when a member is no object type of the project: Construct 3 r506-2 does not open a project with such a member. A member that differs from an object type only in letter case is listed too, because the tools refuse it; whether Construct 3 accepts it was not checked. [`validate_project`](#validate_project) reports both (the `container-member` row of its load-time rules).
+
+### `create_container`
+
+Create a container of two or more object types in `project.c3proj`, appended to its `containers` list, so the object types are created, picked and destroyed together. The object types themselves are not changed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `members` | string[] | Yes | Object type names to group, 2 to 100, spelled as registered and listed once (e.g. `["Player", "PlayerHitbox"]`) |
+
+**Behavior:**
+- Every member must be an object type of the project. Refused, and nothing is written: a name that is no object type; a name that differs from an object type only in letter case (names are matched with their letter case, so the registered spelling is named); a name listed twice (ignoring letter case); and a family (a container holds object types).
+- The container needs two or more distinct object types. Construct 3 r506-2 refuses to open a project with a container of fewer than two object types, or one that names a missing object type; these are the `container-member` rules of [`validate_project`](#validate_project).
+- A member that another container already lists is refused, naming that container's index and members. Construct 3 r506-2 refuses to open a project in which an object type is in two containers (it reports "already in a container"), so the tools keep each object type in one container. A hand edit can still put one there; the update tools then refuse it (see [`update_container`](#update_container)).
+- A refusal says "Nothing was changed." and leaves `project.c3proj` as it was. The checks run before the write, and again on the file as it is just before the write; a refusal found in that second check, after a save made during the call, can leave a `project.c3proj.bak` from an earlier round of the same call behind (see [`update_container`](#update_container)).
+- Backs up `project.c3proj` to `project.c3proj.bak`. When the write fails, the error says what is on disk: `project.c3proj` is put back unless another write changed it since, and the error then names it with its `.bak`.
+
+**Returns:** `{ success, entity: "containers/<index>", category: "container", action: "created", index, members, backupFile }`.
+
+### `update_container`
+
+Add object types to a container, or take some out. The container is found by one of its members (ignoring letter case). Give `index` when the member is in several containers.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `member` | string | Yes | An object type in the container to change |
+| `index` | integer | No | Index of the container (from [`list_containers`](#list_containers)); needed when `member` is in several containers |
+| `addMembers` | string[] | No | Object type names to add (up to 100) |
+| `removeMembers` | string[] | No | Object type names to take out (up to 100) |
+
+**Behavior:**
+- A `member` that several containers list is refused, and the error names each container's index and members ("give index to pick one"). With `index`, the container at that position must list `member`, else the call is refused: the containers may have changed during the call. Each update round looks the container up again in the file it reads, so an editor save that reorders the containers during the call never edits another one.
+- A name in both `addMembers` and `removeMembers` is refused.
+- A name already in the container (to add) or not in it (to remove) gives a warning in `warnings` and is skipped.
+- The result is checked with the rules of [`create_container`](#create_container), except that the container itself is not counted as "another container" for the one-container rule: every member is an object type spelled as registered, listed once, not a family, and no other container lists it. Added members are appended after the existing ones; the others keep their order.
+- A container left with fewer than two object types is refused, and the error names [`delete_container`](#delete_container).
+- When nothing changes, the result is `action: "unchanged"`, nothing is written, and there is no `backupFile`. This also happens when a save of `project.c3proj` in the editor during the call already holds the change: `project.c3proj` stays as saved, and a `project.c3proj.bak` from an earlier round of the same call can remain.
+- A save of `project.c3proj` in the editor during the call is merged, not replaced: the update runs again on the saved file. A save that makes the change invalid (for example one that puts the object type in another container) is refused inside the update, before the write, and says "Nothing was changed." A `project.c3proj.bak` from an earlier round of the same call can remain in that case; `project.c3proj` itself is unchanged.
+- Backs up `project.c3proj` to `project.c3proj.bak` when it changes. When the write fails, the error says what is on disk, as for [`create_container`](#create_container).
+
+**Returns:** `{ success, entity: "containers/<index>", category: "container", action: "updated" | "unchanged", index, members, warnings?, backupFile? }`. `index` is the container's position in the file the update wrote, which can differ from the one given when an editor save inserted a container before it during the call.
+
+### `delete_container`
+
+Delete the container that lists a member (found ignoring letter case). Give `index` when the member is in several containers, as for [`update_container`](#update_container). The object types stay. When the last container is deleted, `containers` stays as `[]`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `member` | string | Yes | An object type in the container to delete |
+| `index` | integer | No | Index of the container (from [`list_containers`](#list_containers)); needed when `member` is in several containers |
+
+**Behavior:**
+- A `member` that no container lists is refused ("Use list_containers to see the containers"); several containers listing it are refused unless `index` picks one, as for `update_container`. Nothing is written in either case. A refusal found in a later round of the update, after a save of `project.c3proj` during the call, leaves a `project.c3proj.bak` from the earlier round, and `project.c3proj` is unchanged.
+- Backs up `project.c3proj` to `project.c3proj.bak`. When the write fails, the error says what is on disk, as for `create_container`.
+
+**Returns:** `{ success, entity: "containers/<index>", category: "container", action: "deleted", index, members, backupFile }`, where `members` are the container's members before the deletion.
+
 ### `create_event_sheet`
 
 Create a new event sheet.

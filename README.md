@@ -156,6 +156,10 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `update_instance_variable` | Rename an instance variable of an object type or family, or change its type or description, with the values on placed instances; refuses a rename events use, unless forced |
 | `reorder_behaviors` | Put the behaviors of an object type or family in a new order, with those behaviors' entries on placed instances |
 | `delete_family` | Delete a family; refused while events or object properties name it or events use its instance variables, behaviors or effects through a member, listing where, unless forced |
+| `list_containers` | List the containers of `project.c3proj` (each with its index and members) and any member that is no object type; read-only |
+| `create_container` | Create a container of two or more object types, so they are created, picked and destroyed together; refuses a family, a missing or mis-cased name, fewer than two object types, or an object type another container lists |
+| `update_container` | Add or remove object types of a container, found by one of its members (with `index` when a member is in several containers); refuses to leave fewer than two object types |
+| `delete_container` | Delete a container; its object types stay |
 
 **Event sheets**
 
@@ -581,6 +585,7 @@ construct3-mcp/
 │   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)
 │   │   ├── effect-tools.ts         # Effect tools (5)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── container-tools.ts      # Container tools (4)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── layer-order.ts          # Layer and instance order tools (3)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)

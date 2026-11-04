@@ -102,7 +102,7 @@ The ceiling is 128MB, the largest S at which every counted run passed. 16, 32 an
 
 ### Construct 3 does not open the project: "cannot find object type name '...'"
 
-**Cause**: a container in `project.c3proj` (`"containers": [ { "members": [...] } ]`) lists an object type that no longer exists, for example one deleted by hand or by `delete_object` of version 1.10.0 or older, which left the name in its container. `validate_project` reports it as a `container-member` error.
+**Cause**: a container in `project.c3proj` (`"containers": [ { "members": [...] } ]`) lists an object type that no longer exists, for example one deleted by hand or by `delete_object` of version 1.10.0 or older, which left the name in its container. `validate_project` reports it as a `container-member` error. `create_container` and `update_container` refuse to write a container that Construct 3 would refuse to open.
 
 **Fix**: remove the name from that container's `members` in `project.c3proj` (the error names the container's index and members), or restore the deleted object type from the files `delete_object` keeps. From this version on, `delete_object` takes a deleted object type out of its containers and keeps its files, so steps 1 to 4 restore one:
 

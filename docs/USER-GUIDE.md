@@ -262,7 +262,7 @@ This format works, and so does the one `claude mcp add` writes (the same with `"
 
 #### Tool permissions
 
-Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 27 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
+Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 28 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
 
 ```json
 {
@@ -281,7 +281,7 @@ Claude Code asks before it uses an MCP tool. In Claude Code the tools are named 
 }
 ```
 
-Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 27 read-only tools was checked against the server's tool list over stdio (102 tools). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
+Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 28 read-only tools was checked against the server's tool list over stdio (106 tools). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
 
 ### Claude Desktop
 
@@ -604,7 +604,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 **Read-only tools (27)**, safe to auto-approve:
 
-- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_addons`, `list_effects`, `list_timelines`, `search_objects`
+- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `search_objects`
 - Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
@@ -613,7 +613,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 **Tools that write files (48)**, review before approving:
 
-- Objects and families: `create_object`, `update_object_properties`, `delete_object`, `create_family`, `update_family`, `update_instance_variable`, `reorder_behaviors`, `delete_family`
+- Objects, families and containers: `create_object`, `update_object_properties`, `delete_object`, `create_family`, `update_family`, `update_instance_variable`, `reorder_behaviors`, `delete_family`, `create_container`, `update_container`, `delete_container`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `move_events_between_sheets`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `update_instance`, `move_instance`, `delete_instance_from_layout`, `set_instance_parent`, `remove_instance_children`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `create_animation_folder`, `move_animation_to_folder`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`, `replace_object_image`

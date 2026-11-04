@@ -118,6 +118,7 @@ construct3-mcp/
 │   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)
 │   │   ├── effect-tools.ts         # Effect tools (5)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── container-tools.ts      # Container tools (4)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── layer-order.ts          # Layer and instance order tools (3)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)

@@ -25,7 +25,7 @@
  * update, never a cached copy.
  */
 
-import { nameKey } from './names.js';
+import { findNameClash, nameKey } from './names.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -159,4 +159,184 @@ export function describeContainerRemoval(removal: ContainerRemoval): string | un
     parts.push(`Removed the container with ${quoted(members)}, since fewer than two members were left.`);
   }
   return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
+/**
+ * The names a project.c3proj entity container ("objectTypes", "families")
+ * registers, in its items and in every subfolder; none when it is missing
+ * or malformed.
+ */
+export function registeredNames(container: unknown): string[] {
+  if (!isRecord(container)) return [];
+  const names = Array.isArray(container.items)
+    ? container.items.filter((item): item is string => typeof item === 'string')
+    : [];
+  if (Array.isArray(container.subfolders)) {
+    for (const subfolder of container.subfolders) names.push(...registeredNames(subfolder));
+  }
+  return names;
+}
+
+/** One thing wrong with the members of a container. */
+export interface ContainerProblem {
+  /**
+   * 'missing': a member that is no object type; 'case-variant': one that
+   * differs from an object type only in letter case; 'too-few': fewer than
+   * two distinct object types.
+   */
+  kind: 'missing' | 'case-variant' | 'too-few';
+  /** The member as written ('missing' and 'case-variant') */
+  member?: string;
+  /** The registered spelling ('case-variant'); for 'too-few' the one object type the container has, when it has one */
+  registered?: string;
+}
+
+/**
+ * The rule the editor applies when it opens a container, once, for
+ * validate_project and for the container tools: every member must be an
+ * object type of the project (a member that differs only in letter case is
+ * reported apart), and a container needs at least two distinct object
+ * types. The problems come in member order, 'too-few' last.
+ */
+export function containerMemberProblems(
+  members: readonly string[],
+  registeredObjects: readonly string[],
+): ContainerProblem[] {
+  const problems: ContainerProblem[] = [];
+  const existing: string[] = [];
+  for (const member of members) {
+    const match = findNameClash(member, registeredObjects);
+    if (match === undefined) {
+      problems.push({ kind: 'missing', member });
+      continue;
+    }
+    existing.push(match);
+    if (match !== member) problems.push({ kind: 'case-variant', member, registered: match });
+  }
+  if (new Set(existing.map(nameKey)).size < 2) {
+    problems.push(existing.length > 0 ? { kind: 'too-few', registered: existing[0] } : { kind: 'too-few' });
+  }
+  return problems;
+}
+
+/**
+ * A container tool's refusal, thrown inside a writer update's change (before
+ * the file is backed up or written) or before it. The message ends with
+ * "Nothing was changed." already, so a tool returns it as it is.
+ */
+export class ContainerRefusal extends Error {
+  constructor(reason: string) {
+    super(`${reason} Nothing was changed.`);
+    this.name = 'ContainerRefusal';
+  }
+}
+
+const quoted = (names: readonly string[]) => names.map(name => `"${name}"`).join(', ');
+
+/**
+ * The members of a container to be written, or a ContainerRefusal. A member
+ * must be an object type, spelled as registered, listed once (ignoring
+ * case); the container needs two distinct object types; and no other
+ * container (not the one at index `except`) may list it. A family is not an
+ * object type. Called on the objects, families and containers of the file
+ * as it is right before the write.
+ */
+export function checkNewContainerMembers(
+  members: readonly string[],
+  objectTypes: readonly string[],
+  families: readonly string[],
+  containers: readonly ContainerEntry[],
+  except?: number,
+): string[] {
+  const seen = new Set<string>();
+  for (const member of members) {
+    const key = nameKey(member);
+    if (seen.has(key)) {
+      throw new ContainerRefusal(`"${member}" is listed twice (names are compared ignoring letter case).`);
+    }
+    seen.add(key);
+  }
+  const familyKeys = new Set(families.map(nameKey));
+  for (const member of members) {
+    if (familyKeys.has(nameKey(member))) {
+      throw new ContainerRefusal(`"${member}" is a family, and a container holds object types.`);
+    }
+  }
+  for (const problem of containerMemberProblems(members, objectTypes)) {
+    if (problem.kind === 'case-variant') {
+      throw new ContainerRefusal(`"${problem.member}" differs only in letter case from the object type "${problem.registered}", `
+        + `and names are matched with their letter case; write "${problem.registered}".`);
+    }
+    if (problem.kind === 'missing') {
+      throw new ContainerRefusal(`"${problem.member}" is not an object type of the project. `
+        + 'Construct 3 r506-2 does not open a project whose container names a missing object type.');
+    }
+    throw new ContainerRefusal('A container needs at least two distinct object types. '
+      + 'Construct 3 r506-2 refuses to open a project with a container of fewer than two object types.');
+  }
+  for (const other of containers) {
+    if (other.index === except) continue;
+    const clash = members.find(member => other.members.some(name => nameKey(name) === nameKey(member)));
+    if (clash !== undefined) {
+      throw new ContainerRefusal(`"${clash}" is already in container ${other.index} of project.c3proj (${quoted(other.members)}). `
+        + 'Construct 3 r506-2 refuses to open a project in which an object type is in two containers '
+        + '(it reports "already in a container").');
+    }
+  }
+  return [...members];
+}
+
+/**
+ * The container that lists `member` (ignoring case), or why there is none.
+ * With `index`, the container at that position, which must list `member`.
+ * Without it, the only container that lists it; when several do, the error
+ * names each one's index and members, since a hand edit can put a type in
+ * two containers. Called again on the file inside every writer update
+ * round, so a reorder between rounds never edits another container.
+ */
+export function findContainerOf(
+  project: { containers?: unknown },
+  member: string,
+  index?: number,
+): { index: number; container: ContainerEntry } | { error: string } {
+  const key = nameKey(member);
+  const containers = projectContainers(project);
+  const listing = containers.filter(container => container.members.some(name => nameKey(name) === key));
+  if (index !== undefined) {
+    const container = containers[index];
+    if (container === undefined) {
+      return { error: `The project has no container at index ${index} (it has ${containers.length}); the containers may have changed during the call.` };
+    }
+    if (!listing.includes(container)) {
+      return { error: `The container at index ${index} does not list "${member}"; the containers may have changed during the call.` };
+    }
+    return { index, container };
+  }
+  if (listing.length === 0) {
+    return { error: `No container lists "${member}". Use list_containers to see the containers.` };
+  }
+  if (listing.length > 1) {
+    const where = listing.map(container => `container ${container.index} (${quoted(container.members)})`).join(' and ');
+    return { error: `"${member}" is in ${where}; give index to pick one.` };
+  }
+  return { index: listing[0].index, container: listing[0] };
+}
+
+/** Append a container to a parsed project.c3proj, in place, creating "containers" when it is absent; returns its index. */
+export function addContainer(project: { containers?: unknown }, members: string[]): number {
+  if (!Array.isArray(project.containers)) project.containers = [];
+  return (project.containers as unknown[]).push({ members }) - 1;
+}
+
+/** Set the members of the container at `index` of a parsed project.c3proj, in place; its other keys stay. */
+export function setContainerMembers(project: { containers?: unknown }, index: number, members: string[]): void {
+  if (!Array.isArray(project.containers)) return;
+  const entry: unknown = project.containers[index];
+  if (isRecord(entry)) entry.members = members;
+  else project.containers[index] = { members };
+}
+
+/** Remove the container at `index` of a parsed project.c3proj, in place; an emptied list stays as []. */
+export function deleteContainer(project: { containers?: unknown }, index: number): void {
+  if (Array.isArray(project.containers)) project.containers.splice(index, 1);
 }

@@ -27,8 +27,8 @@ import { findHierarchyLinkProblems, type HierarchyLinkProblem } from '../hierarc
 import { namedAfterAnyObject } from '../object-images.js';
 import type { BehaviorLookupData } from './behavior-refs.js';
 import { everyAnimation, expectedFrameImageName, frameImageBaseName, indexImageFiles } from '../animation-rename.js';
-import { findNameClash, nameKey } from '../names.js';
-import { projectContainers, SMALL_CONTAINER_RULE } from '../containers.js';
+import { nameKey } from '../names.js';
+import { containerMemberProblems, projectContainers, SMALL_CONTAINER_RULE } from '../containers.js';
 import { duplicateFunctionNames, functionBlockNames } from '../event-variable-names.js';
 import {
   checkEventLoadRules,
@@ -503,52 +503,44 @@ function checkContainerMembers(
   warnings: IntegrityIssue[],
   info: IntegrityIssue[]
 ): void {
-  const objectTypes = new Set(registeredObjects);
   for (const container of projectContainers(project)) {
     const entity = `containers/${container.index}`;
     const members = container.members.map(m => `"${m}"`).join(', ');
-    const existing: string[] = [];
-    for (const member of container.members) {
-      if (objectTypes.has(member)) {
-        existing.push(member);
-        continue;
-      }
-      const variant = findNameClash(member, registeredObjects);
-      if (variant !== undefined) {
-        existing.push(variant);
+    for (const problem of containerMemberProblems(container.members, registeredObjects)) {
+      const { member = '', registered } = problem;
+      if (problem.kind === 'case-variant') {
         warnings.push({
           check: 'container-member',
           entity,
-          message: `Container ${container.index} of project.c3proj lists "${member}", which differs only in letter case from the object type "${variant}". ` +
+          message: `Container ${container.index} of project.c3proj lists "${member}", which differs only in letter case from the object type "${registered}". ` +
             'Whether Construct 3 matches container members ignoring case was not checked.',
-          suggestion: `Change the member to "${variant}" in project.c3proj.`,
+          suggestion: `Change the member to "${registered}" in project.c3proj.`,
         });
-        continue;
+      } else if (problem.kind === 'missing') {
+        errors.push({
+          check: 'container-member',
+          entity,
+          message: `Container ${container.index} of project.c3proj (members ${members}) lists "${member}", which is not an object type of the project. ` +
+            'Construct 3 does not open a project whose container names a missing object type ("cannot find object type name").',
+          suggestion: `Remove "${member}" from that container's "members" in project.c3proj, or restore the object type.`,
+        });
+      } else {
+        const issue: IntegrityIssue = {
+          check: 'container-member',
+          entity,
+          message: (registered === undefined
+            ? `Container ${container.index} of project.c3proj has no member that is an object type`
+            : `Container ${container.index} of project.c3proj has only one member that is an object type ("${registered}")`)
+            + (SMALL_CONTAINER_RULE === 'removed'
+              ? ': Construct 3 refuses to open a project with such a container ("need at least 2 types in container").'
+              : SMALL_CONTAINER_RULE === 'kept-unverified'
+                ? ': it groups nothing. Whether Construct 3 opens such a container was not checked.'
+                : ': it groups nothing.'),
+          suggestion: 'Add the object types it should group in the Construct 3 editor, or remove the container.',
+        };
+        (SMALL_CONTAINER_RULE === 'removed' ? errors : info).push(issue);
       }
-      errors.push({
-        check: 'container-member',
-        entity,
-        message: `Container ${container.index} of project.c3proj (members ${members}) lists "${member}", which is not an object type of the project. ` +
-          'Construct 3 does not open a project whose container names a missing object type ("cannot find object type name").',
-        suggestion: `Remove "${member}" from that container's "members" in project.c3proj, or restore the object type.`,
-      });
     }
-    const distinct = [...new Set(existing.map(nameKey))];
-    if (distinct.length >= 2) continue;
-    const issue: IntegrityIssue = {
-      check: 'container-member',
-      entity,
-      message: (distinct.length === 0
-        ? `Container ${container.index} of project.c3proj has no member that is an object type`
-        : `Container ${container.index} of project.c3proj has only one member that is an object type ("${existing[0]}")`)
-        + (SMALL_CONTAINER_RULE === 'removed'
-          ? ': Construct 3 refuses to open a project with such a container ("need at least 2 types in container").'
-          : SMALL_CONTAINER_RULE === 'kept-unverified'
-            ? ': it groups nothing. Whether Construct 3 opens such a container was not checked.'
-            : ': it groups nothing.'),
-      suggestion: 'Add the object types it should group in the Construct 3 editor, or remove the container.',
-    };
-    (SMALL_CONTAINER_RULE === 'removed' ? errors : info).push(issue);
   }
 }
 
