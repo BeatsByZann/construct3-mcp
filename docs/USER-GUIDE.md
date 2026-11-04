@@ -447,6 +447,8 @@ This adds `objectTypes/Player.json` and a 1x1 placeholder image `images/player-a
 
 The UID is what `update_instance` and `delete_instance_from_layout` need later. Without a size the instance is 100 x 100.
 
+"Put these twenty enemies on Layout 1" calls `add_instances_to_layout` once, with a list of the twenty placements. That is one tool call, one read and one write of the layout and one backup of it, instead of twenty of each. If one placement is refused (an object type that does not exist, say), none is made and the message names the placement by its number, counting from 0. `update_instances` and `delete_instances_from_layout` do the same for many updates and many removals. As for every write, a project that is open in Construct 3 must be closed there and reopened before you save, or the editor can overwrite the change.
+
 "Give Player a number instance variable health" calls `update_object_properties {"name": "Player", "addVariables": [{"name": "health", "type": "number"}]}`. The tool sets name and type only, not a start value: every instance already placed gets the type's default (`0`, `""` or `false`), which you can change per instance with `update_instance`.
 
 "Add a global number variable Score" calls `add_event_to_sheet {"sheetName": "MainSheet", "eventType": "variable", "variableName": "Score", "variableType": "number", "initialValue": "0"}`.
@@ -631,7 +633,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 - Objects, families and containers: `create_object`, `update_object_properties`, `delete_object`, `rename_object_type`, `create_family`, `update_family`, `update_instance_variable`, `reorder_behaviors`, `delete_family`, `rename_family`, `create_container`, `update_container`, `delete_container`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `add_custom_action`, `update_function`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `update_event_group`, `update_comment`, `update_script_event`, `move_events_between_sheets`, `move_event_block`, `move_event_block_items`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `rename_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
-- Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `rename_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `update_instance`, `move_instance`, `delete_instance_from_layout`, `set_instance_parent`, `remove_instance_children`
+- Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `rename_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `add_instances_to_layout`, `update_instance`, `update_instances`, `move_instance`, `delete_instance_from_layout`, `delete_instances_from_layout`, `set_instance_parent`, `remove_instance_children`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `create_animation_folder`, `move_animation_to_folder`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`, `replace_object_image`
 - Effects of object types, families, layouts and layers: `add_effect`, `update_effect`, `remove_effect`, `reorder_effects`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`
@@ -655,7 +657,7 @@ Defaults to know:
   - On `rename_event_sheet` and `rename_layout` it renames even when event sheets or layouts (`rename_event_sheet`), or event sheets or timelines (`rename_layout`), that the server could not parse possibly name the entity; those files are not updated.
   - `unregister_addon` checks no references at all; `force` only allows removing a Scirra built-in addon. It also removes an addon that objects still use (it only adds the warning `If any objects/behaviors still reference it, C3 will error on load.`). Before you approve it, ask which objects use the addon. Afterwards `validate_project` reports leftover uses as `missing-addon` warnings, while the project still counts as `"valid": true`.
   - On `rename_object_type` it renames even when event sheets, layouts or families the server could not parse possibly name the object type, or when a timeline could not be read (whatever it names), and on `rename_family` even when event sheets it could not parse possibly name the family; those files are not updated.
-  - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_timeline`, `remove_event_from_sheet`) have no `force` option.
+  - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_instances_from_layout`, `delete_timeline`, `remove_event_from_sheet`) have no `force` option.
 
 Parameter names differ between tools. This only matters if you write tool calls yourself: `get_object_details` takes `name`, `get_object_dependencies` takes `object`, `get_eventsheet_outline` takes `sheet`, `add_event_block` takes `sheetName`. Every tool and parameter is described in the [API Reference](API.md). More request-to-tool examples are in [EXAMPLES.md](EXAMPLES.md).
 

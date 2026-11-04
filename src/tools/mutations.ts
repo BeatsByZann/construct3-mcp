@@ -13,6 +13,7 @@ import { registerEventTools } from './event-tools.js';
 import { registerLayerOrderTools } from './layer-order.js';
 import { registerLayoutTools } from './layout-tools.js';
 import { registerLayerRenameTools } from './layer-rename.js';
+import { registerBulkInstanceTools } from './bulk-instance-tools.js';
 import { registerProjectTools } from './project-tools.js';
 import { registerHierarchyTools } from './hierarchy-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
@@ -34,6 +35,7 @@ export function registerMutationTools(
   registerLayerOrderTools(deps);
   registerLayoutTools(deps);
   registerLayerRenameTools(deps);
+  registerBulkInstanceTools(deps);
   registerProjectTools(deps);
   registerHierarchyTools(deps);
   registerAnimationTools(deps);

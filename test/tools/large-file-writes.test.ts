@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -195,4 +195,57 @@ describe('the size limit for reads and writes', () => {
     const deep = { toJSON: () => { throw new RangeError('Maximum call stack size exceeded'); } };
     expect(() => internals.validateJsonData(deep, 'Deep')).toThrow('Maximum call stack size exceeded');
   });
+});
+
+describe('checkEntityWrite', () => {
+  const messageOf = async (action: Promise<unknown>): Promise<string> =>
+    action.then(() => 'resolved', (error: Error) => error.message);
+
+  it('refuses what writeEntityFile refuses, and writes nothing', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const layout = await readLayoutFile();
+    // Multibyte characters only: the JSON is under the limit in characters, over it in bytes
+    layout.layers[0].instances[0].tags = String.fromCharCode(0xe9).repeat(Math.ceil(0.7 * MB));
+    expect(JSON.stringify(layout, null, '\t').length).toBeLessThan(MB);
+    const before = await readFile(layoutPath());
+
+    const checked = await messageOf(writer.checkEntityWrite('layouts', 'Layout 1', layout));
+    expect(checked).toMatch(/is too large .* over the 1MB limit/);
+    expect(checked).toBe(await messageOf(writer.writeEntityFile('layouts', 'Layout 1', layout)));
+    expect(Buffer.compare(await readFile(layoutPath()), before)).toBe(0);
+    expect(existsSync(`${layoutPath()}.bak`)).toBe(false);
+
+    layout.layers[0].instances[0].tags = 'ok';
+    await expect(writer.checkEntityWrite('layouts', 'Layout 1', layout)).resolves.toBeUndefined();
+    expect(Buffer.compare(await readFile(layoutPath()), before)).toBe(0);
+    expect(existsSync(`${layoutPath()}.bak`)).toBe(false);
+  }, SLOW);
+
+  it('measures a layout kept in a project folder with that file\'s own line endings', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    // The project is LF; the layout in the folder is CRLF and over the limit only with CRLF
+    const projectFile = join(tmpDir, 'project.c3proj');
+    await writeFile(projectFile, (await readFile(projectFile, 'utf8')).replace(/\r\n/g, '\n'));
+    await reader.loadProject();
+    const layout = await readLayoutFile();
+    const [first] = layout.layers[0].instances;
+    layout.name = 'Folded';
+    layout.layers[0].instances = Array.from({ length: 2000 }, (_, i) => ({ ...structuredClone(first), uid: 1000 + i }));
+    layout.layers[0].instances[0].tags = '';
+    const lines = JSON.stringify(layout, null, '\t').split('\n').length - 1;
+    layout.layers[0].instances[0].tags = ' '.repeat(MB - 100 - Buffer.byteLength(JSON.stringify(layout, null, '\t')));
+    const lfText = JSON.stringify(layout, null, '\t');
+    expect(Buffer.byteLength(lfText)).toBeLessThan(MB);
+    expect(Buffer.byteLength(lfText) + lines).toBeGreaterThan(MB);
+    const folded = join(tmpDir, 'layouts', 'Levels', 'Folded.json');
+    await mkdir(join(tmpDir, 'layouts', 'Levels'), { recursive: true });
+    await writeFile(folded, lfText.replace(/\n/g, '\r\n'));
+    const before = await readFile(folded);
+
+    const checked = await messageOf(writer.checkEntityWrite('layouts', 'Folded', layout, 'Levels'));
+    expect(checked).toMatch(/is too large .* over the 1MB limit/);
+    expect(checked).toBe(await messageOf(writer.writeEntityFile('layouts', 'Folded', layout, 'Levels')));
+    expect(Buffer.compare(await readFile(folded), before)).toBe(0);
+    expect(existsSync(`${folded}.bak`)).toBe(false);
+  }, SLOW);
 });
