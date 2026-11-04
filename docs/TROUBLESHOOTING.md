@@ -139,6 +139,12 @@ Same as above but for behaviors. Add a behavior of that type to any object in th
 
 **Solution**: Use simple names with letters, numbers, underscores, and spaces only.
 
+### "Unknown key(s) ... in the arguments of add_event_to_sheet"
+
+**Cause**: The call named a top-level key the tool does not take, usually a misspelling such as `varType` for `variableType`. The tool would not write that key, so it refuses the call instead of dropping the key. (Keys inside a `functionParams` entry are not checked this way; they are still dropped.)
+
+**Solution**: Correct the key or remove it, then run the call again. Nothing was written.
+
 ### "Object is still referenced"
 
 **Cause**: `delete_object` found references in event sheets, layouts (instances on any layer or sub-layer, non-world instances, object properties of other instances), or families.

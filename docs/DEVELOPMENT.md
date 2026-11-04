@@ -189,7 +189,7 @@ server.tool(
    - Return a `WriteResult` through `toolResult()`, which adds the `editorNote` to completed writes
 3. Add tests in `test/tools/` that call the handler through `test/mocks/mock-server.ts`
 
-`server.tool()` takes a raw shape, which the MCP SDK wraps in an object schema that drops unknown arguments. A tool whose mistyped arguments would lose content (as `add_event_block` and `update_event_block`) is registered with `server.registerTool(name, { description, inputSchema: z.object({ ... }).strict() }, handler)` instead: the SDK parses the arguments with that schema as it is, so unknown ones are refused. The mock server handles both.
+`server.tool()` takes a raw shape, which the MCP SDK wraps in an object schema that drops unknown arguments. A tool whose mistyped arguments would lose content (as `add_event_block`, `update_event_block` and `add_event_to_sheet`) is registered with `server.registerTool(name, { description, inputSchema: z.object({ ... }).strict() }, handler)` instead: the SDK parses the arguments with that schema as it is, so unknown ones are refused. The mock server handles both.
 
 ### Adding a New Template
 

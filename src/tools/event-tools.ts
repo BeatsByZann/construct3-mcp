@@ -278,30 +278,37 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   // ─── add_event_to_sheet ───────────────────────────────────
 
-  server.tool(
+  // Registered with a strict object schema, so unknown top-level arguments are
+  // refused (server.tool() with a raw shape would drop them; see Strict Input in
+  // event-helpers.ts) (#ISSUE).
+  server.registerTool(
     'add_event_to_sheet',
-    'Add an event (group, function, variable, include, or comment) to the top level of an event sheet. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile.',
     {
-      sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
-      eventType: z.enum(['group', 'function', 'variable', 'include', 'comment']).describe('Type of event to add'),
-      title: z.string().max(500).optional().describe('For groups: the group title'),
-      functionName: z.string().max(200).optional().describe('For functions: function name. Refused like in the editor: a name that matches, ignoring case, another function in the project or a System expression; with a return type also whitespace, punctuation such as - . : or a leading underscore (the name is used in expressions). Without a return type the editor accepts any name that is not empty'),
-      functionParams: z.array(z.object({
-        name: z.string().describe('Parameter name'),
-        type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
-      })).optional().describe('For functions: parameter definitions. Names are refused like in the editor: a name that matches, ignoring case, a global variable of the project, another parameter of the function or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
-      functionReturnType: z.enum(['none', 'number', 'string', 'any']).optional()
-        .describe('For functions: the editor\'s "Return type" (default "none"); a function with a return type sets its value with the Functions "Set return value" action'),
-      functionIsAsync: z.boolean().optional().describe('For functions: the editor\'s "Asynchronous" option, so a call can be waited for with "Wait for previous actions to complete" (default false)'),
-      functionCopyPicked: z.boolean().optional().describe('For functions: the editor\'s "Copy picked" option, which passes the instances picked where the function is called into the function (default false)'),
-      variableName: z.string().max(200).optional().describe('For variables: name of the new global variable. Refused like in the editor: a name that matches, ignoring case, any event variable or function parameter in the project or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
-      variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
-      initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
-      includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
-      commentText: z.string().max(2000).optional().describe('For comments: comment text'),
-      commentTextColor: commentColorSchema.optional().describe('For comments: the text colour, written as "text-color": [red, green, blue, alpha], each 0-1, as the editor saves it'),
-      commentBackgroundColor: commentColorSchema.optional().describe('For comments: the background colour, written as "background-color": [red, green, blue, alpha], each 0-1'),
-      position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert the event'),
+      description: 'Add an event (group, function, variable, include, or comment) to the top level of an event sheet. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile. Unknown top-level arguments are refused, never dropped; keys inside a functionParams entry other than name and type are still dropped.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
+        eventType: z.enum(['group', 'function', 'variable', 'include', 'comment']).describe('Type of event to add'),
+        title: z.string().max(500).optional().describe('For groups: the group title'),
+        functionName: z.string().max(200).optional().describe('For functions: function name. Refused like in the editor: a name that matches, ignoring case, another function in the project or a System expression; with a return type also whitespace, punctuation such as - . : or a leading underscore (the name is used in expressions). Without a return type the editor accepts any name that is not empty'),
+        functionParams: z.array(z.object({
+          name: z.string().describe('Parameter name'),
+          type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+        })).optional().describe('For functions: parameter definitions. Names are refused like in the editor: a name that matches, ignoring case, a global variable of the project, another parameter of the function or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+        functionReturnType: z.enum(['none', 'number', 'string', 'any']).optional()
+          .describe('For functions: the editor\'s "Return type" (default "none"); a function with a return type sets its value with the Functions "Set return value" action'),
+        functionIsAsync: z.boolean().optional().describe('For functions: the editor\'s "Asynchronous" option, so a call can be waited for with "Wait for previous actions to complete" (default false)'),
+        functionCopyPicked: z.boolean().optional().describe('For functions: the editor\'s "Copy picked" option, which passes the instances picked where the function is called into the function (default false)'),
+        variableName: z.string().max(200).optional().describe('For variables: name of the new global variable. Refused like in the editor: a name that matches, ignoring case, any event variable or function parameter in the project or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+        variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
+        initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
+        includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
+        commentText: z.string().max(2000).optional().describe('For comments: comment text'),
+        commentTextColor: commentColorSchema.optional().describe('For comments: the text colour, written as "text-color": [red, green, blue, alpha], each 0-1, as the editor saves it'),
+        commentBackgroundColor: commentColorSchema.optional().describe('For comments: the background colour, written as "background-color": [red, green, blue, alpha], each 0-1'),
+        position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert the event'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of add_event_to_sheet', 'add_event_to_sheet takes sheetName, eventType, position, title (group), functionName, functionParams, functionReturnType, functionIsAsync, functionCopyPicked (function), variableName, variableType, initialValue (variable), includeSheet (include), commentText, commentTextColor and commentBackgroundColor (comment). Block events are added with add_event_block.'),
+      }).strict(),
     },
     async (args) => {
       try {

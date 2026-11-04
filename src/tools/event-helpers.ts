@@ -92,12 +92,15 @@ export const EVENT_INPUT_DESCRIPTIONS = {
 //
 // Event input objects refuse keys they do not know: a stripped key would drop
 // its content without a word (a comment's text, a colour, a mistyped
-// "params"). The one exception is "sid", which inputs copied from
-// get_eventsheet_details or an editor-saved sheet carry: it is ignored, since
-// every written event, condition and action gets a new SID. The arguments of
-// add_event_block and update_event_block are strict as well: those tools are
-// registered with a strict object schema (registerTool), since a raw shape
-// given to server.tool() is wrapped in a stripping object by the MCP SDK.
+// "params"). The one exception is "sid" in the event input objects (conditions,
+// actions and sub-events) and at the top level of add_event_block: inputs
+// copied from get_eventsheet_details or an editor-saved sheet carry it, and it
+// is ignored, since every written event, condition and action gets a new SID.
+// add_event_to_sheet refuses a top-level "sid". The arguments of
+// add_event_block, update_event_block and add_event_to_sheet are strict as
+// well: those tools are registered with a strict object schema (registerTool),
+// since a raw shape given to server.tool() is wrapped in a stripping object by
+// the MCP SDK.
 
 /** Drop an input object's "sid" (see above); anything else is passed on unchanged. */
 function withoutSid(value: unknown): unknown {
