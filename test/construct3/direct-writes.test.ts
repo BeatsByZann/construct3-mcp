@@ -15,7 +15,7 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { getImageFileName } from '../../src/construct3/png-generator.js';
-import { currentToolCall, fileKey, runInToolCall, statFileState } from '../../src/construct3/disk-state.js';
+import { currentToolCall, fileKey, runInToolCall, StaleFileError, statFileState } from '../../src/construct3/disk-state.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
@@ -133,6 +133,27 @@ describe('deleteFile', () => {
       return currentToolCall()?.reads.get(fileKey(file));
     });
     expect(left).toBeNull();
+  });
+
+  it('refuses a delete whose expected state no longer matches, and keeps the file', async () => {
+    const file = join(dir, 'timelines', 'T.json');
+    await mkdir(join(dir, 'timelines'), { recursive: true });
+    await writeFile(file, '{"v":1}');
+    const expected = await statFileState(file);
+    await writeFile(file, '{"v":"outside"}');
+    await expect(runInToolCall(() => writer.deleteFile(file, { expected }))).rejects.toBeInstanceOf(StaleFileError);
+    expect(await readFile(file, 'utf-8')).toBe('{"v":"outside"}');
+    expect(existsSync(file + '.bak')).toBe(false);
+  });
+
+  it('deletes a file whose expected state matches', async () => {
+    const file = join(dir, 'timelines', 'T.json');
+    await mkdir(join(dir, 'timelines'), { recursive: true });
+    await writeFile(file, '{"v":1}');
+    const expected = await statFileState(file);
+    expect(await runInToolCall(() => writer.deleteFile(file, { expected }))).toBe(file + '.bak');
+    expect(existsSync(file)).toBe(false);
+    expect(await readFile(file + '.bak', 'utf-8')).toBe('{"v":1}');
   });
 });
 

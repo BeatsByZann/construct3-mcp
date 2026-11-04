@@ -149,7 +149,7 @@ To see the tool list without any AI tool, use the MCP Inspector in CLI mode:
 npx -y @modelcontextprotocol/inspector --cli node "C:/Tools/construct3-mcp/dist/index.js" "C:/Games/My Game" --method tools/list
 ```
 
-This prints a JSON list of 85 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools`; both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
+This prints a JSON list of 85 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools` (that figure was measured on the 83-tool server); both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
 
 ### Alternative: run from GitHub without cloning
 
@@ -622,7 +622,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 **Read-only tools (27)**, safe to auto-approve:
 
-- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `search_objects`
+- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `list_timeline_tracks`, `list_eases`, `search_objects`
 - Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
@@ -636,9 +636,11 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `rename_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `add_instances_to_layout`, `update_instance`, `update_instances`, `move_instance`, `move_instances`, `delete_instance_from_layout`, `delete_instances_from_layout`, `set_instance_parent`, `remove_instance_children`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `create_animation_folder`, `move_animation_to_folder`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`, `replace_object_image`
 - Effects of object types, families, layouts and layers: `add_effect`, `update_effect`, `remove_effect`, `reorder_effects`
-- Timelines: `create_timeline`, `update_timeline`, `delete_timeline`
+- Timelines: `create_timeline`, `update_timeline`, `delete_timeline`, `add_timeline_track`, `remove_timeline_track`, `add_property_track`, `remove_property_track`, `set_keyframe`, `delete_keyframe`, `update_track`, `add_value_track`, `add_audio_track`, `add_timeline_folder`, `rename_timeline_folder`, `delete_timeline_folder`, `move_timeline_track`, `create_ease`, `update_ease`, `delete_ease`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
+
+**Editing a timeline.** The timeline tools edit a timeline piece by piece: an instance track animates one instance of a layout (one property track for each animated property), value and audio tracks hold a named number or a sound over time, track folders group the tracks, and custom eases are curves that timelines and Tween actions can name. Every call backs up the files it changes once, as `.bak` files, and a call that is refused changes nothing. A project that is open in Construct 3 must be closed and reopened there before it is saved, or the editor can overwrite these changes.
 
 **Tools that act on the running game** (they change nothing in the project, but run functions, set variables and send input in the game they connect to, and `serve_preview` starts a local web server and a browser): `connect_to_game`, `disconnect_from_game`, `call_bridge`, `wait_for_condition`, `subscribe_events`, `read_events`, `unsubscribe_events`, `simulate_input`, `serve_preview`, `stop_preview`.
 
@@ -655,9 +657,10 @@ Defaults to know:
   - On `delete_layer` it deletes the layer together with the instances on it.
   - On `remove_effect` it removes the effect although events still use it, and lists those uses; the uses are not changed, so fix them in the editor.
   - On `rename_event_sheet` and `rename_layout` it renames even when event sheets or layouts (`rename_event_sheet`), or event sheets or timelines (`rename_layout`), that the server could not parse possibly name the entity; those files are not updated.
+  - On `delete_ease` it deletes the ease although event sheets or script files mention its name, or cannot be read. A timeline that uses the ease still refuses the delete.
   - `unregister_addon` checks no references at all; `force` only allows removing a Scirra built-in addon. It also removes an addon that objects still use (it only adds the warning `If any objects/behaviors still reference it, C3 will error on load.`). Before you approve it, ask which objects use the addon. Afterwards `validate_project` reports leftover uses as `missing-addon` warnings, while the project still counts as `"valid": true`.
   - On `rename_object_type` it renames even when event sheets, layouts or families the server could not parse possibly name the object type, or when a timeline could not be read (whatever it names), and on `rename_family` even when event sheets it could not parse possibly name the family; those files are not updated.
-  - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_instances_from_layout`, `delete_timeline`, `remove_event_from_sheet`) have no `force` option.
+  - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_instances_from_layout`, `delete_timeline`, `delete_timeline_folder`, `delete_keyframe`, `remove_event_from_sheet`) have no `force` option.
 
 Parameter names differ between tools. This only matters if you write tool calls yourself: `get_object_details` takes `name`, `get_object_dependencies` takes `object`, `get_eventsheet_outline` takes `sheet`, `add_event_block` takes `sheetName`. Every tool and parameter is described in the [API Reference](API.md). More request-to-tool examples are in [EXAMPLES.md](EXAMPLES.md).
 

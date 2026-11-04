@@ -520,6 +520,162 @@ export interface Instance {
   [key: string]: unknown;
 }
 
+// ─── Timeline Types ───────────────────────────────────────
+//
+// Shape confirmed against a timeline file saved by Construct 3 r495.2
+// (test/fixtures/timeline-sample). A timeline file is
+// timelines/[subfolder/]<name>.json, registered in the `timelines` container
+// of project.c3proj. `playheadTime`, `stepTime` and the `showing*` flags are
+// editor UI state: the tools preserve them and never compute them.
+//
+// Nested timelines (`nestedData`, `childrenNestedData`, `nestedTimelinesRoot`)
+// and custom eases are opaque containers here.
+
+/** A track, property-track or nested-timeline folder inside a timeline. */
+export interface TimelineFolder {
+  enabled: boolean;
+  interpolationMode: string;
+  resultMode: string;
+  ease: string;
+  pathMode: string;
+  resizeMode: string;
+  expanded: boolean;
+  name: string;
+  items: unknown[];
+  subfolders: unknown[];
+}
+
+/**
+ * Editor state describing how an instance track's values are anchored.
+ * `relativeFlags` is a bit field; 16383 is what r495.2 writes for a new
+ * instance track and the tools never compute another value.
+ */
+export interface TimelineVirtualPosition {
+  /** One offset key per animated world property, added as its property track is added. */
+  offsetX?: number;
+  offsetY?: number;
+  useColor: boolean;
+  colorSet: boolean;
+  relativeFlags: number;
+  version: number;
+  [key: string]: unknown;
+}
+
+/**
+ * A master keyframe on an instance track. It carries no value: the values live
+ * in the per-property keyframes at the same `time`.
+ */
+export interface TimelineKeyframe {
+  time: number;
+  tags: string;
+  enabled: boolean;
+  ease: string;
+  pathMode: string;
+  [key: string]: unknown;
+}
+
+/** An addon entry on a property keyframe (r495.2 writes one cubic-bezier entry). */
+export interface TimelineKeyframeAddon {
+  id: string;
+  data?: Record<string, unknown>;
+}
+
+/**
+ * One keyframe on a property track.
+ *
+ * `value` is the property's value relative to the instance's layout value and
+ * `aValue` is its absolute value: the offsetX keyframe of timeline-sample carries
+ * `value: 0, aValue: 324` for an instance placed at x 324. Under the "default"
+ * result mode `rValue` equals `value`.
+ */
+export interface TimelinePropertyKeyframe {
+  time: number;
+  enabled: boolean;
+  resultMode: string;
+  ease: string;
+  pathMode: string;
+  /** The tools write `aValue` here under the "absolute" result mode and `rValue` otherwise. */
+  value: number | string | boolean | number[];
+  /** Offset from the instance's own value for numbers; the value itself for strings and booleans; absent for colors. */
+  rValue?: number | string | boolean;
+  /** Value of the property at this keyframe. */
+  aValue: number | string | boolean | number[];
+  addons: TimelineKeyframeAddon[];
+  [key: string]: unknown;
+}
+
+/** One animated property of an instance track. */
+export interface TimelinePropertyTrack {
+  /** World property name (offsetX, ...), instance variable name, or plugin property id. */
+  property: string;
+  /** `uid` is the instance UID for world-instance, the variable name for instance-variable, the plugin id for plugin. */
+  source: { type: string; uid: number | string; [key: string]: unknown };
+  enabled: boolean;
+  interpolationMode: string;
+  resultMode: string;
+  ease: string;
+  pathMode: string;
+  propertyKeyframes: TimelinePropertyKeyframe[];
+  [key: string]: unknown;
+}
+
+/** A track animating one world instance of a layout. */
+export interface TimelineInstanceTrack {
+  type: 'instance-track';
+  /** UID of the animated world instance. */
+  worldInstance: number;
+  /** Object type name of that instance. */
+  objectType: string;
+  /** The project's `uniqueId`. */
+  project: string;
+  enabled: boolean;
+  interpolationMode: string;
+  resultMode: string;
+  ease: string;
+  pathMode: string;
+  resizeMode: string;
+  initialVisibility: boolean;
+  id: string;
+  virtualPosition: TimelineVirtualPosition;
+  keyframes: TimelineKeyframe[];
+  propertyTracks: TimelinePropertyTrack[];
+  propertyTracksRoot: TimelineFolder;
+  [key: string]: unknown;
+}
+
+/** A timeline file. `tracks` stays `unknown[]` so unmodelled track kinds survive a read-modify-write. */
+export interface Timeline {
+  name: string;
+  enabled: boolean;
+  interpolationMode: string;
+  resultMode: string;
+  ease: string;
+  pathMode: string;
+  resizeMode: string;
+  playheadTime: number;
+  totalTime: number;
+  stepTime: number;
+  useStepTime: boolean;
+  showingInterpolationModes: boolean;
+  showingResultModes: boolean;
+  showingEases: boolean;
+  showingPathModes: boolean;
+  scale: number;
+  loop: boolean;
+  pingPong: boolean;
+  repeatCount: number;
+  startOnLayout: string;
+  transformWithSceneGraph: boolean;
+  ignoreSystemTimescale: boolean;
+  tracks: unknown[];
+  tracksRoot: TimelineFolder;
+  nestedTimelinesRoot: TimelineFolder;
+  nestedData: Record<string, unknown>;
+  childrenNestedData: Record<string, unknown>;
+  transitionsData: unknown[];
+  [key: string]: unknown;
+}
+
 // ─── Analysis Result Types ──────────────────────────────────
 
 /** A reference to an object found in an event sheet */

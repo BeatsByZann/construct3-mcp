@@ -31,3 +31,35 @@ export function transitionsFolderIndex(timelines: ProjectFolderNode | undefined)
     sf => typeof sf === 'object' && sf !== null && isNamelessFolder(sf as ProjectFolderNode)
   );
 }
+
+/** The Transitions folder as the ease tools use it: registered ease names and (unused) subfolders. */
+export type TransitionsFolder = { name?: string; items: string[]; subfolders: unknown[] };
+
+/**
+ * The Transitions folder of a timelines container (see transitionsFolderIndex),
+ * wherever it sits among the first-level subfolders; undefined when there is
+ * none or it has no `items` array.
+ */
+export function transitionsFolder(timelines: ProjectFolderNode | undefined): TransitionsFolder | undefined {
+  const index = transitionsFolderIndex(timelines);
+  if (index < 0) return undefined;
+  const folder = (timelines!.subfolders as unknown[])[index] as TransitionsFolder;
+  return Array.isArray(folder.items) ? folder : undefined;
+}
+
+/**
+ * The Transitions folder, created at index 0 (where the editor writes it) when
+ * the container has none. A nameless folder without an `items` array is
+ * completed rather than followed by a second nameless folder.
+ */
+export function ensureTransitionsFolder(container: { items: string[]; subfolders: unknown[] }): TransitionsFolder {
+  const index = transitionsFolderIndex(container);
+  if (index >= 0) {
+    const folder = container.subfolders[index] as TransitionsFolder;
+    if (!Array.isArray(folder.items)) folder.items = [];
+    return folder;
+  }
+  const created: TransitionsFolder = { items: [], subfolders: [] };
+  container.subfolders.unshift(created);
+  return created;
+}
