@@ -2220,7 +2220,7 @@ Copy the project folder to a new directory, optionally with the bridge injected 
 
 ### `pack_project`
 
-Pack the project folder into a `.c3p` file (ZIP archive) that the Construct 3 editor can open. Skips `.git`, `node_modules`, `.bak` files, `.DS_Store` and `Thumbs.db`. Unless `injectBridge` is false, it first adds the bridge **to the project itself**, as `inject_runtime_bridge` does (the bridge file, its entry and the marked import line in the main script), so the packed game loads the bridge. To pack a game for players, call `remove_runtime_bridge` and pack with `injectBridge: false`.
+Pack the project folder into a `.c3p` file (ZIP archive) that the Construct 3 editor can open. Skips `.git`, `node_modules`, `.bak` files, `.DS_Store` and `Thumbs.db`. Entries are stored without compression, and names with characters outside ASCII are marked as UTF-8. Unless `injectBridge` is false, it first adds the bridge **to the project itself**, as `inject_runtime_bridge` does (the bridge file, its entry and the marked import line in the main script), so the packed game loads the bridge. To pack a game for players, call `remove_runtime_bridge` and pack with `injectBridge: false`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

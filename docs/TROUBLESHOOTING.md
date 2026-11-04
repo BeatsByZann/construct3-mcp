@@ -7,8 +7,7 @@ Common issues and solutions for the Construct3 MCP Server.
 ### "No .c3proj file found in directory"
 
 **Cause**: The path you provided doesn't contain a `.c3proj` file directly. Only that folder is searched, not its subfolders or parent folders. The same message appears when:
-- the path does not exist (a typo),
-- the path is a `.c3p` file (single-file projects cannot be opened),
+- the path does not exist (a typo in a folder or `.c3proj` path),
 - the path is a subfolder of the project (e.g. `layouts/`) or a parent folder (e.g. a repository root with the game in `game/`),
 - no path was given and the server was started in a folder without a `.c3proj`. Without an argument and without `C3_PROJECT_PATH` the server uses its working directory; Claude Code starts it in the folder where you started `claude`.
 
@@ -17,7 +16,7 @@ The server exits with code 1, so the client only reports that the connection clo
 **Solutions**:
 - Pass the path directly to the `.c3proj` file: `node dist/index.js /path/to/project.c3proj`
 - Or pass the directory that contains it: `node dist/index.js /path/to/project-folder/`
-- Make sure the project is saved in **folder format**, not as a `.c3p` ZIP file
+- Pass the `.c3p` file itself, or the folder that contains the `.c3proj`
 
 ### "Invalid Construct3 project file"
 
@@ -130,6 +129,45 @@ A change that keeps a file's size, modification time and file id (possible on fi
 **Cause**: `project.c3proj` changed and is not valid JSON at the moment, typically while the editor or git is still writing it.
 
 **Solution**: Run the tool again once the save or checkout is done. The server keeps trying on every call and does not use the old project meanwhile.
+
+## Single-file (.c3p) Project Issues
+
+These apply when the server was started on a `.c3p` file. See [Single-file `.c3p` projects](USER-GUIDE.md#single-file-c3p-projects) in the User Guide for how the working folder and the write-back work.
+
+### "The project was NOT saved to <archive>"
+
+**Cause**: The write-back of the archive did not happen. The message gives the reason and ends with what to do:
+- *This session's changes are kept in the working folder ...*: the archive changed on disk after the session changed the project (a save in the Construct 3 editor, for example), or no longer exists. The server never replaces a version of the archive another program saved, so it wrote nothing, and it reports this on every later tool result until it stops. Tool calls still work on the working folder.
+- *The next tool call writes it back again*: the write-back failed before the archive was touched (the new file could not be staged beside it, or did not read back as the working folder holds it) or the archive was put back as it was. The archive is as it was.
+- *Restart the server after taking what you need from the folders named*: the server stopped working with the archive, and every call is refused until it is restarted.
+
+When the message names a file ending in `.previous` (or, in a note, a second `.bak` name), that file is a version of the archive that the server moved aside or kept; it is never deleted by the server, and it may be a version another program saved.
+
+**Solution**: Copy what you need from the working folder (it is an ordinary folder project) before restarting. Then restart the server, which loads the archive as it is on disk now. The changes of the session that are not in the archive have to be carried over from the working folder by hand. The archive's earlier version from before the session's first write-back is `<name>.c3p.bak` next to it, when the session wrote one.
+
+### "<archive> changed on disk and could not be read again"
+
+**Cause**: The archive changed on disk and the server could not read it as a `.c3p` archive at the moment, typically because a save is still under way. The call was refused without running (`Nothing was run`).
+
+**Solution**: Run the call again once the save is done. The server tries to read the archive again at the start of every call.
+
+### "The working folder could not be put back"
+
+**Cause**: The archive had changed and the server was replacing its working folder with a new unpack, which failed in a way that left the old folder under another name. The message names where the session's files are; every call is refused (`Nothing was run`).
+
+**Solution**: Take the files you need from the folders named, then restart the server.
+
+### "Cannot read <archive> as a .c3p archive: ..." / "<archive> has no project.c3proj at its root ..."
+
+**Cause**: The archive cannot be used. The reason follows: it is not a zip archive, is damaged (a CRC or size does not match), uses encryption, several disks or a compression method other than STORE and DEFLATE, or holds a name that is unsafe (an empty, `.` or `..` path segment, an absolute path, a colon, a name ending in a dot or space, a name Windows reserves for a device) or that would land on one file or folder with another (`appears more than once`, `spells the folder ... two ways`, `is both a file and a folder`). A start on such an archive fails with this message, and no working folder is left behind. A message `has no project.c3proj at its root` means the archive is not a Construct 3 project archive.
+
+**Solution**: Repack the archive so that its names are safe and differ from each other (unpack it with a zip tool, fix the names, pack it again), or pass a folder project.
+
+### Working folders left in the temp folder
+
+**Cause**: A server that was killed does not remove its working folder. The next server started on a `.c3p` names such folders in its log and in its first tool result; they may hold changes that were never written back. The server never removes them.
+
+**Solution**: Take what you need from them, then delete them.
 
 ## Mutation Tool Issues
 

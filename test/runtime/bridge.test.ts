@@ -320,6 +320,18 @@ describe('writeZip (c3p packing)', () => {
     expect(zipData.includes(binaryData)).toBe(true);
   });
 
+  it("pack_project's writer marks a non-ASCII entry name as UTF-8", async () => {
+    const outputPath = join(tempDir, 'utf8.c3p');
+    await writeZip([{ path: 'files/données.txt', data: Buffer.from('x') }], outputPath);
+
+    const zipData = await readFile(outputPath);
+    const eocd = zipData.length - 22;
+    expect(zipData.readUInt32LE(eocd)).toBe(0x06054b50);
+    const cdOffset = zipData.readUInt32LE(eocd + 16);
+    expect(zipData.readUInt32LE(cdOffset)).toBe(0x02014b50);
+    expect(zipData.readUInt16LE(cdOffset + 8)).toBe(0x800);
+  });
+
   it('can pack the minimal project fixture', async () => {
     const fixtureDir = FIXTURE_DIR;
     const entries: Array<{ path: string; data: Buffer }> = [];

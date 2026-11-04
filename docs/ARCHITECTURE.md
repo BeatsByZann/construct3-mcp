@@ -49,7 +49,7 @@ The server registers 85 tools, 9 resources and 7 prompts. The layer counts follo
 
 ### 1. Entry Point (`src/index.ts`)
 
-Resolves the project path (first CLI argument, then `C3_PROJECT_PATH`, then the working directory; a directory is searched for a `.c3proj` file), loads the project, creates all core instances, and registers handlers:
+Resolves the project path (first CLI argument, then `C3_PROJECT_PATH`, then the working directory; a directory is searched for a `.c3proj` file; a `.c3p` file is opened through a working folder, `project-source.ts` and `c3p-archive.ts`), loads the project, creates all core instances, and registers handlers:
 
 ```
 reader  → registerProjectResources, registerQueryTools, registerWorkflowPrompts,
@@ -261,17 +261,21 @@ Supporting modules next to the templates:
 | `construct3/object-images.ts` | The frame and single image files of an object type in `images/`, kept as `.bak` when the object is deleted |
 | `construct3/animation-rename.ts` | Sprite animations in animation folders, and what renaming one changes: frame image file names, `initial-animation` of layout instances, event sheet strings naming it (counted for a warning); the frame image files that move on frame insert, delete, reorder and duplicate |
 | `construct3/file-size-limit.ts` | The size limit for the project files the server reads and writes: `C3MCP_MAX_FILE_MB` (whole megabytes, 1 to 128; 10 by default), read at each use; the reader refuses a larger file, the writer a larger generated text |
+| `construct3/c3p-archive.ts` | A `.c3p` project's session folder: the archive unpacked into a `project/` folder (the working folder the server loads) and a `held/` folder (entries the packer leaves out, `*.tmp` and `*.bak` files, which no tool writes); the refresh into a fresh folder that is published by rename (retried on a transient lock), the write-back (the archive built in memory and read back, staged beside the archive, moved aside by rename, compared by content with the session's own last version, then placed with a link or an exclusive copy, which fail when a file is there, and read again), the conflict that sticks until the server stops, the close, and the session folders a killed process left |
 | `construct3/json-format.ts` | On-disk text style: detects and reapplies line endings, trailing newline and BOM |
 | `construct3/layers.ts` | The layer tree of a layout: walks every layer and nested sub-layer and their instances (non-world instances included), finds layers and instances, compares layer names ignoring case; every walk over layers or layout instances goes through it |
 | `construct3/path-utils.ts` | `resolveProjectPath()`: joins path segments and rejects paths that leave the project folder |
 | `construct3/png-generator.ts` | Zero-dependency placeholder PNGs and C3 image file names (all lowercase) |
+| `construct3/project-source.ts` | The project path: a folder or a `.c3proj` is used as it is, a file ending in `.c3p` is opened through `c3p-archive.ts` (a folder whose name ends in `.c3p` stays a folder project), and the start of the server on it is undone (the archive closed) when it fails |
 | `construct3/raw-text-search.ts` | Streamed text search in files the reader skips: whole-word names ignoring case (as JSON writes them in a string), whole numbers, bounded patterns; one alternation of literals, word boundaries checked where a literal matched. Also the streamed UID/SID scan of the ID generator (`RawIdScan`, `scanFileIds`) |
 | `construct3/timeline-folders.ts` | The editor's Transitions folder in the timelines container (first nameless first-level folder, files in `timelines/transitions/`), shared by the timeline tools and `validate_project` |
 | `construct3/types.ts` | TypeScript types for project files and analysis results |
 | `runtime/bridge.ts` | Generates the injectable runtime bridge script (`globalThis.__c3bridge`): command queue, results with cancel and a 60 s expiry, event subscriptions, layer coordinate conversion |
 | `runtime/cdp-client.ts` | Chrome DevTools Protocol client over Node's built-in WebSocket (Node.js 22+): connects to the game's page (trying the pages the browser lists, narrowed by `pageUrl`/`urlContains`, and refusing when more than one has a ready bridge), reaches a bridge on the page or in a dedicated worker (`Target.setAutoAttach`, flat sessions), marks the bridge's global scope so a reload closes the connection, runs bridge commands, conditions, input and screenshots |
 | `runtime/preview-server.ts` | Serves an exported game on 127.0.0.1 (Host check, no links out of the folder, each file opened once per request and closed on an abort, a port in use refused, optional COOP/COEP) and launches Chrome or Edge with a fresh profile and `--remote-debugging-port=0` (the port read back from `DevToolsActivePort`); a failed start is an error of the call; removes profiles on stop and leftovers of ended runs |
-| `runtime/zip-writer.ts` | Zero-dependency ZIP writer used to pack `.c3p` files |
+| `runtime/project-files.ts` | The files of a folder project that are packed (`isPackedProjectFile`, `collectProjectFiles`): used by `pack_project` and by the write-back of a single-file project |
+| `runtime/zip-reader.ts` | Zero-dependency ZIP reader for `.c3p` archives: ZIP64, STORE and DEFLATE entries, backslash paths, UTF-8 names; refuses encrypted entries, other compression methods, unsafe paths and entries that would land on one file. Shape counted on three archives saved by r495.2 (ZIP64, STORE and DEFLATE, a UTF-8 flag on every entry, backslashes), and on record for a save by r506-2 (ZIP64 central directory, DEFLATE, backslashes) |
+| `runtime/zip-writer.ts` | ZIP writer for `.c3p` files: `pack_project` and the write-back of a single-file project (stored entries, UTF-8 names marked) |
 
 ### 6. Analyzers (`src/construct3/analyzers/`)
 
@@ -313,6 +317,8 @@ The cross-reference index (`ProjectIndex`) is cached per reader, so projects ope
 | Prompts | `prompts/workflows.ts` | 7 | Workflow templates |
 
 `tools/mutations.ts` only calls the domain modules' `register*Tools()` functions. Every `register*` function that gets the reader registers through `withProjectSync(server, reader)` (`tools/project-sync.ts`), which wraps each tool, resource and prompt handler: it opens a tool call scope and runs `reader.checkProjectFile()` before the handler; a tool whose `project.c3proj` changed and cannot be read returns that as a tool error. Shared tool code lives in `tools/shared.ts` (name and subfolder validation, `toolResult` / `toolError`, not-found suggestions, the editor reload note), `tools/event-helpers.ts` (event Zod schemas, builders, validators and the load-time pre-write check) and `tools/instance-sync.ts` (the sync of layout instances with their object types and families; `object-tools.ts` and `effect-tools.ts` are its callers).
+
+When the project is a `.c3p`, `index.ts` wraps the server once more with `withArchiveSync(server, archive)` (`tools/archive-sync.ts`), outside `withProjectSync`. A call that starts while no call runs first lets the archive refresh the working folder when the archive changed on disk, and is refused without running when it cannot be read again. After the last running call finishes, and a tool call has run since the last write-back, the archive is written back; new calls wait until that is done. A tool result gets one note about the call's own archive work (the write-back, else the refresh, else a standing conflict; a write-back failure no tool result carried is added to the next one), and `close()` waits for the running calls, refuses new ones and closes the archive once, which is what stopping the server runs.
 
 ## Data Flow
 

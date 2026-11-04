@@ -7,7 +7,7 @@ Guide for contributing to and developing the Construct3 MCP Server.
 - **Node.js** >= 18.0.0 to run the server; the test suite (Vitest 4) needs Node.js 20.19+ (20.x), 22.12+ (22.x) or 24+
 - **npm** >= 9.0.0
 - **TypeScript** 5.7+
-- A Construct 3 project in **folder format** (.c3proj) for testing
+- A Construct 3 project in **folder format** (.c3proj), or a single-file .c3p, for testing
 
 ## Setup
 
@@ -39,6 +39,9 @@ npm run test:coverage
 # Start the server with a test project
 node dist/index.js /path/to/your/project.c3proj
 
+# Or a single-file project
+node dist/index.js /path/to/your/game.c3p
+
 # Or set the environment variable
 C3_PROJECT_PATH=/path/to/project npm start
 ```
@@ -48,7 +51,7 @@ C3_PROJECT_PATH=/path/to/project npm start
 ```
 construct3-mcp/
 ├── src/
-│   ├── index.ts                    # Entry point: project path, server setup, registration, shutdown
+│   ├── index.ts                    # Entry point: project path (a folder, a .c3proj or a .c3p), server setup, registration, shutdown
 │   ├── construct3/                 # Core project logic
 │   │   ├── project-reader.ts       # Project file reads, caches, checks for changes on disk
 │   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify), project.c3proj updates, undo of a tool call's writes
@@ -76,6 +79,8 @@ construct3-mcp/
 │   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
+│   │   ├── c3p-archive.ts          # A .c3p project's working folder: unpack, refresh, write back, conflict
+│   │   ├── project-source.ts       # The project path: a folder, a .c3proj or a .c3p
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
 │   │   ├── types.ts                # TypeScript type definitions
@@ -107,7 +112,9 @@ construct3-mcp/
 │   │   ├── bridge.ts               # Injectable runtime bridge script generator
 │   │   ├── cdp-client.ts           # CDP client: game connections, bridge calls, input, screenshots
 │   │   ├── preview-server.ts       # Loopback server for exported games, browser launch
-│   │   └── zip-writer.ts           # Zero-dep ZIP writer for .c3p packing
+│   │   ├── project-files.ts        # The files of a folder project (pack_project, .c3p write-back)
+│   │   ├── zip-reader.ts           # Zero-dep ZIP reader for .c3p archives (ZIP64, DEFLATE, backslash paths)
+│   │   └── zip-writer.ts           # Zero-dep ZIP writer for .c3p archives (pack_project, .c3p write-back)
 │   ├── tools/                      # MCP tool handlers
 │   │   ├── query.ts                # Query tools (9)
 │   │   ├── analysis.ts             # Analysis tools (11)
@@ -117,6 +124,7 @@ construct3-mcp/
 │   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), their rollback, script file search
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
+│   │   ├── archive-sync.ts         # withArchiveSync: a .c3p refreshed before the calls, written back after
 │   │   ├── object-tools.ts         # Object and family tools (8)
 │   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families
 │   │   ├── event-tools.ts          # Event sheet tools (19)

@@ -20,9 +20,11 @@ import { existsSync } from 'node:fs';
 import { basename, join, dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { toolResult, toolError, boundedRecord } from './shared.js';
 import { writeZip } from '../runtime/zip-writer.js';
+import { collectProjectFiles } from '../runtime/project-files.js';
 import { jsonTextStyleOf, parseJsonText, serializeJson } from '../construct3/json-format.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { withProjectSync } from './project-sync.js';
+import type { C3pArchive } from '../construct3/c3p-archive.js';
 
 import { PreviewManager, isLoopbackHost } from '../runtime/preview-server.js';
 import { RuntimeConnectionManager } from '../runtime/cdp-client.js';
@@ -188,6 +190,8 @@ interface RuntimeToolDeps {
   server: McpServer;
   reader: Construct3ProjectReader;
   writer: Construct3ProjectWriter;
+  /** The open .c3p when the project is a single-file archive: pack_project does not write onto it, its backups or its working folder */
+  archive?: Pick<C3pArchive, 'protectedPath'>;
 }
 
 /**
@@ -701,7 +705,7 @@ function loadingMessage(install: BridgeInstall): string {
   return 'The project uses classic scripts, where imports are not available; the bridge is listed with purpose none. Loading it that way is not verified: switch the project to module scripts if the bridge does not start.';
 }
 
-export function registerRuntimeTools({ server: mcpServer, reader, writer }: RuntimeToolDeps): RuntimeToolController {
+export function registerRuntimeTools({ server: mcpServer, reader, writer, archive }: RuntimeToolDeps): RuntimeToolController {
   const server = withProjectSync(mcpServer, reader);
   const connections = new RuntimeConnectionManager();
   const previews = new PreviewManager();
@@ -1398,6 +1402,12 @@ print(json.dumps({
       try {
         const projectDir = reader.getProjectDir();
 
+        // Before anything is written: the open .c3p, its backups and its working folder are the server's to write
+        const protectedAs = archive?.protectedPath(outputPath);
+        if (protectedAs) {
+          return toolError(`Failed to pack project: the output path "${outputPath}" is ${protectedAs}, which the server must not write over. Nothing was written. Choose another file for the packed project.`);
+        }
+
         // Optionally inject bridge first
         let install: BridgeInstall | undefined;
         if (injectBridge) {
@@ -1405,7 +1415,7 @@ print(json.dumps({
         }
 
         // Collect all project files
-        const files = await collectFiles(projectDir);
+        const files = await collectProjectFiles(projectDir);
 
         // Build the zip using Node.js built-in zlib
         // .c3p format is a standard zip file
@@ -1444,37 +1454,6 @@ print(json.dumps({
 
 
 // ── File helpers ──────────────────────────────────────────
-
-/** Directories to skip when packing a C3 project. */
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.bak', '__MACOSX']);
-const SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db']);
-
-/**
- * Recursively collect all files in a directory, returning paths relative
- * to the root. Skips .git, node_modules, backups, and OS junk.
- */
-async function collectFiles(rootDir: string, subDir = ''): Promise<string[]> {
-  const results: string[] = [];
-  const fullDir = subDir ? join(rootDir, subDir) : rootDir;
-  const entries = await readdir(fullDir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (SKIP_FILES.has(entry.name)) continue;
-    const relPath = subDir ? `${subDir}/${entry.name}` : entry.name;
-
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      const subFiles = await collectFiles(rootDir, relPath);
-      results.push(...subFiles);
-    } else if (entry.isFile()) {
-      // Skip .bak files from the writer's backup system
-      if (entry.name.endsWith('.bak')) continue;
-      results.push(relPath);
-    }
-  }
-
-  return results;
-}
 
 /**
  * Build a .c3p (ZIP) file from a project directory.
