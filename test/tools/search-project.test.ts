@@ -334,26 +334,26 @@ describe('search_project', () => {
 
     it('searches an unparsable sheet as text for a whole-word query that starts and ends with a non-ASCII letter', async () => {
       await addSheet('Umlaut', [comment('x')]);
-      await writeFile(join(tmpDir, 'eventSheets', 'Umlaut.json'), '{ broken Ärger');
+      await writeFile(join(tmpDir, 'eventSheets', 'Umlaut.json'), '{ broken \u00C4rger');
       await startServer();
-      const result = await search({ query: 'Ärger', wholeWord: true, scopes: ['events'] });
+      const result = await search({ query: '\u00C4rger', wholeWord: true, scopes: ['events'] });
       expect(result.unscannedFiles).toEqual([expect.objectContaining({ file: 'eventSheets/Umlaut', textSearch: 'possible-use' })]);
-      const none = await search({ query: 'Ärgerx', wholeWord: true, scopes: ['events'] });
+      const none = await search({ query: '\u00C4rgerx', wholeWord: true, scopes: ['events'] });
       expect(none.unscannedFiles).toEqual([expect.objectContaining({ file: 'eventSheets/Umlaut', textSearch: 'no-match' })]);
     });
 
     it('finds a whole word that starts or ends with a non-ASCII letter in parsed files', async () => {
-      await addSheet('Words', [comment('kein Ärger hier'), comment('le café noir'), comment('der Ärgerliche'), comment('cafés open'), comment('naïve')]);
+      await addSheet('Words', [comment('kein \u00C4rger hier'), comment('le caf\u00E9 noir'), comment('der \u00C4rgerliche'), comment('caf\u00E9s open'), comment('na\u00EFve')]);
       await startServer();
-      const start = await search({ query: 'Ärger', wholeWord: true, scopes: ['events'] });
+      const start = await search({ query: '\u00C4rger', wholeWord: true, scopes: ['events'] });
       expect(start.totalHits).toBe(1);
       expect(start.hits.map(h => h.text)).toEqual([expect.stringContaining('kein')]);
-      const end = await search({ query: 'café', wholeWord: true, scopes: ['events'] });
+      const end = await search({ query: 'caf\u00E9', wholeWord: true, scopes: ['events'] });
       expect(end.totalHits).toBe(1);
       expect(end.hits.map(h => h.text)).toEqual([expect.stringContaining('noir')]);
-      const inside = await search({ query: 'naïve', wholeWord: true, scopes: ['events'] });
+      const inside = await search({ query: 'na\u00EFve', wholeWord: true, scopes: ['events'] });
       expect(inside.totalHits).toBe(1);
-      const caseless = await search({ query: 'äRGER', wholeWord: true, scopes: ['events'] });
+      const caseless = await search({ query: '\u00E4RGER', wholeWord: true, scopes: ['events'] });
       expect(caseless.totalHits).toBe(1);
     });
 
