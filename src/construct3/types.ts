@@ -297,7 +297,7 @@ export interface CommentAction {
   [key: string]: unknown;
 }
 
-export type Action = StandardAction | FunctionCallAction | ScriptAction | CommentAction;
+export type Action = StandardAction | FunctionCallAction | CustomActionCall | ScriptAction | CommentAction;
 
 /** Block event — the most common: has conditions, actions, optional children */
 export interface BlockEvent {
@@ -376,6 +376,39 @@ export interface ScriptEvent {
   eventType: 'script';
   language?: string;
   script: string | string[];
+  [key: string]: unknown;
+}
+
+/** Custom action call: runs the custom action `customAction` of an object type or family. */
+export interface CustomActionCall {
+  customAction: string;
+  /** The object type or family the action is called on */
+  objectClass: string;
+  /** The family whose custom action runs, when a member calls its family's original (see event-outline.ts) */
+  customActionObjectClass?: string;
+  sid: number;
+  disabled?: boolean;
+  /** Arguments in parameter order: expression strings, and JSON booleans for boolean parameters */
+  parameters?: Array<string | boolean>;
+  [key: string]: unknown;
+}
+
+/** Custom action block: the definition of a custom action of an object type or family */
+export interface CustomActionBlockEvent {
+  eventType: 'custom-ace-block';
+  aceType?: string;
+  aceName: string;
+  objectClass: string;
+  functionDescription?: string;
+  functionCategory?: string;
+  functionReturnType?: string;
+  functionCopyPicked?: boolean;
+  functionIsAsync?: boolean;
+  functionParameters?: Array<{ name: string; type: string; initialValue?: string; comment?: string; sid?: number }>;
+  conditions: Condition[];
+  actions: Action[];
+  children?: C3Event[];
+  sid?: number;
   [key: string]: unknown;
 }
 

@@ -17,6 +17,7 @@ import {
   deleteRegisteredEntity,
 } from './shared.js';
 import { findFolderPathClash, findNameClash } from '../construct3/names.js';
+import type { CustomActionCall } from '../construct3/types.js';
 import {
   SYSTEM_EXPRESSIONS_NOT_IN_R449,
   eventVariableNameUses,
@@ -52,6 +53,11 @@ import {
   type ResolvedContainer,
   buildCondition,
   buildAction,
+  isCustomActionCall,
+  CustomActionCallError,
+  customActionCallError,
+  customActionCallWarnings,
+  loadCustomActionContext,
   resolveEventBySid,
   parseEventPath,
   ambiguousSidMessage,
@@ -134,12 +140,14 @@ import { writeEntityOrRollBack } from './call-rollback.js';
 import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-keys.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
+import { customActionDefinitionClashes, customActionOwnerError, customActionScan, newCustomActionDuplicates } from '../construct3/custom-actions.js';
 import {
   createEmptySheet,
   createVariableEvent,
   createGroupEvent,
   createFunctionEvent,
   createIncludeEvent,
+  createCustomActionEvent,
 } from '../construct3/templates.js';
 import { withProjectSync } from './project-sync.js';
 
@@ -183,6 +191,11 @@ const SCOPE_LOSS_CONSEQUENCE =
   'After loading a project, Construct 3 resolves these names and throws "cannot find event variable" when one is ' +
   'not in scope (loader code; whether the project then fails to open has not been confirmed in the editor), and an ' +
   'expression that uses it by name would name a variable that is not there.';
+
+/** Why two custom actions of one name on one object type or family are refused. */
+const DUPLICATE_CUSTOM_ACTION_RULE =
+  'A call names a custom action by its name, so it could not tell two apart (Construct 3 r506-2 (Free edition) opened such a project, ' +
+  'ran the first definition, and renamed the second one when it saved: DoK became DoK2). Choose another name.';
 
 /**
  * One sentence per deleted function or variable that is still referenced
@@ -530,7 +543,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }).optional().describe('Optional, only "block": this tool adds block events. Comments, groups, variables, functions and includes: add_event_to_sheet (comments and scripts can also be sub-events in children)'),
         sid: z.number().optional().describe('Ignored: a block copied from get_eventsheet_details may carry its SID, but the new block always gets a new one'),
         conditions: z.array(conditionSchema).optional().default([]).describe(EVENT_INPUT_DESCRIPTIONS.conditions),
-        actions: z.array(actionSchema).optional().default([]).describe('Actions: plugin/behavior/System actions, function calls { callFunction, parameters: [...] }, script actions { type: "script", script } and comment rows { type: "comment", text, "text-color"?, "background-color"? }'),
+        actions: z.array(actionSchema).optional().default([]).describe('Actions: plugin/behavior/System actions, function calls { callFunction, parameters: [...] }, custom action calls { customAction, objectClass, customActionObjectClass?, parameters: [...] }, script actions { type: "script", script } and comment rows { type: "comment", text, "text-color"?, "background-color"? }'),
         ...locatorShape,
         disabled: z.boolean().optional().default(false).describe('Create the event block disabled'),
         isElse: z.boolean().optional().default(false).describe(EVENT_INPUT_DESCRIPTIONS.isElse),
@@ -631,12 +644,160 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         };
         return toolResult({ ...result, eventPath });
       } catch (error) {
+        if (error instanceof CustomActionCallError) return toolError(nothingChanged(error.message));
         console.error('[add_event_block] failed:', error);
         if (undoPlacement) {
           undoPlacement();
           if (!writeStarted) return toolError(stoppedBeforeWriteMessage(error));
         }
         return toolError(`Error adding event block: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── add_custom_action ────────────────────────────────────
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
+    'add_custom_action',
+    {
+      description: 'Add a custom action definition (a custom action block) to an event sheet. A custom action belongs to an object type or family and is called on it with { customAction, objectClass, parameters: [...] } in add_event_block or update_event_block; its conditions and actions are added with update_event_block on the returned SID. Placed at the top level, in a group, or beside an event there, and only where every event above it is a group: Construct 3 r506-2 (Free edition) was seen accepting a custom action block only at the top level and in a top-level group, and a group below a block, a block with conditions, a function block or a custom action block is refused (a custom action block is a trigger root for the load check). Runs the load-time gate (new warnings are returned). Event sheets that could not be parsed are searched as text for the name; a possible match refuses without force=true. Refused, changing nothing: an owner that is no object type or family, an empty name, a second custom action of the same name on the same owner (ignoring case), parameter names the editor refuses, and a place that no editor-saved project on record or checked editor case shows for custom action blocks (below a block, a function block or a custom action block, also through a group). Returns generatedSid, parameterSids, eventPath and backupFile.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
+        objectClass: z.string().max(200).describe('The object type or family the custom action belongs to'),
+        aceName: z.string().max(200).describe('The custom action\'s name, as calls give it in customAction'),
+        description: z.string().max(2000).optional().describe('The description shown in the editor'),
+        category: z.string().max(200).optional().describe('The category it is listed under in the editor'),
+        isAsync: z.boolean().optional().describe('The editor\'s "Asynchronous" option (default false)'),
+        copyPicked: z.boolean().optional().describe('The editor\'s "Copy picked" option (default false)'),
+        parameters: z.array(z.object({
+          name: z.string().max(200).describe('Parameter name'),
+          type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+          initialValue: z.string().max(500).optional().describe('Default value (by type: "0", "" or "false")'),
+          comment: z.string().max(500).optional().describe('Parameter comment'),
+        }, {
+          errorMap: unknownKeysErrorMap('a parameter', 'A parameter has name, type, initialValue and comment.'),
+        }).strict()).max(100).optional().describe('Parameters in call order; names follow the editor\'s function parameter rules'),
+        ...locatorShape,
+        force: z.boolean().optional().default(false).describe('Add even while an event sheet the server could not parse may define a custom action of that name (the sheets are listed in unscannedFiles and a warning)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of add_custom_action', 'add_custom_action takes sheetName, objectClass, aceName, description, category, isAsync, copyPicked, parameters, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position and force.'),
+      }).strict(),
+    },
+    async (args) => {
+      // Set once the new block is in the sheet in memory, so a throw before the write puts the sheet back
+      let undoInsert: (() => void) | undefined;
+      let writeStarted = false;
+      try {
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        const ownerError = customActionOwnerError(args.objectClass, await reader.listObjectTypes(), await reader.listFamilies());
+        if (ownerError) return toolError(nothingChanged(ownerError));
+        if (args.aceName.trim() === '') return toolError(nothingChanged('aceName is empty or only spaces.'));
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return toolError(nothingChanged(`Event sheet "${args.sheetName}" is registered in the project but could not be read.`));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
+        });
+        if ('error' in resolution) return toolError(nothingChanged(resolution.error));
+        const container = resolution.container;
+        const placement = placementError('custom-ace-block', container);
+        if (placement) return toolError(nothingChanged(placement));
+        // Only groups may stand above the new definition: a group below a block, a function block or a custom action block is refused
+        const nonGroup = containerParents(sheet.events, container).find(parent => parent.eventType !== 'group');
+        if (nonGroup !== undefined) {
+          const what = nonGroup.eventType === 'block' ? (Array.isArray(nonGroup.conditions) && nonGroup.conditions.length > 0 ? 'a block with conditions' : 'a block')
+            : nonGroup.eventType === 'function-block' ? 'a function block'
+              : nonGroup.eventType === 'custom-ace-block' ? 'a custom action block' : `an event of type "${String(nonGroup.eventType)}"`;
+          return toolError(nothingChanged(
+            `A custom action block is not placed in a group that stands below ${what}${nonGroup.sid !== undefined ? ` (SID ${nonGroup.sid})` : ''}: ` +
+            'Construct 3 r506-2 (Free edition) was seen accepting one only at the top level and in a top-level group, and the load check this tool follows ' +
+            'treats a custom action block as a trigger root, as it does a function block, which r506-2 (Free edition) refused to open under an "On start" block. ' +
+            'This is the tool\'s own rule, not checked in the editor. It can go at the top level, in a group, or in a group that has only groups above it.'));
+        }
+
+        // One custom action of a name per owner, across the project
+        const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        const scan = customActionScan(sheets);
+        const clashes = customActionDefinitionClashes(scan.definitions, args.objectClass, args.aceName);
+        if (clashes.length > 0) {
+          const c = clashes[0];
+          return toolError(nothingChanged(`"${args.objectClass}" already has a custom action "${c.name}" (sheet "${c.sheet}", ${c.eventPath}${c.sid !== undefined ? `, SID ${c.sid}` : ''}). ${DUPLICATE_CUSTOM_ACTION_RULE}`));
+        }
+        // A definition past the scan's limits is unknown, as in a sheet that could not be parsed
+        const scanChecked = 'custom actions of that name';
+        if (!scan.complete && !args.force) {
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'add_blocked',
+            message: nothingChanged(`${traversalLimitReason(scanChecked)} Use force=true to add it anyway.`),
+          }, { projectWritten: false });
+        }
+        const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'))
+          .filter(f => f.name !== args.sheetName);
+        const unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [[nameTerm(args.aceName)], [nameTerm(args.objectClass)]] }]);
+        if (blocksWithoutForce(unscanned) && !args.force) {
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'add_blocked',
+            message: nothingChanged(`${unscannedRefusal(unscanned)} One of them may already define a custom action "${args.aceName}" on "${args.objectClass}". Use force=true to add it anyway.`),
+            ...unscannedFields(unscanned),
+          }, { projectWritten: false });
+        }
+
+        const names = (args.parameters ?? []).map(p => p.name);
+        if (names.length > 0) {
+          const paramError = functionParameterNamesError(sheets, args.sheetName, names, containerParents(sheet.events, container), 'parameters');
+          if (paramError) return toolError(nothingChanged(paramError));
+        }
+
+        const beforeEvents = snapshotEvents(sheet.events);
+        const sid = await idGen.generateSid(reader);
+        const params: Array<NonNullable<typeof args.parameters>[number] & { sid: number }> = [];
+        for (const p of args.parameters ?? []) params.push({ ...p, sid: await idGen.generateSid(reader) });
+        const event = createCustomActionEvent(args.aceName, args.objectClass, sid, params, {
+          description: args.description, category: args.category, isAsync: args.isAsync, copyPicked: args.copyPicked,
+        }) as unknown as Record<string, unknown>;
+        undoInsert = () => { sheet.events = beforeEvents; };
+        insertIntoContainer(container, args.position, event);
+        const eventPath = eventPathOf(events, event);
+
+        // The load-time gate, as add_event_block runs it: the new block may stand between a block and its else block
+        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+        if (loadCheck.errors.length > 0) {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(loadRuleErrorMessage(loadCheck.errors)));
+        }
+        // With force, the sheets that may define the name; without a block, those searched as text without a match
+        const warnings = [...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events), ...unscannedWarnings(unscanned, 'Added')];
+        if (!scan.complete) warnings.push(`Added with force=true: ${traversalLimitReason(scanChecked)}`);
+
+        writeStarted = true;
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', generatedSid: sid,
+          ...(params.length > 0 ? { parameterSids: params.map(p => ({ name: p.name, sid: p.sid })) } : {}),
+          eventPath,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...unscannedFields(unscanned),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[add_custom_action] failed:', error);
+        if (undoInsert) {
+          undoInsert();
+          // Nothing reached the disk: the sheet in memory is as it was
+          if (!writeStarted) {
+            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          }
+        }
+        return toolError(`Error adding custom action: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
@@ -1066,14 +1227,14 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   server.tool(
     'update_event_block_action',
-    'Replace parameters on a single action within an existing event block. Identify the block by SID and the action by its 0-based index. Use get_eventsheet_details to find SIDs and action indices. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Function calls take their arguments as an array in parameter order. Comment rows and script actions have no parameters and are refused. Parameters that would break a checked editor load-time rule (expression syntax, empty expressions) are refused.',
+    'Replace parameters on a single action within an existing event block. Identify the block by SID and the action by its 0-based index. Use get_eventsheet_details to find SIDs and action indices. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Function calls take their arguments as an array in parameter order. A custom action call takes its arguments as an array in parameter order, which replaces the stored ones. Comment rows and script actions have no parameters and are refused. Parameters that would break a checked editor load-time rule (expression syntax, empty expressions) are refused.',
     {
       sheetName: z.string().max(200).describe('Target event sheet'),
       blockSid: z.number().int().positive().describe('SID of the block event containing the action'),
       eventPath: eventPathSchema,
       actionIndex: z.number().int().min(0).describe('0-based index of the action to update'),
       parameters: z.union([boundedRecord(), z.array(functionCallArgumentSchema).max(100)])
-        .describe('New parameter values — replaces existing parameters entirely. Key-value pairs for plugin/behavior/System actions (max 100 keys, depth 6); for a function call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted)'),
+        .describe('New parameter values — replaces existing parameters entirely. Key-value pairs for plugin/behavior/System actions (max 100 keys, depth 6); for a function call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted); for a custom action call, an array in parameter order (an object is refused)'),
     },
     async (args) => {
       try {
@@ -1095,8 +1256,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const { event, path } = found.match;
         const eventType = event.eventType as string;
 
-        if (eventType !== 'block' && eventType !== 'function-block') {
-          return toolError(`Event with SID ${args.blockSid} is a "${eventType}", not a block or function-block. Only block events have actions.`);
+        if (eventType !== 'block' && eventType !== 'function-block' && eventType !== 'custom-ace-block') {
+          return toolError(`Event with SID ${args.blockSid} is a "${eventType}", not a block, function-block or custom action block. Only those have actions.`);
         }
 
         const actions = event.actions as Record<string, unknown>[];
@@ -1112,7 +1273,18 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const rowProblem = parameterlessRowError(action, args.actionIndex);
         if (rowProblem) return toolError(rowProblem);
         let warnings: string[];
-        if (isFunctionCall(action)) {
+        if (isCustomActionCall(action)) {
+          // A custom action call takes its arguments as an array; the refusal and the project read come before the call changes
+          if (!Array.isArray(args.parameters)) {
+            return toolError(nothingChanged(`Action ${args.actionIndex} is a custom action call: pass its arguments as an array in parameter order.`));
+          }
+          const customContext = await loadCustomActionContext(reader);
+          const argumentsGiven = args.parameters.map(value => (typeof value === 'boolean' ? value : String(value)));
+          if (argumentsGiven.length > 0) action.parameters = argumentsGiven;
+          else delete action.parameters;
+          warnings = customActionCallWarnings(action as unknown as CustomActionCall, customContext,
+            `Action ${args.actionIndex}, custom action call "${String(action.customAction)}" on "${String(action.objectClass)}"`, 'kept');
+        } else if (isFunctionCall(action)) {
           // Function calls take positional arguments, as the editor saves them
           const name = action.callFunction as string;
           const label = `Call to "${name}"`;
@@ -1160,7 +1332,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           updatedBlockSid: args.blockSid,
           eventPath: path,
           updatedActionIndex: args.actionIndex,
-          ...(isFunctionCall(action) ? { callFunction: action.callFunction } : { actionId: action.id }),
+          ...(isFunctionCall(action) ? { callFunction: action.callFunction } : isCustomActionCall(action) ? { customAction: action.customAction } : { actionId: action.id }),
           ...(warnings.length > 0 ? { warnings } : {}),
           backupFile: backupPath,
         });
@@ -1175,7 +1347,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   server.tool(
     'move_events_between_sheets',
-    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). SIDs and all nested children are preserved; the result warns when a copied SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force.',
+    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). SIDs and all nested children are preserved; the result warns when a copied SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force. A copy (deleteSource=false) that would leave two custom actions of one name on one object type or family is refused, and so is any copy while the check for custom actions stopped at its traversal limit; a move is not (Construct 3 r506-2 (Free edition) renamed the second of two such definitions on save).',
     {
       sourceSheet: z.string().max(200).describe('Event sheet to copy/move events from, as registered (letter case included)'),
       targetSheet: z.string().max(200).describe('Event sheet to copy/move events into, as registered (letter case included)'),
@@ -1357,6 +1529,21 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           targetSheetData.events = targetBefore;
           return toolError(copiedFunctionNameClashMessage(args.targetSheet, functionClashes));
         }
+        // Custom actions: a copied definition keeps its name, which its original still has on the same owner
+        const scanBefore = customActionScan(sheetsBefore);
+        const scanAfter = customActionScan(sheetsAfter);
+        if ((!scanBefore.complete || !scanAfter.complete) && !args.deleteSource) {
+          sourceSheetData.events = sourceEvents as unknown as C3Event[];
+          targetSheetData.events = targetBefore;
+          return toolError(nothingChanged(`${traversalLimitReason('custom actions the copy would duplicate')} Move the events instead (deleteSource: true).`));
+        }
+        const customDuplicates = newCustomActionDuplicates(scanBefore.definitions, scanAfter.definitions);
+        if (customDuplicates.length > 0) {
+          sourceSheetData.events = sourceEvents as unknown as C3Event[];
+          targetSheetData.events = targetBefore;
+          const listed = customDuplicates.slice(0, 10).map(g => `- "${g[0].owner}.${g[0].name}": ${g.map(d => `sheet "${d.sheet}" (${d.eventPath})`).join(', ')}`);
+          return toolError(nothingChanged(`Copying these events to "${args.targetSheet}" would leave two custom actions of one name on one object type or family:\n${listed.join('\n')}\n\n${DUPLICATE_CUSTOM_ACTION_RULE} Move the custom action instead (deleteSource: true).`));
+        }
 
         // Editor load-time rules over both sheets: a copy of an event that
         // breaks a rule adds the problem to the target, a move only relocates it
@@ -1465,10 +1652,10 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
   server.registerTool(
     'update_event_block',
     {
-      description: 'Update an existing block event in an event sheet — modify action parameters, add/remove actions or conditions, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
+      description: 'Update an existing block, function block or custom action block in an event sheet — modify action parameters, add/remove actions or conditions, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
-        sid: z.number().int().positive().describe('SID of the block event to update'),
+        sid: z.number().int().positive().describe('SID of the block, function block or custom action block to update'),
         eventPath: eventPathSchema,
         disabled: z.boolean().optional().describe('Enable or disable the entire block'),
         isElse: z.boolean().optional().describe('true: make the block an else block (puts the System "else" condition first; existing conditions then make an else-if). false: remove the leading "else" condition. Applied after all other condition changes.'),
@@ -1476,7 +1663,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         updateActions: z.array(z.object({
           index: z.number().int().min(0).describe('Action index (0-based)'),
           parameters: z.union([boundedRecord(), z.array(functionCallArgumentSchema).max(100)]).optional()
-            .describe('New parameter values — merged with existing (max 100 keys, depth 6). For a function call: an array replaces the arguments; an object keyed by position ("0", "1", …) or parameter name replaces single arguments'),
+            .describe('New parameter values — merged with existing (max 100 keys, depth 6). For a function call: an array replaces the arguments; an object keyed by position ("0", "1", …) or parameter name replaces single arguments. For a custom action call: an array in parameter order replaces them, and an object is refused'),
           disabled: z.boolean().optional().describe('Enable or disable this action'),
           text: z.string().max(10_000).optional().describe('Comment rows only: the new text; the row keeps its place and colours'),
           'text-color': commentColorSchema.nullable().optional().describe('Comment rows only: the new text colour [red, green, blue, alpha], each 0-1; null removes it'),
@@ -1537,12 +1724,27 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const { event, path } = found.match;
         const eventType = event.eventType as string;
 
-        // Must be a block or function-block (not a group, variable, include, etc.)
-        if (eventType !== 'block' && eventType !== 'function-block') {
-          return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block or function-block. Only block events can be updated with this tool.`);
+        // Must be a block, function-block or custom action block (not a group, variable, include, etc.)
+        if (eventType !== 'block' && eventType !== 'function-block' && eventType !== 'custom-ace-block') {
+          return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action block. Only those can be updated with this tool.`);
         }
         if (args.isElse !== undefined && eventType !== 'block') {
-          return toolError('isElse applies to block events only; a function block cannot be an else block.');
+          return toolError('isElse applies to block events only; a function block or custom action block cannot be an else block.');
+        }
+
+        // Custom action calls: checked before anything changes, so a refusal leaves the block as it was
+        const customAdds = (args.addActions ?? []).filter(a => isCustomActionCall(a as Record<string, unknown>));
+        const storedActions = Array.isArray(event.actions) ? event.actions as Record<string, unknown>[] : [];
+        const customUpdates = (args.updateActions ?? []).filter(u => storedActions[u.index] !== undefined && isCustomActionCall(storedActions[u.index]));
+        for (const upd of customUpdates) {
+          if (upd.parameters !== undefined && !Array.isArray(upd.parameters)) {
+            return toolError(nothingChanged(`Action ${upd.index} is a custom action call: pass its arguments as an array in parameter order.`));
+          }
+        }
+        const customContext = customAdds.length > 0 || customUpdates.length > 0 ? await loadCustomActionContext(reader) : undefined;
+        for (const add of customAdds) {
+          const callError = customActionCallError(add as { objectClass: string; customActionObjectClass?: string }, customContext!);
+          if (callError) return toolError(nothingChanged(callError));
         }
 
         if (!Array.isArray(event.conditions)) event.conditions = [];
@@ -1662,7 +1864,13 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
               return toolError(`Action ${upd.index} is a comment row, which cannot be disabled (editor-saved comment rows are { type, text } with optional "text-color" and "background-color"; none carries "disabled").`);
             }
             if (upd.parameters) {
-              if (isFunctionCall(act)) {
+              if (isCustomActionCall(act)) {
+                const argumentsGiven = (upd.parameters as unknown[]).map(value => (typeof value === 'boolean' ? value : String(value)));
+                if (argumentsGiven.length > 0) act.parameters = argumentsGiven;
+                else delete act.parameters;
+                warnings.push(...customActionCallWarnings(act as unknown as CustomActionCall, customContext!,
+                  `${where}, action ${upd.index}, custom action call "${String(act.customAction)}" on "${String(act.objectClass)}"`, 'kept'));
+              } else if (isFunctionCall(act)) {
                 const name = act.callFunction as string;
                 const label = `${where}, action ${upd.index} (call to "${name}")`;
                 const signature = await signatureOf(name);
@@ -1684,7 +1892,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
                   return functions;
                 });
               }
-            } else if (!isFunctionCall(act)) {
+            } else if (!isFunctionCall(act) && !isCustomActionCall(act)) {
               touched.push({ ace: act, kind: 'action' });
             }
             if (upd.disabled !== undefined) {
@@ -1740,7 +1948,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
         // ── Add new actions (validated up front) ──
         if (args.addActions && args.addActions.length > 0) {
-          const ctx = { warnings, functions };
+          const ctx = { warnings, functions, customActions: customContext };
           for (const a of args.addActions) {
             actions.push(await buildAction(reader, idGen, a, ctx, where) as unknown as Record<string, unknown>);
           }
@@ -1766,9 +1974,11 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // Only warn when this call removed the last condition. Blocks that
         // never had conditions (function blocks, sub-events) are normal.
         if (removedConditions && conditionCountBefore > 0 && conditions.length === 0) {
-          warnings.push(eventType === 'function-block'
-            ? 'All conditions were removed: the function body now runs on every call.'
-            : 'All conditions were removed: the block now runs whenever its parent runs (every tick at the top level).');
+          warnings.push(eventType === 'block'
+            ? 'All conditions were removed: the block now runs whenever its parent runs (every tick at the top level).'
+            : eventType === 'function-block'
+              ? 'All conditions were removed: the function body now runs on every call.'
+              : 'All conditions were removed: the custom action body now runs on every call.');
         }
 
         // Edited conditions/actions written by older versions may still carry
