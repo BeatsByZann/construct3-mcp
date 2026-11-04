@@ -77,7 +77,7 @@ describe('messageWithoutPaths edge cases', () => {
   });
 
   it('replaces the 8.3 short form of the project folder, which is not the folder as given', () => {
-    expect(messageWithoutPaths(new Error('Cannot read C:\\PRIMAR~1\\Proj\\a.json.'), 'C:\\Users\\Primary User\\Proj')).toBe(`Cannot read ${outside}.`);
+    expect(messageWithoutPaths(new Error('Cannot read C:\\SAMPLE~1\\Proj\\a.json.'), 'C:\\Users\\Sample User\\Proj')).toBe(`Cannot read ${outside}.`);
   });
 
   it('keeps relative paths and slashes inside words', () => {
