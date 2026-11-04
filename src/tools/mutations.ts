@@ -9,6 +9,7 @@ import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
 import type { IdGenerator } from '../construct3/id-generator.js';
 import { registerObjectTools } from './object-tools.js';
 import { registerEventTools } from './event-tools.js';
+import { registerLayerOrderTools } from './layer-order.js';
 import { registerLayoutTools } from './layout-tools.js';
 import { registerLayerRenameTools } from './layer-rename.js';
 import { registerProjectTools } from './project-tools.js';
@@ -24,6 +25,7 @@ export function registerMutationTools(
   const deps = { server, reader, writer, idGen };
   registerObjectTools(deps);
   registerEventTools(deps);
+  registerLayerOrderTools(deps);
   registerLayoutTools(deps);
   registerLayerRenameTools(deps);
   registerProjectTools(deps);

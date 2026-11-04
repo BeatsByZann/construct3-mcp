@@ -615,7 +615,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 - Objects and families: `create_object`, `update_object_properties`, `delete_object`, `create_family`, `update_family`, `delete_family`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `move_events_between_sheets`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
-- Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `add_instance_to_layout`, `update_instance`, `delete_instance_from_layout`
+- Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `update_instance`, `move_instance`, `delete_instance_from_layout`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `create_animation_folder`, `move_animation_to_folder`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`, `replace_object_image`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
