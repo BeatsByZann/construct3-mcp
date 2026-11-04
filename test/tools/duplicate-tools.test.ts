@@ -18,6 +18,7 @@ import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.
 import { registerDuplicateTools } from '../../src/tools/duplicate-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'rename-project');
+const MB = 1024 * 1024;
 
 type Args = Record<string, unknown>;
 type Obj = Record<string, unknown>;
@@ -195,6 +196,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -491,11 +493,22 @@ describe('duplicate_layout', () => {
     expect(data.text?.match(/rolled back/g)?.length ?? 0).toBeLessThanOrEqual(1);
   });
 
-  it('refuses a copy larger than the writer allows before anything is written', async () => {
-    await editLayout(['layouts', 'Level 1.json'], layout => {
-      layout.padding = 'x'.repeat(5.5 * 1024 * 1024);
-    });
-    await refusal('duplicate_layout', { layoutName: 'Level 1', newName: 'Level 1 Copy' }, 'Generated JSON for "Level 1 Copy" is too large');
+  it('refuses a copy over the size limit when its source file is under it, before anything is written', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const source = await readJson<LayoutJson>('layouts', 'Level 1.json');
+    const [, enemy] = source.layers[0].instances;
+    source.layers[0].instances = Array.from({ length: 4500 }, (_, i) => ({ ...structuredClone(enemy), uid: 1000 + i, sid: 631000000000000 + i }));
+    // Saved compact: under the limit on disk, over it once the writer tab-indents it
+    await writeFile(path('layouts', 'Level 1.json'), JSON.stringify(source));
+    expect((await stat(path('layouts', 'Level 1.json'))).size).toBeLessThan(MB);
+    expect(JSON.stringify(source, null, '\t').length).toBeGreaterThan(MB);
+
+    const validateJsonData = vi.spyOn(writer, 'validateJsonData');
+    await refusal('duplicate_layout', { layoutName: 'Level 1', newName: 'Level 1 Copy' },
+      'Generated JSON for "Level 1 Copy" is too large (at least', 'over the 1MB limit');
+    expect(validateJsonData.mock.calls.map(([, name]) => name)).toEqual(['Level 1 Copy']);
+    expect(existsSync(path('layouts', 'Level 1 Copy.json'))).toBe(false);
+    expect(treeFiles((await project()).layouts, 'layouts').some(file => file.endsWith('/Level 1 Copy.json'))).toBe(false);
   });
 
   it('writes the copy with the line endings of the project', async () => {
@@ -1083,10 +1096,22 @@ describe('duplicate_timeline', () => {
     await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'Timeline "Intro" could not be read (not a JSON object).');
   });
 
-  it('refuses a copy larger than the writer allows before anything is written', async () => {
-    const source = await readJson<Obj>('timelines', 'Intro.json');
-    await writeJson(['timelines', 'Intro.json'], { ...source, padding: 'x'.repeat(5.5 * 1024 * 1024) });
-    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' }, 'Generated JSON for "Copy" is too large');
+  it('refuses a copy over the size limit when its source file is under it, before anything is written', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const source = await readJson<Obj & { tracks: unknown[] }>('timelines', 'Intro.json');
+    const [track] = source.tracks;
+    source.tracks = Array.from({ length: 1100 }, () => structuredClone(track));
+    // Saved compact: under the limit on disk, over it once the writer tab-indents it
+    await writeFile(path('timelines', 'Intro.json'), JSON.stringify(source));
+    expect((await stat(path('timelines', 'Intro.json'))).size).toBeLessThan(MB);
+    expect(JSON.stringify(source, null, '\t').length).toBeGreaterThan(MB);
+
+    const validateJsonData = vi.spyOn(writer, 'validateJsonData');
+    await refusal('duplicate_timeline', { timelineName: 'Intro', newName: 'Copy' },
+      'Generated JSON for "Copy" is too large (at least', 'over the 1MB limit');
+    expect(validateJsonData.mock.calls.map(([, name]) => name)).toEqual(['Copy']);
+    expect(existsSync(path('timelines', 'Copy.json'))).toBe(false);
+    expect(treeFiles((await project()).timelines, 'timelines').some(file => file.endsWith('/Copy.json'))).toBe(false);
   });
 
   it('says Nothing was changed. when a step before the write throws unexpectedly, without a path', async () => {
