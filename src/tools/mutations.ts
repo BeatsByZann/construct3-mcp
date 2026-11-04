@@ -15,6 +15,7 @@ import { registerLayerRenameTools } from './layer-rename.js';
 import { registerProjectTools } from './project-tools.js';
 import { registerHierarchyTools } from './hierarchy-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
+import { registerEffectTools } from './effect-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 
 export function registerMutationTools(
@@ -32,5 +33,6 @@ export function registerMutationTools(
   registerProjectTools(deps);
   registerHierarchyTools(deps);
   registerAnimationTools(deps);
+  registerEffectTools(deps);
   registerTimelineTools(deps);
 }

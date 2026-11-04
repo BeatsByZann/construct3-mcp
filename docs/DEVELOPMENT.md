@@ -116,6 +116,7 @@ construct3-mcp/
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)
+│   │   ├── effect-tools.ts         # Effect tools (5)
 │   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── layer-order.ts          # Layer and instance order tools (3)

@@ -247,6 +247,53 @@ export function dropInstanceEffects(
 }
 
 /**
+ * Add an entry to an instance's `effects` for each of `adds` it has none for
+ * (an entry it holds keeps its state). `expected` is the effect names the
+ * instance's object type and families have after the change, in the editor's
+ * order (see expectedInstanceEffects): a new entry goes where syncInstanceVariables
+ * puts a new value, after the last existing entry that ranks before it, else
+ * before the first expected one, so a family's effect lands before the
+ * object's own. Each instance gets its own copy of the entry. Returns the
+ * names added.
+ */
+export function addInstanceEffects(
+  instance: Record<string, unknown>,
+  adds: ReadonlyArray<{ name: string; entry: { isEnabled: boolean; parameters: Record<string, unknown> } }>,
+  expected: readonly string[],
+): string[] {
+  const entries = Object.entries(isRecord(instance.effects) ? instance.effects : {});
+  const rank = new Map(expected.map((name, i) => [name, i]));
+  const added: string[] = [];
+  for (const { name, entry } of adds) {
+    if (entries.some(([n]) => n === name)) continue;
+    entries.splice(insertPosition(entries.map(([n]) => rank.get(n)), rank.get(name) ?? expected.length), 0, [name, structuredClone(entry)]);
+    added.push(name);
+  }
+  if (added.length > 0) instance.effects = Object.fromEntries(entries);
+  return added;
+}
+
+/**
+ * Put the instance's entries for the effects in `names` (one owner's
+ * effects, in their new order) in that order, among the places those entries
+ * hold, in place: entries of other owners (the object's own, another
+ * family's) and for other names stay where they are. How the editor orders
+ * several owners' entries is not verified, so only the order among this
+ * owner's entries ever changes. False when the order was that already.
+ */
+export function orderInstanceEffects(instance: Record<string, unknown>, names: readonly string[]): boolean {
+  if (!isRecord(instance.effects)) return false;
+  const entries = Object.entries(instance.effects);
+  const rank = new Map(names.map((name, i) => [name, i]));
+  const slots = entries.map(([name], i) => (rank.has(name) ? i : -1)).filter(i => i !== -1);
+  const ordered = slots.map(i => entries[i]).sort((a, b) => rank.get(a[0])! - rank.get(b[0])!);
+  if (ordered.every((entry, k) => entry === entries[slots[k]])) return false;
+  slots.forEach((slot, k) => { entries[slot] = ordered[k]; });
+  instance.effects = Object.fromEntries(entries);
+  return true;
+}
+
+/**
  * Where a new entry of expected rank `rank` goes among entries whose ranks
  * are `ranks` (undefined: not expected): after the last one ranked lower,
  * else before the first expected one, else at the end.

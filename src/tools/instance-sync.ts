@@ -1,6 +1,6 @@
 /**
  * The sync of layout instances with the behaviors, instance variables and effects of their
- * object types and families, shared by the object and family tools; moved from
+ * object types and families, shared by the object, family and effect tools; moved from
  * object-tools.ts.
  */
 
@@ -22,8 +22,10 @@ import {
 } from '../construct3/instance-behaviors.js';
 import type { InstanceBehavior } from '../construct3/instance-behaviors.js';
 import {
+  addInstanceEffects,
   dropInstanceEffects,
   isDefaultInstanceVariableValue,
+  orderInstanceEffects,
   renameInstanceVariableValue,
   retypeInstanceVariableValue,
   syncInstanceVariables,
@@ -60,8 +62,12 @@ export interface InstanceSyncPlan {
   dropVariables?: string[];
   /** Effect names whose instance entries are removed unless the object type or its families still have the effect */
   dropEffects?: string[];
-  /** The effects the object's instances carry entries for, after the change (with dropEffects) */
+  /** The effects the object's instances carry entries for, after the change (with dropEffects and addEffects) */
   effects?: string[];
+  /** Effects whose entry every instance gets when it has none, in the place `effects` ranks it (add_effect) */
+  addEffects?: ReadonlyArray<{ name: string; entry: { isEnabled: boolean; parameters: Record<string, unknown> } }>;
+  /** The reordered owner's effect names in their new order; the instance's entries for them are put in it (reorder_effects) */
+  orderEffects?: readonly string[];
   /** Instance variable values moved to a new name before the other changes, each in its place (update_instance_variable) */
   renameVariables?: ReadonlyArray<{ from: string; to: string }>;
   /** Instance variables whose type changed: a value that does not fit gets the type's default (update_instance_variable) */
@@ -169,6 +175,10 @@ export async function syncLayoutInstances(
         for (const { name, entry } of effects) removedData.push(`${where} effect "${name}" ${shortJson(entry)}`);
         removedEffects += effects.length;
       }
+      if (plan.addEffects?.length) {
+        modified = addInstanceEffects(instance, plan.addEffects, plan.effects ?? []).length > 0 || modified;
+      }
+      if (plan.orderEffects) modified = orderInstanceEffects(instance, plan.orderEffects) || modified;
     };
 
     forEachLayoutInstance(layout, visit);
@@ -221,7 +231,8 @@ export async function syncLayoutInstances(
 
 /** Whether a plan adds, drops, moves, retypes or reorders anything (else it only fills in missing entries). */
 function planChanges(plan: InstanceSyncPlan): boolean {
-  return [plan.add, plan.drop, plan.addVariables, plan.dropVariables, plan.dropEffects, plan.renameVariables, plan.retypeVariables, plan.orderBehaviors]
+  return [plan.add, plan.drop, plan.addVariables, plan.dropVariables, plan.dropEffects, plan.addEffects, plan.orderEffects,
+    plan.renameVariables, plan.retypeVariables, plan.orderBehaviors]
     .some(list => (list?.length ?? 0) > 0);
 }
 

@@ -262,7 +262,7 @@ This format works, and so does the one `claude mcp add` writes (the same with `"
 
 #### Tool permissions
 
-Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 26 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
+Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 27 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
 
 ```json
 {
@@ -281,7 +281,7 @@ Claude Code asks before it uses an MCP tool. In Claude Code the tools are named 
 }
 ```
 
-Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 26 read-only tools was checked against the server's tool list (84 tools). The tools added since have names outside these patterns. `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
+Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 27 read-only tools was checked against the server's tool list over stdio (102 tools). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
 
 ### Claude Desktop
 
@@ -602,9 +602,9 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 ## Read tools and write tools
 
-**Read-only tools (26)**, safe to auto-approve:
+**Read-only tools (27)**, safe to auto-approve:
 
-- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_addons`, `list_timelines`, `search_objects`
+- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_addons`, `list_effects`, `list_timelines`, `search_objects`
 - Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
@@ -617,6 +617,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `move_events_between_sheets`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `update_instance`, `move_instance`, `delete_instance_from_layout`, `set_instance_parent`, `remove_instance_children`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `create_animation_folder`, `move_animation_to_folder`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`, `replace_object_image`
+- Effects of object types, families, layouts and layers: `add_effect`, `update_effect`, `remove_effect`, `reorder_effects`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
@@ -631,6 +632,7 @@ Defaults to know:
   - On `delete_object`, `delete_family`, `delete_event_sheet`, `delete_event_from_sheet`, `delete_layout`, `update_object_properties` and `update_family` it skips the reference checks and leaves the references behind.
   - On `move_events_between_sheets` it moves an event variable out of the scope of events that still use it (e.g. a used global variable into a group) and lists those uses; without it such a move is refused.
   - On `delete_layer` it deletes the layer together with the instances on it.
+  - On `remove_effect` it removes the effect although events still use it, and lists those uses; the uses are not changed, so fix them in the editor.
   - `unregister_addon` checks no references at all; `force` only allows removing a Scirra built-in addon. It also removes an addon that objects still use (it only adds the warning `If any objects/behaviors still reference it, C3 will error on load.`). Before you approve it, ask which objects use the addon. Afterwards `validate_project` reports leftover uses as `missing-addon` warnings, while the project still counts as `"valid": true`.
   - The other delete tools (`delete_animation`, `delete_frame_from_animation`, `delete_instance_from_layout`, `delete_timeline`, `remove_event_from_sheet`) have no `force` option.
 
