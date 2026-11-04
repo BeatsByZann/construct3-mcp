@@ -1,8 +1,9 @@
 /**
  * Atomic file replacement that keeps an existing file's name on disk.
  *
- * Files are replaced by writing <file>.tmp and renaming it onto <file>. On a
- * case-insensitive file system (Windows, default macOS) the path can name an
+ * Files are replaced by writing a temp file beside them and
+ * renaming it onto <file>. On a case-insensitive file system
+ * (Windows, default macOS) the path can name an
  * existing file whose name differs in case — "layout1.json" finds
  * "Layout1.json" when project.c3proj spells the entity "layout1" — and the
  * rename would silently change the name on disk to the path's spelling. With
@@ -11,7 +12,8 @@
  * disk (existingSpelling).
  */
 
-import { readdir, rename, stat, unlink, writeFile } from 'fs/promises';
+import { randomBytes } from 'crypto';
+import { link, lstat, readdir, rename, stat, unlink, writeFile } from 'fs/promises';
 import { basename, dirname, join } from 'path';
 import { nameKey } from './names.js';
 
@@ -73,26 +75,183 @@ export async function findFileIgnoringCase(filePath: string, fs: DirectoryLookup
   return variants.length > 0 ? join(dirname(filePath), variants[0]) : undefined;
 }
 
+/** How many fresh names a write tries for one of its own files when the name drawn already exists. */
+const MAX_NAME_ATTEMPTS = 5;
+
 /**
- * Replace (or create) a file atomically: write <file>.tmp, then rename it onto
- * the file, keeping an existing file's name on disk (see existingSpelling).
- * On Windows, rename can fail with EEXIST when the destination exists; the
- * destination is then deleted and the rename retried. Returns the path written.
+ * Replace (or create) a file atomically: write a temp file in the same
+ * folder, then rename it onto the file, keeping an existing file's name on
+ * disk (see existingSpelling). Returns the path written.
+ *
+ * The files this function makes for itself are named
+ * .c3mcp-<16 random hex digits>.<tmp|link|old>, the same length whatever the
+ * file is called. The temp and link-test names are claimed exclusively, and
+ * the aside name is checked before the file is moved to it; a name found to
+ * exist is never written over, and another one is drawn.
+ *
+ * When the rename fails with EEXIST and the path is a regular file, the
+ * function first checks that the folder can make hard links, then renames the
+ * file aside (.old) and links the temp file in. A link never replaces an
+ * existing name, so nothing another write put at the file's name meanwhile is
+ * replaced. When the link in fails, the file is linked back (the same file,
+ * with its size, modification time and file id). When the folder cannot make
+ * hard links, the file is not moved and the error says so. When the name was
+ * taken meanwhile, or putting the file back fails, nothing is removed and the
+ * error names the aside file (what was at the name before the write) and the
+ * temp file (the new content). When the path is not a regular file, the EEXIST
+ * error is thrown as it is.
+ *
+ * The errors it throws for the fallback have the named failure as `cause` and
+ * keep its `code`.
+ * Removing the function's own files afterwards is best effort: one that
+ * cannot be removed stays next to the file.
  */
 export async function atomicReplace(filePath: string, content: string | Buffer): Promise<string> {
   const target = await existingSpelling(filePath);
-  const tmpPath = target + '.tmp';
-  await writeFile(tmpPath, content, typeof content === 'string' ? 'utf-8' : undefined);
+  const tmpPath = await withFreshName(dirname(target), 'tmp', path =>
+    writeFile(path, content, { encoding: typeof content === 'string' ? 'utf-8' : undefined, flag: 'wx' }));
   try {
     await rename(tmpPath, target);
   } catch (e: unknown) {
-    if (e && typeof e === 'object' && 'code' in e && e.code === 'EEXIST') {
-      await unlink(target);
-      await rename(tmpPath, target);
-    } else {
-      try { await unlink(tmpPath); } catch { /* best-effort */ }
+    if (errorCode(e) !== 'EEXIST' || !(await isFile(target))) {
+      await removeIfPossible(tmpPath);
       throw e;
     }
+    await replaceThroughAside(target, tmpPath, e);
   }
   return target;
+}
+
+/**
+ * Claim a fresh name .c3mcp-<16 random hex digits>.<ext> in `dir` by running
+ * `claim` on it. `claim` must fail with EEXIST, having changed nothing, when
+ * the name exists; another name is then drawn, up to MAX_NAME_ATTEMPTS
+ * times. Returns the name claimed; any other error is thrown at once.
+ */
+async function withFreshName(dir: string, ext: 'tmp' | 'link' | 'old', claim: (path: string) => Promise<void>): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const path = join(dir, `.c3mcp-${randomBytes(8).toString('hex')}.${ext}`);
+    try {
+      await claim(path);
+      return path;
+    } catch (e: unknown) {
+      if (errorCode(e) !== 'EEXIST' || attempt >= MAX_NAME_ATTEMPTS) throw e;
+    }
+  }
+}
+
+/**
+ * The EEXIST fallback of atomicReplace (see there): check hard links, move
+ * `target` aside, link `tmpPath` in, or link `target` back. `first` is the
+ * EEXIST of the first rename.
+ */
+async function replaceThroughAside(target: string, tmpPath: string, first: unknown): Promise<void> {
+  const name = basename(target);
+  const dir = dirname(target);
+  try {
+    const probe = await withFreshName(dir, 'link', path => link(tmpPath, path));
+    await removeIfPossible(probe);
+  } catch (e: unknown) {
+    await removeIfPossible(tmpPath);
+    throw replaceError(`Could not replace ${name}: ${messageOf(first)}, and the way around that error needs a hard link `
+      + `in this folder, which failed (${messageOf(e)}). This write did not change it.`, first);
+  }
+  let asidePath: string;
+  try {
+    asidePath = await withFreshName(dir, 'old', async path => {
+      if (await exists(path)) throw Object.assign(new Error(`EEXIST: file already exists, '${path}'`), { code: 'EEXIST' });
+      await rename(target, path);
+    });
+  } catch (e: unknown) {
+    await removeIfPossible(tmpPath);
+    throw replaceError(`Could not replace ${name}: ${messageOf(e)}. This write did not change it.`, e);
+  }
+  const bothKept = (): string => `At that point what was at ${name} before this write was in ${basename(asidePath)} `
+    + `and this write's content in ${basename(tmpPath)}, both in the same folder, and neither was removed.`;
+  const left = (lead: string | undefined, taken: unknown, cause: unknown): Error => replaceError(
+    `Could not replace ${name}${lead === undefined ? '' : `: ${lead}`}. ${name} was created again while this write had it `
+    + `moved aside (${messageOf(taken)}), and that file was left as it is. ${bothKept()}`, cause);
+
+  // Another program may have put something other than a file at the name after the check above
+  const isRegular = await isFile(asidePath);
+  let lead = `${messageOf(first)}, and ${name} is not a regular file`;
+  let cause: unknown = first;
+  if (isRegular) {
+    // Only the link is in the try, so its catch never sees anything but a failed link in
+    let linked = false;
+    try {
+      await link(tmpPath, target);
+      linked = true;
+    } catch (e: unknown) {
+      if (errorCode(e) === 'EEXIST') throw left(undefined, e, e);
+      lead = messageOf(e);
+      cause = e;
+    }
+    if (linked) {
+      await removeIfPossible(tmpPath);
+      await removeIfPossible(asidePath);
+      return;
+    }
+  }
+  try {
+    if (isRegular) {
+      await link(asidePath, target);
+    } else {
+      // A directory cannot be linked; a rename puts it back only onto a missing name or an empty directory
+      await rename(asidePath, target);
+    }
+  } catch (e: unknown) {
+    if (errorCode(e) === 'EEXIST') throw left(lead, e, cause);
+    throw replaceError(`Could not replace ${name}: ${lead}. Putting it back failed too (${messageOf(e)}). `
+      + `${bothKept()} If ${name} is missing, rename ${basename(asidePath)} to ${name} to put it back.`, cause);
+  }
+  if (isRegular) await removeIfPossible(asidePath);
+  await removeIfPossible(tmpPath);
+  throw replaceError(`Could not replace ${name}: ${lead}. It was put back, so this write did not change it.`, cause);
+}
+
+/** Whether `path` is a regular file; false when it is something else or cannot be read. */
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Whether anything (a file, a folder, a link) has the name `path`; errors other than ENOENT are thrown. */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (e: unknown) {
+    if (errorCode(e) === 'ENOENT') return false;
+    throw e;
+  }
+}
+
+/** The `code` of a file system error, or undefined. */
+function errorCode(error: unknown): unknown {
+  return error && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined;
+}
+
+/** An error's message, or the value as text, without a trailing full stop. */
+function messageOf(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).replace(/\.+$/, '');
+}
+
+/** A new Error with `message`, `cause` as its cause and the cause's `code`, so callers that check the code see the same one. */
+function replaceError(message: string, cause: unknown): Error {
+  const error = new Error(message, { cause });
+  const code = errorCode(cause);
+  return code === undefined ? error : Object.assign(error, { code });
+}
+
+/** Remove a name this module created; a failure is ignored (best effort). */
+async function removeIfPossible(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch {
+    // best-effort
+  }
 }
