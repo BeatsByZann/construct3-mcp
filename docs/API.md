@@ -668,7 +668,7 @@ Add a structural event to an existing event sheet.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet, as registered (letter case included) |
-| `eventType` | enum | Yes | `"group"` \| `"function"` \| `"variable"` \| `"include"` \| `"comment"` |
+| `eventType` | enum | Yes | `"group"` \| `"function"` \| `"variable"` \| `"include"` \| `"comment"` \| `"script"` |
 | `title` | string | For groups | Group title |
 | `functionName` | string | For functions | Function name (checked, see [Function names](#function-names)) |
 | `functionParams` | array | For functions | `[{ name, type }]` (names checked, see below) |
@@ -678,19 +678,56 @@ Add a structural event to an existing event sheet.
 | `variableName` | string | For variables | Variable name (checked, see below) |
 | `variableType` | enum | For variables | `"number"` \| `"string"` \| `"boolean"` |
 | `initialValue` | string | For variables | Initial value |
+| `variableComment`, `variableIsStatic`, `variableIsConstant` | string, boolean, boolean | No | For variables: the declaration comment and the editor's *Static* and *Constant* options |
 | `includeSheet` | string | For includes | Sheet to include (validated) |
 | `commentText` | string | For comments | Comment text |
 | `commentTextColor` | number[] | No | For comments: the text colour, written as `"text-color"`: `[red, green, blue, alpha]`, each 0-1, as the editor saves it |
 | `commentBackgroundColor` | number[] | No | For comments: the background colour, written as `"background-color"` in the same form |
-| `position` | enum | No | `"start"` \| `"end"` (default: end) |
+| `script` | string \| string[] | For scripts | JavaScript, split into lines |
+| `groupPath` | string | No | Into a group by title path |
+| `parentSid` / `parentEventPath` | number / string | No | Among the sub-events of this group, block or function block; the path picks one of several events that share the SID |
+| `siblingSid` / `siblingEventPath` | number / string | No | Beside this event; needs `position` `"before"` or `"after"` |
+| `position` | enum | No | `"start"` \| `"end"` (default) \| `"before"` \| `"after"` |
 
-Runs the same load-time gate as `add_event_block` before writing. Unknown top-level arguments are refused and nothing is written. A top-level `sid` is refused here, unlike `add_event_block`, which ignores it. Keys inside a `functionParams` entry other than `name` and `type` (such as the `sid` of an entry copied from a sheet) are still dropped, as before.
+Runs the same load-time gate as `add_event_block` before writing. Unknown top-level arguments are refused and nothing is written. A top-level `sid` is refused here, unlike `add_event_block`, which ignores it. Keys inside a `functionParams` entry other than `name` and `type` (such as the `sid` of an entry copied from a sheet) are still dropped, as before. A step that fails after the event is placed in memory and before anything is written is refused with a message that begins "The change was stopped before anything was written" and ends "Nothing was changed."; a failed write keeps its own message.
 
 Returns `generatedSid` (the SID of a new group, function or variable; includes and comments have none), `functionParameterSids` (for a function with parameters: `[{ name, sid }]` in parameter order), `eventPath` (the new event's path, e.g. `"events[3]"`, which the SID-based tools accept as `eventPath`) and `backupFile`.
 
+**Where events go:** the destination arguments place an event at the top level, in a group (`groupPath`), among the sub-events of an event (`parentSid`) or beside one (`siblingSid`). Each kind of event is placed only where this table says. Editor-backed cells are listed with their evidence below the table.
+
+| Kind | Top level | Group | Block | Function block | Custom action block |
+|------|-----------|-------|-------|----------------|---------------------|
+| Block | yes | yes | yes | yes | no |
+| Comment | yes | yes | yes | no | no |
+| Script | yes | yes | yes | yes | no |
+| Variable | yes | yes | yes | yes | no |
+| Group | yes | yes | yes | no | no |
+| Function block | yes | yes | yes (not under a block with a trigger) | no | no |
+| Custom action block | yes | yes (only with groups above it) | no | no | no |
+| Include | yes | no | no | no | no |
+
+- A custom action block is not a destination: its sub-events accept no kind of event, so the last column is all no, and a parent given as a custom action block is refused.
+- A function block in a group: Construct 3 r506-2 (Free edition) opened and kept one.
+- A function block in a block with no trigger: r506-2 opened and kept one under an ordinary block. A function block under a block with a trigger is refused, as below.
+- A variable in a group: an r495.2 editor-saved project has 2 such variables.
+- A variable in a block: an r495.2 editor-saved project has 1, and r506-2 opened and kept one under a block with a trigger and one under a block without.
+- A variable in a function block: r506-2 opened and kept one.
+- A group in a block: r506-2 opened and kept one under a block with a trigger and one under a block without.
+- A group in a group: r506-2 opened and kept a group nested in another group.
+- A script at the top level, in a group and in a function block: r506-2 opened and kept each.
+- A comment in a group: an r495.2 editor-saved project has 16.
+- A custom action block at the top level and in a top-level group: r506-2 opened and kept each. A group below a block, a function block or a custom action block was not tried: the tools refuse a custom action block (and a group or block that holds one) unless only groups stand above it, which is their own rule, since the load-time check treats a custom action block as a trigger root.
+- A block in a function block: no editor-saved project on record and no editor case covers it; it is not verified in the editor.
+- A function block under a block with a trigger (for example an *On start* block) is refused: Construct 3 r506-2 (Free edition) refused to open a project with a function block there: the editor showed "Failed to open project" and logged "cannot add another trigger to event branch". The other arrangements of a function block under a trigger, a function block or a custom action block follow upstream's load-time check, which counts a function block and a custom action block as a trigger; they were not tried in the editor.
+- The other "no" cells have no editor case on record; the table refuses them, and they were not tried in the editor.
+
+Everything else is refused, with the places that kind of event can go. Includes are placed only at the top level.
+
+A global variable's *Static* option (`variableIsStatic`) is written as given: r506-2 opened and kept `isStatic: true` on a global variable.
+
 #### Event variable names
 
-A variable added with `add_event_to_sheet` goes to the top level of the sheet, so it is a global variable; a function goes there too. The variable's name, the names in `functionParams` and a new name given to `update_event_variable` are refused where the Construct 3 editor's event variable and function parameter dialogs refuse them (checked against the editor code of releases r449 and r495.2, which agree; both dialogs run the same checks):
+A variable added at the top level of a sheet is a global variable; in a group, a block or a function block it is a local variable. The variable's name, the names in `functionParams` and a new name given to `update_event_variable` are refused where the Construct 3 editor's event variable and function parameter dialogs refuse them (checked against the editor code of releases r449 and r495.2, which agree; both dialogs run the same checks):
 
 - **In use in the scope, ignoring case.** A global variable's name must differ from every event variable (global, local, static) and function parameter in every event sheet of the project. A local variable's name must differ from every global variable, from the variables and parameters of each event enclosing it, and from every variable and parameter below its parent event; locals in other branches or other sheets do not count. A function parameter has the scope of a local variable declared directly in its function: for a new function, its name must differ from every global variable and from the function's other parameters, while parameters of other functions and locals elsewhere do not count. Changing only the case of a variable's own name is allowed.
 - **A System expression name, ignoring case** — e.g. `time`, `dt`, `random`, `max`, `LayoutName` (all 136 System expressions of r495.2, deprecated ones included). Five of them (`ColorToHexString`, `distance3d`, `HexColor`, `ProjectFileCount`, `ProjectFileNameAt`) are not in r449, whose editor accepts these names; they are refused anyway, since the r495.2 editor refuses them, and the error says so.
@@ -722,11 +759,17 @@ Add a block event (conditions + actions) to an event sheet — the core of gamep
 | `conditions` | array | No | Conditions (default: `[]`). Each: `{ id, objectClass, behaviorType?, parameters?, isInverted?, disabled? }`. AND-combined, or OR-combined in an OR block. `[]` makes an event without conditions: at the top level (or in a group) it runs every tick, as a sub-event whenever its parent runs. |
 | `actions` | array | No | Actions (default: `[]`). Plugin/behavior/System action: `{ id, objectClass, behaviorType?, parameters?, disabled?, breakpoint? }`. Function call: `{ callFunction, parameters?: [...], disabled? }`. Script: `{ type: "script", script, language?, disabled? }`. Comment row: `{ type: "comment", text, "text-color"?, "background-color"? }` |
 | `groupPath` | string | No | Insert inside group by title path (e.g., `"Movement > Collision"`). Segments are split at `>`. A segment first matches a group title exactly as typed, one space on each side of `>` counting as part of the separator (`"HUD "` and `"Parent > HUD "` name the title `"HUD "`, `"HUD"` and `"Parent > HUD"` the title `"HUD"`), so each of two sibling groups titled `"HUD"` and `"HUD "` can be reached. The editor also saves titles with leading or trailing whitespace, so a segment without such a match then matches the one group whose trimmed title equals the trimmed segment (`"HUD"` finds a lone `"HUD "`). When several do (e.g. `"HUD"` next to `"HUD "` and `" HUD"`), the call is refused with the candidate titles. |
-| `position` | enum | No | `"start"` \| `"end"` (default: end) |
+| `parentSid` / `parentEventPath` | number / string | No | Among the sub-events of this group, block or function block; the path picks one of several events that share the SID |
+| `siblingSid` / `siblingEventPath` | number / string | No | Beside this event; needs `position` `"before"` or `"after"` |
+| `position` | enum | No | `"start"` \| `"end"` (default) \| `"before"` \| `"after"` |
 | `disabled` | boolean | No | Create the block disabled (default: false) |
 | `isElse` | boolean | No | Make it an else block (default: false): a System `else` condition is written first. Conditions given in `conditions` follow it and make an else-if. |
 | `isOrBlock` | boolean | No | Make it an OR block: the event runs when any of its conditions is true (Construct 3 *Make 'Or' block*). An OR block may hold several triggers. |
 | `children` | array | No | Sub-events nested inside this block (recursive), each one of: a block `{ eventType?: "block", conditions?, actions?, disabled?, isElse?, isOrBlock?, children? }`, a comment `{ eventType: "comment", text, "text-color"?, "background-color"? }` or a script `{ eventType: "script", script, language?, disabled? }`. Other event types are refused (see **Sub-events** below). |
+
+A block goes where the placement rules of `add_event_to_sheet` allow a block (see **Where events go** there); the warning for `Set return value` (`set-function-return-value`) outside a function block is checked against its destination (inside a function block, at any depth, it gives none).
+
+Returns `generatedSid` (the SID of the new block), `eventPath` (its path, e.g. `"events[3].children[1]"`, which the SID-based tools accept as `eventPath`), `warnings` when there are any, and `backupFile`. A step that fails after the block is placed in memory and before anything is written is refused with a message that begins "The change was stopped before anything was written" and ends "Nothing was changed."; a failed write keeps its own message.
 
 **Condition fields:**
 - `behaviorType` — For behavior conditions/actions: the behavior's *name* as defined on the object type or one of its families (e.g. `"Platform"`, `"8Direction"` — not the behaviorId `"EightDir"`). Omit for plugin and System ACEs. Written to the event sheet as `"behaviorType"`, the key Construct 3 reads.
@@ -742,13 +785,13 @@ Add a block event (conditions + actions) to an event sheet — the core of gamep
 - Comment rows — `text`, plus the optional colours `"text-color"` and `"background-color"`, each `[red, green, blue, alpha]` with values from 0 to 1 as the editor saves them. Other colour forms (e.g. `"#ffcc00"`) are refused.
 - Function calls — `callFunction` names an event function, `parameters` is the argument list in the order of the function's parameters: expressions as strings (`"1"`, `"\"text\""`, `"Player.X"`; numbers are written as strings), `true`/`false` for boolean parameters. The older form `{ id, objectClass, callFunction, parameters: { ... } }` is still accepted: its `id`, `objectClass`, `behaviorType` and `"behavior-type"` are dropped with a warning, also next to positional parameters, and parameters keyed `"0"`, `"1"`, … or by the function's parameter names become the positional array (with a warning); other keys are refused. A `breakpoint` on a function call is refused in either form, since no editor-saved function call on record has one. A call to a function that no event sheet defines, a different number of arguments than the function has parameters, and a boolean parameter given an expression (or the reverse) are warnings. A name that differs from the function's only in case is written with the function's spelling, as editor saves always spell calls, with a warning.
 - Script actions — `script` is an array of lines, as the editor saves it, or one string that is split into lines. `language` is `"javascript"` (the default and only value).
-- The built-in Functions object — the editor saves *Set return value* and the function map actions on it, not on System: `{ "id": "set-function-return-value", "objectClass": "Functions", "parameters": { "value": "..." } }`, and likewise `map-function`, `map-function-default` and `call-mapped-function`. Its name is `functionsName` in `project.c3proj` (`"Functions"` in every project on record). Conditions, other action ids and `behaviorType` on it, and these actions given on `System`, are written with a warning, since no editor save on record has them. *Set return value* outside a function block gets a warning too: it sets the return value of the function its event runs in, and `add_event_block` never adds to a function block (use `update_event_block` on the function block or one of its sub-events). The `function` parameter of `map-function` / `map-function-default` names an event function: a name that differs from the function's only in case is written with the function's spelling (editor saves pick it from a list), with a warning, and a name no function block has gets a warning, since the editor's loader throws *cannot find function* for it. The same applies when `update_event_block` or `update_event_block_action` changes the parameters of a function map.
+- The built-in Functions object: the editor saves *Set return value* and the function map actions on it, not on System: `{ "id": "set-function-return-value", "objectClass": "Functions", "parameters": { "value": "..." } }`, and likewise `map-function`, `map-function-default` and `call-mapped-function`. Its name is `functionsName` in `project.c3proj` (`"Functions"` in every project on record). Conditions, other action ids and `behaviorType` on it, and these actions given on `System`, are written with a warning, since no editor save on record has them. *Set return value* outside a function block gets a warning too: it sets the return value of the function its event runs in, so the check looks at where the block is placed (see the paragraph after the parameter table of `add_event_block`). The `function` parameter of `map-function` / `map-function-default` names an event function: a name that differs from the function's only in case is written with the function's spelling (editor saves pick it from a list), with a warning, and a name no function block has gets a warning, since the editor's loader throws *cannot find function* for it. The same applies when `update_event_block` or `update_event_block_action` changes the parameters of a function map.
 
 **Sub-events (`children`):**
 - A child is a block, a comment or a script — the kinds of sub-events editor-saved sheets hold under blocks — told apart by `eventType`. A block may leave `eventType` out.
 - A block child is a full block event with its own conditions, actions, and children.
 - A comment child `{ eventType: "comment", text, "text-color"?, "background-color"? }` and a script child `{ eventType: "script", script, language?, disabled? }` are written as the editor saves them (see **Written shapes**). Like script actions, `script` is an array of lines or one string that is split into lines, and `language` is `"javascript"`.
-- Other event types are refused with an error that names the sub-event's path, and nothing is written: event variables, groups, function blocks and includes cannot be added as sub-events with this tool, and an unknown `eventType` is refused too. Groups, functions and includes are added with `add_event_to_sheet`. An event variable inside an event is a local variable, which this tool does not add; `add_event_to_sheet` adds variables only at the top level of a sheet, where they are global variables, a different scope.
+- Other event types are refused with an error that names the sub-event's path, and nothing is written: event variables, groups, function blocks and includes cannot be added as sub-events with this tool, and an unknown `eventType` is refused too. Groups, functions and includes are added with `add_event_to_sheet`. An event variable inside an event is a local variable, which this tool does not add; `add_event_to_sheet` adds one at the top level (a global variable) or, with its destination arguments, in a group, a block or a function block (a local variable).
 - Children without conditions are normal sub-events: they run whenever their parent runs.
 - Children with `isElse: true` are else (or else-if) branches of the sub-event before them. An else block needs a block without a trigger before it, with at most comments between (manual: *Else can only follow normal (non-triggered) events*), so an else block that is the first sub-event (comments aside), is inserted with no block before it, follows a triggered block or holds a trigger itself gets an `else-placement` warning from the load-time gate. To branch inside a trigger, put a block with the condition and then the else block as sub-events of the triggered event.
 - With `isElse: true` (or a System `else` first condition), a further System `else` condition in `conditions` is a duplicate and is dropped, with a warning.
@@ -890,6 +933,33 @@ Replace the parameters of a single action. The block is found by SID anywhere in
 | `parameters` | object \| array | Yes | New parameter values; replaces the existing `parameters` entirely (max 100 keys, depth 6). For a function call: the arguments in parameter order as an array; an object keyed `"0"`, `"1"`, … or by the function's parameter names is converted to that array. An array for any other action is refused. |
 
 Runs the load-time gate (see [`add_event_block`](#add_event_block)): parameters that break `expression-syntax` or `empty-expression` are refused and nothing is written; function call arguments are checked position by position. A legacy `"behavior-type"` key on the edited action is normalized as in `update_event_block` and reported in `warnings`, and a function call stored in an older shape is rewritten in the editor's shape (with the function's spelling of its name). Comment rows and script actions have no parameters and are refused; the error for a comment row points to `update_event_block`, whose `updateActions` change its text and colours in place. The result names the action by `actionId`, or by `callFunction` for a function call.
+
+### `move_event_block`
+
+Move an event, with its sub-events, to another place in the same event sheet (#ISSUE): the top level, a group (`groupPath`), the sub-events of an event (`parentSid`) or beside one (`siblingSid` with `position` `"before"` or `"after"`). Blocks, groups, variables, function blocks and custom action blocks are moved by SID. The event keeps its SID and everything in it. Use `move_events_between_sheets` to move top-level events to another sheet.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `sid` / `eventPath` | number / string | Yes / No | The event to move; the path picks one of several events that share the SID |
+| `groupPath`, `parentSid` / `parentEventPath`, `siblingSid` / `siblingEventPath` | string, number / string, number / string | No | The destination, as in `add_event_to_sheet`; none: the top level |
+| `position` | enum | No | `"start"`, `"end"` (default), `"before"`, `"after"` |
+| `force` | boolean | No | Move even when events then use a variable or parameter outside its scope |
+
+Refused, changing nothing (the message ends "Nothing was changed."): a SID that matches no event or several without `eventPath`; a destination inside the moved event or beside itself; a place the placement rules of `add_event_to_sheet` do not allow for that kind of event; a function block, or an event holding one, under or below a block with a trigger or below a function block or a custom action block (the rule of `add_event_to_sheet`); a variable or parameter whose name would clash in its new scope (the editor's rule, see [Event variable names](#event-variable-names)); a new error of the load-time gate; an event of a type the tool does not move (the refusal names the type); a comment, an include or a script event has no SID and is refused as not found. If checking a very deeply nested sheet fails after the event is placed in memory and before the write, the sheet is put back and the call is refused with a message that begins "The change was stopped before anything was written" and ends "Nothing was changed."; a failed write keeps its own message.
+
+Without `force`, the move is refused, changing nothing, and the result is `{ success: false, entity, category: "eventsheet", action: "move_blocked", message, references, reboundReferences?, unscannedFiles? }` when any of these holds:
+
+- a use of an event variable or a function parameter would no longer find its declaration in the new scope (a local variable moved away from its users, a block moved out of the function whose parameter it uses, a global variable moved into a group while other sheets use it). These uses are listed in `references`;
+- a use would find another event variable or function parameter of the same name after the move, so it would bind to a different declaration. These uses are listed in `reboundReferences`;
+- event sheets that could not be parsed may hold a use of a global variable the move makes local (a text match, listed in `unscannedFiles`);
+- the check of the uses stopped at its traversal limit (100,000 events across all event sheets) or at its nesting-depth limit (events nested more than 50 deep), so the uses further on are unknown.
+
+With `force`, the move is written, the uses are listed in `references` (out of scope) or `reboundReferences` (another declaration), and each is named in a warning; the unparsed sheets and the limit are named in warnings as well. A move that makes an else block continue another event is reported in a warning, and other new warnings of the load-time gate are returned as well.
+
+Each reference names the use's location in `path`, built like the paths of the other reference checks: the enclosing events as `function:<name>`, `group:<title>`, `block` or `custom-action:<object class>.<action name>` (a use inside a custom action body), then `condition:N` or `action:N` (0-based index).
+
+Returns `{ success, entity, category: "eventsheet", action: "updated", movedSid, movedType, from, to, childrenMoved, warnings?, references?, reboundReferences?, unscannedFiles?, backupFile }`; `from` and `to` are event paths. A move to where the event already is returns `action: "unchanged"` and writes nothing. When the write fails, the sheet is put back, unless another write changed it since; the error then names it with its `.bak`.
 
 ### `update_event_variable`
 
@@ -1871,7 +1941,7 @@ The text is a plain message (some start with `Error ...`, e.g. `Error creating o
 
 A write that would replace a change made on disk outside the tool call is an error: when an event sheet, layout, object type or family file changed after the call read it (saved in the Construct 3 editor, restored with git, or written by a tool call running in parallel on the same file), or, for the timeline, addon and runtime-bridge tools, `project.c3proj` changed during the call, the text says `<file> was changed on disk after this server read it (...). It was not written, so that change is kept. Run the tool again: it reads the file as it is now.` When the call had already written other files, they are put back first and the text goes on `The files this tool call had already changed were put back as they were before the call (<files>), so the call changed nothing.`; a file that changed on disk again meanwhile is left as it is and named with its `.bak` (`... left as they are (...): <file> (its state from before the call is in <file>.bak). Check the project (validate_project, git diff) before you run the tool again.`). The server's own `project.c3proj` updates (registering or removing an entity, addon auto-registration, `update_project_metadata`) keep a change made on disk and are not refused for it. Of two parallel create calls for the same name, the second fails with `Refusing to create "<name>": the file ... already exists`. A tool call whose `project.c3proj` changed on disk and is not valid JSON at the moment (still being written) fails with `project.c3proj changed on disk and could not be read again (...)`. Changes made on disk between tool calls need no reconnect: each call checks `project.c3proj`, and the files the server's caches hold when the call first uses them, and reads again what changed.
 
-Refusals by the reference checks are **not** errors: `delete_object`, `update_object_properties`, `move_events_between_sheets` and similar tools return a normal response with `"success": false`, `"action": "delete_blocked"`, `"update_blocked"` or `"move_blocked"`, a `message` and the `references` found, and `unscannedFiles` when files that could not be parsed possibly hold uses. Nothing is written in either case.
+Refusals by the reference checks are **not** errors: `delete_object`, `update_object_properties`, `move_events_between_sheets`, `move_event_block` and similar tools return a normal response with `"success": false`, `"action": "delete_blocked"`, `"update_blocked"` or `"move_blocked"`, a `message` and the `references` found, and `unscannedFiles` when files that could not be parsed possibly hold uses. Nothing is written in either case.
 
 ### WriteResult
 

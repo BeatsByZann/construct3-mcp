@@ -614,7 +614,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 **Tools that write files (48)**, review before approving:
 
 - Objects, families and containers: `create_object`, `update_object_properties`, `delete_object`, `create_family`, `update_family`, `update_instance_variable`, `reorder_behaviors`, `delete_family`, `create_container`, `update_container`, `delete_container`
-- Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `move_events_between_sheets`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
+- Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `move_events_between_sheets`, `move_event_block`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `rename_layer`, `delete_layer`, `reorder_layers`, `move_layer`, `add_instance_to_layout`, `update_instance`, `move_instance`, `delete_instance_from_layout`, `set_instance_parent`, `remove_instance_children`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `create_animation_folder`, `move_animation_to_folder`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`, `replace_object_image`
 - Effects of object types, families, layouts and layers: `add_effect`, `update_effect`, `remove_effect`, `reorder_effects`
@@ -631,6 +631,7 @@ Defaults to know:
 - `force: true` means different things per tool:
   - On `delete_object`, `delete_family`, `delete_event_sheet`, `delete_event_from_sheet`, `delete_layout`, `update_object_properties` and `update_family` it skips the reference checks and leaves the references behind.
   - On `move_events_between_sheets` it moves an event variable out of the scope of events that still use it (e.g. a used global variable into a group) and lists those uses; without it such a move is refused.
+  - On `move_event_block` it moves an event whose uses would lose their variable or parameter, or would find another one of the same name (the uses are listed in `references` or `reboundReferences`); without it such a move is refused.
   - On `delete_layer` it deletes the layer together with the instances on it.
   - On `remove_effect` it removes the effect although events still use it, and lists those uses; the uses are not changed, so fix them in the editor.
   - `unregister_addon` checks no references at all; `force` only allows removing a Scirra built-in addon. It also removes an addon that objects still use (it only adds the warning `If any objects/behaviors still reference it, C3 will error on load.`). Before you approve it, ask which objects use the addon. Afterwards `validate_project` reports leftover uses as `missing-addon` warnings, while the project still counts as `"valid": true`.

@@ -34,10 +34,12 @@ import {
   toScriptLines,
   functionsObjectName,
   DEFAULT_FUNCTIONS_OBJECT_NAME,
+  isElseBlock,
   FUNCTIONS_OBJECT_ACTION_IDS,
   type FunctionSignature,
 } from '../construct3/event-shapes.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
+import { findEnclosingEvents } from '../construct3/event-variable-names.js';
 import type { BehaviorLookupData } from '../construct3/analyzers/behavior-refs.js';
 import {
   BEHAVIOR_TYPE_KEY,
@@ -50,6 +52,7 @@ import { boundedRecord } from './shared.js';
 import { buildEventOutline, summarizeNode, type OutlineNode } from '../construct3/analyzers/event-outline.js';
 import {
   checkEventLoadRules,
+  previousNonComment,
   collectTriggerObjectClasses,
   createAceOriginResolver,
   formatLoadRuleIssue,
@@ -607,22 +610,36 @@ export function ambiguousSidMessage(
 }
 
 /**
+ * A refusal's text, ending with "Nothing was changed." exactly once: for the
+ * refusals of the event tools that place, move or edit events, which all
+ * come before the tool's first write.
+ */
+export function nothingChanged(message: string): string {
+  const text = message.trimEnd();
+  if (text.endsWith('Nothing was changed.')) return text;
+  return `${/[.?!]$/.test(text) ? text : `${text}.`} Nothing was changed.`;
+}
+
+/**
  * Resolve the one event a SID-addressed tool acts on. A SID that matches no
  * event, or several events without an eventPath to pick one, is an error, as
  * is an eventPath that does not point at an event with this SID. Nothing is
- * changed, so tools can return the error before any write.
+ * changed, so tools can return the error before any write. `argument` is the
+ * name of the tool argument that holds `eventPath` (default `eventPath`); the
+ * messages name it.
  */
 export function resolveEventBySid(
   events: Record<string, unknown>[],
   sid: number,
-  options: { sheetName: string; action: string; eventPath?: string },
+  options: { sheetName: string; action: string; eventPath?: string; argument?: string },
 ): { match: SidMatch } | { error: string } {
   const { sheetName, eventPath } = options;
+  const argument = options.argument ?? 'eventPath';
   let wanted: string | undefined;
   if (eventPath !== undefined) {
     const indices = parseEventPath(eventPath);
     if (!indices) {
-      return { error: `eventPath "${eventPath}" is not an event path. Use the form events[3] or events[3].children[1], as locate_event and SID errors list it.` };
+      return { error: `${argument} "${eventPath}" is not an event path. Use the form events[3] or events[3].children[1], as locate_event and SID errors list it.` };
     }
     wanted = formatEventPath(indices);
   }
@@ -639,14 +656,14 @@ export function resolveEventBySid(
       : 'no event exists at that path';
     return {
       error:
-        `eventPath "${eventPath}" does not point at an event with SID ${sid} in sheet "${sheetName}" (${target}). ` +
+        `${argument} "${eventPath}" does not point at an event with SID ${sid} in sheet "${sheetName}" (${target}). ` +
         `${matches.length === 1 ? 'The event with this SID is' : `The ${matches.length} events with this SID are`}:\n` +
         describeSidMatches(sheetName, events, matches).join('\n'),
     };
   }
 
   if (matches.length > 1) {
-    return { error: ambiguousSidMessage(sheetName, events, sid, matches, { action: options.action, argument: 'eventPath' }) };
+    return { error: ambiguousSidMessage(sheetName, events, sid, matches, { action: options.action, argument }) };
   }
   return { match: matches[0] };
 }
@@ -783,29 +800,18 @@ export interface GroupPathProblem {
 }
 
 export type GroupPathResolution =
-  | { children: Record<string, unknown>[]; problem?: undefined }
+  | { children: Record<string, unknown>[]; group: Record<string, unknown>; problem?: undefined }
   | { children?: undefined; problem: GroupPathProblem };
 
 function groupTitle(e: Record<string, unknown>): string | undefined {
   return e.eventType === 'group' && typeof e.title === 'string' ? e.title : undefined;
 }
 
-/**
- * Traverse the event tree to find a group by title path (e.g. "Movement > Collision").
- * Segments are split at ">". Each segment first matches a group title at its level
- * exactly as typed (the first such group wins), its whitespace kept except one space
- * on each side of a ">", which belongs to the separator: "UI " and "Parent > UI " both
- * name the title "UI ", and "UI" or "Parent > UI" the title "UI". The editor also saves
- * titles with leading or trailing whitespace, so a segment without such a match falls
- * back to the groups whose trimmed title equals the trimmed segment: exactly one is
- * taken, several make the path ambiguous (so "HUD " next to "HUD" and " HUD" is refused
- * rather than silently taking one).
- * Two-pass: verify the full path resolves before mutating any data.
- */
-export function resolveGroupPath(
+/** The groups a group path names, outermost first, or the problem; changes nothing. */
+export function findGroupPath(
   events: Record<string, unknown>[],
   groupPath: string,
-): GroupPathResolution {
+): { groups: Array<Record<string, unknown>> } | { problem: GroupPathProblem } {
   const rawSegments = groupPath.split('>');
 
   // First pass: verify all segments resolve without mutating
@@ -838,12 +844,36 @@ export function resolveGroupPath(
     current = Array.isArray(group.children) ? group.children as Record<string, unknown>[] : [];
   }
 
+  return { groups };
+}
+
+/**
+ * Traverse the event tree to find a group by title path (e.g. "Movement > Collision").
+ * Segments are split at ">". Each segment first matches a group title at its level
+ * exactly as typed (the first such group wins), its whitespace kept except one space
+ * on each side of a ">", which belongs to the separator: "UI " and "Parent > UI " both
+ * name the title "UI ", and "UI" or "Parent > UI" the title "UI". The editor also saves
+ * titles with leading or trailing whitespace, so a segment without such a match falls
+ * back to the groups whose trimmed title equals the trimmed segment: exactly one is
+ * taken, several make the path ambiguous (so "HUD " next to "HUD" and " HUD" is refused
+ * rather than silently taking one).
+ * Two-pass: verify the full path resolves before mutating any data.
+ * On success it also returns the group the path names (`group`).
+ */
+export function resolveGroupPath(
+  events: Record<string, unknown>[],
+  groupPath: string,
+): GroupPathResolution {
+  const found = findGroupPath(events, groupPath);
+  if ('problem' in found) return { problem: found.problem };
+  const { groups } = found;
+
   // Full path resolved — ensure all groups have children arrays
   for (const g of groups) {
     if (!Array.isArray(g.children)) g.children = [];
   }
 
-  return { children: groups[groups.length - 1].children as Record<string, unknown>[] };
+  return { children: groups[groups.length - 1].children as Record<string, unknown>[], group: groups[groups.length - 1] };
 }
 
 /** The children array of the group a title path names, or null when it does not resolve (see resolveGroupPath). */
@@ -852,6 +882,98 @@ export function findGroupByPath(
   groupPath: string,
 ): Record<string, unknown>[] | null {
   return resolveGroupPath(events, groupPath).children ?? null;
+}
+
+/** The event types the tools that place or move events write. */
+export type PlacedEventKind = 'block' | 'comment' | 'script' | 'variable' | 'group' | 'function-block' | 'custom-ace-block' | 'include';
+
+/**
+ * Insert `event` into a resolved destination. An owner that had no
+ * sub-events gets the new list. The sibling's index is read now, so a
+ * caller that took an event out of the same list first still lands beside it.
+ */
+export function insertIntoContainer(container: ResolvedContainer, position: InsertPosition, event: Record<string, unknown>): void {
+  const { owner, targetEvents, siblingEvent } = container;
+  if (siblingEvent !== undefined && (position === 'before' || position === 'after')) {
+    const at = targetEvents.indexOf(siblingEvent);
+    if (at === -1) throw new Error('The event to place the new one beside is no longer in its list; nothing was inserted.');
+    targetEvents.splice(position === 'before' ? at : at + 1, 0, event);
+  } else if (position === 'start') {
+    targetEvents.unshift(event);
+  } else {
+    targetEvents.push(event);
+  }
+  if (owner !== undefined && owner.children !== targetEvents) owner.children = targetEvents;
+}
+
+/**
+ * Where each kind of event may be placed. Each entry is backed by event
+ * shapes the editor saves: the shapes the other event tools already write,
+ * counts in an r495.2 editor-saved project, or a project opened in the
+ * Construct 3 editor (the release is named at the entry). A placement with
+ * none of these is refused (placementError).
+ *
+ * Entries decided by an editor run or a count. Editor runs: Construct 3
+ * r506-2, free edition, opened a project with the event there, saved it and
+ * reopened it. Counts: an r495.2 editor-saved project.
+ * - function-block in group: opened and kept by Construct 3 r506-2
+ * - function-block in block: opened and kept by r506-2 under a block with no
+ *   trigger; r506-2 refuses to open it under a block with a trigger ("cannot
+ *   add another trigger to event branch"), which this table does not tell apart
+ * - variable in block: opened and kept by r506-2 under a block with and
+ *   without a trigger; 1 in an r495.2 editor-saved project
+ * - variable in function-block: opened and kept by r506-2
+ * - group in block: opened and kept by r506-2 under a block with and without a trigger
+ * - script in root, group and function-block: opened and kept by r506-2
+ * - custom-ace-block in root and group: opened and kept by r506-2
+ * - comment in group: 16 in an r495.2 editor-saved project
+ * Block and comment in a custom action block, and comment in a function
+ * block, have neither a count nor an editor run, so they are not listed.
+ */
+export const PLACEMENT: Readonly<Record<PlacedEventKind, ReadonlySet<ContainerKind>>> = {
+  block: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  comment: new Set<ContainerKind>(['root', 'group', 'block']),
+  script: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  variable: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  group: new Set<ContainerKind>(['root', 'group', 'block']),
+  'function-block': new Set<ContainerKind>(['root', 'group', 'block']),
+  'custom-ace-block': new Set<ContainerKind>(['root', 'group']),
+  include: new Set<ContainerKind>(['root']),
+};
+
+/** Why a placement is refused, where it is known; the default reason is that it was not verified. */
+const PLACEMENT_REFUSALS: Readonly<Partial<Record<`${PlacedEventKind} in ${ContainerKind}`, string>>> = {
+  'include in group': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in function-block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in custom-ace-block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+};
+
+const KIND_LABELS: Readonly<Record<PlacedEventKind, string>> = {
+  block: 'A block', comment: 'A comment', script: 'A script event', variable: 'An event variable', group: 'A group',
+  'function-block': 'A function block', 'custom-ace-block': 'A custom action block', include: 'An include',
+};
+
+const CONTAINER_LABELS: Readonly<Record<ContainerKind, string>> = {
+  root: 'at the top level of a sheet',
+  group: 'in a group',
+  block: 'among the sub-events of a block',
+  'function-block': 'among the sub-events of a function block',
+  'custom-ace-block': 'among the sub-events of a custom action block',
+};
+
+/** Why `kind` may not be placed in `container` (see PLACEMENT), or undefined when it may. */
+export function placementError(kind: PlacedEventKind, container: ResolvedContainer): string | undefined {
+  if (PLACEMENT[kind].has(container.kind)) return undefined;
+  const reason = PLACEMENT_REFUSALS[`${kind} in ${container.kind}`]
+    ?? 'no editor-saved project on record has one there, and it was not checked in the Construct 3 editor';
+  const allowed = [...PLACEMENT[kind]].map(k => CONTAINER_LABELS[k]).join(', ');
+  return `${KIND_LABELS[kind]} is not placed ${CONTAINER_LABELS[container.kind]}: ${reason}. It can go ${allowed}.`;
+}
+
+/** The placement kind of a stored event type, or undefined for a type the placing tools do not handle. */
+export function placedKindOf(eventType: unknown): PlacedEventKind | undefined {
+  return typeof eventType === 'string' && Object.hasOwn(KIND_LABELS, eventType) ? eventType as PlacedEventKind : undefined;
 }
 
 /** Error text for a group path that did not resolve, naming the groups there (titles quoted, so outer whitespace shows). */
@@ -870,6 +992,190 @@ export function describeGroupPathProblem(problem: GroupPathProblem, groupPath: s
     ? `\nGroups ${where}: ${quoted}`
     : `\nNo groups ${where}${problem.parents.length === 0 ? ' of this event sheet' : ''}.`;
   return `Group path "${groupPath}" not found in "${sheetName}": no group titled "${problem.segment}" ${where}.${hint}`;
+}
+
+// ─── Event Placement ────────────────────────────────────────
+
+/** Where an event stands: the top level of a sheet, or among the sub-events of a group, block, function block or custom action block. */
+export type ContainerKind = 'root' | 'group' | 'block' | 'function-block' | 'custom-ace-block';
+
+/** Where an event goes in its destination. */
+export type InsertPosition = 'start' | 'end' | 'before' | 'after';
+
+/** A destination as the tools take it: at most one of groupPath, parentSid and siblingSid; none means the top level. */
+export interface LocatorInput {
+  groupPath?: string;
+  parentSid?: number;
+  parentEventPath?: string;
+  siblingSid?: number;
+  siblingEventPath?: string;
+  position: InsertPosition;
+}
+
+/** A resolved destination. Resolving changes nothing in the sheet; insertIntoContainer does. */
+export interface ResolvedContainer {
+  /** The list the event goes into; a new empty list for an owner that has no sub-events yet. */
+  targetEvents: Record<string, unknown>[];
+  /** The group or event whose sub-events targetEvents are; undefined at the top level. */
+  owner?: Record<string, unknown>;
+  /** For "before" and "after": the event the new one goes beside. */
+  siblingEvent?: Record<string, unknown>;
+  kind: ContainerKind;
+}
+
+const CONTAINER_KINDS: ReadonlySet<string> = new Set(['group', 'block', 'function-block', 'custom-ace-block']);
+
+/** The kind of container `owner` is (undefined: the top level), or undefined when it cannot hold sub-events. */
+function containerKindOf(owner: Record<string, unknown> | undefined): ContainerKind | undefined {
+  if (owner === undefined) return 'root';
+  return typeof owner.eventType === 'string' && CONTAINER_KINDS.has(owner.eventType) ? owner.eventType as ContainerKind : undefined;
+}
+
+/** The Zod fields of a destination, shared by the tools that place or move events. */
+export const locatorShape = {
+  groupPath: z.string().max(500).optional().describe('Into a group by title path, e.g. "Movement > Collision". Titles match exactly first, then ignoring leading/trailing whitespace when that fits one group'),
+  parentSid: z.number().int().positive().optional().describe('Into the sub-events of this group, block or function block'),
+  parentEventPath: z.string().max(500).optional().describe('Only when parentSid matches several events of the sheet (the call is then refused with the candidates): the path of the one you mean, e.g. "events[3].children[1]"'),
+  siblingSid: z.number().int().positive().optional().describe('Beside this event, in the same list; needs position "before" or "after"'),
+  siblingEventPath: z.string().max(500).optional().describe('Only when siblingSid matches several events of the sheet: the path of the one you mean'),
+  position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('"start" or "end" of the destination (default "end"), or "before" or "after" the siblingSid event'),
+};
+
+/** Why a destination's arguments do not fit together, or undefined. */
+export function validateLocator(locator: LocatorInput): string | undefined {
+  // An empty groupPath counts as not given, as add_event_block has always read it
+  const groupPath = locator.groupPath === '' ? undefined : locator.groupPath;
+  const given = [groupPath, locator.parentSid, locator.siblingSid].filter(v => v !== undefined).length;
+  if (given > 1) return 'Give at most one of groupPath, parentSid and siblingSid.';
+  if (locator.parentEventPath !== undefined && locator.parentSid === undefined) {
+    return 'parentEventPath picks one of several events that share parentSid; pass it together with parentSid.';
+  }
+  if (locator.siblingEventPath !== undefined && locator.siblingSid === undefined) {
+    return 'siblingEventPath picks one of several events that share siblingSid; pass it together with siblingSid.';
+  }
+  const beside = locator.position === 'before' || locator.position === 'after';
+  if (locator.siblingSid !== undefined && !beside) return 'siblingSid needs position "before" or "after".';
+  if (locator.siblingSid === undefined && beside) return `position "${locator.position}" needs siblingSid.`;
+  return undefined;
+}
+
+/**
+ * Resolve a destination in `events` (a sheet's events). A parentSid or
+ * siblingSid that several events share is refused unless its path argument
+ * picks one, as for the SID of the event a tool acts on. Changes nothing:
+ * an owner without a children list gets a new empty list as targetEvents,
+ * which insertIntoContainer attaches.
+ */
+export function resolveContainer(
+  events: Record<string, unknown>[],
+  sheetName: string,
+  locator: LocatorInput,
+): { container: ResolvedContainer } | { error: string } {
+  const problem = validateLocator(locator);
+  if (problem) return { error: problem };
+  if (locator.groupPath !== undefined && locator.groupPath !== '') {
+    const found = findGroupPath(events, locator.groupPath);
+    if ('problem' in found) return { error: describeGroupPathProblem(found.problem, locator.groupPath, sheetName) };
+    const group = found.groups[found.groups.length - 1];
+    return { container: { targetEvents: Array.isArray(group.children) ? group.children as Record<string, unknown>[] : [], owner: group, kind: 'group' } };
+  }
+  if (locator.parentSid !== undefined) {
+    const found = resolveEventBySid(events, locator.parentSid, {
+      sheetName, action: 'put the event into', eventPath: locator.parentEventPath, argument: 'parentEventPath',
+    });
+    if ('error' in found) return { error: found.error };
+    const owner = found.match.event;
+    const kind = containerKindOf(owner);
+    if (kind === undefined) {
+      return { error: `The event with SID ${locator.parentSid} is a "${String(owner.eventType)}", which has no sub-events. A parent must be a group, block or function block.` };
+    }
+    return { container: { targetEvents: Array.isArray(owner.children) ? owner.children as Record<string, unknown>[] : [], owner, kind } };
+  }
+  if (locator.siblingSid !== undefined) {
+    const found = resolveEventBySid(events, locator.siblingSid, {
+      sheetName, action: 'put the event beside', eventPath: locator.siblingEventPath, argument: 'siblingEventPath',
+    });
+    if ('error' in found) return { error: found.error };
+    const enclosing = findEnclosingEvents(events as unknown as C3Event[], found.match.event as unknown as C3Event) ?? [];
+    const owner = enclosing.at(-1) as Record<string, unknown> | undefined;
+    const kind = containerKindOf(owner);
+    if (kind === undefined) {
+      return { error: `The event with SID ${locator.siblingSid} stands among the sub-events of a "${String(owner?.eventType)}", which cannot hold sub-events, so nothing can be placed beside it.` };
+    }
+    return { container: { targetEvents: found.match.parentArray, owner, siblingEvent: found.match.event, kind } };
+  }
+  return { container: { targetEvents: events, kind: 'root' } };
+}
+
+/** The events enclosing an event placed in `container`, outermost first, ending with its owner; empty at the top level. */
+export function containerParents(events: C3Event[], container: ResolvedContainer): C3Event[] {
+  if (container.owner === undefined) return [];
+  const owner = container.owner as unknown as C3Event;
+  return [...(findEnclosingEvents(events, owner) ?? []), owner];
+}
+
+/** True when an event placed in `container` is inside a function block (for the "Set return value" check). */
+export function containerInFunction(events: Record<string, unknown>[], container: ResolvedContainer): boolean {
+  return container.owner !== undefined && isInFunctionBlock(events, container.owner);
+}
+
+/** The path of `target` (compared by identity) in `events`, e.g. "events[2].children[0]", or undefined. */
+export function eventPathOf(events: Record<string, unknown>[], target: Record<string, unknown>): string | undefined {
+  let path: string | undefined;
+  walkEvents(events, node => {
+    if (path === undefined && node.event === target) path = node.path;
+  });
+  return path;
+}
+
+/** The event at an event path such as "events[2].children[0]", or undefined when the path is not one or leads nowhere. */
+export function eventAtEventPath(events: Record<string, unknown>[], path: string): Record<string, unknown> | undefined {
+  const indices = parseEventPath(path);
+  return indices ? eventAtPath(events, indices) : undefined;
+}
+
+/**
+ * For every else block in `events` and below (by SID), the SID of the
+ * event it continues: the nearest sibling before it that is not a comment
+ * (previousNonComment, as the load-time gate looks it up), or undefined
+ * when there is none or it has no SID.
+ */
+export function elsePredecessors(events: readonly unknown[]): Map<number, number | undefined> {
+  const found = new Map<number, number | undefined>();
+  const stack: Array<{ list: readonly unknown[]; depth: number }> = [{ list: events, depth: 0 }];
+  let nodes = 0;
+  while (stack.length > 0) {
+    const { list, depth } = stack.pop()!;
+    if (depth > MAX_SEARCH_DEPTH) throw new Error(`Sub-event scan exceeded depth ${MAX_SEARCH_DEPTH}`);
+    list.forEach((ev, i) => {
+      if (++nodes > MAX_SEARCH_NODES) throw new Error(`Sub-event scan exceeded ${MAX_SEARCH_NODES} nodes`);
+      if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return;
+      const record = ev as Record<string, unknown>;
+      if (isElseBlock(record) && typeof record.sid === 'number') {
+        const previous = previousNonComment(list, i) as Record<string, unknown> | undefined;
+        found.set(record.sid, typeof previous?.sid === 'number' ? previous.sid : undefined);
+      }
+      if (Array.isArray(record.children)) stack.push({ list: record.children, depth: depth + 1 });
+    });
+  }
+  return found;
+}
+
+/**
+ * One warning for each else block, there before and after a change, that
+ * now continues another event: it then runs when that event's conditions
+ * are false. Both arrangements may be valid, so the load-time gate does
+ * not report this.
+ */
+export function elsePredecessorWarnings(before: readonly unknown[], after: readonly unknown[]): string[] {
+  const was = elsePredecessors(before);
+  const named = (sid: number | undefined) => (sid === undefined ? 'no event with a SID' : `the event with SID ${sid}`);
+  const warnings: string[] = [];
+  for (const [sid, now] of elsePredecessors(after)) {
+    if (!was.has(sid) || was.get(sid) === now) continue;
+    warnings.push(`The else block with SID ${sid} now follows ${named(now)} instead of ${named(was.get(sid))}, so it runs when that event's conditions are false.`);
+  }
+  return warnings;
 }
 
 // ─── Behavior Key Resolution ────────────────────────────────

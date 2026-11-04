@@ -394,6 +394,23 @@ describe('reference checks that stop at their traversal limit refuse without for
     expect((await call('delete_event_sheet', { name: 'Plain' })).action).toBe('deleted');
   });
 
+  it('delete_event_sheet names the nesting-depth limit, not the event limit, for a sheet nested too deep', async () => {
+    await addSheet('Lib', [fn('Spawn', 786000000000001), variable('Score', 786000000000002)]);
+    let inner: Record<string, unknown> = block(786000000000010, [setX('1', 786000000000011)]);
+    for (let i = 0; i < 52; i++) inner = { ...block(786000000000100 + i, []), children: [inner] };
+    await addSheet('Deep', [inner]);
+    await startServer();
+    const depth = 'stopped at its nesting-depth limit (events nested more than 50 deep), so uses further on are unknown';
+
+    const blocked = await call('delete_event_sheet', { name: 'Lib' });
+    expect(blocked.action).toBe('delete_blocked');
+    expect(blocked.message).toContain(`The check for uses of the functions and global variables the sheet defines ${depth}`);
+    expect(blocked.message).not.toContain('traversal limit');
+
+    const forced = await call('delete_event_sheet', { name: 'Lib', force: true });
+    expect(forced.warnings).toContainEqual(expect.stringContaining(`Deleted with force=true: The check for uses of the functions and global variables the sheet defines ${depth}`));
+  });
+
   it('move_events_between_sheets refuses to move an event variable into a group, and moves it with force', async () => {
     const main = await readSheet('MainSheet');
     main.events.unshift(variable('Score', 786000000000011));
