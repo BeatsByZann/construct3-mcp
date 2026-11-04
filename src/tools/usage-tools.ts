@@ -354,7 +354,7 @@ interface Declaration { owner: string; ownerKind: 'object' | 'family'; name: str
 
 /**
  * The classes (object types, families) that a name declared on an owner
- * reaches, as nameKey → nameKeys of the names: the owner itself and, for a
+ * reaches, as nameKey to nameKeys of the names: the owner itself and, for a
  * family, its members.
  */
 function declarationScopes(declarations: readonly Declaration[], members: ReadonlyMap<string, readonly string[]>): Map<string, Set<string>> {
@@ -526,7 +526,13 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
         let pattern: RegExp;
         try {
           const source = args.regex ? args.query : args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          pattern = new RegExp(args.wholeWord ? `\\b(?:${source})\\b` : source, args.caseSensitive ? 'g' : 'gi');
+          const flags = args.caseSensitive ? 'g' : 'gi';
+          if (args.wholeWord && !args.regex) {
+            // A literal's edges are judged by Unicode letters and digits; "\b" knows only ASCII.
+            pattern = new RegExp(`(?<![\\p{L}\\p{N}_])(?:${source})(?![\\p{L}\\p{N}_])`, `${flags}u`);
+          } else {
+            pattern = new RegExp(args.wholeWord ? `\\b(?:${source})\\b` : source, flags);
+          }
         } catch (error) {
           const message = (error instanceof Error ? error.message : String(error)).replace(/^Invalid regular expression: /, '');
           return toolError(`Invalid regular expression: ${message}. Nothing was returned.`);
@@ -724,7 +730,8 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           });
         }
 
-        const names = args.behaviorName ? [args.behaviorName] : [...new Set(declarations.map(d => d.name))];
+        // An unparsable file may declare the addon under another name, so the id is a term too.
+        const names = [...(args.behaviorName ? [args.behaviorName] : [...new Set(declarations.map(d => d.name))]), ...(args.behaviorId ? [args.behaviorId] : [])];
         const status = await completeness(
           reader, index.unscannedFiles, ALL_CATEGORIES,
           names.length > 0 ? [names.map(name => nameTerm(name))] : [],
@@ -840,7 +847,8 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
           }
         }
 
-        const searchNames = args.effectName ? [args.effectName] : [...new Set(named)];
+        // An unparsable file may declare the addon under another name, so the id is a term too.
+        const searchNames = [...(args.effectName ? [args.effectName] : [...new Set(named)]), ...(args.effectId ? [args.effectId] : [])];
         const status = await completeness(
           reader, index.unscannedFiles, ALL_CATEGORIES,
           searchNames.length > 0 ? [searchNames.map(name => nameTerm(name))] : [],

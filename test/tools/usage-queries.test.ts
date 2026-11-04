@@ -246,6 +246,17 @@ describe('find_behavior_usage', () => {
     expect(shallow.eventReferences?.map(r => r.eventSheet)).toEqual(['Shallow']);
   });
 
+  it('searches an unparsable object type for the addon id too, when it may declare the addon under another name', async () => {
+    await addObject('Sprite', { behaviorTypes: [behavior('Jumper', 'Platform')] });
+    await addObject('Rock');
+    await overwrite('objectTypes', 'Rock', '{ "behaviorId": "Platform", "name": "Hopper" broken');
+    await startServer();
+    const byId = await call('find_behavior_usage', { behaviorId: 'Platform' });
+    expect(byId.unscannedFiles).toEqual([expect.objectContaining({ file: 'objectTypes/Rock', textSearch: 'possible-use' })]);
+    const byName = await call('find_behavior_usage', { behaviorName: 'Jumper' });
+    expect(byName.unscannedFiles).toEqual([expect.objectContaining({ file: 'objectTypes/Rock', textSearch: 'no-match' })]);
+  });
+
   it('skips entries of a behavior list that are not named objects', async () => {
     await addObject('Sprite', { behaviorTypes: [null, 'Platform', { behaviorId: 'Platform' }, behavior('Platform')] });
     await startServer();
@@ -288,6 +299,17 @@ describe('find_effect_usage', () => {
     const byName = await call('find_effect_usage', { effectName: 'GLOW' });
     expect(byName.uses?.map(u => u.target)).toEqual(['Sprite', 'Enemy']);
     expect(byName.eventReferences?.map(r => r.objectClass)).toEqual(['Sprite', 'Enemy']);
+  });
+
+  it('searches an unparsable object type for the addon id too, when it may declare the addon under another name', async () => {
+    await addObject('Sprite', { effectTypes: [effect('Glow', 'glowhorizontal')] });
+    await addObject('Rock');
+    await overwrite('objectTypes', 'Rock', '{ "effectId": "glowhorizontal", "name": "Shine" broken');
+    await startServer();
+    const byId = await call('find_effect_usage', { effectId: 'glowhorizontal' });
+    expect(byId.unscannedFiles).toEqual([expect.objectContaining({ file: 'objectTypes/Rock', textSearch: 'possible-use' })]);
+    const byName = await call('find_effect_usage', { effectName: 'Glow' });
+    expect(byName.unscannedFiles).toEqual([expect.objectContaining({ file: 'objectTypes/Rock', textSearch: 'no-match' })]);
   });
 
   it('follows a family effect to its members, marks a member that declares the name itself, and sets aside a use that is not a quoted name', async () => {

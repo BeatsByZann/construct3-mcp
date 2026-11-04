@@ -342,6 +342,28 @@ describe('search_project', () => {
       expect(none.unscannedFiles).toEqual([expect.objectContaining({ file: 'eventSheets/Umlaut', textSearch: 'no-match' })]);
     });
 
+    it('finds a whole word that starts or ends with a non-ASCII letter in parsed files', async () => {
+      await addSheet('Words', [comment('kein Ärger hier'), comment('le café noir'), comment('der Ärgerliche'), comment('cafés open'), comment('naïve')]);
+      await startServer();
+      const start = await search({ query: 'Ärger', wholeWord: true, scopes: ['events'] });
+      expect(start.totalHits).toBe(1);
+      expect(start.hits.map(h => h.text)).toEqual([expect.stringContaining('kein')]);
+      const end = await search({ query: 'café', wholeWord: true, scopes: ['events'] });
+      expect(end.totalHits).toBe(1);
+      expect(end.hits.map(h => h.text)).toEqual([expect.stringContaining('noir')]);
+      const inside = await search({ query: 'naïve', wholeWord: true, scopes: ['events'] });
+      expect(inside.totalHits).toBe(1);
+      const caseless = await search({ query: 'äRGER', wholeWord: true, scopes: ['events'] });
+      expect(caseless.totalHits).toBe(1);
+    });
+
+    it('keeps ASCII word boundaries for a regular expression with wholeWord', async () => {
+      await addSheet('Plain', [comment('a needle here'), comment('needles')]);
+      await startServer();
+      const result = await search({ query: 'needle', regex: true, wholeWord: true, scopes: ['events'] });
+      expect(result.totalHits).toBe(1);
+    });
+
     it('reports an unparsable layout, still returns the other layouts\' hits and is not complete', async () => {
       await addLayout('Good', [instance(51, 'Sprite', { tags: 'needle tag' })]);
       await addLayout('Bad', [instance(52, 'Sprite', { tags: 'needle tag' })]);

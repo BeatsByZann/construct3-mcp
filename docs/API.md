@@ -463,7 +463,7 @@ Counts the instances each object type has on the layouts, on every layer and sub
 | `query` | string | Yes | Text to find, or a regular expression when `regex` is true |
 | `regex` | boolean | No | Treat `query` as a JavaScript regular expression (default false) |
 | `caseSensitive` | boolean | No | Default false |
-| `wholeWord` | boolean | No | Default false |
+| `wholeWord` | boolean | No | Default false. For a literal query a word edge is any character that is not a Unicode letter, digit or underscore, so a word that starts or ends with an accented letter matches as a whole word. For a regular expression the edges are `\b`, which counts only ASCII letters, digits and underscore as word characters |
 | `scopes` | array | No | Any of `events`, `scripts`, `layouts` (default `events` and `scripts`) |
 | `sheets` | string[] | No | Limit the event search to these sheets; an unknown one is refused |
 | `maxResults` | number | No | Hits returned, 1 to 1000 (default 200) |

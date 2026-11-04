@@ -133,7 +133,7 @@ To see the tool list without any AI tool, use the MCP Inspector in CLI mode:
 npx -y @modelcontextprotocol/inspector --cli node "C:/Tools/construct3-mcp/dist/index.js" "C:/Games/My Game" --method tools/list
 ```
 
-This prints a JSON list of 89 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and a `Schema portability` line; both are harmless (`Schema portability: 0 errors, 16 warnings across 8 tools` was measured on the 83-tool server and has not been measured again for 89). Without `--cli` the Inspector starts a browser UI and keeps running.
+This lists 89 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and a `Schema portability` line; both are harmless (`Schema portability: 0 errors, 16 warnings across 8 tools` was measured on the 83-tool server and has not been measured again for 89). Without `--cli` the Inspector starts a browser UI and keeps running.
 
 ### Alternative: run from GitHub without cloning
 
