@@ -165,8 +165,13 @@ export function planFrameImageRenames(
   return plan;
 }
 
-/** A frame inserted at index `insertAt` (0 to the frame count), or the frame at `deleteAt` deleted. */
-export type FrameListChange = { insertAt: number } | { deleteAt: number };
+/**
+ * A frame inserted at index `insertAt` (0 to the frame count), or the
+ * frame at `deleteAt` deleted. With `copyOf`, the inserted frame is a copy
+ * of frame `copyOf` (an index before the change) and gets copies of its
+ * image files instead of a placeholder.
+ */
+export type FrameListChange = { insertAt: number; copyOf?: number } | { deleteAt: number };
 
 /** The image file renames that go with inserting or deleting a frame. */
 export interface FrameImageShiftPlan {
@@ -176,6 +181,8 @@ export interface FrameImageShiftPlan {
    * Undo them in reverse order.
    */
   renames: ImageFileRename[];
+  /** True for an insert (the later files move one index up), false for a delete */
+  inserted: boolean;
   /** Image files of later frames moved one index up (insert) or down (delete), in `renames` */
   shifted: ImageFileRename[];
   /** Image files of the deleted frame, kept under a .bak name, in `renames` */
@@ -188,10 +195,33 @@ export interface FrameImageShiftPlan {
   backedUp: ImageFileRename[];
   /** Expected file names of moved frames that have no image file (nothing moved for them) */
   missing: string[];
-  /** Name of the new frame's image file (insert only; the name is free once `renames` ran) */
+  /** Name of the new frame's placeholder image (insert without copyOf; the name is free once `renames` ran) */
   newFrameFile?: string;
+  /**
+   * Insert with copyOf: the image files to copy for the new frame, from the
+   * name the copied frame's file has once `renames` ran to the new frame's
+   * name, keeping the extension (the name is free once `renames` ran)
+   */
+  copies: ImageFileRename[];
+  /** Insert with copyOf: the copied frame's expected file name when it has no image file (nothing is copied) */
+  uncopied?: string;
   /** Why the renames cannot be applied (nothing may be changed then) */
   clashes: string[];
+}
+
+/**
+ * A name for `file` ending in `suffix` that no name in `taken` (compared by
+ * nameKey) has: `<file><suffix>`, else `<file>.1<suffix>`, `<file>.2<suffix>`,
+ * ... The name returned is added to `taken`.
+ */
+function freeName(file: string, suffix: string, taken: Set<string>): string {
+  for (let n = 0; ; n++) {
+    const name = n === 0 ? `${file}${suffix}` : `${file}.${n}${suffix}`;
+    if (!taken.has(nameKey(name))) {
+      taken.add(nameKey(name));
+      return name;
+    }
+  }
 }
 
 /**
@@ -200,13 +230,7 @@ export interface FrameImageShiftPlan {
  * returned is added to `taken`.
  */
 export function freeBackupName(file: string, taken: Set<string>): string {
-  for (let n = 0; ; n++) {
-    const name = n === 0 ? `${file}.bak` : `${file}.${n}.bak`;
-    if (!taken.has(nameKey(name))) {
-      taken.add(nameKey(name));
-      return name;
-    }
-  }
+  return freeName(file, '.bak', taken);
 }
 
 /**
@@ -222,6 +246,9 @@ export function freeBackupName(file: string, taken: Set<string>): string {
  *   first; the new frame's image then goes under the name of index k.
  * - Delete at k: the deleted frame's files are renamed to <file>.bak (kept,
  *   not deleted), then the files of frames k+1..n-1 move one index down.
+ * - Insert at k with copyOf: the same moves, then the copied frame's files are
+ *   copied (by the caller) to the names of index k, keeping their extension,
+ *   instead of a placeholder.
  *
  * No existing file is replaced: a file that no frame uses but that has a
  * name a moved image or the new frame's image needs is renamed to <file>.bak
@@ -236,10 +263,14 @@ export function planFrameImageShift(
 ): FrameImageShiftPlan {
   const index = indexImageFiles(files);
   const base = (frameIndex: number) => frameImageBaseName(objectName, animationName, frameIndex);
-  const plan: FrameImageShiftPlan = { renames: [], shifted: [], parked: [], backedUp: [], missing: [], clashes: [] };
+  const plan: FrameImageShiftPlan = {
+    inserted: 'insertAt' in change, renames: [], shifted: [], parked: [], backedUp: [], missing: [], copies: [], clashes: [],
+  };
 
   // Every name in images/ so far, and those the renames produce, by nameKey() (for free .bak names)
   const taken = new Set(files.map(nameKey));
+  // With copyOf: the files each frame placed would bind at its new index, also one without an image file
+  const slots: string[] = [];
   const backupName = (file: string): string => freeBackupName(file, taken);
 
   const move = (from: number, to: number) => {
@@ -255,7 +286,24 @@ export function planFrameImageShift(
 
   if ('insertAt' in change) {
     for (let i = frames.length - 1; i >= change.insertAt; i--) move(i, i + 1);
-    plan.newFrameFile = getImageFileName(objectName, animationName, change.insertAt, 'Sprite');
+    if (change.copyOf === undefined) {
+      plan.newFrameFile = getImageFileName(objectName, animationName, change.insertAt, 'Sprite');
+    } else {
+      const fileType = frames[change.copyOf]?.fileType;
+      const sources = index.frameFiles(base(change.copyOf), fileType);
+      if (sources.length === 0) plan.uncopied = expectedFrameImageName(base(change.copyOf), fileType);
+      for (const file of sources) {
+        // A file of a frame at or after insertAt has moved up by the time it is copied
+        const now = plan.shifted.find(r => r.from === file)?.to ?? file;
+        const target = `${base(change.insertAt)}.${extensionOf(file)}`;
+        plan.copies.push({ from: now, to: target });
+        taken.add(nameKey(target));
+      }
+      // With copyOf, every frame placed reserves the files it would bind at its new index, also one without an
+      // image file, so it never takes an unused file there (add and delete keep the planning above unchanged)
+      for (let i = frames.length - 1; i >= change.insertAt; i--) slots.push(...index.frameFiles(base(i + 1), frames[i]?.fileType));
+      slots.push(...index.frameFiles(base(change.insertAt), fileType));
+    }
   } else {
     for (const file of index.frameFiles(base(change.deleteAt), frames[change.deleteAt]?.fileType)) {
       plan.parked.push({ from: file, to: backupName(file) });
@@ -265,21 +313,137 @@ export function planFrameImageShift(
 
   // Files in the way: named like a target, but not moved themselves
   const moved = new Set([...plan.parked, ...plan.shifted].map(r => r.from));
-  const targets = [...plan.shifted.map(r => r.to), ...(plan.newFrameFile !== undefined ? [plan.newFrameFile] : [])];
-  for (const target of targets) {
-    for (const file of index.named(target)) {
-      if (!moved.has(file) && !plan.backedUp.some(r => r.from === file)) {
-        plan.backedUp.push({ from: file, to: backupName(file) });
-      }
+  const targets = [
+    ...plan.shifted.map(r => r.to),
+    ...(plan.newFrameFile !== undefined ? [plan.newFrameFile] : []),
+    ...plan.copies.map(c => c.to),
+  ];
+  for (const file of [...targets.flatMap(target => index.named(target)), ...slots]) {
+    if (!moved.has(file) && !plan.backedUp.some(r => r.from === file)) {
+      plan.backedUp.push({ from: file, to: backupName(file) });
     }
   }
   plan.renames = [...plan.backedUp, ...plan.parked, ...plan.shifted];
   const result = simulateImageRenames(files, plan.renames);
   plan.clashes = result.clashes.map(c => `images/${c.from} cannot be renamed to images/${c.to}: images/${c.occupant} would be replaced`);
-  if (plan.newFrameFile !== undefined && plan.clashes.length === 0) {
-    const occupant = result.present.get(nameKey(plan.newFrameFile))?.[0];
-    if (occupant !== undefined) plan.clashes.push(`images/${occupant} would be replaced by the new frame's image`);
+  if (plan.clashes.length === 0) {
+    for (const target of [...(plan.newFrameFile !== undefined ? [plan.newFrameFile] : []), ...plan.copies.map(c => c.to)]) {
+      const occupant = result.present.get(nameKey(target))?.[0];
+      if (occupant !== undefined) plan.clashes.push(`images/${occupant} would be replaced by the new frame's image`);
+    }
   }
+  return plan;
+}
+
+/** The image file renames that go with putting an animation's frames in a new order. */
+export interface FrameImageReorderPlan {
+  /** Every rename, in the order to apply them (each target name is free when its rename runs); undo them in reverse order */
+  renames: ImageFileRename[];
+  /** Image files that follow their frame to its new index: the name before the call and the final name (in `renames`, some by way of a temporary name) */
+  moved: ImageFileRename[];
+  /** Files no frame uses under a name a moved image needs, kept under a .bak name, in `renames` */
+  backedUp: ImageFileRename[];
+  /** Expected file names of frames that change index but have no image file (nothing moved for them) */
+  missing: string[];
+  /** Why the renames cannot be applied (nothing may be changed then) */
+  clashes: string[];
+}
+
+/**
+ * Plan the image file renames that keep an animation's frames and their
+ * images together when the frames are put in a new order: `order[k]` is the
+ * index before the call of the frame that ends at index k (a permutation of
+ * 0 to n-1). `files` lists images/, `frames` are the frames before the
+ * call. Each moving frame's files are found as for a rename
+ * (planFrameImageRenames: its fileType's extension, or for another fileType
+ * every file with its name and a single extension, ignoring case) and move
+ * to the lowercase name of the frame's new index, keeping the extension.
+ * A file no frame uses under a target name is kept as <file>.bak first, as
+ * planFrameImageShift does. Each rename runs once its target is free; moves
+ * that wait on each other in a cycle (two frames that swap) go through a
+ * temporary name, <file>.reorder (<file>.1.reorder, ... when taken). No
+ * existing file is replaced.
+ */
+export function planFrameImageReorder(
+  files: readonly string[],
+  objectName: string,
+  animationName: string,
+  frames: ReadonlyArray<{ fileType?: unknown } | null | undefined>,
+  order: readonly number[],
+): FrameImageReorderPlan {
+  const index = indexImageFiles(files);
+  const base = (frameIndex: number) => frameImageBaseName(objectName, animationName, frameIndex);
+  const plan: FrameImageReorderPlan = { renames: [], moved: [], backedUp: [], missing: [], clashes: [] };
+  // Every name in images/ so far, and those the renames produce, by nameKey() (for free .bak and .reorder names)
+  const taken = new Set(files.map(nameKey));
+  // The files each moving frame would bind at its new index, also one without an image file: any of them that does not move is in the way
+  const slots: string[] = [];
+
+  order.forEach((from, to) => {
+    if (from === to) return;
+    const fileType = frames[from]?.fileType;
+    slots.push(...index.frameFiles(base(to), fileType));
+    const sources = index.frameFiles(base(from), fileType);
+    if (sources.length === 0) plan.missing.push(expectedFrameImageName(base(from), fileType));
+    for (const file of sources) {
+      const target = `${base(to)}.${extensionOf(file)}`;
+      // Two files that differ only in case (a case-sensitive file system) would get the same name
+      const other = plan.moved.find(r => nameKey(r.to) === nameKey(target));
+      if (other !== undefined) {
+        plan.clashes.push(`images/${other.from} and images/${file} would both be renamed to images/${target}`);
+        continue;
+      }
+      plan.moved.push({ from: file, to: target });
+      taken.add(nameKey(target));
+    }
+  });
+  if (plan.clashes.length > 0) return plan;
+
+  // Files in the way: named like a target, or bound by a moving frame at its new index, but not moved themselves
+  const movedFrom = new Set(plan.moved.map(r => r.from));
+  for (const file of [...plan.moved.flatMap(({ to }) => index.named(to)), ...slots]) {
+    if (!movedFrom.has(file) && !plan.backedUp.some(r => r.from === file)) {
+      plan.backedUp.push({ from: file, to: freeName(file, '.bak', taken) });
+    }
+  }
+
+  // How many files have each name (by nameKey) once the backups ran, kept up to date as the renames below go
+  const present = new Map<string, number>();
+  const count = (name: string, n: number) => present.set(nameKey(name), (present.get(nameKey(name)) ?? 0) + n);
+  for (const file of files) count(file, 1);
+  for (const { from, to } of plan.backedUp) {
+    count(from, -1);
+    count(to, 1);
+  }
+
+  const sequence: ImageFileRename[] = [];
+  const rename = (from: string, to: string) => {
+    sequence.push({ from, to });
+    count(from, -1);
+    count(to, 1);
+  };
+  const pending = plan.moved.map(r => ({ ...r }));
+  for (let steps = 0; pending.length > 0; steps++) {
+    // Each move runs once, each cycle parks one file: more steps than this means the moves cannot be ordered
+    if (steps > 2 * plan.moved.length) {
+      plan.clashes.push('the frame image renames could not be put in an order in which no file is replaced');
+      return plan;
+    }
+    const ready = pending.findIndex(r => (present.get(nameKey(r.to)) ?? 0) === 0);
+    if (ready !== -1) {
+      const [move] = pending.splice(ready, 1);
+      rename(move.from, move.to);
+      continue;
+    }
+    // Every target is taken by a file that moves too: a cycle. Park the first one under a temporary name
+    const first = pending[0];
+    const temporary = freeName(first.from, '.reorder', taken);
+    rename(first.from, temporary);
+    first.from = temporary;
+  }
+  plan.renames = [...plan.backedUp, ...sequence];
+  plan.clashes = simulateImageRenames(files, plan.renames).clashes
+    .map(c => `images/${c.from} cannot be renamed to images/${c.to}: images/${c.occupant} would be replaced`);
   return plan;
 }
 

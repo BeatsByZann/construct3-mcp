@@ -1,9 +1,11 @@
 /**
  * Animation tools: add_animation_to_sprite, update_animation_properties,
  * delete_animation, rename_animation, add_frame_to_animation,
- * delete_frame_from_animation, update_frame, replace_sprite_image.
+ * delete_frame_from_animation, reorder_frames, reverse_frames, duplicate_frame,
+ * update_frame, replace_sprite_image.
  */
 
+import { readFile } from 'fs/promises';
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, ObjectType, Animation, AnimationFrame } from '../construct3/types.js';
@@ -23,11 +25,12 @@ import {
   familiesContaining,
   findAnimation,
   frameImageExtension,
+  planFrameImageReorder,
   planFrameImageRenames,
   planFrameImageShift,
   renameInitialAnimation,
 } from '../construct3/animation-rename.js';
-import type { FrameImageShiftPlan, ImageFileRename } from '../construct3/animation-rename.js';
+import type { FrameImageReorderPlan, FrameImageShiftPlan, ImageFileRename } from '../construct3/animation-rename.js';
 import {
   checkUnscannedFiles,
   describeUnscannedFile,
@@ -694,6 +697,208 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
     }),
   );
 
+  // ─── reorder_frames, reverse_frames ───────────────────────
+
+  /**
+   * reorder_frames and reverse_frames: put the frames of the animation in
+   * the order `orderOf(frameCount)` gives (order[k]: the index before the
+   * call of the frame that ends at index k), with their image files
+   * (planFrameImageReorder). The image files are renamed first, then the
+   * object is written; a failure renames them back and restores the object
+   * file by the image rollback rule (recoverFrameChange).
+   */
+  const reorderFrames = async (
+    objectName: string,
+    animationName: string,
+    orderOf: (frameCount: number) => number[],
+    orderGiven: boolean,
+  ) => {
+    const loaded = await loadSpriteAnimation(reader, objectName, animationName);
+    if ('error' in loaded) return loaded.error;
+    const { obj, anim } = loaded;
+
+    const frames = anim.frames;
+    const order = orderOf(frames.length);
+    const orderError = frameOrderError(order, frames.length, anim.name);
+    if (orderError) return toolError(orderError);
+    if (order.every((from, to) => from === to)) {
+      return toolError(orderGiven
+        ? `The order leaves every frame of "${anim.name}" at its index. Nothing was changed.`
+        : `Animation "${anim.name}" has one frame, so reversing it changes nothing. Nothing was changed.`);
+    }
+    // Animations whose names differ only in case use the same image files: moving them would give the other one other images
+    const sharing = animationsSharingImageFiles(obj.animations, anim);
+    if (sharing.length > 0) return toolError(sharedImageFilesError('reorder the frames of', objectName, anim, sharing));
+
+    const imageObjectName = storedObjectName(obj, objectName);
+    const images = planFrameImageReorder(await writer.listImageFiles(), imageObjectName, anim.name, frames, order);
+    if (images.clashes.length > 0) {
+      return toolError(`Cannot reorder the frames of "${anim.name}" on "${objectName}": the frame image files cannot be renamed to `
+        + `their new indexes (${someOf(images.clashes, 3)}). Nothing was changed. Check these files in images/.`);
+    }
+
+    const before = JSON.parse(JSON.stringify(frames)) as AnimationFrame[];
+    anim.frames = order.map(from => frames[from]);
+    const subfolder = writer.getSubfolderForEntity('objectTypes', objectName);
+
+    // Image files first (renamed back by the writer if one fails), then the
+    // object; a failure there is recovered by recoverFrameChange
+    if (images.renames.length > 0) await writer.renameImageFiles(images.renames);
+    let backupPath: string;
+    let otherWrite = false;
+    try {
+      backupPath = await writer.writeEntityFile('objectTypes', objectName, obj, subfolder);
+    } catch (error) {
+      ({ backupPath, otherWrite } = await recoverFrameChangeOrThrow(writer, reader, error, {
+        objectName, animationName: anim.name, before, after: anim.frames, renames: images.renames,
+      }));
+    }
+
+    const warnings = frameReorderWarnings(images, anim.name);
+    if (otherWrite) warnings.push(otherWriteKeptWarning('the new frame order'));
+    const result: WriteResult = {
+      success: true,
+      entity: objectName,
+      category: 'object',
+      action: 'updated',
+      backupFile: backupPath,
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
+    return toolResult(result);
+  };
+
+  server.tool(
+    'reorder_frames',
+    'Put the frames of a Sprite animation in a new order. Each frame keeps its properties and its image: the image files, named by '
+      + 'frame index, are renamed to the new indexes (through a temporary name where two would swap); an unused file in the way is kept as .bak',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation name'),
+      order: z.array(z.number().int().min(0)).min(1).max(1000)
+        .describe('The frames\' indexes before the call in their new order (order[k] is the frame that ends at index k); every index once'),
+    },
+    oneAtATime(async (args) => {
+      try {
+        return await reorderFrames(args.objectName, args.animationName, () => args.order, true);
+      } catch (error) {
+        console.error('[reorder_frames] failed:', error);
+        return toolError(`Error reordering frames: ${fileErrorText(error, path => writer.projectRelative(path))}`);
+      }
+    }),
+  );
+
+  server.tool(
+    'reverse_frames',
+    'Reverse the order of the frames of a Sprite animation, with their image files (as reorder_frames)',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation name'),
+    },
+    oneAtATime(async (args) => {
+      try {
+        return await reorderFrames(args.objectName, args.animationName, count => Array.from({ length: count }, (_, k) => count - 1 - k), false);
+      } catch (error) {
+        console.error('[reverse_frames] failed:', error);
+        return toolError(`Error reversing frames: ${fileErrorText(error, path => writer.projectRelative(path))}`);
+      }
+    }),
+  );
+
+  // ─── duplicate_frame ──────────────────────────────────────
+
+  server.tool(
+    'duplicate_frame',
+    'Insert a copy of a Sprite animation frame (its properties, a new imageSpriteId, and a copy of its image file) at an index, by default '
+      + 'right after the frame. The image files of the frames from that index on move one index up with their frames; an unused file in the way is kept as .bak',
+    {
+      objectName: z.string().max(200).describe('Sprite object name'),
+      animationName: z.string().min(1).max(200).describe('Animation name'),
+      frameIndex: z.number().int().min(0).describe('0-based index of the frame to copy'),
+      index: z.number().int().min(0).optional().describe('Insert the copy at this index, 0 to the frame count (default: right after the frame)'),
+    },
+    oneAtATime(async (args) => {
+      const relative = (path: string) => writer.projectRelative(path);
+      try {
+        const loaded = await loadSpriteAnimation(reader, args.objectName, args.animationName);
+        if ('error' in loaded) return loaded.error;
+        const { obj, anim } = loaded;
+
+        const frameCount = anim.frames.length;
+        if (args.frameIndex >= frameCount) {
+          return toolError(`Frame index ${args.frameIndex} is out of range. Animation "${anim.name}" has ${frameCount} frame(s). Nothing was changed.`);
+        }
+        const insertAt = args.index ?? args.frameIndex + 1;
+        if (insertAt > frameCount) {
+          return toolError(`Index ${insertAt} is out of range: insert the copy at an index from 0 to ${frameCount}, or leave index out `
+            + `to insert it right after frame ${args.frameIndex}. Nothing was changed.`);
+        }
+
+        // Animations whose names differ only in case use the same image files: moving them would give the other one other images
+        const sharing = animationsSharingImageFiles(obj.animations, anim);
+        if (sharing.length > 0) return toolError(sharedImageFilesError('copy a frame of', args.objectName, anim, sharing));
+
+        const imageObjectName = storedObjectName(obj, args.objectName);
+        const images = planFrameImageShift(await writer.listImageFiles(), imageObjectName, anim.name, anim.frames,
+          { insertAt, copyOf: args.frameIndex });
+        if (images.clashes.length > 0) {
+          return toolError(`Cannot insert a copy of frame ${args.frameIndex} at index ${insertAt} in "${anim.name}" on "${args.objectName}": `
+            + `the frame image files cannot be renamed or copied without replacing a file (${someOf(images.clashes, 3)}). Nothing was changed. `
+            + 'Check these files in images/.');
+        }
+
+        const before = JSON.parse(JSON.stringify(anim.frames)) as AnimationFrame[];
+        const source = anim.frames[args.frameIndex];
+        const copy = JSON.parse(JSON.stringify(source)) as AnimationFrame;
+        if (source.imageSpriteId !== undefined) copy.imageSpriteId = await idGen.generateImageSpriteId(reader);
+        anim.frames.splice(insertAt, 0, copy);
+        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+        const imagesPath = (name: string) => resolveProjectPath(reader.getProjectDir(), 'images', name);
+        const copies = new Map(images.copies.map(c => [c.to, c.from]));
+        const newImages: NewFrameImage[] = images.copies.map(c => ({ name: c.to, path: imagesPath(c.to) }));
+        const written: NewFrameImage[] = [];
+
+        // Image files first (renamed back by the writer if one fails), then the
+        // copies in the freed names, written create-only, then the object; a
+        // failure there undoes everything before it
+        if (images.renames.length > 0) await writer.renameImageFiles(images.renames);
+        let backupPath: string;
+        let otherWrite = false;
+        try {
+          await writeNewFrameImages(writer, newImages, written, image => readFile(imagesPath(copies.get(image.name) ?? image.name)));
+          backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+        } catch (error) {
+          // The whole expected frame list is compared, the frames before the copy as well as the copy (hasFrameBinding)
+          ({ backupPath, otherWrite } = await recoverFrameChangeOrThrow(writer, reader, error, {
+            objectName: args.objectName, animationName: anim.name, before, after: anim.frames,
+            renames: images.renames, newImages: written, imageNoun: 'copied frame image',
+          }));
+        }
+
+        const warnings = frameImageWarnings(images, anim.name);
+        if (images.copies.length > 0) {
+          warnings.push(`Copied the image of frame ${args.frameIndex}: ${someOf(images.copies.map(c => `images/${c.from} to images/${c.to}`), 3)}.`);
+        }
+        if (images.uncopied !== undefined) {
+          warnings.push(`Frame ${args.frameIndex} has no image file in images/ (expected images/${images.uncopied}), so the copy has none either.`);
+        }
+        if (otherWrite) warnings.push(otherWriteKeptWarning('the copied frame'));
+        return toolResult({
+          success: true,
+          entity: args.objectName,
+          category: 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          index: insertAt,
+          imageSpriteId: copy.imageSpriteId,
+          warnings: warnings.length > 0 ? warnings : undefined,
+        });
+      } catch (error) {
+        console.error('[duplicate_frame] failed:', error);
+        return toolError(`Error duplicating frame: ${fileErrorText(error, relative)}`);
+      }
+    }),
+  );
+
   // ─── update_frame ─────────────────────────────────────────
 
   server.tool(
@@ -917,7 +1122,7 @@ function frameImageWarnings(images: FrameImageShiftPlan, animationName: string):
   };
   if (images.shifted.length > 0) {
     const [first] = images.shifted;
-    const direction = images.newFrameFile !== undefined ? 'up' : 'down';
+    const direction = images.inserted ? 'up' : 'down';
     warnings.push(`Renamed ${images.shifted.length} frame image file(s) in images/ one index ${direction}, with their frames `
       + `("${first.from}" → "${first.to}"${images.shifted.length > 1 ? ', …' : ''}).`);
   }
@@ -1268,6 +1473,95 @@ async function recoverFrameChangeOrThrow(
     throw new Error(`${cause}. ${outcome.message}`);
   }
   return { backupPath: (error as EntityWriteError).backupPath, otherWrite: true };
+}
+
+/**
+ * The Sprite `objectName` and its animation `animationName` (its exact
+ * name, in any animation folder) for a frame tool that renames or writes the
+ * animation's frame image files, or the tool error that says why there is
+ * none to change: no such object, not a Sprite, no animations structure, no
+ * such animation, an animation name that cannot be part of an image file
+ * name, or an animation without a frames list or without frames. It only
+ * reads.
+ */
+async function loadSpriteAnimation(
+  reader: MutationToolDeps['reader'],
+  objectName: string,
+  animationName: string,
+): Promise<{ obj: ObjectType; anim: Animation } | { error: ReturnType<typeof toolError> }> {
+  let obj: ObjectType;
+  try {
+    obj = await reader.readObjectType(objectName);
+  } catch {
+    return { error: notFoundError('Object', objectName, reader.findNearestName(objectName, 'objects'), 'list_objects') };
+  }
+  if (obj['plugin-id'] !== 'Sprite') return { error: toolError(`Object "${objectName}" is not a Sprite. Nothing was changed.`) };
+  if (!obj.animations || !Array.isArray(obj.animations.items)) {
+    return { error: toolError(`Object "${objectName}" has no animations structure. Nothing was changed.`) };
+  }
+  const anim = findAnimation<Animation>(obj.animations, animationName)?.animation;
+  if (!anim) {
+    return { error: toolError(`Animation "${animationName}" not found. Available: ${describeAvailableAnimations(obj.animations)}`) };
+  }
+  const nameError = animationNameFileError(anim.name, true);
+  if (nameError) return { error: toolError(nameError) };
+  if (!Array.isArray(anim.frames)) {
+    return { error: toolError(`Animation "${anim.name}" on "${objectName}" has no frames list in its object file. Nothing was changed.`) };
+  }
+  if (anim.frames.length === 0) {
+    return { error: toolError(`Animation "${anim.name}" on "${objectName}" has no frames. Nothing was changed.`) };
+  }
+  return { obj, anim };
+}
+
+/**
+ * The refusal of a frame tool that moves or adds frame image files while
+ * other animations (`sharing`, their names) differ from `anim` only in case
+ * and so use the same files: `action` completes "Cannot <action> "<name>"
+ * on ...", e.g. "reorder the frames of".
+ */
+function sharedImageFilesError(action: string, objectName: string, anim: { name: string }, sharing: readonly string[]): string {
+  const names = sharing.map(n => `"${n}"`).join(', ');
+  return sharing.length > 1
+    ? `Cannot ${action} "${anim.name}" on "${objectName}": animations ${names} differ from it only in case, so all use the same frame `
+      + 'image files, and changing them would give those animations other images. Nothing was changed. Delete the other animations first.'
+    : `Cannot ${action} "${anim.name}" on "${objectName}": animation ${names} differs from it only in case, so both use the same frame `
+      + 'image files, and changing them would give that animation other images. Nothing was changed. Delete the other animation first.';
+}
+
+/** Why `order` is not a full permutation of the animation's frame indexes, or undefined when it is. */
+function frameOrderError(order: readonly number[], frameCount: number, animationName: string): string | undefined {
+  if (order.length !== frameCount) {
+    return `order must list each of the ${frameCount} frame(s) of "${animationName}" once, by its index before the call `
+      + `(0 to ${frameCount - 1}); it lists ${order.length}. Nothing was changed.`;
+  }
+  const seen = new Set<number>();
+  for (const index of order) {
+    if (index >= frameCount) {
+      return `order names frame index ${index}, but "${animationName}" has ${frameCount} frame(s) (0 to ${frameCount - 1}). Nothing was changed.`;
+    }
+    if (seen.has(index)) return `order names frame index ${index} twice; it must list each frame index once. Nothing was changed.`;
+    seen.add(index);
+  }
+  return undefined;
+}
+
+/** Warnings about the image files reorder_frames or reverse_frames renamed (see planFrameImageReorder). */
+function frameReorderWarnings(images: FrameImageReorderPlan, animationName: string): string[] {
+  const warnings: string[] = [];
+  const list = (renames: ImageFileRename[]) => someOf(renames.map(r => `images/${r.from} to images/${r.to}`), 3);
+  if (images.moved.length > 0) {
+    warnings.push(`Renamed ${images.moved.length} frame image file(s) in images/ to the new index of their frame (${list(images.moved)}).`);
+  }
+  if (images.backedUp.length > 0) {
+    warnings.push(`${images.backedUp.length} file(s) in images/ had the name a frame image needed, but no frame used them; they were renamed `
+      + `instead of being replaced: ${list(images.backedUp)}.`);
+  }
+  if (images.missing.length > 0) {
+    warnings.push(`No image file in images/ for ${images.missing.length} frame(s) of "${animationName}" that changed index `
+      + `(expected ${someOf(images.missing, 3)}); nothing was renamed for them.`);
+  }
+  return warnings;
 }
 
 /**

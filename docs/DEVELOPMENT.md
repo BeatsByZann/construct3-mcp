@@ -62,7 +62,7 @@ construct3-mcp/
 │   │   ├── containers.ts           # Containers in project.c3proj: members, a deleted object type taken out, a container under two members removed
 │   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
 │   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
-│   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert/delete
+│   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert, delete, reorder and duplicate
 │   │   ├── file-size-limit.ts      # The size limit: C3MCP_MAX_FILE_MB, 10MB by default, whole megabytes up to 128
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
