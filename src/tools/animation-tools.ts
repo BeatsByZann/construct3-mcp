@@ -2,7 +2,7 @@
  * Animation tools: add_animation_to_sprite, update_animation_properties,
  * delete_animation, rename_animation, add_frame_to_animation,
  * delete_frame_from_animation, reorder_frames, reverse_frames, duplicate_frame,
- * update_frame, replace_sprite_image.
+ * update_frame, replace_sprite_image, replace_object_image.
  */
 
 import { readFile } from 'fs/promises';
@@ -14,8 +14,8 @@ import { findNameClash, nameKey } from '../construct3/names.js';
 import { createAnimation, createAnimationFrame } from '../construct3/templates.js';
 import { describeCharacter, generatePlaceholderPng, getImageFileName, invalidImageNameCharacter } from '../construct3/png-generator.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
-import { EntityWriteError, failedWriteLeftReason, filesLeftClause } from '../construct3/project-writer.js';
-import { StaleFileError } from '../construct3/disk-state.js';
+import { EntityWriteError, UnconfirmedWriteError, failedWriteLeftReason, filesLeftClause } from '../construct3/project-writer.js';
+import { StaleFileError, currentToolCall, fileKey } from '../construct3/disk-state.js';
 import { fileErrorText } from '../construct3/fs-errors.js';
 import {
   animationsSharingImageFiles,
@@ -31,6 +31,7 @@ import {
   renameInitialAnimation,
 } from '../construct3/animation-rename.js';
 import type { FrameImageReorderPlan, FrameImageShiftPlan, ImageFileRename } from '../construct3/animation-rename.js';
+import { objectImageFiles } from '../construct3/object-images.js';
 import {
   checkUnscannedFiles,
   describeUnscannedFile,
@@ -1070,6 +1071,114 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
       }
     }),
   );
+
+  // ─── replace_object_image ─────────────────────────────────
+
+  server.tool(
+    'replace_object_image',
+    'Replace the single image of an object type that has one image instead of animations (such as a Tiled Background) with real PNG data '
+      + '(base64), written to images/<object>.png; the image it replaces is kept as .bak. The image record gets fileType image/png, and the '
+      + 'width and height when given (as replace_sprite_image). For Sprite frames use replace_sprite_image',
+    {
+      objectName: z.string().max(200).describe('Object type with a single image (not a Sprite)'),
+      pngBase64: z.string().max(10_000_000).describe('Base64-encoded PNG image data'),
+      width: z.number().int().positive().optional().describe('Image width in pixels (updates the image record if provided)'),
+      height: z.number().int().positive().optional().describe('Image height in pixels (updates the image record if provided)'),
+    },
+    oneAtATime(async (args) => {
+      const relative = (path: string) => writer.projectRelative(path);
+      try {
+        let obj: ObjectType;
+        try {
+          obj = await reader.readObjectType(args.objectName);
+        } catch {
+          return notFoundError('Object', args.objectName, reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        }
+        if (obj.animations !== undefined) {
+          return toolError(`Object "${args.objectName}" has animations, and its images belong to their frames: use replace_sprite_image. Nothing was changed.`);
+        }
+        const image = obj.image;
+        if (typeof image !== 'object' || image === null || Array.isArray(image)) {
+          return toolError(`Object "${args.objectName}" (${String(obj['plugin-id'])}) has no single image. Nothing was changed.`);
+        }
+        const record = image as Record<string, unknown>;
+        // The check replace_sprite_image makes: the first bytes of the PNG signature
+        const png = Buffer.from(args.pngBase64, 'base64');
+        if (png.length < 8 || png[0] !== 0x89 || png[1] !== 0x50 || png[2] !== 0x4E || png[3] !== 0x47) {
+          return toolError('Decoded data does not appear to be a valid PNG (invalid header). Nothing was changed.');
+        }
+
+        // A single image is stored as lower("<object>.<ext>"), the object's name as stored in its file (see object-images.ts)
+        const stored = storedObjectName(obj, args.objectName);
+        const badCharacter = invalidImageNameCharacter(stored);
+        if (badCharacter !== undefined) {
+          return toolError(`Object "${stored}" contains ${describeCharacter(badCharacter)}, which cannot be part of its image file name `
+            + '(images/<object>.png). Nothing was changed.');
+        }
+        const fileName = `${stored}.png`.toLowerCase();
+        const filePath = resolveProjectPath(reader.getProjectDir(), 'images', fileName);
+        const oldFiles = objectImageFiles(stored, obj, await writer.listImageFiles()).filter(file => nameKey(file) !== nameKey(fileName));
+
+        const warnings: string[] = [];
+        if (oldFiles.length > 0) {
+          warnings.push(`The object type stored its image as ${oldFiles.map(file => `images/${file}`).join(', ')} ("${String(record.fileType)}"). `
+            + `Its fileType is now "image/png" and its image images/${fileName}; the old file was left in images/.`);
+        }
+        const before = imageBinding(obj);
+        record.fileType = 'image/png';
+        if (args.width !== undefined) record.width = args.width;
+        if (args.height !== undefined) record.height = args.height;
+        const after = imageBinding(obj);
+
+        // The image first, through the writer: an image under its name is kept under a free .bak name
+        let imageBackup: string | undefined;
+        try {
+          imageBackup = await writer.replaceFile(filePath, png);
+        } catch (error) {
+          const kept = currentToolCall()?.backups.get(fileKey(filePath));
+          const where = error instanceof UnconfirmedWriteError && kept?.existed
+            ? ` The file this call kept before writing the image is ${relative(kept.path)}.`
+            : '';
+          throw new Error(`${fileErrorText(error, relative).replace(/\.$/, '')}. The object file was not written.${where}`);
+        }
+
+        // The object file is always written, also when its record did not change: the write checks that it did not
+        // change on disk since it was read (an editor save), so the image is never left for a record that moved on
+        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
+        let backupPath: string;
+        try {
+          backupPath = await writer.writeEntityFile('objectTypes', args.objectName, obj, subfolder);
+        } catch (error) {
+          const outcome = await recoverObjectImage(writer, reader, error, {
+            objectName: args.objectName, before, after, imagePath: filePath, imageBackup,
+          });
+          if ('message' in outcome) {
+            let cause = fileErrorText(error, relative).replace(/\.$/, '');
+            // A stale refusal tells to run the tool again; after anything but a full rollback the recovery sentences say what to check first
+            if (!outcome.complete) cause = cause.replace(/ Run the tool again: it reads the files? as (?:it is|they are) now$/, '');
+            throw new Error(`${cause}. ${outcome.message}`);
+          }
+          backupPath = (error as EntityWriteError).backupPath;
+          warnings.push('Another write changed the object file right after this one (a tool call running in parallel?). The file still has '
+            + 'the new image record, so the new image stays, but the other write may have been made on older content: re-read the object to check it.');
+        }
+
+        return toolResult({
+          success: true,
+          entity: args.objectName,
+          category: 'object',
+          action: 'updated',
+          backupFile: backupPath,
+          imageFile: `images/${fileName}`,
+          imageBackup: imageBackup === undefined ? undefined : relative(imageBackup),
+          warnings: warnings.length > 0 ? warnings : undefined,
+        });
+      } catch (error) {
+        console.error('[replace_object_image] failed:', error);
+        return toolError(`Error replacing object image: ${fileErrorText(error, relative)}`);
+      }
+    }),
+  );
 }
 
 function animationNames(anims: Animation[]): string[] {
@@ -1678,4 +1787,126 @@ function renameUnscannedWarnings(
   }
   warnings.push(...unscannedWarnings([...layouts, ...sheets].filter(r => r.textSearch === 'no-match'), 'Renamed'));
   return warnings;
+}
+
+/**
+ * What ties a single-image object type to its image file, to compare the
+ * object file before and after a failed write: its stored name (the file
+ * is named after it), the image's file extension (frameImageExtension of its
+ * fileType; another fileType compared as it is) and its width and height.
+ * undefined for an object type without an image record.
+ */
+function imageBinding(objectType: unknown): string | undefined {
+  if (typeof objectType !== 'object' || objectType === null) return undefined;
+  const { name, image } = objectType as { name?: unknown; image?: unknown };
+  if (typeof image !== 'object' || image === null || Array.isArray(image)) return undefined;
+  const record = image as Record<string, unknown>;
+  return JSON.stringify([name, frameImageExtension(record.fileType) ?? `other:${String(record.fileType)}`, record.width, record.height]);
+}
+
+/**
+ * Which image binding (imageBinding) the object file holds after
+ * replace_object_image's object write failed, read again from disk:
+ * 'before', 'after' (this call's), 'other' or 'unreadable'. When this call
+ * changed nothing in the binding, 'before' is reported.
+ */
+async function imageStateAfterFailure(
+  reader: MutationToolDeps['reader'],
+  objectName: string,
+  before: string | undefined,
+  after: string | undefined,
+): Promise<'before' | 'after' | 'other' | 'unreadable'> {
+  let current: string | undefined;
+  try {
+    current = imageBinding(await reader.readObjectType(objectName));
+  } catch {
+    return 'unreadable';
+  }
+  if (current === before) return 'before';
+  if (current === after) return 'after';
+  return 'other';
+}
+
+/**
+ * Recover replace_object_image after its object write failed or was
+ * refused (`error`), by the image rollback rule. The object file is first
+ * restored from its backup when its write failed after replacing it and it
+ * still holds that write's own content (restoreFailedWrite), then read
+ * again (imageStateAfterFailure). Only when its image binding is the one
+ * from before the call is the image put back (putBackImage: from the backup
+ * this call's write made, which stays, or removed when there was none; left
+ * and named, without calling either file the old image, when it or that
+ * backup changed on disk since). When the binding is this call's, the new
+ * image stays: after another write made on top of this one the call keeps
+ * its change ({ kept: true }), otherwise the error says so. When it is
+ * neither or the file cannot be read, the new image stays and the error
+ * says recovery is unresolved. The message leads with "The change was not
+ * rolled back" when nothing was undone and "rolled back only in part" when
+ * something was and something was not.
+ */
+async function recoverObjectImage(
+  writer: MutationToolDeps['writer'],
+  reader: MutationToolDeps['reader'],
+  error: unknown,
+  change: { objectName: string; before: string | undefined; after: string | undefined; imagePath: string; imageBackup: string | undefined },
+): Promise<{ kept: true } | { message: string; complete: boolean }> {
+  const relative = (path: string) => writer.projectRelative(path);
+  const otherWrite = error instanceof EntityWriteError && error.changedByOtherWrite;
+  const objectFile = error instanceof EntityWriteError
+    ? relative(error.backupPath.replace(/\.bak$/, ''))
+    : reader.getEntityRelativePath('objectTypes', change.objectName);
+  const image = relative(change.imagePath);
+  const backup = change.imageBackup === undefined ? undefined : relative(change.imageBackup);
+  let restoredFile = false;
+  let notRestored: string | undefined;
+  if (error instanceof EntityWriteError && !otherWrite) {
+    try {
+      const { restored, label, reason } = await writer.restoreFailedWrite(error);
+      if (restored) restoredFile = true;
+      else notRestored = `${label} (${failedWriteLeftReason(reason)}; it was left as it is)`;
+    } catch (e) {
+      notRestored = `restoring ${objectFile} from its backup failed (${fileErrorText(e, relative).replace(/\.$/, '')})`;
+    }
+  }
+  const state = await imageStateAfterFailure(reader, change.objectName, change.before, change.after);
+  if (state === 'after' && otherWrite) return { kept: true };
+  const notRestoredNote = notRestored !== undefined ? `The object file was not restored: ${notRestored}. ` : '';
+
+  if (state !== 'before') {
+    // The object file is not the one the old image belongs to: the new image stays
+    const otherWriteNote = otherWrite
+      ? 'Another write replaced the object file during this one (a tool call running in parallel?); it was left as that write left it. '
+      : '';
+    const where = `${image} holds the new image${backup !== undefined ? `, and ${backup} the file this call kept before writing it` : ''}`;
+    const outcome = state === 'after'
+      ? `${objectFile} holds this call's image record, so the new image stays: ${where}. Check the object file before you run the tool again.`
+      : `${objectFile} ${state === 'unreadable' ? 'could not be read again to tell which image record it holds' : 'holds neither the image record from before the call nor this call\'s'}, `
+        + `so the new image stays: ${where}. Recovery is unresolved: check the object's image record against images/ before you run the tool again.`;
+    return { message: `${otherWriteNote}${notRestoredNote}${outcome}`, complete: false };
+  }
+
+  const done: string[] = [];
+  const problems: string[] = [];
+  try {
+    const outcome = await writer.putBackImage(change.imagePath);
+    if (outcome === 'restored') done.push(`${image} has its image from before the call again (${backup} holds it too)`);
+    else if (outcome === 'removed') done.push(`${image} was removed (it did not exist before the call)`);
+    else {
+      problems.push(`${image} was left as it is: it${backup !== undefined ? `, or the file this call kept as ${backup},` : ''} changed on disk `
+        + 'after this call wrote it, so neither is known to hold the image from before the call');
+    }
+  } catch (e) {
+    problems.push(`${image} (${fileErrorText(e, relative).replace(/\.$/, '')}; it was left as it is)`);
+  }
+  if (restoredFile) done.push(`${objectFile} was restored from its backup (its .bak stays)`);
+  const otherWriteNote = otherWrite
+    ? 'Another write replaced the object file during this one (a tool call running in parallel?) without this call\'s change; '
+      + 'the object file was left as that write left it. '
+    : '';
+  if (problems.length > 0) {
+    const lead = done.length === 0 ? 'The change was not rolled back' : 'The change was rolled back only in part';
+    return { message: `${otherWriteNote}${notRestoredNote}${lead}: ${[...done, ...problems].join('; ')}. `
+      + 'Check the project before you run the tool again.', complete: false };
+  }
+  return { message: `${otherWriteNote}${notRestoredNote}The change was rolled back: ${done.join('; ')}.`, complete: true };
 }
