@@ -2083,3 +2083,33 @@ export async function buildBlockEvent(
     isOrBlock,
   });
 }
+
+/**
+ * Give every SID in copied event data a new value from the ID generator:
+ * the events, their conditions and actions, and function and custom action
+ * parameters (every "sid" key holding a number, at any depth). Returns how
+ * many were replaced.
+ */
+export async function reassignSids(reader: Construct3ProjectReader, idGen: IdGenerator, value: unknown): Promise<number> {
+  let count = 0;
+  const stack: unknown[] = [value];
+  let nodes = 0;
+  while (stack.length > 0) {
+    if (++nodes > MAX_SEARCH_NODES) throw new Error(`SID reassignment exceeded ${MAX_SEARCH_NODES} nodes`);
+    const node = stack.pop();
+    if (Array.isArray(node)) {
+      stack.push(...node);
+    } else if (typeof node === 'object' && node !== null) {
+      const record = node as Record<string, unknown>;
+      for (const [key, child] of Object.entries(record)) {
+        if (key === 'sid' && typeof child === 'number') {
+          record.sid = await idGen.generateSid(reader);
+          count++;
+        } else if (typeof child === 'object' && child !== null) {
+          stack.push(child);
+        }
+      }
+    }
+  }
+  return count;
+}

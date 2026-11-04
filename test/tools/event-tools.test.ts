@@ -1632,7 +1632,9 @@ describe('move_events_between_sheets', () => {
     const writtenTarget = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
     const targetEvents = writtenTarget.events as Array<Record<string, unknown>>;
     expect(targetEvents).toHaveLength(1);
-    expect(targetEvents[0].sid).toBe(100);
+    // Not an SID the project has: the two sheets and their events
+    expect([1, 2, 100, 200]).not.toContain(targetEvents[0].sid);
+    expect(typeof targetEvents[0].sid).toBe('number');
   });
 
   it('moves events (deleteSource=true) removes from source', async () => {
@@ -1738,7 +1740,7 @@ describe('move_events_between_sheets', () => {
     });
     const writtenTarget = writer.callsFor('writeEntityFile')[0].args[2] as Record<string, unknown>;
     const targetEvents = writtenTarget.events as Array<Record<string, unknown>>;
-    expect(targetEvents[0].sid).toBe(100);
+    expect([1, 2, 100, 999]).not.toContain(targetEvents[0].sid);
     expect(targetEvents[1].sid).toBe(999);
   });
 });
@@ -3543,7 +3545,7 @@ describe('SID-addressed tools with duplicate event SIDs (issue #30)', () => {
       expect(remaining[0].children).toHaveLength(1);
     });
 
-    it('warns when copied events keep SIDs the target sheet already has, and still writes the copy', async () => {
+    it('warns when moved events keep SIDs the target sheet already has, and still writes them', async () => {
       const source = {
         name: 'SourceSheet', sid: 1,
         events: [
@@ -3571,7 +3573,7 @@ describe('SID-addressed tools with duplicate event SIDs (issue #30)', () => {
       expect(data.success).toBe(true);
       expect(data.warnings).toHaveLength(1);
       const warning = data.warnings[0] as string;
-      expect(warning).toContain('2 SIDs of the copied events now match more than one event in "TargetSheet", because copied events keep their SIDs');
+      expect(warning).toContain('2 SIDs of the moved events now match more than one event in "TargetSheet", because moved events keep their SIDs');
       expect(warning).toContain('SID 500 at events[0], events[2]; SID 510 at events[1].children[0], events[2].children[0].');
       expect(warning).not.toContain('SID 520');
       expect(warning).toContain('refuse these SIDs in "TargetSheet" unless eventPath names one of the events');
@@ -3587,8 +3589,8 @@ describe('SID-addressed tools with duplicate event SIDs (issue #30)', () => {
       expect(picked.eventPath).toBe('events[2]');
     });
 
-    it('warns when the same event is copied into a sheet a second time', async () => {
-      const { server } = setupMove();
+    it('copies the same event into a sheet a second time with new SIDs and no warning', async () => {
+      const { server, writer } = setupMove();
       const copy = () => server.callTool('move_events_between_sheets', {
         sourceSheet: 'SourceSheet', targetSheet: 'TargetSheet', sids: [200],
       });
@@ -3598,11 +3600,12 @@ describe('SID-addressed tools with duplicate event SIDs (issue #30)', () => {
 
       const second = parseResult(await copy());
       expect(second.success).toBe(true);
-      expect(second.warnings).toEqual([
-        'A SID of the copied events now matches more than one event in "TargetSheet", because copied events keep their SIDs: ' +
-        'SID 200 at events[0], events[1]. update_event_block, update_event_block_action, update_event_variable and delete_event_from_sheet ' +
-        'refuse this SID in "TargetSheet" unless eventPath names one of the events.',
-      ]);
+      expect(second.warnings).toBeUndefined();
+      const target = written(writer, 'TargetSheet').events;
+      expect(target).toHaveLength(2);
+      expect(target[0].sid).not.toBe(200);
+      expect(target[1].sid).not.toBe(200);
+      expect(target[1].sid).not.toBe(target[0].sid);
     });
   });
 });
@@ -3799,7 +3802,8 @@ describe('group paths with outer whitespace in titles (#32)', () => {
     }));
     expect(data.success).toBe(true);
     const target = writer.callsFor('writeEntityFile')[0].args[2] as any;
-    expect(target.events[0].children.map((e: any) => e.sid)).toEqual([100]);
+    expect(target.events[0].children).toHaveLength(1);
+    expect([10, 20, 100, 200]).not.toContain(target.events[0].children[0].sid);
   });
 });
 

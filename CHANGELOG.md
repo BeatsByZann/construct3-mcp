@@ -37,6 +37,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 - `update_event_block_action` updates the actions of a custom action block, and `update_event_block` and `update_event_block_action` replace a custom action call's arguments with an array in parameter order. The refusals of an event that is no block, function block or custom action block, and of `isElse` on a function block or custom action block, now name the custom action block (#ISSUE).
 - `update_event_block` refuses a call that adds conditions or actions (also through `addConditions` and `addActions`) when the block would then hold more than 100 of them; a call that adds none edits a block of any size (#ISSUE).
 - `update_event_block`: a step that throws after the block changed in memory and before the file is written now puts the sheet back and reads "The change was stopped before anything was written: ... Nothing was changed."; a removal index past the end of the conditions or actions is refused before anything changes, and its message ends "Nothing was changed." (#ISSUE).
+- `move_events_between_sheets` gives copied events (`deleteSource: false`) new SIDs, their conditions, actions and parameters included, so the SID tools can address the copy without an `eventPath`; moved events keep their SIDs as before. This is a deliberate change: earlier versions gave a copy the SIDs of its original, so a copy shared every SID with it (#ISSUE).
 
 ### Fixed
 
