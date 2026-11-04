@@ -197,6 +197,8 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_animation_properties` | Update animation speed, looping, ping-pong, repeat count |
 | `rename_animation` | Rename an animation with its frame image files and the layout instances starting with it |
 | `delete_animation` | Delete an animation (never the last one) |
+| `create_animation_folder` | Create an animation folder (and the folders above it) on a Sprite |
+| `move_animation_to_folder` | Move an animation into an animation folder or back to the top level |
 | `add_frame_to_animation` | Add a blank frame (placeholder PNG) at an index; later frame images move up with their frames |
 | `update_frame` | Update a frame's duration, size or origin |
 | `delete_frame_from_animation` | Delete a frame by index (never the last one); its image is kept as `.bak`, later frame images move down |
