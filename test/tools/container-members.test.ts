@@ -160,9 +160,17 @@ describe('delete_object and containers', () => {
   it('puts the registration and the membership back when the file delete fails after the update', async () => {
     const projectBefore = await readFile(projectPath());
     const objectBefore = await readFile(objectPath('Gem'));
-    writer.deleteEntityFile = async () => { throw Object.assign(new Error('EPERM: operation not permitted, unlink'), { code: 'EPERM' }); };
+    // What project.c3proj holds when the file delete starts: the update has run by then
+    let projectAtDelete: ProjectFile | undefined;
+    writer.deleteEntityFile = async () => {
+      projectAtDelete = await readProject();
+      throw Object.assign(new Error('EPERM: operation not permitted, unlink'), { code: 'EPERM' });
+    };
     const data = await call('delete_object', { name: 'Gem' });
     expect(data.isError).toBe(true);
+    expect(projectAtDelete).toBeDefined();
+    expect(projectAtDelete?.objectTypes.items).not.toContain('Gem');
+    expect(projectAtDelete?.containers?.[1].members).toEqual(['Coin', 'Key']);
     expect(Buffer.compare(await readFile(projectPath()), projectBefore)).toBe(0);
     expect(Buffer.compare(await readFile(objectPath('Gem')), objectBefore)).toBe(0);
   });
@@ -218,28 +226,38 @@ describe('delete_object and containers', () => {
     expect((await readProject()).containers).toEqual([{ members: ['Hitbox', 'Shield'] }]);
   });
 
-  it('puts everything back when the write of project.c3proj fails after the container change was made', async () => {
+  it('puts everything back when the check of the written project.c3proj fails, after the container change was written', async () => {
     const projectBefore = await readFile(projectPath());
     const objectBefore = await readFile(objectPath('Gem'));
-    let changed = false;
-    const removeFromProject = writer.removeFromProject.bind(writer);
-    writer.removeFromProject = async (category, name, options) => {
-      await removeFromProject(category, name, {
-        alsoChange: project => { options?.alsoChange?.(project); changed = true; },
-      });
+    const internals = writer as unknown as {
+      atomicWrite: (path: string, content: string | Buffer) => Promise<void>;
+      verifyWrittenFile: (path: string, entityName: string, expected: string) => Promise<unknown>;
     };
-    const internals = writer as unknown as { atomicWrite: (path: string, content: string | Buffer) => Promise<void> };
+    // The real replace happens first: the check after it fails, so project.c3proj holds the call's own text
+    // until the call is undone
+    const projectWrites: ProjectFile[] = [];
     const atomicWrite = internals.atomicWrite.bind(writer);
     internals.atomicWrite = async (path, content) => {
-      if (path.endsWith('project.c3proj')) throw new Error('disk full');
+      if (path.endsWith('project.c3proj')) projectWrites.push(JSON.parse(String(content)) as ProjectFile);
       return atomicWrite(path, content);
+    };
+    const verifyWrittenFile = internals.verifyWrittenFile.bind(writer);
+    internals.verifyWrittenFile = async (path, entityName, expected) => {
+      if (path.endsWith('project.c3proj')) throw new Error('disk full');
+      return verifyWrittenFile(path, entityName, expected);
     };
     const data = await call('delete_object', { name: 'Gem' });
     expect(data.isError).toBe(true);
     expect(data.text).toContain('disk full');
-    expect(changed).toBe(true);
+    // The first write is the call's update; it already lacks the registration and the membership
+    expect(projectWrites.length).toBeGreaterThan(0);
+    expect(projectWrites[0].objectTypes.items).not.toContain('Gem');
+    expect(projectWrites[0].containers![1].members).toEqual(['Coin', 'Key']);
     expect(Buffer.compare(await readFile(projectPath()), projectBefore)).toBe(0);
     expect(Buffer.compare(await readFile(objectPath('Gem')), objectBefore)).toBe(0);
+    const project = await readProject();
+    expect(project.objectTypes.items).toContain('Gem');
+    expect(project.containers![1].members).toEqual(['Gem', 'Coin', 'Key']);
   });
 
   it('removes a container left with fewer than two members, in the same update', async () => {
