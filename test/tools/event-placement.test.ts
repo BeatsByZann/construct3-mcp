@@ -243,14 +243,17 @@ describe('add_event_to_sheet destinations', () => {
   });
 
   it('refuses an unknown argument that ends in Sid or EventPath instead of writing at the top level', async () => {
-    const { server, writer } = setup();
-    for (const wrong of ['parentsid', 'siblingEventpath', 'grouppath']) {
-      const text = errorText(await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x', [wrong]: 'G' }));
-      expect(text, wrong).toContain(`add_event_to_sheet does not take "${wrong}".`);
+    const { server, reader, writer, drawn } = setup();
+    const before = JSON.stringify(await reader.readEventSheet('Sheet1'));
+    const misspelled: Array<[string, string | number]> = [['parentsid', 'G'], ['siblingEventpath', 'G'], ['grouppath', 'G'], ['parentSID', 100], ['siblingSID', 101]];
+    for (const [wrong, value] of misspelled) {
+      // The schema is strict, so the message is the ZodError's JSON, in which the key's quotes are escaped
+      await expect(server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x', [wrong]: value }), wrong)
+        .rejects.toThrow(new RegExp(`Unknown key\\(s\\) \\\\"${wrong}\\\\" in the arguments of add_event_to_sheet: they would not be written, so the call is refused\\.`));
     }
-    const result = await server.callTool('add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x', parentSID: 100 });
-    expect(errorText(result)).toBe('add_event_to_sheet does not take "parentSID". The destination arguments are groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath and position. Nothing was changed.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(drawn.count).toBe(0);
+    expect(JSON.stringify(await reader.readEventSheet('Sheet1'))).toBe(before);
   });
 
   it('keeps adding at the start and the end of the top level as before', async () => {
@@ -372,7 +375,6 @@ describe('refusals', () => {
       ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'X', siblingSid: 101, position: 'before' }],
       ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'X', parentSid: 311 }],
       ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'function', functionName: 'X', parentSid: 710 }],
-      ['add_event_to_sheet', { sheetName: 'Sheet1', eventType: 'comment', commentText: 'x', siblingSID: 101 }],
     ];
     for (const [tool, args] of calls) {
       const { server, reader, writer, drawn } = setup([...sheetEvents(), customActionBlock, functionWithBlock]);

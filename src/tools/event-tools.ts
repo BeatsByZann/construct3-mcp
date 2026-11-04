@@ -308,7 +308,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   // ─── add_event_to_sheet ───────────────────────────────────
 
-  // The argument fields are held apart so the handler can tell a misspelled destination argument from a known one
+  // The arguments add_event_to_sheet takes; the object schema built from them is strict, so any other top-level argument is refused
   const addEventToSheetShape = {
     sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
     eventType: z.enum(['group', 'function', 'variable', 'include', 'comment', 'script']).describe('Type of event to add'),
@@ -352,13 +352,6 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       let undoPlacement: (() => void) | undefined;
       let writeStarted = false;
       try {
-        // A destination argument misspelled would otherwise be dropped and the event written at the top level
-        const known = new Set(Object.keys(addEventToSheetShape));
-        const misspelled = Object.keys(args).find(k => !known.has(k) && /(sid|eventpath|grouppath)$/i.test(k));
-        if (misspelled !== undefined) {
-          return toolError(nothingChanged(`add_event_to_sheet does not take "${misspelled}". The destination arguments are groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath and position.`));
-        }
-
         // Its checks compare the sheet with the other sheets by registered name
         const unregistered = await unregisteredSheetError(reader, args.sheetName);
         if (unregistered) return unregistered;
