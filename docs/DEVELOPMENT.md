@@ -119,6 +119,7 @@ construct3-mcp/
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── layer-order.ts          # Layer and instance order tools (3)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
+│   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers
 │       └── workflows.ts            # Workflow prompts (7)

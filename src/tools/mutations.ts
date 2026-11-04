@@ -13,6 +13,7 @@ import { registerLayerOrderTools } from './layer-order.js';
 import { registerLayoutTools } from './layout-tools.js';
 import { registerLayerRenameTools } from './layer-rename.js';
 import { registerProjectTools } from './project-tools.js';
+import { registerHierarchyTools } from './hierarchy-tools.js';
 import { registerAnimationTools } from './animation-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 
@@ -29,6 +30,7 @@ export function registerMutationTools(
   registerLayoutTools(deps);
   registerLayerRenameTools(deps);
   registerProjectTools(deps);
+  registerHierarchyTools(deps);
   registerAnimationTools(deps);
   registerTimelineTools(deps);
 }
