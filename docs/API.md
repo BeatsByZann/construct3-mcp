@@ -1036,6 +1036,22 @@ A rename that only changes the letter case (`Main` to `MAIN`) breaks no event, s
 
 The layout is written first, then the event sheets; if one fails, everything written is restored from its backup, except a file saved again in the editor meanwhile, which is left as it is and named in the error.
 
+### `rename_layer`
+
+Rename a layer in one or more layouts in one call (#ISSUE). In each layout the layer is found as [`update_layer`](#update_layer) finds it (its exact name, or a sub-layer by its path such as `"Main > HUD"`), or else the layer whose name differs only in letter case. The new name must not match another layer of the layout, sub-layers included, ignoring case. Every layout is read and checked before anything is written; a refusal changes nothing.
+
+The `"layer"` parameters of conditions and actions whose whole expression is the quoted old name (ignoring case) name a layer of whatever layout runs the event sheet. They are pointed at the new name only when every layout with a layer of the old name is in `layoutNames`; while another layout has one (or a layout file the server could not parse names the old name), they are listed in a warning and not changed, as with `update_layer`. Other strings that name the layer (`LayerScale("Main")`, scripts, function call arguments) are listed, never changed. A rename that only changes the letter case changes no event sheet.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutNames` | string[] | Yes | 1 to 200 layouts; each is renamed once, also when listed twice or in another letter case |
+| `layerName` | string | Yes | Current layer name, or a sub-layer path |
+| `newName` | string | Yes | New layer name |
+| `updateReferences` | boolean | No | Default `true`; `false` lists the parameters instead of changing them |
+| `dryRun` | boolean | No | Default `false`; `true` returns `wouldWrite` and the warnings and writes nothing |
+
+Returns `{ success, entity, category: "layer", action: "renamed", newName, layouts, filesWritten, warnings?, unscannedFiles? }`; with `dryRun`, `action: "rename_preview"`, `dryRun: true` and `wouldWrite` instead of `filesWritten`. A layout whose layer already has the new name is left out of `layouts`. The layouts are written first, then the event sheets; when a write fails, the files the call wrote are rolled back, except a file another write changed since (a save in the editor), which is left as it is and named with its `.bak`. When the first write fails, nothing had been written, and the error says so. This is a rollback of the failed call, not an undo a user can run later. If the server process stops during the call (for example out of memory), nothing is rolled back; the `.bak` files the call left are the way back. Before each layout or event sheet is replaced, the call copies it to a `.bak` file beside it (for example `layouts/Layout 1.json.bak`), which holds the file as it was before the call and stays after a successful call, until a later call writes that file again.
+
 ### `delete_layer`
 
 Delete a layer or sub-layer from a layout, together with its sub-layers.

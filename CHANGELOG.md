@@ -7,6 +7,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 ### Added
 
 - `C3MCP_MAX_FILE_MB`, a setting of whoever starts the server (whole megabytes, 1 to 128; default 10), sets the size limit for the object type, family, event sheet, layout and script files the server reads, for the project files, flowcharts and timelines the analysis tools read, and for the entity files and `project.c3proj` it writes. Another value keeps the default, and the refusals say it was ignored. Memory use grows with the whole project; TROUBLESHOOTING has measurements (#ISSUE).
+- `rename_layer` renames a layer in one or more layouts in one call and points the `"layer"` parameters that are exactly its quoted old name at the new name when every layout with a layer of that name is renamed; `dryRun` reports the files it would write. When a write fails, the files the call wrote are rolled back, except one another write changed since (#ISSUE).
 
 ### Changed
 
