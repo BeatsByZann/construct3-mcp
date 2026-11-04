@@ -7,6 +7,8 @@ import type { ObjectDependencyNode, UnanalysedObjectFile } from '../types.js';
 import { getProjectIndex, type ProjectIndex } from './index-builder.js';
 import { searchUnscannedFiles, type UnscannedFileReport } from './unscanned-uses.js';
 import { nameTerm, numberTerm, type RawTextTerm } from '../raw-text-search.js';
+import { containerMemberships, type ContainerMembership } from '../containers.js';
+import { nameKey } from '../names.js';
 
 /** A file the index could not parse, and whether its text search found anything (no `names`: see the objects) */
 export type UnscannedFileSummary = Omit<UnscannedFileReport, 'names'>;
@@ -66,6 +68,8 @@ export interface OrphanedObjectsResult {
     isGlobal: boolean;
     /** Families (that no event uses) the object is a member of */
     families?: string[];
+    /** Containers in project.c3proj that list the object */
+    containers?: ContainerMembership[];
   }>;
   count: number;
   totalObjects: number;
@@ -149,6 +153,8 @@ export async function getObjectDependencies(
   } = {}
 ): Promise<ObjectDependencyResult> {
   const index = await getProjectIndex(reader);
+  // Read at use, after the index's check of the disk: never cached (containers can change between calls)
+  const memberships = containerMemberships(reader.getProject());
 
   if (options.object) {
     // Validate the object exists
@@ -160,7 +166,7 @@ export async function getObjectDependencies(
       throw new Error(`Object "${options.object}" not found.${hint} Use list_objects to see all available names.`);
     }
 
-    const node = buildObjectNode(index, options.object);
+    const node = buildObjectNode(index, options.object, memberships);
     const { files, byObject } = await possibleObjectUses(reader, index, [options.object]);
     const possibly = byObject.get(options.object);
     const own = unparsedObjectFiles(index).get(options.object);
@@ -183,7 +189,7 @@ export async function getObjectDependencies(
   const unanalysedObjects: UnanalysedObject[] = [];
 
   for (const objName of index.allObjects) {
-    const node = buildObjectNode(index, objName);
+    const node = buildObjectNode(index, objName, memberships);
     const possibly = byObject.get(objName);
     const own = unparsed.get(objName);
     allNodes.push({ ...node, ...(possibly ? { possiblyReferencedIn: possibly } : {}), ...(own ? { unanalysed: own } : {}) });
@@ -220,8 +226,13 @@ export async function getObjectDependencies(
   };
 }
 
-function buildObjectNode(index: import('./index-builder.js').ProjectIndex, objectName: string): ObjectDependencyNode {
+function buildObjectNode(
+  index: import('./index-builder.js').ProjectIndex,
+  objectName: string,
+  memberships: Map<string, ContainerMembership[]>,
+): ObjectDependencyNode {
   const eventSheets = index.getEventSheetsForObject(objectName);
+  const containers = memberships.get(nameKey(objectName)) ?? [];
   // Layouts with an instance (any layer or sub-layer, or non-world) or an object property naming it
   const usage = index.getObjectUsage(objectName);
   const layouts = [...new Set([
@@ -236,6 +247,7 @@ function buildObjectNode(index: import('./index-builder.js').ProjectIndex, objec
     objectName,
     referencedIn: { eventSheets, layouts },
     families,
+    ...(containers.length > 0 ? { containers } : {}),
     coOccursWith: coOccurs.slice(0, 20), // Limit co-occurrence list
     referenceCount: refs.length + layouts.length,
   };
@@ -254,6 +266,8 @@ export async function findOrphanedObjects(
   reader: Construct3ProjectReader
 ): Promise<OrphanedObjectsResult> {
   const index = await getProjectIndex(reader);
+  // Read at use, after the index's check of the disk: never cached (containers can change between calls)
+  const memberships = containerMemberships(reader.getProject());
   const objectTypes = await reader.readAllObjectTypes();
   const unused = index.allObjects.filter(objName => !index.isObjectUsed(objName));
   const { files, byObject } = await possibleObjectUses(reader, index, unused);
@@ -278,7 +292,14 @@ export async function findOrphanedObjects(
       continue;
     }
     const families = index.getObjectUsage(objName).families;
-    orphaned.push({ name: objName, pluginId, isGlobal, ...(families.length > 0 ? { families } : {}) });
+    const containers = memberships.get(nameKey(objName)) ?? [];
+    orphaned.push({
+      name: objName,
+      pluginId,
+      isGlobal,
+      ...(families.length > 0 ? { families } : {}),
+      ...(containers.length > 0 ? { containers } : {}),
+    });
   }
 
   return {

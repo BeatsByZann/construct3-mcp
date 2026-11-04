@@ -13,6 +13,7 @@
  */
 
 import type { UnscannedFileReport } from './analyzers/unscanned-uses.js';
+import type { ContainerMembership } from './containers.js';
 
 // ─── Project Root ───────────────────────────────────────────
 
@@ -530,6 +531,8 @@ export interface ObjectDependencyNode {
     layouts: string[];
   };
   families: string[];
+  /** Containers in project.c3proj that list the object (absent when there are none) */
+  containers?: ContainerMembership[];
   coOccursWith: string[];
   /** References the index found (event references + layouts) */
   referenceCount: number;

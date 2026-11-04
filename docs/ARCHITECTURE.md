@@ -255,6 +255,7 @@ Supporting modules next to the templates:
 | `construct3/instance-behaviors.ts` | The behavior entries every layout instance carries (object and family behaviors, with default property values) |
 | `construct3/instance-variables.ts` | The instance variable values and effect entries every layout instance carries (object and family variables, family first), kept in step when variables, members or families change |
 | `construct3/hierarchy.ts` | Hierarchy (scene graph) links between the instances of a layout: removing links to deleted instances, the UIDs links name, links that do not hold up |
+| `construct3/containers.ts` | Containers in `project.c3proj`: the member names of each, the containers an object is in (read by name, ignoring case), taking a deleted object type out of every container in the update that deregisters it, and removing a container left with fewer than two members |
 | `construct3/layer-references.ts` | Event sheet strings that name a layer: `"layer"` parameters that are the quoted name (rewritten by a rename) and other string literals (reported) |
 | `construct3/object-images.ts` | The frame and single image files of an object type in `images/`, kept as `.bak` when the object is deleted |
 | `construct3/animation-rename.ts` | Sprite animations in animation folders, and what renaming one changes: frame image file names, `initial-animation` of layout instances, event sheet strings naming it (counted for a warning); the frame image files that move one index up or down when a frame is inserted or deleted |

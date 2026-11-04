@@ -35,6 +35,7 @@ import {
   type UseRule,
 } from '../construct3/analyzers/unscanned-uses.js';
 import { OWN_FILE_UNCHECKED } from '../construct3/analyzers/object-deps.js';
+import { describeContainerRemoval, removeContainerMember, SMALL_CONTAINER_RULE, type ContainerEntry, type ContainerRemoval } from '../construct3/containers.js';
 import { nameTerm, numberTerm } from '../construct3/raw-text-search.js';
 import { classifyReadError, type EntityCategory } from '../construct3/project-reader.js';
 import {
@@ -406,7 +407,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
 
   server.tool(
     'delete_object',
-    'Delete an object type from the project (checks references first: events, including object parameters, expressions, runtime.objects in script actions and the literal name of System "Create object (by name)"; layout instances on any layer or sub-layer, including non-world instances; object properties of other instances; families). Refused without force while anything refers to the object; the response lists where. Event sheets, layouts and families that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text for the name (and, in layouts, the SID): a match is a possible use and refuses without force, as does such a file that cannot be read at all; unscannedFiles lists them. References in project script files and objects created by a name built at runtime are not detected. The frame image files (or single image) of the object in images/ are kept as <file>.bak.',
+    'Delete an object type from the project (checks references first: events, including object parameters, expressions, runtime.objects in script actions and the literal name of System "Create object (by name)"; layout instances on any layer or sub-layer, including non-world instances; object properties of other instances; families). Refused without force while anything refers to the object; the response lists where. Event sheets, layouts and families that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text for the name (and, in layouts, the SID): a match is a possible use and refuses without force, as does such a file that cannot be read at all; unscannedFiles lists them. References in project script files and objects created by a name built at runtime are not detected. The frame image files (or single image) of the object in images/ are kept as <file>.bak. The object type is also taken out of the containers in project.c3proj that list it (containersUpdated), in the same update that removes its registration, since Construct 3 does not open a project whose container lists a missing object type. A container left with fewer than two members is removed (containersRemoved).',
     {
       name: z.string().max(200).describe('Object name to delete'),
       force: z.boolean().optional().default(false).describe('If true, delete even if referenced (does NOT clean up references)'),
@@ -468,6 +469,9 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         }
         warnings.push(...unscannedWarnings(unscanned, 'Deleted'));
 
+        // What the delete takes out of containers (containersUpdated and containersRemoved in the result)
+        let containers: ContainerRemoval = { updated: [], removed: [] };
+
         // Its frame images (or single image) lose their user: kept as .bak, like
         // the image of a deleted frame. They are renamed first; then the name
         // leaves project.c3proj and the object file is deleted (#ISSUE). When a
@@ -506,14 +510,18 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
           }
         });
         warnings.push(...images.warnings);
+        const containerWarning = describeContainerRemoval(containers);
+        if (containerWarning) warnings.push(containerWarning);
 
-        const result: WriteResult = {
+        const result: WriteResult & { containersUpdated?: ContainerEntry[]; containersRemoved?: ContainerEntry[] } = {
           success: true,
           entity: args.name,
           category: 'object',
           action: 'deleted',
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
+          ...(containers.updated.length > 0 ? { containersUpdated: containers.updated } : {}),
+          ...(containers.removed.length > 0 ? { containersRemoved: containers.removed } : {}),
           ...unscannedFields(unscanned),
         };
         return toolResult(result);

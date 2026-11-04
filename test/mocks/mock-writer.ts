@@ -59,8 +59,9 @@ export class MockWriter {
   async removeFromProject(
     category: string,
     name: string,
+    options?: { alsoChange?: (project: Record<string, unknown>) => void },
   ): Promise<void> {
-    this.calls.push({ method: 'removeFromProject', args: [category, name] });
+    this.calls.push({ method: 'removeFromProject', args: [category, name, options] });
   }
 
   async updateProjectProperties(updates: Record<string, unknown>): Promise<string> {
