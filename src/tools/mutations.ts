@@ -19,6 +19,7 @@ import { registerAnimationTools } from './animation-tools.js';
 import { registerEffectTools } from './effect-tools.js';
 import { registerTimelineTools } from './timeline-tools.js';
 import { registerObjectRenameTools } from './object-rename.js';
+import { registerEntityRenameTools } from './entity-rename.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -39,4 +40,5 @@ export function registerMutationTools(
   registerEffectTools(deps);
   registerTimelineTools(deps);
   registerObjectRenameTools(deps);
+  registerEntityRenameTools(deps);
 }

@@ -184,6 +184,7 @@ Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage
 | `update_event_group` | Change a group's title, description, *Active on start*, disabled state and colours in place, keeping its SID and sub-events; refuses a title another group in the same list has, and (without `force`) a rename while a `group-name` parameter or an unparsed sheet may name the old title |
 | `update_comment` | Change a comment event's text and colours in place, by container and index (comments have no SID); a comment row among a block's actions is changed with `update_event_block` |
 | `update_script_event` | Replace a script event's lines, enable or disable it, or remove it, by container and index; a removal needs the script's first line as `expectedText` |
+| `rename_event_sheet` | Rename an event sheet with its includes, layout bindings and project-bar entry (dry run, force); refuses a name taken ignoring case and a change of letter case only |
 | `fix_legacy_behavior_keys` | Rename legacy `"behavior-type"` keys (written by older versions) to `"behaviorType"` in all event sheets, checking each name against the object's behaviors (dry-run by default) |
 | `fix_legacy_event_shapes` | Convert event shapes written by older versions into the editor's own (block `isElse` to a System else condition, condition `isOr` to `isOrBlock`, old-shape function calls to positional arguments, one-string scripts, as older Construct 3 releases also saved them, to lines) where the result is unambiguous; reports the rest and which conversions can change how an event runs (dry-run by default) |
 
@@ -196,6 +197,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `create_layout` | Create a new layout with configurable layers; refuses names that differ from an existing layout only in case |
 | `update_layout` | Update layout event sheet binding and dimensions |
 | `delete_layout` | Delete a layout (blocks startup layout, checks references) |
+| `rename_layout` | Rename a layout with its Go to layout parameters, the timelines that start on it and its project-bar entry; stays the startup layout; lists strings that may name it, never changes them (dry run, force) |
 | `add_layer` | Add a layer (position, visibility, transparency, parallax, blend mode); refuses a name any layer or sub-layer of the layout uses, ignoring case |
 | `update_layer` | Rename a layer or sub-layer or change visibility, interactivity, parallax, blend mode, scale rate, Z elevation; refuses a new name used by another layer or sub-layer, ignoring case; a rename points the event parameters that name the layer at the new name (unless another layout has a layer of that name) and lists other strings that may name it |
 | `rename_layer` | Rename a layer in several layouts at once, with its `"layer"` parameters and a dry run |
@@ -544,6 +546,7 @@ construct3-mcp/
 │   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert, delete, reorder and duplicate
 │   │   ├── file-size-limit.ts      # The size limit: C3MCP_MAX_FILE_MB, 10MB by default, whole megabytes up to 128
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
+│   │   ├── entity-name-references.ts # Where an event sheet or a layout is named (rename_event_sheet, rename_layout)
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
@@ -602,6 +605,7 @@ construct3-mcp/
 │   │   ├── container-tools.ts      # Container tools (4)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── layer-order.ts          # Layer and instance order tools (3)
+│   │   ├── entity-rename.ts        # Event sheet and layout renames with their references (2)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
@@ -729,7 +733,7 @@ We welcome contributions! Here's how to get started:
 
 - **Folder Format Only**: Works with .c3proj folder projects; `pack_project` can write a .c3p, but .c3p files cannot be opened
 - **Editor Holds the Project in Memory**: Close and reopen the project in Construct 3 after MCP edits and before saving there, or the editor can overwrite them
-- **No Rename Refactoring**: Event sheets, layouts and timelines cannot be renamed (`rename_object_type` and `rename_family` rename object types and families with what names them); renaming an event variable (`update_event_variable`) does not update the events that use the old name, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38); `rename_layer` renames it in several layouts in one call. `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
+- **No Rename Refactoring**: Timelines cannot be renamed (`rename_event_sheet`, `rename_layout`, `rename_object_type` and `rename_family` rename event sheets, layouts, object types and families with what names them); renaming an event variable (`update_event_variable`) does not update the events that use the old name, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38); `rename_layer` renames it in several layouts in one call. `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
 - **Runtime Testing Needs an Export or the Editor's Preview**: Only the Construct editor exports or previews a project, so the runtime tools start from an exported folder (`serve_preview`) or a preview in a browser with a debugging port; they drive Chromium-based browsers (Chrome, Edge) only
 - **No ACE Validation**: Event block conditions/actions are not validated against plugin schemas (the AI caller is expected to know valid ACE IDs). Only the editor load-time rules listed under `validate_project` are checked; triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only. OR blocks are created with `isOrBlock`
 
