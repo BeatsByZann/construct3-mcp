@@ -155,6 +155,19 @@ describe('parsing', () => {
     expect(messages('"unterminated')).toEqual(['a string without its closing quote']);
     expect(messages('1 + "open')).toEqual(['a string without its closing quote']);
   });
+
+  it('reports nesting past the limit once, instead of overflowing the stack, and accepts real depths', () => {
+    const tooDeep = ['expression-grammar'];
+    const message = ['the expression is nested more than 200 levels deep'];
+    const parens = (n: number) => `${'('.repeat(n)}1${')'.repeat(n)}`;
+    expect(messages(parens(1000))).toEqual(message);
+    expect(codes(parens(5000))).toEqual(tooDeep);
+    expect(messages(`${'max('.repeat(5000)}1`)).toEqual(message);
+    expect(messages(`${'1 ? '.repeat(5000)}1`)).toEqual(message);
+    expect(messages(`${'-'.repeat(5000)}1`)).toEqual(message);
+    expect(messages(parens(50))).toEqual([]);
+    expect(messages(`${'-'.repeat(50)}1`)).toEqual([]);
+  });
 });
 
 describe('name resolution', () => {
@@ -181,7 +194,8 @@ describe('name resolution', () => {
     expect(messages('distance(1, 2)')).toEqual(['"distance" takes 4 argument(s); 2 given.']);
     expect(messages('Sprite.ImagePointX()')).toEqual(['"Sprite.ImagePointX" takes 1 argument(s); 0 given.']);
     expect(messages('Sprite.hp(1)')).toEqual(['"Sprite.hp" is an instance variable and takes no arguments.']);
-    expect(messages('random()')).toEqual(['"random" takes 2 argument(s); 0 given.']);
+    expect(messages('random()')).toEqual(['"random" takes at least 1 argument(s); 0 given.']);
+    expect(messages('random(1)')).toEqual([]);
     expect(messages('random(1, 6) + loopindex + loopindex("i") + max(1, 2, 3)')).toEqual([]);
     expect(messages('dt + pi + LayoutName')).toEqual([]);
   });

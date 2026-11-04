@@ -310,6 +310,12 @@ describe('fetching the sources', () => {
       }
     });
 
+    it('refuses a Location that is not a URL, and requests nothing more', async () => {
+      const stub = fetchStub({ ...fixtureRoutes(), [PLUGINS_URL]: redirectTo('http://[') });
+      expect(await fetchCatalogSources('r495-2', stub)).toEqual({ ok: false, reason: 'refused', detail: 'redirected to another host' });
+      expect(stub.calls.map(call => call.url)).toEqual([PLUGINS_URL]);
+    });
+
     it('refuses four hops', async () => {
       const stub = fetchStub({
         [PLUGINS_URL]: redirectTo(`${PLUGINS_URL}?1`),
@@ -592,6 +598,9 @@ describe('the cache write', () => {
     } finally {
       spy.mockRestore();
     }
+    const named = deps({ fetch: fetchStub(fixtureRoutes()) });
+    expect(await runBuildCatalog(['r495-2', '--out', join(dir, 'x', 'other.json')], named)).toBe(2);
+    expect(named.errors).toEqual([expect.stringContaining('--out must name a file called r495-2.json')]);
     const stub = fetchStub(fixtureRoutes());
     for (const args of [['bad'], [], ['r495-2', '--out', join(dir, 'wrong.json')], ['r495-2', '--what'], ['r495-2', '--from']]) {
       const run = deps({ fetch: stub });

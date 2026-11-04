@@ -174,21 +174,30 @@ export async function validateProjectIntegrity(
   checkMissingBehaviorEntries(layouts, objects, families, warnings);
 
   // Conditions, actions and expressions against Construct's definitions
-  await checkAcesAndExpressions(
-    reader,
-    {
-      objects,
-      families,
-      sheets: eventSheets,
-      unreadable: {
-        objectTypes: unscannedFilesOf('objectTypes', registeredObjects, objects, objectFailures).map(f => f.file),
-        families: unscannedFilesOf('families', registeredFamilies, families, familyFailures).map(f => f.file),
-        eventSheets: unscannedFilesOf('eventSheets', registeredSheets, eventSheets, sheetFailures).map(f => f.file),
+  // A fault inside this step becomes one info issue, so no single value can take the whole report down.
+  try {
+    await checkAcesAndExpressions(
+      reader,
+      {
+        objects,
+        families,
+        sheets: eventSheets,
+        unreadable: {
+          objectTypes: unscannedFilesOf('objectTypes', registeredObjects, objects, objectFailures).map(f => f.file),
+          families: unscannedFilesOf('families', registeredFamilies, families, familyFailures).map(f => f.file),
+          eventSheets: unscannedFilesOf('eventSheets', registeredSheets, eventSheets, sheetFailures).map(f => f.file),
+        },
       },
-    },
-    warnings,
-    info,
-  );
+      warnings,
+      info,
+    );
+  } catch {
+    info.push({
+      check: 'ace-check-failed',
+      entity: 'project',
+      message: 'The check of conditions, actions and expressions stopped on an unexpected fault, so it may have found less than it would otherwise. The other checks ran.',
+    });
+  }
 
   // Info checks (orphaned files also warn about file-name-case-mismatch)
   await checkOrphanedFiles(reader, project, warnings, info);

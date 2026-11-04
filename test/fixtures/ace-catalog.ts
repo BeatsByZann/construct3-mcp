@@ -59,7 +59,7 @@ export const TEST_CATALOG: AceCatalog = {
       expressions: {
         choose: { name: 'choose', params: ['any', 'any'], variadic: true, returns: 'any' },
         int: { name: 'int', params: ['any'], returns: 'number' },
-        random: { name: 'random', params: ['number', 'number'], returns: 'number' },
+        random: { name: 'random', params: ['number'], variadic: true, returns: 'number' },
         distance: { name: 'distance', params: ['number', 'number', 'number', 'number'], returns: 'number' },
         max: { name: 'max', params: ['number', 'number'], variadic: true, returns: 'number' },
         loopindex: { name: 'loopindex', params: [], variadic: true, returns: 'number' },

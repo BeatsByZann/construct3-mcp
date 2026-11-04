@@ -395,8 +395,14 @@ describe('releaseHedge and describeEventAceProblem', () => {
     expect(releaseHedge('r495-2', 50602)).toBe(sentence);
   });
 
-  it('adds nothing for an equal, older or unknown release', () => {
-    for (const saved of [44000, 49502, undefined]) {
+  it('says the project is older when it was saved with an older release', () => {
+    const older = ' The project was saved with release r440, older than r495.2 whose definitions were used, so the editor that saved it may have defined this differently.';
+    expect(releaseHedge('r495-2', 44000)).toBe(older);
+    expect(describeEventAceProblem(problem, 'r495-2', 44000).endsWith(older)).toBe(true);
+  });
+
+  it('adds nothing for an equal or unknown release', () => {
+    for (const saved of [49502, undefined]) {
       expect(describeEventAceProblem(problem, 'r495-2', saved)).toBe(describeEventAceProblem(problem, 'r495-2'));
       expect(describeEventAceProblem(problem, 'r495-2', saved)).not.toContain('saved with release');
     }

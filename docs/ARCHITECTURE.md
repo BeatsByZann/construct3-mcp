@@ -320,7 +320,7 @@ Conditions, actions and the expressions in their parameters are checked against 
 
 | Module | Purpose |
 |--------|---------|
-| `ace-catalog-source.ts` | Builds a catalogue from the three files the editor serves for a release (the common ACEs are read out of `main.js`), with the fetch rules, the cache file (read, write, default folder) and the entry of the developer script `scripts/build-ace-catalog.mjs` |
+| `ace-catalog-source.ts` | Builds a catalogue from the three files the server requests for a release (the common ACEs are read out of `main.js`), with the fetch rules, the cache file (read, write, default folder) and the entry of the developer script `scripts/build-ace-catalog.mjs` |
 | `ace-catalog-provider.ts` | Hands out the catalogue of a release: a local folder, else the cache file, else a fetch that is then cached; the fallback release; one attempt per release per process |
 | `ace-catalog.ts` | Checks one condition or action against a catalogue or an addon's definitions (`checkAce`), a whole event tree (`checkEventAces`), and tells which ACEs an event tool changed |
 | `addon-definitions.ts` | The registry of third-party addon definitions, and the reading of addon folders and `.c3addon` archives inside the allowed roots |

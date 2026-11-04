@@ -25,7 +25,7 @@ import { zipWithDeflate, paddedJson, centralEntryOffsets, localOffsetOf, type Fi
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, readFile: vi.fn(actual.readFile), realpath: vi.fn(actual.realpath), stat: vi.fn(actual.stat) };
+  return { ...actual, open: vi.fn(actual.open), readFile: vi.fn(actual.readFile), realpath: vi.fn(actual.realpath), stat: vi.fn(actual.stat) };
 });
 
 const FIXTURE = join(__dirname, '..', 'fixtures', 'addons', 'probe-timer');
@@ -47,6 +47,7 @@ beforeEach(async () => {
 afterEach(async () => {
   restoreNetwork();
   vi.restoreAllMocks();
+  vi.mocked(open).mockReset();
   vi.mocked(realpath).mockReset();
   vi.mocked(readFile).mockReset();
   vi.mocked(stat).mockReset();
@@ -267,6 +268,25 @@ describe('.c3addon archives', () => {
     expect(report.loaded).toEqual([]);
     expect(report.skipped).toEqual([{ name: 'huge.c3addon', reason: 'the archive is larger than 25MB. Nothing was loaded.' }]);
     expect(vi.mocked(readFile).mock.calls.some(call => String(call[0]).endsWith('huge.c3addon'))).toBe(false);
+  });
+
+  it('refuses an archive that holds more bytes than its size said when it was opened', async () => {
+    const path = await writeArchive(join(project, 'grows.c3addon'), await definitionEntries());
+    const defs = await registryWith(project);
+    const actualOpen = (await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).open;
+    vi.mocked(open).mockImplementationOnce((async (...args: Parameters<typeof actualOpen>) => {
+      const real = await actualOpen(...args);
+      return {
+        stat: async () => ({ ...(await real.stat()), size: (await real.stat()).size - 1 }),
+        read: (...readArgs: unknown[]) => (real.read as (...a: unknown[]) => unknown)(...readArgs),
+        close: () => real.close(),
+      };
+    }) as never);
+    const report = await defs.load(path);
+    expect(report.loaded).toEqual([]);
+    expect(report.skipped).toEqual([{ name: 'grows.c3addon', reason: 'the archive changed while it was read. Nothing was loaded.' }]);
+    const again = await defs.load(path);
+    expect(again.loaded.map(d => d.id)).toEqual(['ProbeTimer']);
   });
 
   it('refuses an archive outside the roots, and one reached through a junction that leads out', async ctx => {

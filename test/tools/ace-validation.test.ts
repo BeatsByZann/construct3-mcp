@@ -394,6 +394,9 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
     expect(withCode(older, 'ace-catalog-other-release')).toHaveLength(1);
     expect(older.warnings.filter(w => w.check.startsWith('ace-') || EXPRESSION_CODES.has(w.check))).toHaveLength(4);
     expect(everyIssue(older).some(hedged)).toBe(false);
+    const olderWords = (i: Issue) => i.message.includes('older than r495.2 whose definitions were used');
+    expect(older.warnings.filter(w => w.check.startsWith('ace-')).every(olderWords)).toBe(true);
+    expect(olderWords(withCode(older, 'expression-unknown-function')[0])).toBe(true);
 
     const same = await run(49502);
     expect(withCode(same, 'ace-catalog-other-release')).toEqual([]);
@@ -462,6 +465,39 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
   it('runs 32 checks', async () => {
     const { validate } = await openForValidation(MINIMAL);
     expect((await validate()).summary.checksRun).toBe(32);
+  });
+
+  it('reports a very deeply nested value as one finding and still runs every other check', async () => {
+    const { dir, validate } = await openForValidation(MINIMAL, { release: 49502 });
+    const { events, sids } = aceFaults();
+    await setMainEvents(dir, events);
+    const deep = `${'('.repeat(5000)}1${')'.repeat(5000)}`;
+    await addSheet(dir, 'Deep', [block([onStart()], [action('set-x', 'Sprite', { x: deep })])]);
+    const report = await validate();
+    const grammar = withCode(report, 'expression-grammar');
+    expect(grammar).toHaveLength(1);
+    expect(grammar[0].message).toContain('nested more than 200 levels deep');
+    expect(report.warnings.filter(w => w.check === 'ace-unknown-ace').map(w => w.entity)).toEqual([`eventSheets/MainSheet/sid:${sids.unknownAce}`]);
+    expect(report.summary.checksRun).toBe(32);
+  });
+
+  it('turns a fault inside the ACE and expression step into one info issue and keeps every other check', async () => {
+    const reference = await openForValidation(MINIMAL, { release: 49502 });
+    await setMainEvents(reference.dir, aceFaults().events);
+    const expected = await reference.validate();
+
+    const provider = await fixtureProvider();
+    const { dir, validate } = await openForValidation(MINIMAL, { release: 49502, provider });
+    await setMainEvents(dir, aceFaults().events);
+    vi.spyOn(provider, 'catalogFor').mockRejectedValue(new Error('unexpected fault in /private/place'));
+    const report = await validate();
+    const failed = withCode(report, 'ace-check-failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].entity).toBe('project');
+    expect(failed[0].message).not.toContain('private');
+    expect(catalogIssues(report).map(i => i.check)).toEqual(['ace-check-failed']);
+    expect(otherIssues(report)).toEqual(otherIssues(expected));
+    expect(report.summary.checksRun).toBe(32);
   });
 
   describe('valid projects', () => {

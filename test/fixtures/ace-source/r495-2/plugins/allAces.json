@@ -48,10 +48,10 @@
         {
           "id": "random",
           "expressionName": "random",
+          "isVariadicParameters": true,
           "returnType": "number",
           "params": [
-            { "id": "a", "type": "number" },
-            { "id": "b", "type": "number" }
+            { "id": "a", "type": "number" }
           ]
         },
         {

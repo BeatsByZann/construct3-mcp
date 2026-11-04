@@ -179,7 +179,7 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
   server.tool(
     'load_addon_definitions',
     'Load a third-party addon\'s definitions (addon.json and aces.json) so that validate_project and the event tools can check its conditions, actions and expressions. '
-      + 'The path is an addon folder, or a folder holding several addon folders. '
+      + 'The path is an addon folder, or a folder holding several addon folders; give an absolute path, because a relative one is resolved against the folder the server was started in. '
       + 'The path must lie inside the project folder (for a .c3p project, the folder that holds the .c3p) or inside a root named in the C3_ADDON_DEFINITIONS variable. '
       + 'Call it without a path to list the definitions loaded so far. '
       + 'It changes only what this server checks; it writes nothing to the project.',

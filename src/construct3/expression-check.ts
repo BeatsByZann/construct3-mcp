@@ -342,6 +342,10 @@ class Parser {
   private pos = 0;
   readonly problems: ExpressionProblem[] = [];
   private stopped = false;
+  private depth = 0;
+
+  /** Levels of parentheses, arguments, ternaries and signs a value may nest; real values stay far below it. */
+  private static readonly MAX_DEPTH = 200;
 
   constructor(
     private readonly tokens: Token[],
@@ -376,7 +380,17 @@ class Parser {
   }
 
   private expression(): void {
+    if (!this.enter()) return;
     this.ternary();
+    this.depth--;
+  }
+
+  /** Count one level of nesting; past the limit, report it and stop, so a deep value cannot overflow the stack. */
+  private enter(): boolean {
+    if (++this.depth <= Parser.MAX_DEPTH) return true;
+    this.depth--;
+    this.syntax(`the expression is nested more than ${Parser.MAX_DEPTH} levels deep`);
+    return false;
   }
 
   private ternary(): void {
@@ -406,7 +420,13 @@ class Parser {
   }
 
   private unary(): void {
-    if (this.isOp('-') || this.isOp('+')) { this.take(); this.unary(); return; }
+    if (this.isOp('-') || this.isOp('+')) {
+      this.take();
+      if (!this.enter()) return;
+      this.unary();
+      this.depth--;
+      return;
+    }
     this.primary();
   }
 

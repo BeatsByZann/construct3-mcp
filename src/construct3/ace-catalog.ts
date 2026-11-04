@@ -310,14 +310,20 @@ export function checkEventAces(
 
 /**
  * The sentence added to a finding that depends on the catalogue when the
- * project was saved with a newer release than the one whose definitions were
- * used, or '' when it was not (also when either release cannot be ordered).
+ * project was saved with a different release than the one whose definitions
+ * were used (newer or older), or '' when it was not (also when either release
+ * cannot be ordered).
  */
 export function releaseHedge(catalogRelease: string, savedWithRelease?: number): string {
-  if (savedWithRelease === undefined || !(savedWithRelease > releaseNumber(catalogRelease))) return '';
+  if (savedWithRelease === undefined) return '';
+  const used = releaseNumber(catalogRelease);
+  const newer = savedWithRelease > used;
+  if (!newer && !(savedWithRelease < used)) return '';
   const saved = releaseFromSaved(savedWithRelease);
   if (saved === undefined) return '';
-  return ` The project was saved with release ${releaseLabel(saved)}, newer than ${releaseLabel(catalogRelease)} whose definitions were used, so the editor that saved it may define this.`;
+  return newer
+    ? ` The project was saved with release ${releaseLabel(saved)}, newer than ${releaseLabel(catalogRelease)} whose definitions were used, so the editor that saved it may define this.`
+    : ` The project was saved with release ${releaseLabel(saved)}, older than ${releaseLabel(catalogRelease)} whose definitions were used, so the editor that saved it may have defined this differently.`;
 }
 
 /** A problem worded for a tool warning: which ACE, on which object, and what is wrong. */
