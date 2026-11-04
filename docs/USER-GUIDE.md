@@ -150,7 +150,7 @@ To see the tool list without any AI tool, use the MCP Inspector in CLI mode:
 npx -y @modelcontextprotocol/inspector --cli node "C:/Tools/construct3-mcp/dist/index.js" "C:/Games/My Game" --method tools/list
 ```
 
-This prints a JSON list of 84 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools` (that figure was measured on the 83-tool server and has not been measured again for 84 tools); both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
+This lists 84 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and `Schema portability: 0 errors, 16 warnings across 8 tools` (that figure was measured on the 83-tool server and has not been measured again for 84 tools); both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
 
 ### Alternative: run from GitHub without cloning
 
@@ -758,7 +758,7 @@ Update the server: since 1.10.0 each tool call checks the project files and read
 Version 1.9.2 and older keep the lists from before the undo: reconnect the server, or update it. See [Undoing a session](#undoing-a-session).
 
 **`validate_project` says valid, but the event is wrong or Construct 3 complains.**
-`valid: true` is not a guarantee. Action and condition ids, parameter keys and most expression syntax are not checked. Open the project and look at the new events. Read the `warnings` too.
+`valid: true` is not a guarantee. Condition and action ids, parameter names, combo values and the expressions in parameters are checked against Construct's definitions, but a finding is only a warning, an addon whose definitions are not loaded is not checked, and the checks are skipped when the definitions cannot be had (one info issue says so). Open the project and look at the new events. Read the `warnings` too.
 
 **`validate_project` says `valid: false`, but `summary.errors` is 0.**
 A registered file over the 10 MB read limit, usually a large layout, was not checked (`unscanned-file` warning). `complete` is `false` and `unscannedFiles` names the file. See [Limits](#limits).

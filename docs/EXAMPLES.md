@@ -491,7 +491,7 @@ The script is written the way the editor saves it: `{ "type": "script", "languag
 }
 ```
 
-Parameter keys are the ones Construct 3 saves: instance variable conditions and actions use `"instance-variable"` (the reference checks of `update_object_properties` and `validate_project` only recognise that key; System event variable ACEs use `"variable"`). The comparison operator is a number: `0` is *equal to*, as in editor-saved sheets; the others follow Construct's comparison order (`1` not equal, `2` less, `3` less or equal, `4` greater, `5` greater or equal), which was not checked in the editor for this document. The server does not validate parameter keys or operator values, so if in doubt build one such condition in the editor and read it with `get_eventsheet_details`.
+Parameter keys are the ones Construct 3 saves: instance variable conditions and actions use `"instance-variable"` (the reference checks of `update_object_properties` and `validate_project` only recognise that key; System event variable ACEs use `"variable"`). The comparison operator is a number: `0` is *equal to*, as in editor-saved sheets; the others follow Construct's comparison order (`1` not equal, `2` less, `3` less or equal, `4` greater, `5` greater or equal), which was not checked in the editor for this document. `validate_project` and the event tools warn about parameter names and combo values that Construct's definitions do not list (`ace-unknown-parameter`, `ace-invalid-choice`), but only when those definitions are available, and the operator numbers above were not compared with them; if in doubt build one such condition in the editor and read it with `get_eventsheet_details`.
 
 ### Else Block
 
