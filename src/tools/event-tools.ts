@@ -14,6 +14,7 @@ import {
   boundedRecord,
   caseClashError,
   folderCaseClashError,
+  deleteRegisteredEntity,
 } from './shared.js';
 import { findFolderPathClash, findNameClash } from '../construct3/names.js';
 import {
@@ -663,9 +664,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
         warnings.push(...unscannedWarnings(unscanned, 'Deleted'));
 
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.name);
-        const backupPath = await writer.deleteEntityFile('eventSheets', args.name, subfolder);
-        await writer.removeFromProject('eventSheets', args.name);
+        const backupPath = await deleteRegisteredEntity(writer, 'eventSheets', args.name);
         resetProjectIndex(reader);
 
         const result: WriteResult = {

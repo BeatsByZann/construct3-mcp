@@ -148,6 +148,18 @@ Same as above but for behaviors. Add a behavior of that type to any object in th
 - Use `force: true` to delete anyway (references will NOT be cleaned up — you'll need to fix them manually; `validate_project` then reports the leftover instances, object parameters, family memberships and Particles object properties as `broken-object-reference`; uses in expressions and scripts are not reported, so fix the ones the force warning lists)
 - The error response lists all locations where the object is referenced
 
+### A delete tool's error ends with what is on disk ("project.c3proj still lists ...", "... no longer lists ...", "... is missing")
+
+**Cause**: `delete_object`, `delete_family`, `delete_event_sheet` or `delete_layout` failed after a step, or `project.c3proj` was saved in the Construct 3 editor during the delete. After any undo, the tool reads `project.c3proj` and the entity's file again and says what it found at the end of the error. A refusal because the entity's file changed on disk before the tool wrote anything is a different message: it ends with "Run the tool again: it reads the file as it is now." and changes nothing.
+
+**Solutions**, by the sentence the error ends with (`layouts/Level.json` stands for the entity's file):
+- "project.c3proj still lists "Level", and layouts/Level.json is on disk": nothing is left half done. Run the tool again. If the error also names files left as they are, check the project (`validate_project`, `git diff`) first.
+- "project.c3proj no longer lists "Level", but layouts/Level.json is still on disk": check the file, then delete it or register it again in the Construct 3 editor. For objects, event sheets and layouts, `validate_project` lists it as `orphaned-file` (info); for families, check the file by hand.
+- "layouts/Level.json was deleted, but project.c3proj ... lists "Level" again" or "project.c3proj lists "Level", but layouts/Level.json is missing": put the file back from `layouts/Level.json.bak`, or remove the name in the Construct 3 editor.
+- "project.c3proj is missing": put it back from `project.c3proj.bak` (its last backup) before you open the project.
+- "project.c3proj could not be read": another program may hold it, or its JSON may be damaged. Check it; if the JSON is damaged, put it back from `project.c3proj.bak` before you open the project.
+- "Whether layouts/Level.json is still on disk could not be checked": the file's state could not be read. Check the file and `project.c3proj` by hand before you run the tool again.
+
 ### "Family is still referenced"
 
 **Cause**: `delete_family` found events or object properties that name the family, or conditions, actions and expressions that use its instance variables or behaviors through a member object type (`references.memberUses`), or conditions and actions on a member that name one of its effects (`references.effectUses`).
