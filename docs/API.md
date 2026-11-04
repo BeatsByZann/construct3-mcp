@@ -940,7 +940,7 @@ Place an object instance on a layout layer or sub-layer. For copying instances b
 | `properties` | object | No | Plugin-specific properties (auto-filled for known plugins) |
 | `angle` | number | No | Rotation angle in radians (default: 0) |
 | `color` | number[4] | No | RGBA tint as `[r, g, b, a]` with values 0-1 (default: [1,1,1,1]) |
-| `zElevation` | number | No | Z elevation for 3D layering (default: 0) |
+| `zElevation` | number | No | Z elevation for 3D layering (default: 0), written as `world.z` |
 | `originX` | number | No | Horizontal origin 0-1 (default: 0.5 = center) |
 | `originY` | number | No | Vertical origin 0-1 (default: 0.5 = center) |
 | `instanceVariables` | object | No | Instance variable values as `{varName: value}`; every instance variable of the object and its families not given gets its default (`0`, `""` or `false`); a name the object and its families have no instance variable of is refused |
@@ -1071,6 +1071,8 @@ Delete a layer or sub-layer from a layout, together with its sub-layers.
 
 Update a placed instance, found by UID on any layer or sub-layer or among the non-world instances (which ignore position, size, angle, Z elevation and color).
 
+The Z elevation is written as `world.z`. Construct 3 r495.2 saves that key for instances (one editor-saved project, 47 of 47 instances), and r506-2 keeps it when it saves a project; layers keep `zElevation`. On a new instance `world.z` goes after `color`; a key renamed in place from `world.zElevation` keeps the old key's position. An instance keeps one Z key: one written by version 1.10.0 or older holds `world.zElevation`, which is moved to `world.z` in its place, and one with both keys loses `world.zElevation`; each with a warning that names the old value (#ISSUE). Construct 3 r506-2 reads `world.zElevation` and saves it as `world.z`; this was seen on one project that used the Normalized Z axis scale.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `layoutName` | string | Yes | Layout name |
@@ -1078,7 +1080,7 @@ Update a placed instance, found by UID on any layer or sub-layer or among the no
 | `x`, `y` | number | No | New position |
 | `width`, `height` | number | No | New size |
 | `angle` | number | No | New angle in radians |
-| `zElevation` | number | No | New Z elevation |
+| `zElevation` | number | No | New Z elevation, written as `world.z` |
 | `color` | number[4] | No | RGBA tint `[r, g, b, a]`, values 0-1 |
 | `showing` | boolean | No | Initial visibility |
 | `locked` | boolean | No | Locked in the editor |

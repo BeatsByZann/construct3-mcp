@@ -646,6 +646,7 @@ export function createLayer(name: string, sid: number): Layer {
 export interface InstanceOverrides {
   angle?: number;
   color?: number[];
+  /** Z elevation, written as world.z */
   zElevation?: number;
   originX?: number;
   originY?: number;
@@ -688,8 +689,46 @@ export function createInstance(
       originX: overrides?.originX ?? 0.5,
       originY: overrides?.originY ?? 0.5,
       color: overrides?.color ?? [1, 1, 1, 1],
+      z: overrides?.zElevation ?? 0,
       angle: overrides?.angle ?? 0,
-      zElevation: overrides?.zElevation ?? 0,
     },
   };
+}
+
+/**
+ * Set a placed instance's Z elevation in its world, leaving one Z key. An
+ * instance holding world.zElevation only (written by version 1.10.0 or older)
+ * gets z in that key's place; one holding both keeps z and loses zElevation;
+ * one holding neither gets z before depth or angle, where Construct 3 r495.2
+ * writes it. Returns the old key and value when one was moved or removed.
+ */
+export function setInstanceZ(world: Record<string, unknown>, value: number): { oldKey?: 'zElevation'; oldValue?: unknown } {
+  const hasZ = Object.hasOwn(world, 'z');
+  const hasOld = Object.hasOwn(world, 'zElevation');
+  const oldValue = world.zElevation;
+  if (hasOld && !hasZ) {
+    // The key is renamed in place, so the instance's other keys keep their order
+    const entries = Object.entries(world).map(([k, v]) => (k === 'zElevation' ? ['z', value] : [k, v]) as [string, unknown]);
+    for (const k of Object.keys(world)) delete world[k];
+    Object.assign(world, Object.fromEntries(entries));
+    return { oldKey: 'zElevation', oldValue };
+  }
+  if (hasOld) delete world.zElevation;
+  if (hasZ) world.z = value;
+  else placeBefore(world, 'z', value, ['depth', 'angle']);
+  return hasOld ? { oldKey: 'zElevation', oldValue } : {};
+}
+
+/** Set a key `obj` does not have before the first of `followers` it has (they move behind it). */
+function placeBefore(obj: Record<string, unknown>, key: string, value: unknown, followers: readonly string[]): void {
+  obj[key] = value;
+  const keys = Object.keys(obj);
+  const at = keys.findIndex(k => followers.includes(k));
+  if (at === -1) return;
+  for (const k of keys.slice(at)) {
+    if (k === key) continue;
+    const moved = obj[k];
+    delete obj[k];
+    obj[k] = moved;
+  }
 }

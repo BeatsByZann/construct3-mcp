@@ -25,6 +25,7 @@ import {
   createLayout,
   createInstance,
   createLayer,
+  setInstanceZ,
 } from '../construct3/templates.js';
 import type { InstanceOverrides } from '../construct3/templates.js';
 import {
@@ -401,7 +402,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
       // Instance-level overrides
       angle: z.number().optional().describe('Rotation angle in radians (default: 0)'),
       color: z.array(z.number().min(0).max(1)).length(4).optional().describe('RGBA tint as [r, g, b, a] with values 0-1 (default: [1,1,1,1])'),
-      zElevation: z.number().optional().describe('Z elevation for 3D layering (default: 0)'),
+      zElevation: z.number().optional().describe('Z elevation for 3D layering (default: 0), written as world.z'),
       originX: z.number().min(0).max(1).optional().describe('Horizontal origin 0-1 (default: 0.5 = center)'),
       originY: z.number().min(0).max(1).optional().describe('Vertical origin 0-1 (default: 0.5 = center)'),
       instanceVariables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional()
@@ -1004,7 +1005,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
       width: z.number().optional().describe('New width'),
       height: z.number().optional().describe('New height'),
       angle: z.number().optional().describe('New rotation angle in radians'),
-      zElevation: z.number().optional().describe('New Z elevation'),
+      zElevation: z.number().optional().describe('New Z elevation (written as world.z)'),
       color: z.array(z.number().min(0).max(1)).length(4).optional().describe('New RGBA tint [r,g,b,a] values 0-1'),
       showing: z.boolean().optional().describe('Initial visibility'),
       locked: z.boolean().optional().describe('Locked in editor'),
@@ -1062,7 +1063,18 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
           if (args.width !== undefined) inst.world.width = args.width;
           if (args.height !== undefined) inst.world.height = args.height;
           if (args.angle !== undefined) inst.world.angle = args.angle;
-          if (args.zElevation !== undefined) inst.world.zElevation = args.zElevation;
+          if (args.zElevation !== undefined) {
+            const hadBoth = Object.hasOwn(inst.world, 'z') && Object.hasOwn(inst.world, 'zElevation');
+            const z = setInstanceZ(inst.world, args.zElevation);
+            if (z.oldKey !== undefined) {
+              const old = JSON.stringify(z.oldValue);
+              warnings.push(hadBoth
+                ? `Instance ${args.uid} held its Z elevation as world.z and as world.zElevation: world.zElevation (${old}) was removed, `
+                  + 'and world.z holds the new value.'
+                : `Instance ${args.uid} held its Z elevation as world.zElevation (${old}), which construct3-mcp 1.10.0 and older wrote; `
+                  + 'Construct 3 r495.2 saves it as world.z and r506-2 keeps world.z when it saves a project, so the key is now world.z, with the new value.');
+            }
+          }
           if (args.color !== undefined) inst.world.color = args.color;
         }
         if (args.showing !== undefined) inst.showing = args.showing;
