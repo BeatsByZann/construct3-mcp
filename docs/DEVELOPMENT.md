@@ -113,7 +113,7 @@ construct3-mcp/
 │   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
 │   │   ├── object-tools.ts         # Object and family tools (8)
 │   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families
-│   │   ├── event-tools.ts          # Event sheet tools (14)
+│   │   ├── event-tools.ts          # Event sheet tools (15)
 │   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)

@@ -29,14 +29,20 @@ const MAX_DEPTH = 50;
 const MAX_NODES = 100_000;
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** The limit a walk of the event sheets stopped at: the event count, or the depth events are nested to (the event count when both stopped it). */
+export type CustomActionWalkLimit = 'events' | 'depth';
+
 /**
- * Every custom action block in `sheets` (sheet name to events), in sheet and
- * document order, and whether the scan saw every event: false when it
- * stopped at its depth or node limit, so a definition past it is unknown.
+ * Visit every event of `sheets` (sheet name to events) that is an object,
+ * depth first, with its sheet and its JSON path (e.g. "events[2].children[0]").
+ * Returns the limit the walk stopped at, if any: events past the node or the
+ * depth limit are not visited.
  */
-export function customActionScan(sheets: ReadonlyMap<string, unknown>): { definitions: CustomActionDefinition[]; complete: boolean } {
-  const found: CustomActionDefinition[] = [];
-  let complete = true;
+function walkEvents(
+  sheets: ReadonlyMap<string, unknown>,
+  visit: (event: Record<string, unknown>, sheet: string, eventPath: string) => void,
+): CustomActionWalkLimit | undefined {
+  let limit: CustomActionWalkLimit | undefined;
   let nodes = 0;
   for (const [sheet, events] of sheets) {
     if (!Array.isArray(events)) continue;
@@ -44,29 +50,43 @@ export function customActionScan(sheets: ReadonlyMap<string, unknown>): { defini
     while (stack.length > 0) {
       const { list, path, depth } = stack.pop()!;
       if (depth > MAX_DEPTH) {
-        complete = false;
+        limit ??= 'depth';
         continue;
       }
       list.forEach((ev, i) => {
         if (!isRecord(ev)) return;
         if (++nodes > MAX_NODES) {
-          complete = false;
+          limit = 'events';
           return;
         }
         const eventPath = `${path}[${i}]`;
-        if (ev.eventType === 'custom-ace-block' && typeof ev.aceName === 'string' && typeof ev.objectClass === 'string') {
-          const params = Array.isArray(ev.functionParameters) ? ev.functionParameters : [];
-          found.push({
-            owner: ev.objectClass, name: ev.aceName, sheet, eventPath,
-            ...(typeof ev.sid === 'number' ? { sid: ev.sid } : {}),
-            parameters: params.filter(isRecord).map(p => String(p.name)),
-          });
-        }
+        visit(ev, sheet, eventPath);
         if (Array.isArray(ev.children)) stack.push({ list: ev.children, path: `${eventPath}.children`, depth: depth + 1 });
       });
     }
   }
-  return { definitions: found, complete };
+  return limit;
+}
+
+/**
+ * Every custom action block in `sheets` (sheet name to events), in sheet and
+ * document order, and whether the scan saw every event: false when it
+ * stopped at its depth or node limit, so a definition past it is unknown.
+ * `limit` says which limit it was.
+ */
+export function customActionScan(sheets: ReadonlyMap<string, unknown>): { definitions: CustomActionDefinition[]; complete: boolean; limit?: CustomActionWalkLimit } {
+  const found: CustomActionDefinition[] = [];
+  const limit = walkEvents(sheets, (ev, sheet, eventPath) => {
+    if (ev.eventType === 'custom-ace-block' && typeof ev.aceName === 'string' && typeof ev.objectClass === 'string') {
+      const params = Array.isArray(ev.functionParameters) ? ev.functionParameters : [];
+      found.push({
+        owner: ev.objectClass, name: ev.aceName, sheet, eventPath,
+        ...(typeof ev.sid === 'number' ? { sid: ev.sid } : {}),
+        parameters: params.filter(isRecord).map(p => String(p.name)),
+      });
+    }
+  });
+  return { definitions: found, complete: limit === undefined, ...(limit !== undefined ? { limit } : {}) };
 }
 
 /** The definitions customActionScan finds, for a lookup that only warns (a protective check uses customActionScan and its `complete`). */
@@ -125,4 +145,73 @@ export function resolveCustomActionCall(
     ?? definitions.find(d => d.owner === owner && nameKey(d.name) === nameKey(call.customAction));
   if (call.customActionObjectClass !== undefined) return on(call.customActionObjectClass);
   return on(call.objectClass) ?? familiesOf(call.objectClass).map(on).find(d => d !== undefined);
+}
+
+/** A custom action call where it stands, for the tools that list or rewrite calls. */
+export interface CustomActionCallSite {
+  sheet: string;
+  /** Path of the action, e.g. "events[2].children[0] > action:1" */
+  path: string;
+  sid?: number;
+  call: { customAction: string; objectClass: string; customActionObjectClass?: string };
+  /** The stored action, for a rewrite in place */
+  ace: Record<string, unknown>;
+}
+
+/**
+ * Every custom action call in `sheets`, and whether the walk saw every
+ * event (false past its depth or node limit; `limit` says which, the node
+ * limit when both stopped it).
+ */
+export function customActionCallSites(sheets: ReadonlyMap<string, unknown>): { sites: CustomActionCallSite[]; complete: boolean; limit?: CustomActionWalkLimit } {
+  const sites: CustomActionCallSite[] = [];
+  const limit = walkEvents(sheets, (ev, sheet, eventPath) => {
+    (Array.isArray(ev.actions) ? ev.actions : []).forEach((ace, j) => {
+      if (!isRecord(ace) || typeof ace.customAction !== 'string' || typeof ace.objectClass !== 'string') return;
+      sites.push({
+        sheet, path: `${eventPath} > action:${j}`, ...(typeof ev.sid === 'number' ? { sid: ev.sid } : {}), ace,
+        call: {
+          customAction: ace.customAction, objectClass: ace.objectClass,
+          ...(typeof ace.customActionObjectClass === 'string' ? { customActionObjectClass: ace.customActionObjectClass } : {}),
+        },
+      });
+    });
+  });
+  return { sites, complete: limit === undefined, ...(limit !== undefined ? { limit } : {}) };
+}
+
+/**
+ * What renaming the definition `renamed` to `newName` does to every call.
+ * Each call is resolved before the rename; a call that ran `renamed` is to
+ * be rewritten to the new name. Each call is then resolved again as it
+ * will stand (the rewritten ones with the new name) against the
+ * definitions after the rename: a call to rewrite must still run `renamed`,
+ * and any other call must still run what it ran before (or nothing, as
+ * before). A call that fails this is `captured`. Definitions are compared
+ * by their sheet and event path.
+ */
+export function customActionRenameCaptures(
+  sites: readonly CustomActionCallSite[],
+  definitions: readonly CustomActionDefinition[],
+  renamed: CustomActionDefinition,
+  newName: string,
+  familiesOf: (objectClass: string) => readonly string[],
+): {
+  rewrite: CustomActionCallSite[];
+  captured: Array<{ site: CustomActionCallSite; before?: CustomActionDefinition; after?: CustomActionDefinition }>;
+} {
+  const same = (a?: CustomActionDefinition, b?: CustomActionDefinition) =>
+    a === undefined || b === undefined ? a === b : a.sheet === b.sheet && a.eventPath === b.eventPath;
+  const after = definitions.map(d => (same(d, renamed) ? { ...d, name: newName } : d));
+  const rewrite: CustomActionCallSite[] = [];
+  const captured: Array<{ site: CustomActionCallSite; before?: CustomActionDefinition; after?: CustomActionDefinition }> = [];
+  for (const site of sites) {
+    const before = resolveCustomActionCall(site.call, definitions, familiesOf);
+    const toRewrite = before !== undefined && same(before, renamed);
+    const proposed = toRewrite ? { ...site.call, customAction: newName } : site.call;
+    const now = resolveCustomActionCall(proposed, after, familiesOf);
+    if (!same(now, before)) captured.push({ site, before, after: now });
+    else if (toRewrite) rewrite.push(site);
+  }
+  return { rewrite, captured };
 }

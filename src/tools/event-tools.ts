@@ -16,7 +16,7 @@ import {
   folderCaseClashError,
   deleteRegisteredEntity,
 } from './shared.js';
-import { findFolderPathClash, findNameClash } from '../construct3/names.js';
+import { findFolderPathClash, findNameClash, nameKey } from '../construct3/names.js';
 import type { CustomActionCall } from '../construct3/types.js';
 import {
   SYSTEM_EXPRESSIONS_NOT_IN_R449,
@@ -111,6 +111,7 @@ import {
   REFERENCE_CHECK_MAX_DEPTH,
   type ReferenceCheckLimit,
   variablesDeclaredIn,
+  findFunctionReferences,
   mapCopiedAces,
   definesFunctionsOrVariables,
   countDeleteReferences,
@@ -138,9 +139,19 @@ import {
 import { nameTerm } from '../construct3/raw-text-search.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-keys.js';
+import { rollBackFailedCall } from './call-rollback.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
-import { customActionDefinitionClashes, customActionOwnerError, customActionScan, newCustomActionDuplicates } from '../construct3/custom-actions.js';
+import {
+  customActionCallSites,
+  customActionDefinitionClashes,
+  customActionOwnerError,
+  customActionRenameCaptures,
+  customActionScan,
+  newCustomActionDuplicates,
+  type CustomActionCallSite,
+  type CustomActionDefinition,
+} from '../construct3/custom-actions.js';
 import {
   createEmptySheet,
   createVariableEvent,
@@ -798,6 +809,392 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         }
         return toolError(`Error adding custom action: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── update_function ──────────────────────────────────────
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
+    'update_function',
+    {
+      description: 'Update a function block or a custom action block: name (functionName; for a custom action its aceName), return type (function blocks only; refused for a custom action), description, category, options, and parameters (add, remove, rename). Calls and function map registrations are rewritten only with updateCallers=true. A custom action call is matched to the definition it runs (its object type\'s own action, else its family\'s, or the family named in customActionObjectClass; names ignoring case); a custom action name its owner already has is refused, and so, even with force, is a rename that would make a call the scan reached run another definition or stop running this one (with force past the scan\'s traversal limit, the calls and definitions beyond it are not checked). A change that Functions.Name(...) expression calls or event sheets that could not be parsed may depend on is refused without force, since this tool cannot rewrite those; such a sheet is searched as text for the old name and, for a rename, the new one. Scripts are not checked. Removing or renaming a parameter that the body still uses by its old name, or renames that make a use in the body find another parameter, are refused without force. A new parameter\'s initial value must be one the calls can take as an argument (a number, a one-line string, true or false). A call is rewritten only when it passes the parameter count from before the update, so a repeated run of a change that alters the parameter count changes nothing more; removing and adding the same number of parameters in one call is refused while calls exist (make two calls). Caller sheets are written first and the definition last; a failed write puts back what the call wrote, except a file saved meanwhile by another program, which is left as it is and named with its .bak. dryRun reports the plan without writing.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet that holds the function, as registered (letter case included)'),
+        sid: z.number().int().positive().describe('SID of the function block or custom action block'),
+        eventPath: eventPathSchema,
+        functionName: z.string().min(1).max(200).optional().describe('New name (for a custom action, its aceName); calls and function maps follow only with updateCallers=true'),
+        description: z.string().max(10_000).optional().describe('The editor\'s Description'),
+        category: z.string().max(200).optional().describe('The editor\'s Category'),
+        returnType: z.enum(['none', 'number', 'string', 'any']).optional().describe('The editor\'s Return type (function blocks only)'),
+        isAsync: z.boolean().optional().describe('The editor\'s Asynchronous option'),
+        copyPicked: z.boolean().optional().describe('The editor\'s Copy picked option'),
+        addParameters: z.array(z.object({
+          name: z.string().min(1).max(200),
+          type: z.enum(['number', 'string', 'boolean']),
+          initialValue: z.string().max(10_000).optional(),
+          comment: z.string().max(10_000).optional(),
+        }, { errorMap: unknownKeysErrorMap('an addParameters entry', 'An entry has name, type, initialValue and comment.') }).strict()).max(100).optional()
+          .describe('Parameters to append, in order; with updateCallers=true each call gets the initial value as its argument'),
+        removeParameters: z.array(z.string().max(200)).max(100).optional().describe('Names of parameters to remove; with updateCallers=true each call loses the argument at that position'),
+        renameParameters: z.array(z.object({ from: z.string().max(200), to: z.string().min(1).max(200) },
+          { errorMap: unknownKeysErrorMap('a renameParameters entry', 'An entry has from and to.') }).strict()).max(100).optional()
+          .describe('Parameter renames; uses in the body are not rewritten'),
+        updateCallers: z.boolean().optional().default(false).describe('Rewrite Call function actions and function map registrations'),
+        force: z.boolean().optional().default(false).describe('Update even when Functions.Name(...) expressions, unparsed sheets or parameter uses in the body depend on the change (listed, left as they are)'),
+        dryRun: z.boolean().optional().default(false).describe('Report what would change and write nothing'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of update_function', 'update_function takes sheetName, sid, eventPath, functionName, description, category, returnType, isAsync, copyPicked, addParameters, removeParameters, renameParameters, updateCallers, force and dryRun.'),
+      }).strict(),
+    },
+    async (args) => {
+      // Set once every sheet has its snapshot, so a throw puts every sheet in memory back
+      let restoreAll: (() => void) | undefined;
+      let writeStarted = false;
+      try {
+        // 1. Nothing given and not dryRun: refuse
+        const removed = args.removeParameters ?? [];
+        const renames = args.renameParameters ?? [];
+        const added = args.addParameters ?? [];
+        const given = [args.functionName, args.description, args.category, args.returnType, args.isAsync, args.copyPicked].some(v => v !== undefined)
+          || removed.length + renames.length + added.length > 0;
+        if (!given && !args.dryRun) {
+          return toolError(nothingChanged('No update given. Give at least one of functionName, description, category, returnType, isAsync, copyPicked, addParameters, removeParameters and renameParameters.'));
+        }
+
+        // 2. The sheet and the function block
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return toolError(nothingChanged(`Event sheet "${args.sheetName}" is registered in the project but could not be read.`));
+        }
+        const found = resolveEventBySid(sheet.events as Record<string, unknown>[], args.sid, { sheetName: args.sheetName, action: 'update', eventPath: args.eventPath });
+        if ('error' in found) return toolError(nothingChanged(found.error));
+        const func = found.match.event;
+        if (func.eventType !== 'function-block' && func.eventType !== 'custom-ace-block') {
+          return toolError(nothingChanged(`The event with SID ${args.sid} is a "${String(func.eventType)}", not a function block or custom action block.`));
+        }
+        const kind = func.eventType === 'function-block' ? 'function' : 'custom-action';
+        if (kind === 'custom-action' && args.returnType !== undefined) {
+          return toolError(nothingChanged('returnType applies to function blocks only; this tool refuses it for a custom action block.'));
+        }
+
+        // 3. Every sheet, read once here as the whole object the write needs, with a snapshot, and the uses of the function by name
+        const sheetObjects = new Map<string, EventSheet>();
+        for (const name of await reader.listEventSheets()) {
+          if (name === args.sheetName) { sheetObjects.set(name, sheet); continue; }
+          try {
+            const data = await reader.readEventSheet(name);
+            if (Array.isArray(data.events)) sheetObjects.set(name, data);
+          } catch {
+            // An unreadable sheet is searched as text below, as readEventSheetsFresh's callers do
+          }
+        }
+        const sheets = new Map([...sheetObjects].map(([name, data]) => [name, data.events as C3Event[]] as const));
+        const snapshots = new Map([...sheets].map(([name, events]) => [name, snapshotEvents(events)] as const));
+        restoreAll = () => {
+          for (const [name, data] of sheetObjects) data.events = snapshots.get(name)!;
+        };
+        // Only the definition's sheet changes before the last refusal, so putting it back undoes everything
+        const restore = () => { sheet.events = snapshots.get(args.sheetName)!; };
+        const refuse = (message: string) => {
+          restore();
+          return toolError(nothingChanged(message));
+        };
+        const blocked = (reason: string, references: unknown, reports: UnscannedFileReport[] = []) => {
+          restore();
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'update_blocked',
+            message: nothingChanged(reason), references, ...unscannedFields(reports),
+          }, { projectWritten: false });
+        };
+        // A function is named by functionName and called by callFunction; a custom action by aceName and customAction
+        const definitionNameKey = kind === 'function' ? 'functionName' : 'aceName';
+        const callNameKey = kind === 'function' ? 'callFunction' : 'customAction';
+        const oldName = String(func[definitionNameKey]);
+        const owner = String(func.objectClass);
+        const shownName = kind === 'function' ? oldName : `${owner}.${oldName}`;
+        let references: CallReference[] = [];
+        let maps: CallReference[] = [];
+        let expressions: CallReference[] = [];
+        let complete: boolean;
+        let limit: ReferenceCheckLimit | undefined;
+        // For a custom action: the definitions, this one among them, every call, and the families of each object type
+        let customActions: {
+          definitions: CustomActionDefinition[]; self: CustomActionDefinition; sites: CustomActionCallSite[];
+          familiesOf: (objectClass: string) => readonly string[];
+        } | undefined;
+        if (kind === 'function') {
+          ({ references, complete, limit } = findFunctionReferences(sheets, oldName, functionsObjectName(reader)));
+          maps = references.filter(r => r.kind === 'function-map');
+          expressions = references.filter(r => r.kind === 'expression');
+        } else {
+          const scan = customActionScan(sheets);
+          const callSites = customActionCallSites(sheets);
+          // A definition past the scan's limits is not listed; it is still the one the calls are checked against
+          const listed = scan.definitions.find(d => d.sheet === args.sheetName && d.eventPath === found.match.path);
+          const self = listed ?? { owner, name: oldName, sheet: args.sheetName, eventPath: found.match.path, parameters: [] };
+          customActions = {
+            definitions: listed ? scan.definitions : [...scan.definitions, self], self, sites: callSites.sites,
+            familiesOf: (await loadCustomActionContext(reader)).familiesOf,
+          };
+          complete = scan.complete && callSites.complete;
+          limit = scan.limit ?? callSites.limit;
+        }
+
+        // 4. The new name and return type, checked like the editor's Function dialog against every other function;
+        // for a custom action, against the other custom actions of its owner and what each call runs
+        const newName = args.functionName ?? oldName;
+        const oldReturn = String(func.functionReturnType ?? 'none');
+        const newReturn = args.returnType ?? oldReturn;
+        let calls: CallReference[];
+        const renameWarnings: string[] = [];
+        if (customActions === undefined) {
+          if (newName !== oldName || newReturn !== oldReturn) {
+            const others = functionBlockNames(sheets).filter(f => !(f.sheet === args.sheetName && f.eventPath === found.match.path));
+            const problem = findFunctionNameProblem(newName, newReturn, others);
+            if (problem) return refuse(functionNameMessage(problem, newName, newReturn));
+          }
+          calls = references.filter(r => r.kind === 'callFunction');
+        } else {
+          const { definitions, self, sites, familiesOf } = customActions;
+          // Only a new name is checked (a case-only one included), as for functions: a duplicate the project already holds does not stop other changes
+          if (newName !== oldName) {
+            if (newName.trim() === '') return refuse('functionName is empty or only spaces.');
+            const clash = customActionDefinitionClashes(definitions.filter(d => d !== self), owner, newName)[0];
+            if (clash !== undefined) {
+              return refuse(`"${owner}" already has a custom action "${clash.name}" (sheet "${clash.sheet}", ${clash.eventPath}${clash.sid !== undefined ? `, SID ${clash.sid}` : ''}). ${DUPLICATE_CUSTOM_ACTION_RULE}`);
+            }
+          }
+          const { rewrite, captured } = customActionRenameCaptures(sites, definitions, self, newName, familiesOf);
+          if (captured.length > 0) {
+            const runs = (d?: CustomActionDefinition) => (d ? `${d.owner}.${d.name}` : null);
+            // A captured call always runs a definition after the rename: one not rewritten keeps its own, a rewritten one finds the renamed one
+            const shown = captured.slice(0, 10).map(({ site, before, after }) =>
+              `${site.sheet} ${site.path}${site.sid !== undefined ? ` (SID ${site.sid})` : ''} ${before ? `runs "${runs(before)}" now` : 'runs no custom action now'}` +
+              ` and would run "${runs(after)}"`);
+            return blocked(`Renaming "${shownName}" to "${newName}" would change which custom action ${captured.length} call(s) run: ` +
+              `${shown.join('; ')}${captured.length > 10 ? `; and ${captured.length - 10} more` : ''}. ` +
+              'A call names a custom action by its name, so this rename would make the game do something else; force does not override it. Choose another name.',
+            captured.map(({ site, before, after }) => ({ ...referenceEntry(customCallReference(site)), runs: runs(before), wouldRun: runs(after) })));
+          }
+          calls = rewrite.map(customCallReference);
+          references = calls;
+          // A plain call on an object in several families that define the new name: the one it runs is the first, as the other custom action tools warn
+          if (newName !== oldName) {
+            let omitted = 0;
+            for (const site of rewrite) {
+              if (site.call.customActionObjectClass !== undefined || self.owner === site.call.objectClass) continue;
+              const others = familiesOf(site.call.objectClass).filter(family => family !== self.owner
+                && definitions.some(d => d !== self && d.owner === family && nameKey(d.name) === nameKey(newName)));
+              if (others.length === 0) continue;
+              if (renameWarnings.length >= 10) {
+                omitted++;
+                continue;
+              }
+              renameWarnings.push(`${site.sheet} ${site.path}${site.sid !== undefined ? ` (SID ${site.sid})` : ''}: "${site.call.objectClass}" belongs to the families "${self.owner}" and ` +
+                `${others.map(f => `"${f}"`).join(', ')}, which both define a custom action of that name. The call uses the one on "${self.owner}"; which one Construct 3 runs was not checked in the editor.`);
+            }
+            if (omitted > 0) {
+              renameWarnings.push(`And ${omitted} more rewritten call(s) whose object belongs to several families that define a custom action of that name; each uses the one on "${self.owner}".`);
+            }
+          }
+        }
+
+        // 5. Parameters: where the removed and renamed names resolve now, then removals, renames and additions in that order
+        const params = (Array.isArray(func.functionParameters) ? func.functionParameters : []) as Array<Record<string, unknown>>;
+        const oldNames = params.map(p => String(p.name));
+        const oldCount = params.length;
+        for (const name of removed) {
+          if (!oldNames.includes(name)) {
+            return refuse(`The function "${oldName}" has no parameter "${name}" to remove. Its parameters are ${oldNames.length > 0 ? oldNames.map(n => `"${n}"`).join(', ') : 'none'}.`);
+          }
+        }
+        // Every name a rename or removal touches, the new names included, so a use that ends up finding another parameter is seen
+        const watched = new Map([...removed, ...renames.flatMap(r => [r.from, r.to])].map(n => [n.toLowerCase(), n] as const));
+        const bindingsBefore = recordVariableBindings(sheets, watched);
+        const removedIndexes = new Set(removed.map(n => oldNames.indexOf(n)));
+        const current = params.filter((_p, i) => !removedIndexes.has(i));
+        func.functionParameters = current;
+        const parents = [...((findEnclosingEvents(sheet.events, func as unknown as C3Event) ?? []) as C3Event[]), func as unknown as C3Event];
+        for (const { from, to } of renames) {
+          const param = current.find(p => p.name === from);
+          if (!param) return refuse(`The function "${oldName}" has no parameter "${from}" to rename${removed.includes(from) ? ': this update also removes it' : ''}.`);
+          const problem = findEventVariableNameProblem(to, eventVariableNameUses(sheets, args.sheetName, parents, param), from);
+          if (problem) return refuse(eventVariableNameMessage(problem, to, 'function parameter', NAME_SCOPE_RULE.parameter));
+          param.name = to;
+        }
+        // The argument each call gets for a new parameter, built and checked here, before anything is written
+        const addedArguments: FunctionArgument[] = [];
+        for (const p of added) {
+          const argument = callArgumentFor(p.type, p.initialValue);
+          if ('problem' in argument) return refuse(argument.problem);
+          addedArguments.push(argument.value);
+        }
+        for (const p of added) {
+          // Checked against the parameters so far, so a name twice in one call is refused, as functionParameterNamesError does
+          const problem = findEventVariableNameProblem(p.name, eventVariableNameUses(sheets, args.sheetName, parents));
+          if (problem) return refuse(eventVariableNameMessage(problem, p.name, 'function parameter', NAME_SCOPE_RULE.parameter));
+          // The template's key order (createFunctionEvent in templates.ts)
+          current.push({ name: p.name, type: p.type, initialValue: p.initialValue ?? defaultInitialValue(p.type), comment: p.comment ?? '', sid: await idGen.generateSid(reader) });
+        }
+
+        // 6. What the change touches; a case-only rename counts, since calls are rewritten to the new spelling
+        const renamed = newName !== oldName;
+        const shapeChanged = removed.length + added.length > 0;
+        const returnToNone = newReturn === 'none' && oldReturn !== 'none';
+
+        // 7. Blocks: calls without updateCallers, an argument change a repeated run could not recognise, expressions, unparsed sheets, the traversal limit
+        const callerRefs = [...calls, ...(renamed ? maps : [])];
+        if ((renamed || shapeChanged) && callerRefs.length > 0 && !args.updateCallers) {
+          const using = kind === 'function' ? `call(s) or function map registration(s) use "${oldName}"` : `call(s) run the custom action "${shownName}"`;
+          return blocked(`${callerRefs.length} ${using}: ${listReferences(callerRefs)}. Set updateCallers=true to rewrite them, or change them first.`,
+            callerRefs.map(referenceEntry));
+        }
+        if (removed.length > 0 && added.length > 0 && current.length === oldCount && calls.length > 0) {
+          return refuse(`This update removes ${removed.length} and adds ${added.length} parameter(s), so each call would keep ${oldCount} argument(s), and a run repeated after a stop could not tell a call already rewritten from one not yet rewritten. Make two calls: one that removes the parameters, then one that adds them.`);
+        }
+        if ((renamed || shapeChanged || returnToNone) && expressions.length > 0 && !args.force) {
+          return blocked(`${expressions.length} expression(s) call Functions.${oldName}(...): ${listReferences(expressions)}. Functions.Name(...) calls in expressions are not rewritten: change them by hand, or use force=true and change them after.`,
+            expressions.map(referenceEntry));
+        }
+        let unscanned: UnscannedFileReport[] = [];
+        // An unparsed sheet may call Functions.Name(...) in an expression, which a removed return type breaks too
+        if (renamed || shapeChanged || returnToNone) {
+          const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'));
+          // The new name too: such a sheet may hold a call the rename would capture, or a definition the new name would clash with
+          const searched = renamed ? [nameTerm(oldName), nameTerm(newName)] : [nameTerm(oldName)];
+          unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [searched] }]);
+          if (blocksWithoutForce(unscanned) && !args.force) {
+            return blocked(`${unscannedRefusal(unscanned)} Use force=true to update anyway.`, [], unscanned);
+          }
+        }
+        const usesChecked = kind === 'function' ? `uses of the function "${oldName}"` : `uses of the custom action "${shownName}"`;
+        if (!complete && !args.force) return blocked(`${traversalLimitReason(usesChecked, limit)} Use force=true to update anyway.`, references.map(referenceEntry));
+
+        // 8. Parameter uses in the body: a use whose parameter is gone, or that now finds another parameter of its name
+        const { lost, rebound } = findVariableBindingChanges(bindingsBefore, sheets);
+        const lostCount = countDeleteReferences(lost);
+        const reboundCount = countDeleteReferences(rebound);
+        const whereLost = 'where the parameter no longer exists after the update';
+        const whereRebound = 'where the name now finds another parameter after the update';
+        const paramsChecked = `uses of the parameters of "${shownName}"`;
+        if ((lostCount > 0 || reboundCount > 0 || !lost.complete) && !args.force) {
+          const reasons = [
+            ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
+            ...(reboundCount > 0 ? [`${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`] : []),
+            ...(!lost.complete ? [traversalLimitReason(paramsChecked, lost.limit)] : []),
+          ];
+          return blocked(`${reasons.join(' ')} Change those uses first, or use force=true to update anyway.`,
+            { ...danglingReferenceList(lost), ...(reboundCount > 0 ? { rebound: danglingReferenceList(rebound) } : {}) });
+        }
+        const warnings: string[] = [];
+        if (lostCount > 0) warnings.push(`Updated with force=true: ${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
+        if (reboundCount > 0) warnings.push(`Updated with force=true: ${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`);
+        if (!lost.complete) warnings.push(`Updated with force=true: ${traversalLimitReason(paramsChecked, lost.limit)}`);
+        if ((renamed || shapeChanged || returnToNone) && expressions.length > 0) {
+          warnings.push(`Updated with force=true: ${expressions.length} Functions.${oldName}(...) expression call(s) were left as they are: ${listReferences(expressions)}. Change them before opening the project in Construct 3.`);
+        }
+        if (!complete) warnings.push(`Updated with force=true: ${traversalLimitReason(usesChecked, limit)}`);
+        warnings.push(...unscannedWarnings(unscanned, 'Updated'));
+        warnings.push(...renameWarnings);
+        const parameterList = () => current.map(p => ({ name: p.name, type: p.type, sid: p.sid }));
+
+        // 9. dryRun: report the plan, put the definition back, write nothing
+        if (args.dryRun) {
+          const plan = {
+            dryRun: true, kind, name: oldName, newName, ...(kind === 'function' ? { returnType: newReturn } : {}), parameters: parameterList(),
+            calls: calls.map(referenceEntry), maps: maps.map(referenceEntry), expressions: expressions.map(referenceEntry),
+            ...(warnings.length > 0 ? { warnings } : {}),
+            ...unscannedFields(unscanned),
+          };
+          restore();
+          return toolResult(plan, { projectWritten: false });
+        }
+
+        // 10. The definition (the parameters were changed in step 5); a key the stored block lacks is added after the others
+        if (renamed) func[definitionNameKey] = newName;
+        if (args.description !== undefined) func.functionDescription = args.description;
+        if (args.category !== undefined) func.functionCategory = args.category;
+        if (args.returnType !== undefined) func.functionReturnType = args.returnType;
+        if (args.isAsync !== undefined) func.functionIsAsync = args.isAsync;
+        if (args.copyPicked !== undefined) func.functionCopyPicked = args.copyPicked;
+
+        // 11. The callers, with updateCallers only; a call is renamed always, and its arguments change only when it passes oldCount of them
+        let rewrittenCalls = 0;
+        let rewrittenMaps = 0;
+        const leftAlone: CallReference[] = [];
+        if (args.updateCallers) {
+          for (const ref of calls) {
+            let changed = false;
+            if (renamed) { ref.ace[callNameKey] = newName; changed = true; }
+            if (shapeChanged) {
+              if (rewriteCallArguments(ref.ace, oldCount, removedIndexes, addedArguments)) changed = true;
+              else leftAlone.push(ref);
+            }
+            if (changed) rewrittenCalls++;
+          }
+          if (renamed) {
+            for (const ref of maps) {
+              (ref.ace.parameters as Record<string, unknown>).function = newName;
+              rewrittenMaps++;
+            }
+          }
+        }
+        if (leftAlone.length > 0) {
+          warnings.push(`${leftAlone.length} call(s) pass a number of arguments other than the ${oldCount} parameter(s) "${shownName}" had, so their arguments were left as they are (a call this update already rewrote in a run that stopped is one of them): ${listReferences(leftAlone)}.`);
+        }
+
+        // 12. Unchanged: no sheet differs from its snapshot
+        const changedSheets = [...sheets.keys()].filter(name => JSON.stringify(sheets.get(name)) !== JSON.stringify(snapshots.get(name)));
+        if (changedSheets.length === 0) {
+          return toolResult({
+            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', updatedSid: args.sid, kind,
+            name: newName, previousName: oldName, parameters: parameterList(), updatedSheets: [], rewrittenCalls: 0, rewrittenMaps: 0,
+            ...(warnings.length > 0 ? { warnings } : {}),
+          }, { projectWritten: false });
+        }
+
+        // 13. Write the caller sheets in registered order, then the definition's sheet. Every sheet object was read in
+        // step 3, so nothing reads between the writes; any error after the first write rolls back what this call wrote
+        const order = [...changedSheets.filter(name => name !== args.sheetName), ...(changedSheets.includes(args.sheetName) ? [args.sheetName] : [])];
+        const backupFiles: string[] = [];
+        let writing: string | undefined;
+        writeStarted = true;
+        try {
+          for (const name of order) {
+            writing = name;
+            backupFiles.push(await writeEntityOrRollBack(writer, 'eventSheets', name, sheetObjects.get(name)!));
+            writing = undefined;
+          }
+          resetProjectIndex(reader);
+        } catch (error) {
+          // writeEntityOrRollBack has rolled the call back and worded the message; any other error is rolled back here
+          if (writing !== undefined) throw error;
+          throw new Error(await rollBackFailedCall(writer, error));
+        }
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', updatedSid: args.sid, kind,
+          name: newName, previousName: oldName, parameters: parameterList(), updatedSheets: order, rewrittenCalls, rewrittenMaps,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
+          ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          ...unscannedFields(unscanned),
+          backupFiles,
+        });
+      } catch (error) {
+        console.error('[update_function] failed:', error);
+        const message = error instanceof Error ? error.message : String(error);
+        if (restoreAll) {
+          restoreAll();
+          // Nothing reached the disk: every sheet in memory is as it was
+          if (!writeStarted) return toolError(nothingChanged(`The change was stopped before anything was written: ${message}`));
+        }
+        return toolError(`Error updating function: ${message}`);
       }
     }
   );
@@ -2721,6 +3118,85 @@ async function unregisteredSheetError(
     return toolError(`Event sheet "${name}" not found: names are matched with their letter case. Did you mean "${sameIgnoringCase}"?`);
   }
   return notFoundError('Event sheet', name, reader.findNearestName(name, 'eventsheets'), 'list_eventsheets');
+}
+
+/**
+ * Rewrite a call's positional arguments for a parameter list change:
+ * drop the arguments at `removed` (indexes in the old list) and append
+ * `added`. Only a call that passes exactly `oldCount` arguments is
+ * changed, so a call this rewrite already changed (a run repeated after
+ * the process stopped, for a change that alters the count) is left as it
+ * is. Returns false for a call left alone.
+ */
+function rewriteCallArguments(call: Record<string, unknown>, oldCount: number, removed: ReadonlySet<number>, added: readonly FunctionArgument[]): boolean {
+  const args = Array.isArray(call.parameters) ? call.parameters as FunctionArgument[] : [];
+  if (args.length !== oldCount) return false;
+  const next = [...args.filter((_a, i) => !removed.has(i)), ...added];
+  rewriteFunctionCallInPlace(call, next);
+  return true;
+}
+
+/** A new parameter's initial value when none is given, as createFunctionEvent writes it (templates.ts). */
+function defaultInitialValue(type: 'number' | 'string' | 'boolean'): string {
+  return type === 'number' ? '0' : type === 'boolean' ? 'false' : '';
+}
+
+/**
+ * The argument a call passes for a new parameter, or why the initial value
+ * cannot be one: a number as its numeric literal, a string as a Construct
+ * string literal (a quote inside is written twice, as layerNameLiteral does
+ * in layer-references.ts; a line break is refused), a boolean as JSON true
+ * or false, as calls store booleans.
+ */
+function callArgumentFor(
+  type: 'number' | 'string' | 'boolean',
+  initialValue: string | undefined,
+): { value: FunctionArgument } | { problem: string } {
+  if (type === 'boolean') {
+    const text = initialValue ?? 'false';
+    if (text !== 'true' && text !== 'false') return { problem: `The initial value of a boolean parameter is "true" or "false", not "${text}".` };
+    return { value: text === 'true' };
+  }
+  if (type === 'number') {
+    const text = (initialValue ?? '0').trim();
+    if (!/^-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/.test(text)) {
+      return { problem: `The initial value of a number parameter is a number, such as "0" or "2.5", not "${initialValue}"; the calls get it as their argument.` };
+    }
+    return { value: text };
+  }
+  // This tool's own rule: whether the editor accepts a line break inside a string literal has not been checked
+  if (/[\r\n]/.test(initialValue ?? '')) {
+    return {
+      problem: 'The initial value of a string parameter cannot hold a line break (a newline or carriage return): this tool writes it into each call ' +
+        'as a one-line string literal, and whether Construct 3 accepts a line break there has not been checked.',
+    };
+  }
+  return { value: `"${(initialValue ?? '').replace(/"/g, '""')}"` };
+}
+
+/** A call or other use of a function or custom action where it stands, with the stored action for a rewrite in place. */
+interface CallReference {
+  kind: DeleteReferenceKind | 'customAction';
+  sheet: string;
+  path: string;
+  sid?: number;
+  ace: Record<string, unknown>;
+}
+
+/** A custom action call as update_function lists and rewrites calls. */
+function customCallReference(site: CustomActionCallSite): CallReference {
+  return { kind: 'customAction', sheet: site.sheet, path: site.path, ...(site.sid !== undefined ? { sid: site.sid } : {}), ace: site.ace };
+}
+
+/** A reference as a result lists it. */
+function referenceEntry(r: Omit<CallReference, 'ace'>): Record<string, unknown> {
+  return { sheet: r.sheet, path: r.path, ...(r.sid !== undefined ? { sid: r.sid } : {}), kind: r.kind };
+}
+
+/** Up to ten references for a message, then how many more. */
+function listReferences(refs: readonly Omit<CallReference, 'ace'>[]): string {
+  const shown = refs.slice(0, 10).map(r => `${r.sheet} ${r.path}${r.sid !== undefined ? ` (SID ${r.sid})` : ''}`);
+  return `${shown.join('; ')}${refs.length > 10 ? `; and ${refs.length - 10} more` : ''}`;
 }
 
 /**
