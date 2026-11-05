@@ -75,6 +75,16 @@ export async function findFileIgnoringCase(filePath: string, fs: DirectoryLookup
   return variants.length > 0 ? join(dirname(filePath), variants[0]) : undefined;
 }
 
+/**
+ * Whether a file name (not a path) is one atomicReplace makes for itself:
+ * .c3mcp-<16 hex digits>.<tmp|link|old>. A write that was interrupted can
+ * leave such a file; the .old one holds the previous content of the file that
+ * was being replaced.
+ */
+export function isWriteLeftover(name: string): boolean {
+  return /^\.c3mcp-[0-9a-f]{16}\.(tmp|link|old)$/.test(name);
+}
+
 /** How many fresh names a write tries for one of its own files when the name drawn already exists. */
 const MAX_NAME_ATTEMPTS = 5;
 

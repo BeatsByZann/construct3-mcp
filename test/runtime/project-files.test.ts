@@ -16,8 +16,31 @@ const skipped = [
   'a.bak', 'eventSheets/Main.json.bak', '.DS_Store', 'images/Thumbs.db', 'Thumbs.db/x',
 ];
 
+const writeLeftovers = [
+  'images/.c3mcp-0123456789abcdef.old',
+  'layouts/.c3mcp-0123456789abcdef.tmp',
+  'eventSheets/.c3mcp-0123456789abcdef.link',
+];
+
 describe('project files', () => {
   let dir: string;
+
+  it('leaves out the files a failed replace can leave', async () => {
+    const leftoverDir = await mkdtemp(join(tmpdir(), 'c3-project-files-left-'));
+    try {
+      for (const rel of ['project.c3proj', ...writeLeftovers]) {
+        await mkdir(dirname(join(leftoverDir, rel)), { recursive: true });
+        await writeFile(join(leftoverDir, rel), 'x');
+      }
+      expect(await collectProjectFiles(leftoverDir)).toEqual(['project.c3proj']);
+      for (const rel of writeLeftovers) expect(isPackedProjectFile(rel), rel).toBe(false);
+      // A name that only looks alike is a project file
+      expect(isPackedProjectFile('images/.c3mcp-0123456789abcde.old')).toBe(true);
+      expect(isPackedProjectFile('images/c3mcp-0123456789abcdef.old')).toBe(true);
+    } finally {
+      await rm(leftoverDir, { recursive: true, force: true });
+    }
+  });
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'c3-project-files-'));

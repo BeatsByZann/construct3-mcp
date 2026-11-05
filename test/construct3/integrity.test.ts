@@ -2209,6 +2209,23 @@ describe('validateProjectIntegrity file scans', () => {
     const bak = result.info.find(i => i.check === 'backup-file')!;
     expect(bak.message).not.toContain('failed write');
   });
+
+  it('lists the files an interrupted write leaves as backup-file info, not as orphaned images or files', async () => {
+    const left = [
+      'images/.c3mcp-0123456789abcdef.old',
+      'layouts/.c3mcp-0123456789abcdef.tmp',
+      'eventSheets/.c3mcp-0123456789abcdef.link',
+    ];
+    await writeFiles(left);
+    const result = await validateProjectIntegrity(readerFor({}));
+    expect(byCheck(result.info, 'backup-file')).toEqual([...left].sort());
+    for (const issue of result.info.filter(i => i.check === 'backup-file')) {
+      expect(issue.message).toContain('a file left by an interrupted write; the .old one holds the file\'s previous content');
+    }
+    expect(byCheck(result.info, 'orphaned-image')).toEqual([]);
+    expect(byCheck(result.info, 'orphaned-file')).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
 });
 
 // ─── Real fixtures ─────────────────────────────────────────

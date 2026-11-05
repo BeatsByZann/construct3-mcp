@@ -129,6 +129,40 @@ describe('withArchiveSync', () => {
     ]);
   });
 
+  const writeLeftoverNames = [
+    'images/.c3mcp-0123456789abcdef.old',
+    'layouts/.c3mcp-0123456789abcdef.tmp',
+    'eventSheets/.c3mcp-0123456789abcdef.link',
+  ];
+
+  it('leaves the files a failed replace can leave out of the written archive', async () => {
+    await start();
+    for (const rel of writeLeftoverNames) {
+      await nodeFs.mkdir(join(archive.workDir, rel, '..'), { recursive: true });
+      await nodeFs.writeFile(join(archive.workDir, ...rel.split('/')), 'left behind');
+    }
+    await addComment('written next to leftovers');
+    const files = await archiveFiles();
+    expect(files.get('eventSheets/MainSheet.json')).toContain('written next to leftovers');
+    for (const rel of writeLeftoverNames) expect(files.has(rel), rel).toBe(false);
+  });
+
+  it('holds an archive entry that has the name of such a file, and writes it back as it was', async () => {
+    const entries = await fixtureEntries();
+    for (const rel of writeLeftoverNames) entries.push({ path: rel, data: Buffer.from(`original ${rel}`) });
+    await writeArchive(entries);
+    await start();
+    for (const rel of writeLeftoverNames) {
+      const inWorkFolder = await nodeFs.stat(join(archive.workDir, ...rel.split('/'))).then(() => true, () => false);
+      expect(inWorkFolder, rel).toBe(false);
+      expect((await nodeFs.readFile(join(archive.sessionDir, 'held', ...rel.split('/')))).toString(), rel).toBe(`original ${rel}`);
+    }
+    await addComment('written next to held entries');
+    const files = await archiveFiles();
+    expect(files.get('eventSheets/MainSheet.json')).toContain('written next to held entries');
+    for (const rel of writeLeftoverNames) expect(files.get(rel), rel).toBe(`original ${rel}`);
+  });
+
   it('writes nothing after a call that changed nothing, and adds no note', async () => {
     await start();
     const before = await bytes();

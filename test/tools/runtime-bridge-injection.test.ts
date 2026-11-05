@@ -11,7 +11,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cp, mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { readZip } from '../../src/runtime/zip-reader.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
@@ -635,6 +636,23 @@ describe('pack_project', () => {
     const plain = payload(await server.callTool('pack_project', { outputPath: out, injectBridge: false }));
     expect(plain.loadedAs).toBeUndefined();
     expect(plain.warning).toBeUndefined();
+  });
+
+  it('packs none of the files a failed replace can leave', async () => {
+    const dir = await copyFixture('minimal-project');
+    const leftovers = ['images/.c3mcp-0123456789abcdef.old', 'layouts/.c3mcp-0123456789abcdef.tmp', 'eventSheets/.c3mcp-0123456789abcdef.link'];
+    for (const rel of leftovers) {
+      await mkdir(join(dir, dirname(rel)), { recursive: true });
+      await writeFile(join(dir, rel), 'left behind');
+    }
+    const server = await tools(dir);
+    const out = join(dir, '..', `${dir.split(/[\\/]/u).pop()}-leftovers.c3p`);
+    dirs.push(out);
+
+    payload(await server.callTool('pack_project', { outputPath: out, injectBridge: false }));
+    const packed = readZip(await readFile(out)).map(entry => entry.path);
+    expect(packed).toContain('project.c3proj');
+    for (const rel of leftovers) expect(packed, rel).not.toContain(rel);
   });
 });
 

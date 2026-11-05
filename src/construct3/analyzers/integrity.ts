@@ -32,6 +32,7 @@ import { namedAfterAnyObject } from '../object-images.js';
 import type { BehaviorLookupData } from './behavior-refs.js';
 import { everyAnimation, expectedFrameImageName, frameImageBaseName, indexImageFiles } from '../animation-rename.js';
 import { nameKey } from '../names.js';
+import { isWriteLeftover } from '../atomic-write.js';
 import { containerMemberProblems, projectContainers, SMALL_CONTAINER_RULE } from '../containers.js';
 import { duplicateFunctionNames, functionBlockNames } from '../event-variable-names.js';
 import {
@@ -1949,9 +1950,10 @@ function classifyEntityFiles(
 // ─── Check 11: Backup Files ─────────────────────────────────
 
 /**
- * .bak files in the entity folders (recursively, including timelines/),
- * directly in images/ (the frame tools keep frame images there as .bak) and
- * next to project.c3proj. The project root is not scanned recursively, so
+ * .bak files, and the files an interrupted write leaves
+ * (.c3mcp-<16 hex digits>.tmp|link|old), in the entity folders (recursively,
+ * including timelines/), directly in images/ (the frame tools keep frame
+ * images there as .bak) and next to project.c3proj. The project root is not scanned recursively, so
  * files/, scripts/, subfolders of images/ and the like stay out of it.
  */
 async function checkBackupFiles(
@@ -1985,6 +1987,13 @@ async function scanDirForBackups(
           entity: path,
           message: 'Backup copy: this server copies a file to <file>.bak before changing or deleting it and keeps the copy afterwards',
           suggestion: 'Review and delete it if no longer needed',
+        });
+      } else if (entry.isFile() && isWriteLeftover(entry.name)) {
+        info.push({
+          check: 'backup-file',
+          entity: path,
+          message: 'a file left by an interrupted write; the .old one holds the file\'s previous content',
+          suggestion: 'Review and delete it if no longer needed; compare an .old file with the file it sat beside first',
         });
       }
       if (recursive && entry.isDirectory()) {
@@ -2126,7 +2135,8 @@ async function checkFrameImages(
  * before the first "-" or "." (the name of the object they were stored for):
  * whether the editor or anything else uses such a file is not verified.
  * Registered object types whose file could not be parsed count as object
- * types; .bak files are listed as backup-file instead, and files named after
+ * types; .bak files and the files an interrupted write leaves are listed as
+ * backup-file instead, and files named after
  * an existing object type (e.g. frames past an animation's last frame, see
  * frame-image) are not reported here. Skipped without an images/ folder.
  */
@@ -2144,7 +2154,7 @@ async function checkOrphanedImages(
   const groups = new Map<string, string[]>();
   const namedAfterObject = namedAfterAnyObject(objectNames);
   for (const entry of entries) {
-    if (!entry.isFile() || entry.name.toLowerCase().endsWith('.bak')) continue;
+    if (!entry.isFile() || entry.name.toLowerCase().endsWith('.bak') || isWriteLeftover(entry.name)) continue;
     if (namedAfterObject(entry.name)) continue;
     const stem = /^[^.-]*/.exec(entry.name)?.[0] ?? entry.name;
     const key = nameKey(stem);
