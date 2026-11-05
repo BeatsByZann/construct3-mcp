@@ -6,10 +6,10 @@
 
 import type { z, ZodRawShape } from 'zod';
 import { toolError, type MutationToolDeps } from './shared.js';
-import { findNameClash } from '../construct3/names.js';
 import { runInToolCall } from '../construct3/disk-state.js';
 import { errorMessage } from '../construct3/error-text.js';
 import { stoppedBeforeWrite } from './refusals.js';
+import { unregisteredNameMessage } from './registered-names.js';
 
 /**
  * The message for a `given` name that is not registered exactly, or
@@ -20,11 +20,7 @@ import { stoppedBeforeWrite } from './refusals.js';
 export function unregisteredName(
   kind: string, given: string, registered: readonly string[], suggestions: readonly string[], listTool: string,
 ): string | undefined {
-  if (registered.includes(given)) return undefined;
-  const clash = findNameClash(given, registered);
-  if (clash !== undefined) return `${kind} "${given}" not found: names are matched with their letter case. Did you mean "${clash}"?`;
-  const hint = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(', ')}?` : ` Use ${listTool} to see all available names.`;
-  return `${kind} "${given}" not found.${hint}`;
+  return unregisteredNameMessage(kind, given, registered, () => [...suggestions], listTool);
 }
 
 /**

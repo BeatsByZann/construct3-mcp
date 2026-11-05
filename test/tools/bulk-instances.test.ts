@@ -236,6 +236,19 @@ describe('add_instances_to_layout', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it('words an item\'s thrown error without an absolute path', async () => {
+    const generate = idGen.generateUid.bind(idGen);
+    let calls = 0;
+    vi.spyOn(idGen, 'generateUid').mockImplementation(async (r) => {
+      calls += 1;
+      if (calls === 2) throw new Error('Cannot scan D:\\elsewhere\\secret\\Other.json');
+      return generate(r);
+    });
+
+    const data = await add([sprite(1), sprite(2)]);
+    expect(data.text).toBe(`Item 1: Cannot scan <a path outside the project>. ${NOTHING_CHANGED}`);
+  });
+
   it('places items as the single tool does when the family files cannot be read', async () => {
     const original = await layoutBytes();
     vi.spyOn(reader, 'readAllFamilies').mockRejectedValueOnce(new Error('EBUSY'));
@@ -293,6 +306,13 @@ describe('add_instances_to_layout', () => {
     expect(listing.text).toBe(`The change was stopped before anything was written: EMFILE. ${NOTHING_CHANGED}`);
     expect(consoleError.mock.calls.some(args => String(args[0]).includes('[add_instances_to_layout] failed'))).toBe(false);
     await unchanged(original);
+  });
+
+  it('words a layout that cannot be read without the path of the failure', async () => {
+    vi.spyOn(reader, 'readLayout').mockRejectedValueOnce(new Error('Unexpected end of JSON in D:\\elsewhere\\secret\\Layout 1.json'));
+    const unreadable = await add([sprite(1)]);
+    expect(unreadable.isError).toBe(true);
+    expect(unreadable.text).toBe(`Cannot read layout "Layout 1": Unexpected end of JSON in <a path outside the project>. ${NOTHING_CHANGED}`);
   });
 
   it('a dry run writes nothing', async () => {

@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { Layout } from '../construct3/types.js';
-import { toolResult, toolError, notFoundError } from './shared.js';
+import { toolResult, toolError } from './shared.js';
 import { mergeUnscannedReports, unscannedFields, type UnscannedFileReport } from '../construct3/analyzers/unscanned-uses.js';
 import { readFamiliesForInstances } from '../construct3/instance-behaviors.js';
 import { hierarchyUnlinkWarnings, unlinkRemovedInstances } from '../construct3/hierarchy.js';
@@ -28,6 +28,8 @@ import {
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { withProjectSync } from './project-sync.js';
 import { stoppedBeforeWrite } from './refusals.js';
+import { unregisteredNameMessage } from './registered-names.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 type Reader = MutationToolDeps['reader'];
 
@@ -42,8 +44,8 @@ type Reader = MutationToolDeps['reader'];
  */
 export const MAX_BULK_INSTANCES = 500;
 
-/** An error's message without its final full stop. */
-export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
+/** An error's message without its final full stop, and with no absolute path in it (`projectDir` is the project folder). */
+export const messageOf = (error: unknown, projectDir?: string): string => errorMessage(error, projectDir).replace(/\.$/, '');
 
 /** A bulk call's refusal for item `index`: its message, ending once with "Nothing was changed." */
 export function bulkItemRefusal(index: number, message: string): string {
@@ -64,19 +66,13 @@ export async function readRegisteredLayout(reader: Reader, layoutName: string): 
   } catch (error) {
     return { refusal: stoppedBeforeWrite(error, reader.getProjectDir()) };
   }
-  if (!registered.includes(layoutName)) {
-    const sameIgnoringCase = registered.find(n => n.toLowerCase() === layoutName.toLowerCase());
-    if (sameIgnoringCase !== undefined) {
-      return { refusal: `Layout "${layoutName}" not found: names are matched with their letter case. Did you mean "${sameIgnoringCase}"? Nothing was changed.` };
-    }
-    const notFound = notFoundError('Layout', layoutName, reader.findNearestName(layoutName, 'layouts'), 'list_layouts').content[0].text;
-    return { refusal: `${notFound} Nothing was changed.` };
-  }
+  const unknown = unregisteredNameMessage('Layout', layoutName, registered, () => reader.findNearestName(layoutName, 'layouts'), 'list_layouts');
+  if (unknown !== undefined) return { refusal: `${unknown} Nothing was changed.` };
   let layout: unknown;
   try {
     layout = await reader.readLayout(layoutName);
   } catch (error) {
-    return { refusal: `Cannot read layout "${layoutName}": ${messageOf(error)}. Nothing was changed.` };
+    return { refusal: `Cannot read layout "${layoutName}": ${messageOf(error, reader.getProjectDir())}. Nothing was changed.` };
   }
   // A file of valid JSON that is not an object (null, a number) parses, and every item step would throw on it
   if (layout === null || typeof layout !== 'object' || Array.isArray(layout)) {
@@ -88,10 +84,11 @@ export async function readRegisteredLayout(reader: Reader, layoutName: string): 
 /**
  * Apply `step` to each item in order. The first item it refuses, or that
  * throws, refuses the whole call with that item's index; nothing has been
- * written then.
+ * written then. `projectDir` is the project folder, so a path inside it shows
+ * as a relative path in a thrown error's text.
  */
 export async function applyItems<T, R extends object>(
-  items: readonly T[], step: (item: T, index: number) => Promise<R | { error: string }>,
+  items: readonly T[], step: (item: T, index: number) => Promise<R | { error: string }>, projectDir?: string,
 ): Promise<{ done: R[] } | { refusal: string }> {
   const done: R[] = [];
   for (const [index, item] of items.entries()) {
@@ -99,7 +96,7 @@ export async function applyItems<T, R extends object>(
     try {
       outcome = await step(item, index);
     } catch (error) {
-      return { refusal: bulkItemRefusal(index, messageOf(error)) };
+      return { refusal: bulkItemRefusal(index, messageOf(error, projectDir)) };
     }
     if ('error' in outcome && typeof outcome.error === 'string') return { refusal: bulkItemRefusal(index, outcome.error) };
     done.push(outcome as R);
@@ -194,7 +191,7 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
           const placed = await ops.placeInstance(layout, args.layoutName, item, type, families);
           if ('error' in placed) return placed;
           return { index, objectType: item.objectType, ...placed };
-        });
+        }, reader.getProjectDir());
         if ('refusal' in applied) return toolError(applied.refusal);
 
         return await finishBulk(args.layoutName, layout, args.dryRun,
@@ -233,7 +230,7 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
           const updated = await ops.updateInstanceInLayout(layout, args.layoutName, item);
           if ('error' in updated) return updated;
           return { index, uid: item.uid, ...updated };
-        });
+        }, reader.getProjectDir());
         if ('refusal' in applied) return toolError(applied.refusal);
         return await finishBulk(args.layoutName, layout, args.dryRun,
           applied.done.map(u => ({ index: u.index, uid: u.uid })), itemWarnings(applied.done), applied.done.flatMap(u => u.unscanned));
@@ -270,7 +267,7 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
             index, uid, objectType: removal.removedType,
             warnings: removal.removedType ? [`Removed instance of "${removal.removedType}" (UID ${uid}) from ${describeInstancePlace(removal.entry)}.`] : [],
           };
-        });
+        }, reader.getProjectDir());
         if ('refusal' in applied) return toolError(applied.refusal);
         // Hierarchy links name UIDs: every removed one is unlinked at once
         const warnings = [...itemWarnings(applied.done), ...hierarchyUnlinkWarnings(unlinkRemovedInstances(layout, seen))];

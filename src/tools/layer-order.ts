@@ -23,12 +23,8 @@ import { unscannedFilesOf } from '../construct3/analyzers/unscanned-uses.js';
 import { resolveLayer } from './layout-tools.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { withProjectSync } from './project-sync.js';
-import { stoppedBeforeWrite } from './refusals.js';
-
-/** `message` as a refusal, ending with "Nothing was changed." */
-function refusal(message: string): ReturnType<typeof toolError> {
-  return toolError(`${message}${message.endsWith('.') ? '' : '.'} Nothing was changed.`);
-}
+import { refuse, stoppedBeforeWrite } from './refusals.js';
+import { MAX_BULK_INSTANCES, applyItems, readRegisteredLayout } from './bulk-instance-tools.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -228,84 +224,6 @@ function moveInstanceInLayout(layout: Layout, layoutName: string, args: MoveInst
   };
 }
 
-type Reader = Construct3ProjectReader;
-
-/**
- * Most items one bulk call takes: a guard on the size of one request and
- * its result, for every kind of item. An add item may carry up to 50KB of
- * property values and 50KB of behavior values, an update item tags and
- * instance variable values, a delete item a UID and a move item a UID
- * with a few short fields, and the result lists every item. The size of a
- * layout is bounded by the writer instead: it refuses a file whose text
- * as written is over the file size limit, before anything is written.
- */
-const MAX_BULK_INSTANCES = 500;
-
-/** An error's message without its final full stop. */
-const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
-
-/** A bulk call's refusal for item `index`: its message, ending once with "Nothing was changed." */
-function bulkItemRefusal(index: number, message: string): string {
-  const core = message.replace(/\s*Nothing was changed\.\s*$/, '').trimEnd();
-  return `Item ${index}: ${core}${/[.!?]$/.test(core) ? '' : '.'} Nothing was changed.`;
-}
-
-/**
- * The layout a bulk call writes, by its registered name: a name in another
- * letter case is refused (a case-blind file system would read the file,
- * and the write would name it as given), and so is a layout file that
- * cannot be read. Every refusal ends with "Nothing was changed.".
- */
-async function readRegisteredLayout(reader: Reader, layoutName: string): Promise<{ layout: Layout } | { refusal: string }> {
-  let registered: string[];
-  try {
-    registered = await reader.listLayouts();
-  } catch (error) {
-    return { refusal: stoppedBeforeWrite(error, reader.getProjectDir()) };
-  }
-  if (!registered.includes(layoutName)) {
-    const sameIgnoringCase = registered.find(n => n.toLowerCase() === layoutName.toLowerCase());
-    if (sameIgnoringCase !== undefined) {
-      return { refusal: `Layout "${layoutName}" not found: names are matched with their letter case. Did you mean "${sameIgnoringCase}"? Nothing was changed.` };
-    }
-    const notFound = notFoundError('Layout', layoutName, reader.findNearestName(layoutName, 'layouts'), 'list_layouts').content[0].text;
-    return { refusal: `${notFound} Nothing was changed.` };
-  }
-  let layout: unknown;
-  try {
-    layout = await reader.readLayout(layoutName);
-  } catch (error) {
-    return { refusal: `Cannot read layout "${layoutName}": ${messageOf(error)}. Nothing was changed.` };
-  }
-  // A file of valid JSON that is not an object (null, a number) parses, and every item step would throw on it
-  if (layout === null || typeof layout !== 'object' || Array.isArray(layout)) {
-    return { refusal: `Cannot read layout "${layoutName}": it does not hold a layout object. Nothing was changed.` };
-  }
-  return { layout: layout as Layout };
-}
-
-/**
- * Apply `step` to each item in order. The first item it refuses, or that
- * throws, refuses the whole call with that item's index; nothing has been
- * written then.
- */
-async function applyItems<T, R extends object>(
-  items: readonly T[], step: (item: T, index: number) => Promise<R | { error: string }>,
-): Promise<{ done: R[] } | { refusal: string }> {
-  const done: R[] = [];
-  for (const [index, item] of items.entries()) {
-    let outcome: R | { error: string };
-    try {
-      outcome = await step(item, index);
-    } catch (error) {
-      return { refusal: bulkItemRefusal(index, messageOf(error)) };
-    }
-    if ('error' in outcome && typeof outcome.error === 'string') return { refusal: bulkItemRefusal(index, outcome.error) };
-    done.push(outcome as R);
-  }
-  return { done };
-}
-
 const quoted = (names: readonly string[]) => names.map(n => `"${n}"`).join(', ');
 
 /** Register reorder_layers, move_layer, move_instance and move_instances. */
@@ -343,7 +261,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         let parent: LayerEntry | undefined;
         if (args.parentLayer !== undefined) {
           const resolved = findLayer(layout, args.parentLayer, args.layoutName);
-          if ('error' in resolved) return refusal(resolved.error);
+          if ('error' in resolved) return refuse(resolved.error);
           parent = resolved.entry;
         }
         const siblings: Layer[] = parent
@@ -355,7 +273,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         const current = siblings.map(l => l.name);
         const repeated = [...new Set(current.filter((n, i) => current.indexOf(n) !== i))];
         if (current.some(n => typeof n !== 'string') || repeated.length > 0) {
-          return refusal(`The layers of ${scope} cannot be told apart by name (${repeated.length > 0 ? `repeated: ${quoted(repeated)}` : 'a layer has no name'}); `
+          return refuse(`The layers of ${scope} cannot be told apart by name (${repeated.length > 0 ? `repeated: ${quoted(repeated)}` : 'a layer has no name'}); `
             + 'rename them first with update_layer');
         }
         const listed = args.layerNames;
@@ -368,7 +286,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
             ...(twice.length > 0 ? [`listed more than once: ${quoted(twice)}`] : []),
             ...(unknown.length > 0 ? [`not at this level: ${quoted(unknown)}`] : []),
           ];
-          return refusal(`layerNames must list every layer of ${scope} exactly once (${problems.join('; ')}). `
+          return refuse(`layerNames must list every layer of ${scope} exactly once (${problems.join('; ')}). `
             + `Current order, first to last: ${quoted(current) || '(none)'}`);
         }
 
@@ -416,7 +334,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
         const resolved = findLayer(layout, args.layerName, args.layoutName);
-        if ('error' in resolved) return refusal(resolved.error);
+        if ('error' in resolved) return refuse(resolved.error);
         const moving = resolved.entry;
         const name = layerPathLabel(moving);
 
@@ -424,12 +342,12 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         let destination: LayerEntry | undefined = args.parentLayer === undefined ? moving.parent : undefined;
         if (args.parentLayer !== undefined && args.parentLayer !== null) {
           const found = findLayer(layout, args.parentLayer, args.layoutName);
-          if ('error' in found) return refusal(found.error);
+          if ('error' in found) return refuse(found.error);
           destination = found.entry;
           // Into itself or one of its sub-layers: the branch would hold itself and leave the layout
           for (let e: LayerEntry | undefined = destination; e; e = e.parent) {
             if (e.layer === moving.layer) {
-              return refusal(destination.layer === moving.layer
+              return refuse(destination.layer === moving.layer
                 ? `Cannot move layer "${name}" into itself`
                 : `Cannot move layer "${name}" into "${layerPathLabel(destination)}", one of its own sub-layers`);
             }
@@ -443,7 +361,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         const highest = sameLevel ? target.length - 1 : target.length;
         const toIndex = args.index ?? highest;
         if (toIndex > highest) {
-          return refusal(`index ${toIndex} is out of range: ${where} would hold ${highest + 1} layer(s) with it, so the highest index is ${highest}`);
+          return refuse(`index ${toIndex} is out of range: ${where} would hold ${highest + 1} layer(s) with it, so the highest index is ${highest}`);
         }
 
         const common = {
@@ -480,7 +398,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
     async (args) => {
       try {
         const argsError = moveArgsError(args);
-        if (argsError) return refusal(argsError);
+        if (argsError) return refuse(argsError);
 
         let layout: Layout;
         try {
@@ -489,7 +407,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
         const moved = moveInstanceInLayout(layout, args.layoutName, args);
-        if ('error' in moved) return refusal(moved.error);
+        if ('error' in moved) return refuse(moved.error);
 
         const common = { success: true, entity: args.layoutName, category: 'layout', uid: args.uid, ...moveFields(moved) };
         if (moved.sameLayer && moved.toIndex === moved.fromIndex) {
@@ -530,7 +448,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
           const moved = moveInstanceInLayout(layout, args.layoutName, item);
           if ('error' in moved) return moved;
           return { index, uid: item.uid, ...moveFields(moved) };
-        });
+        }, reader.getProjectDir());
         if ('refusal' in applied) return toolError(applied.refusal);
         const results: Array<Record<string, unknown>> = applied.done;
 
