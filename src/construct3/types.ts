@@ -150,7 +150,7 @@ export interface ProjectProperties {
   gpuPreference: string;
   scriptsType: string;
   framerateMode: string;
-  fixedFramerate: number;
+  fixedFramerate?: number;
   sampling: string;
   downscaling: string;
   renderingMode: string;
