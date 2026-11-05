@@ -1068,7 +1068,9 @@ describe('closing', () => {
 
     const { hooks, fs } = hookedFs();
     const second = await openArchive({ fs });
-    await changeFolder(second);
+    // Not CHANGED: the archive already holds it, and the same bytes written in the same clock tick as the
+    // unpack leave size and mtime as the open recorded them, which is no change to write back.
+    await changeFolder(second, '{"events":["changed in the second session"]}');
     hooks.before.writeFile = path => {
       if (path.endsWith('.tmp')) throw fault();
     };
