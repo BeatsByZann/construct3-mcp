@@ -9,7 +9,7 @@
  * these, then the view state. So a write the writer refuses because an
  * entity file changed on disk during the call (StaleFileError) comes
  * before any of these, and the writer has then put back what the call
- * wrote. When a later step fails, rollBackRename puts these files back
+ * wrote. When a later write fails, rollBackRename puts these files back
  * from the bytes they held before the call (restoreForCall, which leaves a
  * file changed on disk since the call wrote it), renames the image files
  * back, then has rollBackFailedCall put back the entity files and
@@ -96,7 +96,7 @@ export async function newFileState(
  * Whether a rename of `oldName` to `newName` stopped after its project
  * update: `newName` is registered and readable, and the old file itself
  * is still on disk beside the new one with the same SID. A rename deletes
- * the old file as its last step, so a finished rename never leaves this
+ * the old file last, so a finished rename never leaves this
  * evidence (its .bak is not taken as evidence). Returns the entity under
  * its new name and the old file, read for its delete, or undefined.
  */
@@ -272,7 +272,7 @@ export async function createFileForCall(
  * Move a file to `to` through the writer: written there with `content`
  * (default: its bytes), refused when a file appeared there; then deleted
  * at its old path, refused (under the file's lock) when it changed since
- * it was read. Both steps are recorded for rollBackRename, also when the
+ * it was read. Both writes are recorded for rollBackRename, also when the
  * writer throws after it changed a file (recordFailedSideWrite).
  */
 export async function moveFileForRename(
@@ -306,7 +306,7 @@ export interface ViewStateMove {
  * settings only, and the editor starts a new one where it is missing, so
  * a failure is a warning and the next file is moved: a file whose new name
  * holds other bytes is left as it is, and one whose new name holds the
- * same bytes (a run that stopped between the two steps) only loses its old
+ * same bytes (a run that stopped between the two writes) only loses its old
  * name. A move whose `to` is its `from` rewrites the file in place (a
  * view-state file that lists the entity by name). Not rolled back.
  * Returns the moves made and the warnings.

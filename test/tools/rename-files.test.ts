@@ -152,7 +152,7 @@ describe('replaceForRename', () => {
 });
 
 describe('moveFileForRename', () => {
-  it('writes the new path, deletes the old one with a .bak, and records both steps', async () => {
+  it('writes the new path, deletes the old one with a .bak, and records both writes', async () => {
     await writeFile(at('a.txt'), 'AAA');
     await runInToolCall(async () => {
       const side = newSideWrites();

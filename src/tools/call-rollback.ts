@@ -45,7 +45,7 @@ async function holdsBackup(filePath: string, backupPath: string): Promise<boolea
  * Roll back the running tool call after `error` and return the error
  * message for the tool result. `error` is what a write of the writer threw
  * (EntityWriteError: the write may have replaced the file), or any other
- * error of a step after earlier writes. A StaleFileError comes back as the
+ * error raised after earlier writes. A StaleFileError comes back as the
  * writer worded it: the writer has already undone the call's earlier writes
  * and said so. `options.writing`: the absolute path of a file other than an
  * entity file whose writer update was running when `error` came
