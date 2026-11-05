@@ -500,13 +500,13 @@ describe('update_event_block and custom actions', () => {
     expect(actionsOf(eventWith(written(writer), 500))[0]).toMatchObject({ id: 'set-visible', objectClass: 'Alpha' });
   });
 
-  it('refuses isElse on a custom action block, and an event that is no block, function block or custom action block, in the wording of the refusals update_event_block already had', async () => {
+  it('refuses isElse on a custom action block, and an event that is no block, function block or custom action block, and ends each with the closing sentence', async () => {
     const { server, writer, events } = setup();
     const before = JSON.stringify(events);
     expect(errorText(await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 500, isElse: true })))
-      .toBe('isElse applies to block events only; a function block or custom action block cannot be an else block.');
+      .toBe('isElse applies to block events only; a function block or custom action block cannot be an else block. Nothing was changed.');
     expect(errorText(await server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 700, disabled: true })))
-      .toBe('Event with SID 700 is a "variable", not a block, function-block or custom action block. Only those can be updated with this tool.');
+      .toBe('Event with SID 700 is a "variable", not a block, function-block or custom action block. Only those can be updated with this tool. Nothing was changed.');
     expect(JSON.stringify(events)).toBe(before);
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });

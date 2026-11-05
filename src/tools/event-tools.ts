@@ -2325,7 +2325,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       }).strict(),
     },
     async (args) => {
-      // Set once the sheet is changed in memory: puts the events back as they were read
+      // Set once the events are read and snapshotted: puts them back as they were read
       let restoreSheet: (() => void) | undefined;
       let writeStarted = false;
       try {
@@ -2344,7 +2344,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           || (args.removeConditionIndices && args.removeConditionIndices.length > 0);
 
         if (!hasUpdate) {
-          return toolError('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices, removeConditionIndices.');
+          return toolError(nothingChanged('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices, removeConditionIndices.'));
         }
 
         // The catalogue first: a fetch must not run between the read and the write
@@ -2356,27 +2356,36 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(
+            notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets').content[0].text,
+          ));
         }
 
         const events = sheet.events as Record<string, unknown>[];
         const beforeEvents = snapshotEvents(sheet.events);
+        // From the snapshot on, a refusal or an error puts the events back as they were read
+        restoreSheet = () => { sheet.events = beforeEvents; };
+        /** A refusal made when the sheet may have changed in memory: puts the events back, then refuses with "Nothing was changed.". */
+        const refuseAfterChanges = (message: string) => {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(message));
+        };
         const found = resolveEventBySid(events, args.sid, {
           sheetName: args.sheetName,
           action: 'update',
           eventPath: args.eventPath,
         });
-        if ('error' in found) return toolError(found.error);
+        if ('error' in found) return toolError(nothingChanged(found.error));
 
         const { event, path } = found.match;
         const eventType = event.eventType as string;
 
         // Must be a block, function-block or custom action block (not a group, variable, include, etc.)
         if (eventType !== 'block' && eventType !== 'function-block' && eventType !== 'custom-ace-block') {
-          return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action block. Only those can be updated with this tool.`);
+          return toolError(nothingChanged(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action block. Only those can be updated with this tool.`));
         }
         if (args.isElse !== undefined && eventType !== 'block') {
-          return toolError('isElse applies to block events only; a function block or custom action block cannot be an else block.');
+          return toolError(nothingChanged('isElse applies to block events only; a function block or custom action block cannot be an else block.'));
         }
 
         // Custom action calls: checked before anything changes, so a refusal leaves the block as it was
@@ -2419,7 +2428,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             insideFunction: isInFunctionBlock(events, event),
           });
           if (errors.length > 0) {
-            return toolError(`Object class validation failed:\n${errors.join('\n')}`);
+            return refuseAfterChanges(`Object class validation failed:\n${errors.join('\n')}`);
           }
           warnings.push(...valWarnings);
         }
@@ -2429,7 +2438,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if ([...(args.addConditions ?? []), ...(args.insertConditions ?? []).map(i => i.condition), ...(args.replaceConditions ?? []).map(r => r.condition)].some(c => c.isOr === true)) {
           const willBeOrBlock = args.isOrBlock ?? event.isOrBlock === true;
           if (!willBeOrBlock) {
-            return toolError('isOr on a condition is not written: Construct 3 ORs a whole event. Set isOrBlock: true to make this block an OR block.');
+            return refuseAfterChanges('isOr on a condition is not written: Construct 3 ORs a whole event. Set isOrBlock: true to make this block an OR block.');
           }
           warnings.push(`${where}: the deprecated per-condition isOr flag is not written; the block is an OR block.`);
         }
@@ -2445,11 +2454,11 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // A removal index past the end is named before the inserts are counted, which count the list after the removals
         const badConditionRemoval = (args.removeConditionIndices ?? []).find(i => i < 0 || i >= conditions.length);
         if (badConditionRemoval !== undefined) {
-          return toolError(nothingChanged(`Condition index ${badConditionRemoval} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`));
+          return refuseAfterChanges(`Condition index ${badConditionRemoval} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
         }
         const badActionRemoval = (args.removeActionIndices ?? []).find(i => i < 0 || i >= actions.length);
         if (badActionRemoval !== undefined) {
-          return toolError(nothingChanged(`Action index ${badActionRemoval} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`));
+          return refuseAfterChanges(`Action index ${badActionRemoval} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
         }
         const removedConditionCount = new Set(args.removeConditionIndices ?? []).size;
         const removedActionCount = new Set(args.removeActionIndices ?? []).size;
@@ -2468,15 +2477,15 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         };
         const insertError = insertProblem('Condition', args.insertConditions ?? [], conditionsAfterRemoval)
           ?? insertProblem('Action', args.insertActions ?? [], actionsAfterRemoval);
-        if (insertError) return toolError(nothingChanged(insertError));
+        if (insertError) return refuseAfterChanges(insertError);
         const replaced = new Set<number>();
         for (const r of args.replaceConditions ?? []) {
           if (r.index >= conditions.length) {
-            return toolError(nothingChanged(`Condition index ${r.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`));
+            return refuseAfterChanges(`Condition index ${r.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
           }
-          if (replaced.has(r.index)) return toolError(nothingChanged(`replaceConditions names condition ${r.index} twice.`));
-          if ((args.removeConditionIndices ?? []).includes(r.index)) return toolError(nothingChanged(`Condition ${r.index} is both replaced and removed.`));
-          if ((args.updateConditions ?? []).some(u => u.index === r.index)) return toolError(nothingChanged(`Condition ${r.index} is both updated and replaced; replace it with the condition you want.`));
+          if (replaced.has(r.index)) return refuseAfterChanges(`replaceConditions names condition ${r.index} twice.`);
+          if ((args.removeConditionIndices ?? []).includes(r.index)) return refuseAfterChanges(`Condition ${r.index} is both replaced and removed.`);
+          if ((args.updateConditions ?? []).some(u => u.index === r.index)) return refuseAfterChanges(`Condition ${r.index} is both updated and replaced; replace it with the condition you want.`);
           replaced.add(r.index);
         }
         // The list the inserts go into: the conditions after this call's replacements and removals
@@ -2485,7 +2494,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const keptConditions = conditions.map((c, i) => replacementAt.get(i) ?? c).filter((_c, i) => !removedConditionIndices.has(i));
         // With isElse: false the else condition is taken out at the end, so an insert in front of it is a valid way to put a condition first
         if (isElseCondition(keptConditions[0]) && args.isElse !== false && (args.insertConditions ?? []).some(i => i.index === 0)) {
-          return toolError(nothingChanged('Condition 0 of this block is a System "else" condition, which stays first (also when it is disabled); insert at index 1 or later.'));
+          return refuseAfterChanges('Condition 0 of this block is a System "else" condition, which stays first (also when it is disabled); insert at index 1 or later.');
         }
         // A block that starts with an else condition (or gets one through isElse: true) holds Else once, first
         const startsWithElse = args.isElse !== false && (args.isElse === true || isElseCondition(keptConditions[0]));
@@ -2497,16 +2506,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           ? `${where} would hold ${after + added} ${kind} (max ${MAX_ITEMS_PER_BLOCK}).` : undefined);
         const sizeError = tooMany('conditions', conditionsAfterRemoval, (args.insertConditions?.length ?? 0) + (args.addConditions?.length ?? 0) + elseAdded)
           ?? tooMany('actions', actionsAfterRemoval, (args.insertActions?.length ?? 0) + (args.addActions?.length ?? 0));
-        if (sizeError) return toolError(nothingChanged(sizeError));
+        if (sizeError) return refuseAfterChanges(sizeError);
 
-        // From here the sheet changes in memory: a failure before the write puts the events back
-        restoreSheet = () => { sheet.events = beforeEvents; };
-        /** A refusal after the toggles or updates changed the sheet in memory: puts the events back, then refuses. */
-        const refuseAfterChanges = (message: string) => {
-          sheet.events = beforeEvents;
-          return toolError(nothingChanged(message));
-        };
-
+        // From here the block is changed in memory
         // ── Apply block-level toggles (in the editor's key order: disabled right after sid) ──
         if (args.disabled !== undefined) {
           if (args.disabled) {
@@ -2731,10 +2733,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // Editor load-time rules, checked on the whole sheet so the block's
         // ancestors (an enclosing trigger or function) count too
         const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
-        if (loadCheck.errors.length > 0) {
-          sheet.events = beforeEvents;
-          return toolError(loadRuleErrorMessage(loadCheck.errors));
-        }
+        if (loadCheck.errors.length > 0) return refuseAfterChanges(loadRuleErrorMessage(loadCheck.errors));
         warnings.push(...loadCheck.warnings);
         warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
