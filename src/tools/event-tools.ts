@@ -2649,7 +2649,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           if (isElseCondition(r.condition) && r.index !== 0) {
             warnings.push(misplacedElseWarning(where, 'a replacing', r.index, args.isElse, startsWithElse));
           }
-          conditions[r.index] = buildCondition(r.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>;
+          conditions[r.index] = await buildCondition(reader, r.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>;
         }
 
         // ── Remove conditions by index (descending order to avoid index shifting) ──
@@ -2677,7 +2677,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           if (isElseCondition(insert.condition) && insert.index !== 0) {
             warnings.push(misplacedElseWarning(where, 'an inserted', insert.index, args.isElse, startsWithElse));
           }
-          conditions.splice(insert.index, 0, buildCondition(insert.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>);
+          conditions.splice(insert.index, 0, await buildCondition(reader, insert.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>);
         }
         if ((args.insertActions ?? []).length > 0) {
           const insertCtx = { warnings, functions, customActions: customContext };
@@ -2700,7 +2700,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
               warnings.push(`${where}: an added System "else" condition goes after the existing conditions, but Construct 3 saves Else as the first condition. Use isElse: true instead.`);
             }
             const condSid = await idGen.generateSid(reader);
-            conditions.push(buildCondition(c, condSid));
+            conditions.push(await buildCondition(reader, c, condSid));
           }
         }
 

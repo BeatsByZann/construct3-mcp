@@ -1651,8 +1651,9 @@ export function resolveOrBlock(
 
 /** Build a condition in the editor's key order: id, objectClass, sid, disabled,
  *  behaviorType, parameters, isInverted. The deprecated `isOr` input is never
- *  written (see resolveOrBlock). */
-export function buildCondition(c: ConditionInput, sid: number): Condition {
+ *  written (see resolveOrBlock). A custom ease named in `parameters.ease` is
+ *  embedded the way the editor saves it, as for an action. */
+export async function buildCondition(reader: Construct3ProjectReader, c: ConditionInput, sid: number): Promise<Condition> {
   const cond: Condition = {
     id: c.id,
     objectClass: c.objectClass,
@@ -1661,7 +1662,10 @@ export function buildCondition(c: ConditionInput, sid: number): Condition {
   if (c.disabled) cond.disabled = true;
   const { behaviorType } = resolveBehaviorType(c);
   if (behaviorType) cond.behaviorType = behaviorType;
-  if (c.parameters) cond.parameters = c.parameters;
+  if (c.parameters) {
+    cond.parameters = { ...c.parameters };
+    await applyCustomEaseParameter(reader, cond.parameters);
+  }
   if (c.isInverted) cond.isInverted = true;
   return cond;
 }
@@ -2068,7 +2072,7 @@ export async function buildBlockEvent(
   }
   for (const c of conditions) {
     const condSid = await idGen.generateSid(reader);
-    builtConditions.push(buildCondition(c, condSid));
+    builtConditions.push(await buildCondition(reader, c, condSid));
   }
 
   // Build actions (SIDs for all but script and comment rows, which the editor saves without one)

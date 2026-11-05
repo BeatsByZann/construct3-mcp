@@ -188,6 +188,42 @@ describe('custom eases in event parameters (real project on disk)', () => {
     expect(block.conditions[0].parameters.ease).toEqual({ name: 'Bouncy', json: [{ folders: [], json: await easeFile() }] });
   });
 
+  it('embeds a custom ease in a condition parameter on every path that creates a condition', async () => {
+    const shapes = JSON.parse(await readFile(SHAPES, 'utf-8')) as { easeParameterRoundtrip: unknown };
+    const condition = { id: 'every-tick', objectClass: 'System', parameters: { tags: '"Custom"', ease: 'Bouncy' } };
+    type Block = { sid: number; conditions: Array<{ parameters?: Record<string, unknown> }> };
+    const conditionsOf = async (sid: number) =>
+      ((await sheet()).events as unknown as Block[]).find(e => e.sid === sid)!.conditions;
+    const expected = { name: 'Bouncy', json: [{ folders: [], json: await easeFile() }] };
+
+    const created = await ok('add_event_block', {
+      sheetName: 'MainSheet',
+      conditions: [condition],
+      actions: [],
+    });
+    const sid = created.generatedSid as number;
+    let conditions = await conditionsOf(sid);
+    expect(Object.keys(conditions[0].parameters!)).toEqual(['tags', 'ease']);
+    expect(JSON.stringify(shapeOf(conditions[0].parameters!.ease))).toBe(JSON.stringify(shapes.easeParameterRoundtrip));
+    expect(conditions[0].parameters!.ease).toEqual(expected);
+
+    await ok('update_event_block', { sheetName: 'MainSheet', sid, replaceConditions: [{ index: 0, condition }] });
+    expect((await conditionsOf(sid))[0].parameters!.ease).toEqual(expected);
+
+    await ok('update_event_block', { sheetName: 'MainSheet', sid, insertConditions: [{ index: 1, condition }] });
+    await ok('update_event_block', { sheetName: 'MainSheet', sid, addConditions: [condition] });
+    conditions = await conditionsOf(sid);
+    expect(conditions).toHaveLength(3);
+    for (const written of conditions) expect(written.parameters!.ease).toEqual(expected);
+
+    const builtIn = await ok('add_event_block', {
+      sheetName: 'MainSheet',
+      conditions: [{ ...condition, parameters: { ...condition.parameters, ease: 'easeinsine' } }],
+      actions: [],
+    });
+    expect((await conditionsOf(builtIn.generatedSid as number))[0].parameters!.ease).toBe('easeinsine');
+  });
+
   it('keeps the read and rename tools working on an embedded ease parameter', async () => {
     await addTween('Bouncy');
     const hits = await ok('search_project', { query: 'Bouncy' });
