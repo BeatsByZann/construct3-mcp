@@ -554,11 +554,11 @@ describe('error results of the usage tools', () => {
     const result = await raw(tool, args);
     const text = result.content[0].text;
     expect(result.isError).toBe(true);
-    expect(text.startsWith(`${label}: ENOENT: no such file '<project>`)).toBe(true);
+    expect(text.startsWith(`${label}: ENOENT: no such file 'objectTypes/X.json'`)).toBe(true);
     expect(text).not.toContain(tmpDir);
     expect(text).not.toContain('Elsewhere');
     expect(text).not.toContain('server');
-    expect(text).toContain('<path> and <path>');
+    expect(text).toContain('also <a path outside the project>');
   });
 
   it('removes a drive path or network path that contains spaces whole, and keeps a URL', async () => {
@@ -568,6 +568,6 @@ describe('error results of the usage tools', () => {
       + 'and \\\\file server\\team share\\Game Files\\y.json; see https://example.com/help',
     ));
     const result = await raw('find_behavior_usage', { behaviorName: 'a' });
-    expect(result.content[0].text).toBe("Error finding behavior usage: cannot read <path>, then '<path>' and <path>; see https://example.com/help");
+    expect(result.content[0].text).toBe("Error finding behavior usage: cannot read <a path outside the project>, then '<a path outside the project>' and <a path outside the project>; see https://example.com/help");
   });
 });

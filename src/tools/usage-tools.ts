@@ -24,6 +24,7 @@ import { findEffectUses } from '../construct3/analyzers/effect-uses.js';
 import { registeredScriptFiles } from '../construct3/script-files.js';
 import { notFoundError, toolError, toolResult } from './shared.js';
 import { withProjectSync } from './project-sync.js';
+import { errorReason } from '../construct3/error-text.js';
 
 /** What a usage query says about the parts of the project its answer leaves out. */
 export interface Completeness {
@@ -378,26 +379,6 @@ function someNames(names: readonly string[], max = 20): string {
 }
 
 /**
- * The text of a caught error with the project folder shown as `<project>` and
- * any other absolute Windows path (a drive path or a UNC path, spaces
- * included) as `<path>`, so a reader's file path never reaches a tool result.
- * An unquoted path ends at a quote, a line end, a comma, a semicolon, " and "
- * or " or ". POSIX paths outside the project folder are not recognised.
- */
-function errorText(error: unknown, projectDir: string | undefined): string {
-  let text = error instanceof Error ? error.message : String(error);
-  if (projectDir) {
-    for (const spelling of new Set([projectDir, projectDir.replace(/\\/g, '/'), projectDir.replace(/\//g, '\\')])) {
-      text = text.split(spelling).join('<project>');
-    }
-  }
-  const rest = '(?:(?! and | or |, |; )[^"\'<>|*?\\n])*';
-  return text
-    .replace(new RegExp(`(?<![A-Za-z0-9])[A-Za-z]:[\\\\/]${rest}`, 'g'), '<path>')
-    .replace(new RegExp(`\\\\\\\\[^"'<>|*?\\\\\\n]+\\\\${rest}`, 'g'), '<path>');
-}
-
-/**
  * Exported for tests. The members of every family, from the index (family
  * name as registered); a family whose member list is not a list has none.
  */
@@ -417,7 +398,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
     } catch {
       projectDir = undefined;
     }
-    return toolError(`${label}: ${errorText(error, projectDir)}${suffix}`);
+    return toolError(`${label}: ${errorReason(error, { projectDir })}${suffix}`);
   };
 
   server.tool(

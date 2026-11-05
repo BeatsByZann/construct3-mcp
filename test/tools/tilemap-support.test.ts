@@ -6,8 +6,6 @@ import { z } from 'zod';
 import {
   refusal,
   unregisteredName,
-  messageWithoutPaths,
-  causeWithoutPaths,
   stoppedBeforeWrite,
   syncedTools,
 } from '../../src/tools/tilemap-support.js';
@@ -44,64 +42,10 @@ describe('unregisteredName', () => {
   });
 });
 
-describe('messageWithoutPaths', () => {
-  it('removes the project folder in both slash forms and keeps the ending', () => {
-    const backslash = 'C:\\Users\\x\\Proj';
-    const forward = 'C:/Users/x/Proj';
-    const message = `Could not read ${backslash}\\layouts\\a.json and ${forward}/layouts/b.json under ${backslash}.`;
-    const result = messageWithoutPaths(new Error(message), backslash);
-    expect(result).toBe('Could not read .\\layouts\\a.json and ./layouts/b.json under ..');
-    expect(result).not.toContain('Users');
-    expect(messageWithoutPaths(new Error(message), forward)).not.toContain('Users');
-    expect(messageWithoutPaths(new Error('The file is as before the call.'), backslash)).toBe('The file is as before the call.');
-    expect(messageWithoutPaths(new Error('Stopped. Nothing was changed.'), backslash)).toBe('Stopped. Nothing was changed.');
-    expect(messageWithoutPaths('plain text', backslash)).toBe('plain text');
-  });
-});
-
-describe('messageWithoutPaths edge cases', () => {
-  it('leaves the message alone for an empty folder', () => {
-    expect(messageWithoutPaths(new Error('a/b'), '')).toBe('a/b');
-  });
-
-  const outside = '<a path outside the project>';
-
-  it('replaces a sibling folder that starts with the project folder name, without cutting its name', () => {
-    expect(messageWithoutPaths(new Error('In C:\\Proj2\\x and C:\\Proj\\y.'), 'C:\\Proj')).toBe(`In ${outside} and .\\y.`);
-    expect(messageWithoutPaths(new Error("open 'C:\\Proj-old\\x'"), 'C:\\Proj')).toBe(`open '${outside}'`);
-  });
-
-  it('replaces a UNC path and a POSIX root path', () => {
-    expect(messageWithoutPaths(new Error('Cannot read \\\\server\\share\\a.json: EACCES.'), 'C:\\Proj')).toBe(`Cannot read ${outside}: EACCES.`);
-    expect(messageWithoutPaths(new Error('Cannot read /home/u/a.json.'), 'C:\\Proj')).toBe(`Cannot read ${outside}.`);
-  });
-
-  it('replaces the 8.3 short form of the project folder, which is not the folder as given', () => {
-    expect(messageWithoutPaths(new Error('Cannot read C:\\SAMPLE~1\\Proj\\a.json.'), 'C:\\Users\\Sample User\\Proj')).toBe(`Cannot read ${outside}.`);
-  });
-
-  it('keeps relative paths and slashes inside words', () => {
-    expect(messageWithoutPaths(new Error('Wrote ./layouts/a.json and tilemapBrushes/objectTypes/T.json, and/or 1/2.'), 'C:\\Proj'))
-      .toBe('Wrote ./layouts/a.json and tilemapBrushes/objectTypes/T.json, and/or 1/2.');
-  });
-
-  it('replaces the folder whatever the letter case of the drive, and with a trailing separator', () => {
-    expect(messageWithoutPaths(new Error('In c:\\users\\x\\Proj\\a.json'), 'C:\\Users\\x\\Proj\\')).toBe('In .\\a.json');
-  });
-});
-
-describe('causeWithoutPaths', () => {
-  it('drops only the final full stop', () => {
-    expect(causeWithoutPaths(new Error('Bad. Worse.'), 'C:\\p')).toBe('Bad. Worse');
-    expect(causeWithoutPaths(new Error('No full stop'), 'C:\\p')).toBe('No full stop');
-    expect(causeWithoutPaths(new Error('In C:\\p\\a.json.'), 'C:\\p')).toBe('In .\\a.json');
-  });
-});
-
 describe('stoppedBeforeWrite', () => {
   it('refuses without a path, with one full stop before the ending', () => {
     const message = text(stoppedBeforeWrite(new Error('Cannot read C:\\p\\a.json: EACCES.'), 'C:\\p'));
-    expect(message).toBe('The change was stopped before anything was written: Cannot read .\\a.json: EACCES. Nothing was changed.');
+    expect(message).toBe('The change was stopped before anything was written: Cannot read a.json: EACCES. Nothing was changed.');
     expect(message).not.toContain('..');
   });
 });

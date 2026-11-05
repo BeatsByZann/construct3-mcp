@@ -14,7 +14,7 @@ import { StaleFileError } from '../construct3/disk-state.js';
 import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
 
 type StructureWriter = Pick<Construct3ProjectWriter,
-  'replaceFile' | 'deleteFile' | 'restoreForCall' | 'renameImageFiles' | 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative'>;
+  'replaceFile' | 'deleteFile' | 'restoreForCall' | 'renameImageFiles' | 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative' | 'projectDir'>;
 
 /**
  * Roll back the running call after `error` and return the message for the

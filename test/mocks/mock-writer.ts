@@ -156,6 +156,11 @@ export class MockWriter {
     return { restored: true, label: error.backupPath.replace(/\.bak$/, '') };
   }
 
+  /** The mock project folder, as the real writer's projectDir() */
+  projectDir(): string {
+    return '/mock/backup';
+  }
+
   /** A path inside the mock project as shown in messages: the real writer's project-relative form, here relative to /mock/backup */
   projectRelative(filePath: string): string {
     return filePath.replace(/^\/mock\/backup\//, '');

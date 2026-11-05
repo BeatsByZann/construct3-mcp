@@ -420,7 +420,7 @@ describe('replace_object_in_events', () => {
       vi.spyOn(reader, 'listObjectTypes').mockRejectedValue(new Error(`boom at ${path('x.json')} and ${tmpDir} and D:\\elsewhere\\y.json`));
       const result = await swap({});
       expect(result.isError).toBe(true);
-      expect(textOf(result)).toMatch(/^Error replacing object: boom at <project>[\\/]x\.json and <project> and <path>\. Nothing was changed\.$/);
+      expect(textOf(result)).toMatch(/^Error replacing object: boom at x\.json and \. and <a path outside the project>\. Nothing was changed\.$/);
       noPath(textOf(result));
       expect(writes).not.toHaveBeenCalled();
       expect(await snapshotProject(tmpDir)).toEqual(before);
@@ -962,7 +962,7 @@ describe('replace_in_expressions', () => {
       vi.spyOn(reader, 'listEventSheets').mockRejectedValue(new Error(`boom at ${path('x.json')} and ${tmpDir}`));
       const result = await replaceText({});
       expect(result.isError).toBe(true);
-      expect(textOf(result)).toMatch(/^Error replacing text: boom at <project>[\\/]x\.json and <project>\. Nothing was changed\.$/);
+      expect(textOf(result)).toMatch(/^Error replacing text: boom at x\.json and \. Nothing was changed\.$/);
       noPath(textOf(result));
       expect(writes).not.toHaveBeenCalled();
       expect(await snapshotProject(tmpDir)).toEqual(before);

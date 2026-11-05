@@ -63,6 +63,10 @@ describe('describeError', () => {
     expect(describeError(new Error('Something failed.'))).toBe('Something failed');
     expect(describeError('plain')).toBe('plain');
   });
+
+  it('takes any other absolute path out of the text', () => {
+    expect(describeError(new Error('Cannot read C:\\Users\\x\\y.json.'))).toBe('Cannot read <a path outside the project>');
+  });
 });
 
 describe('openFlowchart', () => {

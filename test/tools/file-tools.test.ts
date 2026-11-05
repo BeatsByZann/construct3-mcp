@@ -779,7 +779,7 @@ describe('Project File tools', () => {
     }
 
     it('refuses a missing file', async () => {
-      await expectSourceRefusal(join(sourceDir, 'missing.json'), 'The source file cannot be read (ENOENT)');
+      await expectSourceRefusal(join(sourceDir, 'missing.json'), 'The source file cannot be read (ENOENT on <a path outside the project>)');
     });
 
     it('refuses a folder', async () => {

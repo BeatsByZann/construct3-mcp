@@ -25,12 +25,13 @@ import type { ImageFileRename } from '../construct3/animation-rename.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { parseJsonText } from '../construct3/json-format.js';
+import { errorReason } from '../construct3/error-text.js';
 import { StaleFileError, currentToolCall, fileKey, noteFileRead, noteFileWritten, sameFileState, statFileState, type FileState } from '../construct3/disk-state.js';
 import { scriptFilePaths } from '../construct3/analyzers/index-builder.js';
 import { rollBackFailedCall } from './call-rollback.js';
 
 type RenameWriter = Pick<Construct3ProjectWriter,
-  'replaceFile' | 'deleteFile' | 'restoreForCall' | 'renameImageFiles' | 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative'>;
+  'replaceFile' | 'deleteFile' | 'restoreForCall' | 'renameImageFiles' | 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative' | 'projectDir'>;
 type RenameReader = Pick<Construct3ProjectReader, 'getProjectDir' | 'readObjectType' | 'readEventSheet' | 'readLayout' | 'readFamily'>;
 
 /** The entity categories a rename moves a file of. */
@@ -152,14 +153,10 @@ export function newSideWrites(): RenameSideWrites {
 /**
  * An error's text for a message: an fs error by its code and the file's
  * path in the project (its own message spells the absolute path), any
- * other error by its message (the writer names files project-relative).
+ * other error by its message with absolute paths taken out.
  */
 export function reasonOf(error: unknown, relative: (path: string) => string): string {
-  if (typeof error === 'object' && error !== null) {
-    const { code, path } = error as { code?: unknown; path?: unknown };
-    if (typeof code === 'string' && typeof path === 'string') return `${code} on ${relative(path)}`;
-  }
-  return (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
+  return errorReason(error, { relative });
 }
 
 /**

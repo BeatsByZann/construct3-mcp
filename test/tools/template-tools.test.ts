@@ -259,10 +259,10 @@ describe('list_templates', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(reader, 'readAllLayouts').mockRejectedValue(new Error("EACCES: permission denied, open 'C:\\Users\\Someone Else\\proj\\layouts\\Level 1.json'"));
     const windows = await call();
-    expect(windows.text).toBe('Error listing templates: EACCES: permission denied, open \'(path removed)\'');
-    vi.spyOn(reader, 'readAllLayouts').mockRejectedValue(new Error('ENOENT: no such file /home/someone/proj/layouts/Level 1.json'));
+    expect(windows.text).toBe('Error listing templates: EACCES: permission denied, open \'<a path outside the project>\'');
+    vi.spyOn(reader, 'readAllLayouts').mockRejectedValue(new Error('ENOENT: no such file /home/someone/proj/layouts/Level_1.json'));
     const posix = await call();
-    expect(posix.text).toBe('Error listing templates: ENOENT: no such file (path removed)');
+    expect(posix.text).toBe('Error listing templates: ENOENT: no such file <a path outside the project>');
     vi.restoreAllMocks();
   });
 
@@ -642,7 +642,7 @@ describe('set_instance_template', () => {
     const write = vi.spyOn(writer, 'writeEntityFile');
     const data = await set(1, 'none');
     expect(data.isError).toBe(true);
-    expect(data.text).toBe(`Error setting instance template: EACCES: permission denied, scandir '(path removed)'. ${NOT_WRITTEN}`);
+    expect(data.text).toBe(`Error setting instance template: EACCES: permission denied, scandir '<a path outside the project>'. ${NOT_WRITTEN}`);
     expect(write).not.toHaveBeenCalled();
   });
 });
@@ -758,7 +758,7 @@ describe('set_default_template', () => {
     const write = vi.spyOn(writer, 'writeEntityFile');
     const data = await defCall({ objectName: 'Player', templateName: null });
     expect(data.isError).toBe(true);
-    expect(data.text).toBe(`Error setting default template: EACCES: permission denied, scandir '(path removed)'. ${NOT_WRITTEN}`);
+    expect(data.text).toBe(`Error setting default template: EACCES: permission denied, scandir '<a path outside the project>'. ${NOT_WRITTEN}`);
     expect(write).not.toHaveBeenCalled();
   });
 

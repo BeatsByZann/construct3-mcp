@@ -12,6 +12,7 @@ import { toolError, validateName, validateSubfolder } from './shared.js';
 import { EntityWriteError, failedWriteLeftReason, filesLeftClause } from '../construct3/project-writer.js';
 import { fileKey, noteFileRead, statFileState, StaleFileError, type FileState } from '../construct3/disk-state.js';
 import { existingSpelling } from '../construct3/atomic-write.js';
+import { errorReason } from '../construct3/error-text.js';
 import { nameKey } from '../construct3/names.js';
 import { resolveJsonTextStyle, serializeJson } from '../construct3/json-format.js';
 
@@ -48,27 +49,6 @@ export function readFailure(error: unknown): string {
   if (error instanceof SyntaxError) return error.message;
   const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined;
   return typeof code === 'string' ? code : 'unreadable';
-}
-
-/** Escape a string for use inside a regular expression. */
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * An error's message with the project folder taken off every path in it,
- * the rest of each such path written with `/`. A folder whose name only
- * starts with the project folder's name is left as it is.
- */
-export function relativeMessage(error: unknown, projectDir: string): string {
-  let message = error instanceof Error ? error.message : String(error);
-  for (const form of new Set([projectDir, projectDir.replace(/\\/g, '/'), projectDir.replace(/\//g, '\\')])) {
-    // A path ends at a quote, a line end, a comma, a semicolon or a bracket (paths may hold spaces)
-    const inside = new RegExp(`${escapeRegExp(form)}[\\\\/]([^'"\\r\\n,;()]*)`, 'g');
-    message = message.replace(inside, (_match, rest: string) => rest.replace(/\\/g, '/'));
-    message = message.replace(new RegExp(`${escapeRegExp(form)}(?![^\\s'"])`, 'g'), '.');
-  }
-  return message;
 }
 
 /** `Did you mean "X"?` when a registered name equals `requested` apart from its letter case. */
@@ -147,8 +127,7 @@ export interface ChangedFile {
 export async function rollBackToolCall(
   writer: Writer, projectDir: string, error: unknown, changed: readonly ChangedFile[],
 ): Promise<string> {
-  // A refusal of the writer ends with a full stop already
-  const cause = relativeMessage(error, projectDir).replace(/\.$/, '');
+  const cause = errorReason(error, { projectDir });
   const undoneByWriter = error instanceof StaleFileError && error.undone;
   const putBack: string[] = [];
   const left: string[] = [];
@@ -178,7 +157,7 @@ export async function rollBackToolCall(
       putBack.push(label);
     } catch (restoreError) {
       // restoreForCall's own refusals name the file and say it was left
-      const reason = relativeMessage(restoreError, projectDir).replace(/\.$/, '');
+      const reason = errorReason(restoreError, { projectDir });
       left.push(reason.startsWith(label) ? reason : `${label} (${reason}; its state from before the call is in ${label}.bak)`);
     }
   }

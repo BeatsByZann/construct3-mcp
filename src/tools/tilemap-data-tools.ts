@@ -19,7 +19,8 @@ import type { Instance, Layout, WriteResult } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
 import { forEachLayoutInstance, findInstanceByUid } from '../construct3/layers.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
-import { refusal, stoppedBeforeWrite, unregisteredName, messageWithoutPaths, causeWithoutPaths, syncedTools } from './tilemap-support.js';
+import { refusal, stoppedBeforeWrite, unregisteredName, syncedTools } from './tilemap-support.js';
+import { errorReason, withoutAbsolutePaths } from '../construct3/error-text.js';
 import {
   decodeTileData,
   encodeTileData,
@@ -131,7 +132,7 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
     try {
       objectType = await reader.readObjectType(inst.type);
     } catch (e) {
-      return { error: `Cannot read object type "${inst.type}": ${causeWithoutPaths(e, reader.getProjectDir())}.` };
+      return { error: `Cannot read object type "${inst.type}": ${errorReason(e, { projectDir: reader.getProjectDir() })}.` };
     }
     const pluginId = objectType['plugin-id'];
     if (pluginId !== 'Tilemap') return { error: `Instance ${uid} is a "${inst.type}" (plugin "${String(pluginId)}"), not a Tilemap.` };
@@ -276,7 +277,7 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
         });
       } catch (error) {
         console.error('[get_tilemap_data] failed:', error);
-        return toolError(`Error reading tilemap data: ${messageWithoutPaths(error, reader.getProjectDir())}`);
+        return toolError(`Error reading tilemap data: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
     }
   );
@@ -358,7 +359,7 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
         backupPath = await store(target, args.layoutName, cells, width, height, false);
       } catch (error) {
         console.error('[set_tilemap_tiles] write failed:', error);
-        return toolError(`Error setting tilemap tiles: ${messageWithoutPaths(error, reader.getProjectDir())}`);
+        return toolError(`Error setting tilemap tiles: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
       return written(args, backupPath, target);
     }
@@ -425,7 +426,7 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
         backupPath = await store(target, args.layoutName, cells, width, height, resize);
       } catch (error) {
         console.error('[set_tilemap_data] write failed:', error);
-        return toolError(`Error setting tilemap data: ${messageWithoutPaths(error, reader.getProjectDir())}`);
+        return toolError(`Error setting tilemap data: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
       return written(args, backupPath, target);
     }

@@ -22,6 +22,7 @@ import { readFile } from 'fs/promises';
 import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
 import type { EntityCategory } from '../construct3/project-reader.js';
 import { EntityWriteError, failedWriteLeftReason, filesLeftClause } from '../construct3/project-writer.js';
+import { withoutAbsolutePaths } from '../construct3/error-text.js';
 import { StaleFileError, currentToolCall, fileKey, sameFileState, statFileState, type CallBackup } from '../construct3/disk-state.js';
 
 /** This call's backup of `filePath` when it still holds what the call put there; undefined otherwise. */
@@ -53,14 +54,14 @@ async function holdsBackup(filePath: string, backupPath: string): Promise<boolea
  * the tool call.
  */
 export async function rollBackFailedCall(
-  writer: Pick<Construct3ProjectWriter, 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative'>,
+  writer: Pick<Construct3ProjectWriter, 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative' | 'projectDir'>,
   error: unknown,
   options: { writing?: string } = {},
 ): Promise<string> {
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof StaleFileError) return message;
   // A refusal of the writer ends with a full stop already
-  const cause = message.replace(/\.$/, '');
+  const cause = withoutAbsolutePaths(message.replace(/\.$/, ''), writer.projectDir());
   const putBack: string[] = [];
   const left: string[] = [];
   if (error instanceof EntityWriteError) {
@@ -127,7 +128,7 @@ export async function rollBackFailedCall(
  * and throw an Error with that message. Returns the backup path.
  */
 export async function writeEntityOrRollBack(
-  writer: Pick<Construct3ProjectWriter, 'writeEntityFile' | 'getSubfolderForEntity' | 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative'>,
+  writer: Pick<Construct3ProjectWriter, 'writeEntityFile' | 'getSubfolderForEntity' | 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative' | 'projectDir'>,
   category: EntityCategory, name: string, data: unknown,
 ): Promise<string> {
   try {

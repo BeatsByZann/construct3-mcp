@@ -15,12 +15,12 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter, ConcurrentWriteError, EntityWriteError, UnconfirmedWriteError } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { runInToolCall, StaleFileError } from '../../src/construct3/disk-state.js';
+import { errorReason } from '../../src/construct3/error-text.js';
 import {
   refuse,
   invalidName,
   invalidSubfolder,
   readFailure,
-  relativeMessage,
   caseHint,
   readFileForWrite,
   readTextIfExists,
@@ -87,18 +87,17 @@ describe('invalidName and invalidSubfolder', () => {
   });
 });
 
-describe('relativeMessage', () => {
-  it('strips the project folder in both slash styles and leaves a sibling folder alone', () => {
+describe('the project folder in an error message', () => {
+  it('is taken off in both slash styles, and a sibling folder is replaced', () => {
     const forms: Array<[folder: string, separator: string]> = [[dir.replace(/\\/g, '/'), '/'], [dir.replace(/\//g, '\\'), '\\']];
     for (const [folder, separator] of forms) {
       const path = [folder, 'timelines', 'X.json'].join(separator);
-      const message = relativeMessage(new Error(`ENOENT: no such file or directory, open '${path}'`), dir);
+      const message = errorReason(new Error(`ENOENT: no such file or directory, open '${path}'`), { projectDir: dir });
       expect(message).toBe("ENOENT: no such file or directory, open 'timelines/X.json'");
       expect(message).not.toContain(dir);
     }
-    const sibling = `bad ${dir}-other\\f.json`;
-    expect(relativeMessage(new Error(sibling), dir)).toBe(sibling);
-    expect(relativeMessage(new Error(dir), dir)).toBe('.');
+    expect(errorReason(new Error(`bad ${dir}-other\\f.json`), { projectDir: dir })).toBe('bad <a path outside the project>');
+    expect(errorReason(new Error(dir), { projectDir: dir })).toBe('.');
   });
 });
 

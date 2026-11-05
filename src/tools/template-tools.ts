@@ -11,6 +11,7 @@ import type { MutationToolDeps } from './shared.js';
 import type { Instance, Layout, ObjectType, WriteResult } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
 import { withProjectSync } from './project-sync.js';
+import { errorReason } from '../construct3/error-text.js';
 import { unregisteredNameMessage } from './registered-names.js';
 import { nothingChanged } from './event-helpers.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
@@ -42,14 +43,6 @@ function skippedWarnings(skipped: readonly UnscannedFile[], consequence: string)
 
 /** The most orphaned replicas one result lists. */
 const ORPHAN_LIST_LIMIT = 50;
-
-/** The text with every absolute path (drive, UNC or rooted) replaced, from its start to the end of the line or a quote. */
-function withoutAbsolutePaths(text: string): string {
-  return text
-    .replace(/[A-Za-z]:[\\/][^"'\r\n]*/g, '(path removed)')
-    .replace(/\\\\[^"'\r\n]*/g, '(path removed)')
-    .replace(/(?<![\w.])\/(?:[\w.-]+\/)+[^"'\r\n]*/g, '(path removed)');
-}
 
 /**
  * What still names a template that a call removes, renames or turns into
@@ -152,7 +145,7 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         });
       } catch (error) {
         console.error('[list_templates] failed:', error);
-        return toolError(`Error listing templates: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error))}`);
+        return toolError(`Error listing templates: ${errorReason(error, { projectDir: reader.getProjectDir() })}`);
       }
     }
   );
@@ -254,7 +247,7 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         return toolResult(result);
       } catch (error) {
         console.error('[set_instance_template] failed:', error);
-        return refuse(`Error setting instance template: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error))}`);
+        return refuse(`Error setting instance template: ${errorReason(error, { projectDir: reader.getProjectDir() })}`);
       }
     }
   );
@@ -309,7 +302,7 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         return toolResult(result);
       } catch (error) {
         console.error('[set_default_template] failed:', error);
-        return refuse(`Error setting default template: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error))}`);
+        return refuse(`Error setting default template: ${errorReason(error, { projectDir: reader.getProjectDir() })}`);
       }
     }
   );

@@ -75,6 +75,21 @@ afterEach(async () => {
 });
 
 describe('rollBackFailedCall', () => {
+  it('words a path in the error of a failed write by its place in the project', async () => {
+    const internals = writer as unknown as { verifyWrittenFile: (path: string) => Promise<unknown> };
+    internals.verifyWrittenFile = async path => { throw new Error(`EIO: i/o error, read '${path}'`); };
+    const message = await writeLayoutThenSheet();
+    expect(message).toBe("EIO: i/o error, read 'layouts/Layout 1.json'. The call was rolled back: layouts/Layout 1.json is as before the call.");
+    expect(message).not.toContain(tmpDir);
+  });
+
+  it('words a path in any other error by its place in the project, and a path outside it as outside', async () => {
+    const message = await runInToolCall(() => rollBackFailedCall(
+      writer, new Error(`Cannot read '${layoutPath()}' or 'D:\\elsewhere\\x.json'.`),
+    ));
+    expect(message).toBe("Cannot read 'layouts/Layout 1.json' or '<a path outside the project>'. Nothing was changed.");
+  });
+
   it('puts back the one file whose write failed its read-back', async () => {
     const layoutBefore = await readFile(layoutPath(), 'utf8');
     failReadBackOf('Layout 1.json');

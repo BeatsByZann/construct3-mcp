@@ -11,6 +11,7 @@ import { dirname, relative, sep, join, basename } from 'path';
 import { resolveProjectPath } from './path-utils.js';
 import type { PutBackOutcome, RenameOutcome } from './change-journal.js';
 import { atomicReplace, existingSpelling, findFileIgnoringCase } from './atomic-write.js';
+import { withoutAbsolutePaths } from './error-text.js';
 import { entityFolderPaths, type Construct3ProjectReader } from './project-reader.js';
 import type { IdGenerator } from './id-generator.js';
 import type { Addon, Subfolder, ProjectProperties } from './types.js';
@@ -99,15 +100,18 @@ export class RenameConflictError extends Error {}
  * failed), none, or its old content. `backupPath` is the path writeEntityFile
  * returns on success; restoreFailedWrite(error) puts the content from
  * before the call back when the file existed (for a new file there is no
- * backup). The message is the cause's.
+ * backup). The message is the cause's, with absolute paths taken out; `cause`
+ * keeps the original error.
  */
 export class EntityWriteError extends Error {
   /**
    * @param written The text the failed write wrote (undefined when it did
    *   not get that far), for restoreFailedWrite's ownership check
+   * @param projectDir The project folder, so a path inside it is worded
+   *   project-relative in the message
    */
-  constructor(cause: unknown, readonly backupPath: string, readonly written?: string) {
-    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  constructor(cause: unknown, readonly backupPath: string, readonly written?: string, projectDir?: string) {
+    super(withoutAbsolutePaths(cause instanceof Error ? cause.message : String(cause), projectDir), { cause });
     this.name = 'EntityWriteError';
   }
 
@@ -1180,7 +1184,7 @@ export class Construct3ProjectWriter {
         } catch (error) {
           // The file may have been replaced already: tell the caller where the backup is
           await this.noteFailedWrite(filePath, text);
-          throw new EntityWriteError(error, backupPath, text);
+          throw new EntityWriteError(error, backupPath, text, this.reader.getProjectDir());
         }
 
         this.afterOwnWrite(filePath, state, text);
@@ -1226,6 +1230,11 @@ export class Construct3ProjectWriter {
       this.fileLocks.set(key, lock);
     }
     return lock(fn);
+  }
+
+  /** The project folder, for wording a path in an error message. */
+  projectDir(): string {
+    return this.reader.getProjectDir();
   }
 
   /** A path inside the project as shown in messages ("layouts/Level 1.json"). */

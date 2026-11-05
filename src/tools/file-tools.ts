@@ -14,6 +14,7 @@ import type { MutationToolDeps } from './shared.js';
 import { folderCaseClashError, toolError, toolResult, validateFileName, validateSubfolder } from './shared.js';
 import { withProjectSync } from './project-sync.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
+import { errorReason } from '../construct3/error-text.js';
 import { StaleFileError, statFileState } from '../construct3/disk-state.js';
 import { filesLeftClause } from '../construct3/project-writer.js';
 import { nameKey } from '../construct3/names.js';
@@ -42,24 +43,6 @@ function refuse(message: string) {
 class Refusal extends Error {}
 
 /**
- * Why a call failed, for a message: a Node fs error by its code (its
- * message carries an absolute path), any other error by its message (the
- * writer's and the reader's own errors explain themselves).
- */
-function failureReason(error: unknown): string {
-  // The writer wraps a failed backup stat in an error whose message carries the absolute path; its cause has the code
-  const cause = error instanceof Error ? (error as { cause?: unknown }).cause : undefined;
-  if (cause instanceof Error && 'syscall' in cause && typeof (cause as NodeJS.ErrnoException).code === 'string') {
-    return (cause as NodeJS.ErrnoException).code as string;
-  }
-  if (error instanceof Error && 'syscall' in error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (typeof code === 'string') return code;
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
-/**
  * The message of a call that failed with an error the tool did not expect:
  * what the call wrote through the writer is put back (writer.undoToolCall)
  * and named; a call that wrote nothing ends with "Nothing was changed.". A
@@ -69,7 +52,7 @@ function failureReason(error: unknown): string {
 async function failureText(writer: Writer, prefix: string, error: unknown): Promise<string> {
   if (error instanceof Refusal) return `${error.message.replace(/\.$/, '')}. Nothing was changed.`;
   const undo = await writer.undoToolCall();
-  const parts = [`${prefix}: ${failureReason(error).replace(/\.$/, '')}.`];
+  const parts = [`${prefix}: ${errorReason(error, { projectDir: writer.projectDir() })}.`];
   if (undo.restored.length > 0) parts.push(`What this call had written was put back: ${undo.restored.join(', ')}.`);
   if (undo.left.length > 0) {
     parts.push(`It could not be put back: ${filesLeftClause(undo.left)}. Check the project (validate_project) before you run the tool again.`);
@@ -315,7 +298,7 @@ async function failedAfterRegistration(writer: Writer, destination: string, rela
 }
 
 /** The source file's bytes, or why it is refused. */
-async function readSourceFile(sourcePath: string): Promise<{ bytes: Buffer } | { refusal: string }> {
+async function readSourceFile(sourcePath: string, projectDir: string): Promise<{ bytes: Buffer } | { refusal: string }> {
   try {
     const info = await stat(sourcePath);
     if (!info.isFile()) return { refusal: 'The source path is not a file' };
@@ -324,7 +307,7 @@ async function readSourceFile(sourcePath: string): Promise<{ bytes: Buffer } | {
     }
     return { bytes: await readFile(sourcePath) };
   } catch (error) {
-    return { refusal: `The source file cannot be read (${failureReason(error)})` };
+    return { refusal: `The source file cannot be read (${errorReason(error, { projectDir })})` };
   }
 }
 
@@ -495,7 +478,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
           return toolResult({ ...registrationResult(outcome, base), ...(warnings.length > 0 ? { warnings } : {}) }, { projectWritten: written });
         }
         if (!sourcePath) return refuse('sourcePath (or filePath) is required when the Project File is not already registered');
-        const source = await readSourceFile(sourcePath);
+        const source = await readSourceFile(sourcePath, reader.getProjectDir());
         if ('refusal' in source) return refuse(source.refusal);
         if (await findFileIgnoringCase(destination)) {
           return refuse(`${relativePath} already exists (or a file whose name differs only in case does) but is not a registered Project File. It was left unchanged. Remove it or choose another name`);
@@ -524,7 +507,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
           // expected null: a file that exists when the writer checks under its lock is refused, not replaced
           await writer.replaceFile(destination, source.bytes, { expected: null });
         } catch (error) {
-          return toolError(await failedAfterRegistration(writer, destination, relativePath, `Copying the file into ${relativePath} failed (${failureReason(error)})`));
+          return toolError(await failedAfterRegistration(writer, destination, relativePath, `Copying the file into ${relativePath} failed (${errorReason(error, { projectDir: reader.getProjectDir() })})`));
         }
         return toolResult(registrationResult(outcome, base));
       } catch (error) {
@@ -584,7 +567,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
           if (error instanceof StaleFileError) {
             return toolError(`Deregistered "${args.name}", but ${relativePath} was changed since this call selected it, so it was left in place. Check it and remove it by hand if it is not needed.`);
           }
-          return toolError(`Deregistered "${args.name}" but could not remove ${relativePath} (${failureReason(error)}). The file is now orphaned; remove it manually.`);
+          return toolError(`Deregistered "${args.name}" but could not remove ${relativePath} (${errorReason(error, { projectDir: reader.getProjectDir() })}). The file is now orphaned; remove it manually.`);
         }
         return toolResult({
           success: true, entity: args.name, category: 'project-file', action: 'deregistered', folder, subfolder: args.subfolder,
@@ -653,7 +636,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
           // expected null: a file that exists when the writer checks under its lock is refused, not replaced
           await writer.replaceFile(destination, built.body, { expected: null });
         } catch (error) {
-          return toolError(await failedAfterRegistration(writer, destination, relativePath, `Writing ${relativePath} failed (${failureReason(error)})`));
+          return toolError(await failedAfterRegistration(writer, destination, relativePath, `Writing ${relativePath} failed (${errorReason(error, { projectDir: reader.getProjectDir() })})`));
         }
         return toolResult({ ...registrationResult(outcome, base), action: 'created', kind: args.kind });
       } catch (error) {

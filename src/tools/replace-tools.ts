@@ -54,7 +54,7 @@ import {
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
-import { reasonOf } from './rename-files.js';
+import { errorReason } from '../construct3/error-text.js';
 import { nothingChanged } from './event-helpers.js';
 import { unregisteredNameMessage } from './registered-names.js';
 import { withProjectSync } from './project-sync.js';
@@ -417,20 +417,6 @@ function unparsedSheetWarnings(reports: readonly UnscannedFileReport[]): string[
   });
 }
 
-/**
- * `text` without absolute paths: the project folder (in either slash style) and any other drive or
- * rooted path in it are replaced, so an unexpected error never shows where the project is on disk.
- */
-function withoutPaths(projectDir: string, text: string): string {
-  let shown = text;
-  for (const variant of new Set([projectDir, projectDir.replace(/\\/g, '/'), projectDir.replace(/\//g, '\\')])) {
-    if (variant.length > 0) shown = shown.split(variant).join('<project>');
-  }
-  return shown
-    .replace(/[A-Za-z]:[\\/][^\s"'`]*/g, '<path>')
-    .replace(/(?<![\w.\-:<])\/(?:[\w.\-]+\/)+[\w.\-]*/g, '<path>');
-}
-
 // ─── Expression find-and-replace ───────────────────────────
 
 /**
@@ -684,7 +670,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
       } catch (error) {
         console.error('[replace_object_in_events] failed:', error);
         // Everything before the first write is in this try, and the writes return from their own catch: nothing was changed
-        return refuse(`Error replacing object: ${withoutPaths(reader.getProjectDir(), reasonOf(error, file => writer.projectRelative(file)))}`);
+        return refuse(`Error replacing object: ${errorReason(error, { projectDir: reader.getProjectDir(), relative: file => writer.projectRelative(file) })}`);
       }
     }
   );
@@ -863,7 +849,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
       } catch (error) {
         console.error('[replace_in_expressions] failed:', error);
         // Everything before the first write is in this try, and the writes return from their own catch: nothing was changed
-        return refuse(`Error replacing text: ${withoutPaths(reader.getProjectDir(), reasonOf(error, file => writer.projectRelative(file)))}`);
+        return refuse(`Error replacing text: ${errorReason(error, { projectDir: reader.getProjectDir(), relative: file => writer.projectRelative(file) })}`);
       }
     }
   );

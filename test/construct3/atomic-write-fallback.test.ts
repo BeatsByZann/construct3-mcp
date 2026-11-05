@@ -607,7 +607,7 @@ describe('the writer when a replacement fails after EEXIST', () => {
     // The second rename onto the file is the failed write's first
     const failedTemp = calls(rename).filter(([, to]) => to === sheetPath)[1][0];
     expect((error as Error).message).toBe(
-      `Could not replace Fallback.json: EPERM: injected failure, link '${failedTemp}' -> '${sheetPath}'. ` +
+      `Could not replace Fallback.json: EPERM: injected failure, link 'eventSheets/${basename(failedTemp)}' -> 'eventSheets/Fallback.json'. ` +
       'It was put back, so this write did not change it.');
 
     // The file is the one the first write left, so the stale check lets this write through

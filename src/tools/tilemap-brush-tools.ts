@@ -43,7 +43,8 @@ import { resolveProjectPath } from '../construct3/path-utils.js';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult } from '../construct3/types.js';
 import { toolResult, toolError, validateName } from './shared.js';
-import { refusal, stoppedBeforeWrite, unregisteredName, messageWithoutPaths, causeWithoutPaths, syncedTools } from './tilemap-support.js';
+import { refusal, stoppedBeforeWrite, unregisteredName, syncedTools } from './tilemap-support.js';
+import { errorReason, withoutAbsolutePaths } from '../construct3/error-text.js';
 
 /** Largest brush file read, in bytes: the limit the project reader applies to its files. */
 const MAX_BRUSH_FILE_BYTES = 10 * 1024 * 1024;
@@ -353,7 +354,7 @@ async function writeBrushFile(
   } catch (error) {
     // A file another program saved after it was read is refused by the writer and untouched
     if (error instanceof StaleFileError) return { failure: toolError(error.message) };
-    return { failure: toolError(await failedWriteMessage(location, read, text, causeWithoutPaths(error, projectDir).replace(/[.\s]+$/, ''), folderExisted)) };
+    return { failure: toolError(await failedWriteMessage(location, read, text, errorReason(error, { projectDir }).replace(/[.\s]+$/, ''), folderExisted)) };
   }
 }
 
@@ -403,7 +404,7 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
         warnings.push(`"${objectName}" uses plugin "${String(pluginId)}", not "Tilemap"; ${listing ? 'its brush file is listed' : 'the brush file is written'} anyway.`);
       }
     } catch (error) {
-      return { error: `Cannot read object type "${objectName}": ${causeWithoutPaths(error, projectDir)}.` };
+      return { error: `Cannot read object type "${objectName}": ${errorReason(error, { projectDir })}.` };
     }
     const location = await locateBrushFile(projectDir, objectName, writer.getSubfolderForEntity('objectTypes', objectName));
     const elsewhere = await brushFilesElsewhere(projectDir, objectName, location);
@@ -456,7 +457,7 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
         });
       } catch (error) {
         console.error('[list_tilemap_brushes] failed:', error);
-        return toolError(`Error listing tilemap brushes: ${messageWithoutPaths(error, reader.getProjectDir())}`);
+        return toolError(`Error listing tilemap brushes: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
     }
   );

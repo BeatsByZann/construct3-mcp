@@ -54,7 +54,6 @@ import {
   invalidName,
   invalidSubfolder,
   readFailure,
-  relativeMessage,
   caseHint,
   writeJsonFile,
   jsonFileText,
@@ -72,6 +71,7 @@ import {
   type TrackSelectorArgs,
 } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
+import { withoutAbsolutePaths } from '../construct3/error-text.js';
 import { readForRename, type ReadForRename } from './rename-files.js';
 import { registerTimelineInstanceTools } from './timeline-instance-tools.js';
 import { registerTimelineTrackTools } from './timeline-track-tools.js';
@@ -420,7 +420,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
     try {
       loaded = await loadTimeline(projectDir, timelineName, found.location);
     } catch (e: unknown) {
-      return { ok: false, error: fail(`Timeline "${timelineName}": ${relativeMessage(e, projectDir)}`) };
+      return { ok: false, error: fail(`Timeline "${timelineName}": ${withoutAbsolutePaths(e instanceof Error ? e.message : String(e), projectDir)}`) };
     }
     if (!loaded.ok) {
       const label = projectLabel(loaded.filePath);
@@ -467,7 +467,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
     try {
       return { ok: true, backupPath: await saveTimeline(opened.filePath, opened.data, opened.state) };
     } catch (error) {
-      if (error instanceof StaleFileError) return { ok: false, error: toolError(relativeMessage(error, reader.getProjectDir())) };
+      if (error instanceof StaleFileError) return { ok: false, error: toolError(withoutAbsolutePaths(error.message, reader.getProjectDir())) };
       throw error;
     }
   }
@@ -611,7 +611,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
         return toolResult({ timelines: names, count: names.length, transitions: [...transitions.keys()] });
       } catch (error) {
         console.error('[list_timelines] failed:', error);
-        return toolError(`Error listing timelines: ${relativeMessage(error, reader.getProjectDir())}`);
+        return toolError(`Error listing timelines: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
     }
   );
@@ -635,7 +635,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
         return toolResult(opened.data);
       } catch (error) {
         console.error('[get_timeline_details] failed:', error);
-        return toolError(`Error getting timeline details: ${relativeMessage(error, reader.getProjectDir())}`);
+        return toolError(`Error getting timeline details: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
     }
   );
@@ -735,7 +735,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
         return toolResult(writeResult(args.name, 'created', undefined, warnings));
       } catch (error) {
         console.error('[create_timeline] failed:', error);
-        return toolError(`Error creating timeline: ${relativeMessage(error, reader.getProjectDir())}`);
+        return toolError(`Error creating timeline: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
     }
   );
@@ -812,13 +812,13 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
           backupPath = await saveTimeline(filePath, data, opened.state);
         } catch (error) {
           // The writer's text says the file was not written and the change on disk is kept
-          if (error instanceof StaleFileError) return toolError(relativeMessage(error, reader.getProjectDir()));
+          if (error instanceof StaleFileError) return toolError(withoutAbsolutePaths(error.message, reader.getProjectDir()));
           throw error;
         }
         return toolResult(writeResult(args.name, 'updated', backupPath, warnings));
       } catch (error) {
         console.error('[update_timeline] failed:', error);
-        return toolError(`Error updating timeline: ${relativeMessage(error, reader.getProjectDir())}`);
+        return toolError(`Error updating timeline: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
     }
   );
@@ -847,7 +847,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
           loaded = await loadTimeline(projectDir, args.name, location);
         } catch (e: unknown) {
           // A registered name that resolves outside timelines/ is refused before anything is touched
-          return refuse(`Timeline "${args.name}": ${relativeMessage(e, projectDir)}`);
+          return refuse(`Timeline "${args.name}": ${withoutAbsolutePaths(e instanceof Error ? e.message : String(e), projectDir)}`);
         }
         if (!loaded.ok && loaded.reason === 'not-a-timeline') {
           return refuse(`Timeline "${args.name}" is registered but its file ${projectLabel(loaded.filePath)} holds no tracks, so it was not deleted. Check it with get_timeline_details.`);
@@ -880,7 +880,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
         return toolResult(writeResult(args.name, 'deleted', backupPath));
       } catch (error) {
         console.error('[delete_timeline] failed:', error);
-        return toolError(`Error deleting timeline: ${relativeMessage(error, reader.getProjectDir())}`);
+        return toolError(`Error deleting timeline: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
       }
     }
   );

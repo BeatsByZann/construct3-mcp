@@ -24,6 +24,7 @@ import type { Construct3ProjectReader } from './project-reader.js';
 import type { Construct3ProjectWriter } from './project-writer.js';
 import { StaleFileError, currentToolCall, fileKey, sameFileState, statFileState, type FileState } from './disk-state.js';
 import { existingSpelling } from './atomic-write.js';
+import { withoutAbsolutePaths } from './error-text.js';
 import { parseJsonText, resolveJsonTextStyle, serializeJson } from './json-format.js';
 import { resolveProjectPath } from './path-utils.js';
 import { projectShapeChanges, rollbackClosing } from './project-shape.js';
@@ -46,9 +47,9 @@ export type Writer = Pick<Construct3ProjectWriter,
  */
 export function describeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message
+  return withoutAbsolutePaths(message
     .replace(/,? ?(?:open|read|stat|lstat|scandir|access|rename|unlink|copyfile|mkdir|rmdir|link|symlink|utime) '.*'$/, '')
-    .replace(/\.$/, '');
+    .replace(/\.$/, ''));
 }
 
 /** The project-relative path of a flowchart file, as shown in messages. */

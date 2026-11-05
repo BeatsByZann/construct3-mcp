@@ -8,6 +8,7 @@ import type { z, ZodRawShape } from 'zod';
 import { toolError, type MutationToolDeps } from './shared.js';
 import { findNameClash } from '../construct3/names.js';
 import { runInToolCall } from '../construct3/disk-state.js';
+import { errorReason, withoutAbsolutePaths } from '../construct3/error-text.js';
 
 /** A write tool's refusal: its message, ending once with "Nothing was changed.". */
 export function refusal(message: string) {
@@ -32,41 +33,9 @@ export function unregisteredName(
   return `${kind} "${given}" not found.${hint}`;
 }
 
-/** Placeholder for an absolute path outside the project folder. */
-const OUTSIDE_PATH = '<a path outside the project>';
-
-/** An absolute path (drive letter, UNC or POSIX root) up to the next space or quote, without trailing punctuation. */
-const ABSOLUTE_PATH = /(?:[A-Za-z]:[\\/]|\\\\|(?<![\w.:\\/~-])\/(?=[\w.~-]))(?:[^\s"'<>|?*]*[^\s"'<>|?*.,:;)\]])?/g;
-
-/**
- * An error's message with the project folder replaced by ".", in both slash
- * forms and whatever the letter case of the drive; its ending is kept. Any
- * other absolute path left in the message (a sibling folder that starts with
- * the project folder's name, a UNC path, an 8.3 short form, a POSIX root
- * path) is replaced by a placeholder, so no absolute path reaches the text.
- * A path that holds a space is cut at the space.
- */
-export function messageWithoutPaths(error: unknown, projectDir: string): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const forward = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
-  let result = message;
-  if (forward !== '') {
-    for (const form of new Set([forward, forward.replace(/\//g, '\\')])) {
-      const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      result = result.replace(new RegExp(`${escaped}(?![^\\\\/\\s.,:;'")\\]])`, 'gi'), '.');
-    }
-  }
-  return result.replace(ABSOLUTE_PATH, OUTSIDE_PATH);
-}
-
-/** An error's message without the project folder and without its final full stop, to be placed inside a sentence. */
-export function causeWithoutPaths(error: unknown, projectDir: string): string {
-  return messageWithoutPaths(error, projectDir).replace(/\.$/, '');
-}
-
 /** The refusal for an error thrown by a check before anything was written. */
 export function stoppedBeforeWrite(error: unknown, projectDir: string) {
-  return refusal(`The change was stopped before anything was written: ${causeWithoutPaths(error, projectDir)}.`);
+  return refusal(`The change was stopped before anything was written: ${errorReason(error, { projectDir })}.`);
 }
 
 /**
@@ -99,7 +68,7 @@ export function syncedTools(server: MutationToolDeps['server'], reader: Mutation
       })) as never);
   const projectDir = () => reader.getProjectDir();
   return {
-    readTool: register(error => toolError(`Error reading the project: ${messageWithoutPaths(error, projectDir())}`)),
+    readTool: register(error => toolError(`Error reading the project: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), projectDir())}`)),
     writeTool: register(error => stoppedBeforeWrite(error, projectDir())),
   };
 }
