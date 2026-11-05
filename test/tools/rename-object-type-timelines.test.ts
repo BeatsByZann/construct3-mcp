@@ -162,6 +162,7 @@ describe('rename_object_type and timeline tracks', () => {
     const live = await ok('rename_object_type', { name: 'Sprite', newName: 'Player' });
     expect(live.success).toBe(true);
     expect(live.filesWritten).toContain('timelines/Move.json');
+    expect(live.references).toContainEqual({ in: 'timelines/Move.json', kind: 'timeline track', tracks: 2, value: 'Sprite' });
     expect(live.possibleReferences?.map(r => r.in) ?? []).not.toContain('timelines/Move.json');
     const data = await timeline('Move');
     expect(data.tracks[0].objectType).toBe('Player');

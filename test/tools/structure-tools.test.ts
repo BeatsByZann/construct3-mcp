@@ -310,6 +310,8 @@ describe('move_project_item', () => {
       await editProject(p => {
         p.flowcharts!.subfolders.push({ items: ['Hidden'], subfolders: [] });
       });
+      // A file the name could resolve to, so a move that read or copied it would show in the snapshot
+      await writeFile(path('flowcharts', 'Hidden.json'), '{"nodes":[]}');
       await refusal({ category: 'flowchart', name: 'Hidden', folder: 'Old' },
         'Flowchart "Hidden" is registered in project.c3proj in a folder without a name, so its file cannot be resolved.');
     });

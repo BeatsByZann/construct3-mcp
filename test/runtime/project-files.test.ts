@@ -37,6 +37,8 @@ describe('project files', () => {
       // A name that only looks alike is a project file
       expect(isPackedProjectFile('images/.c3mcp-0123456789abcde.old')).toBe(true);
       expect(isPackedProjectFile('images/c3mcp-0123456789abcdef.old')).toBe(true);
+      expect(isPackedProjectFile('images/.c3mcp-0123456789abcdef.json')).toBe(true);
+      expect(isPackedProjectFile('images/.c3mcp-0123456789ABCDEF.old')).toBe(true);
     } finally {
       await rm(leftoverDir, { recursive: true, force: true });
     }

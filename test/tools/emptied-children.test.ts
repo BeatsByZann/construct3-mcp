@@ -20,13 +20,17 @@ const script = (lines: string[]): Ev => ({ eventType: 'script', language: 'javas
 const group = (title: string, sid: number, children: Ev[]): Ev =>
   ({ eventType: 'group', disabled: false, title, description: '', isActiveOnStart: true, children, sid });
 
-/** Block 300 holds one script event, block 400 holds block 410, group "G" holds one script event and block 500 stands alone. */
+/**
+ * Block 300 holds one script event, block 400 holds block 410, group "G" holds one script event, block 500 stands
+ * alone and group "H" holds block 230.
+ */
 function sheetEvents(): Ev[] {
   return [
     block(300, { children: [script(['a = 1;'])] }),
     block(400, { children: [block(410)] }),
     group('G', 200, [script(['b = 2;'])]),
     block(500),
+    group('H', 220, [block(230)]),
   ];
 }
 
@@ -57,7 +61,8 @@ describe('an emptied children list', () => {
     const second = setup();
     const fromGroup = await second.server.callTool('update_script_event', { sheetName: 'Sheet1', groupPath: 'G', index: 0, remove: true, expectedText: 'b = 2;' });
     expect(fromGroup.isError).toBeFalsy();
-    expect(JSON.stringify(written(second.writer))).toBe(JSON.stringify(expectedEvents(events => { (events[2].children as Ev[]).length = 0; })));
+    // The group keeps its key with an empty list
+    expect(JSON.stringify(written(second.writer))).toBe(JSON.stringify(expectedEvents(events => { events[2].children = []; })));
   });
 
   it('delete_event_from_sheet drops the key of the event left without sub-events and keeps a group list', async () => {
@@ -71,5 +76,10 @@ describe('an emptied children list', () => {
     const dryRun = await second.server.callTool('delete_event_from_sheet', { sheetName: 'Sheet1', sid: 410, dryRun: true });
     expect(dryRun.isError).toBeFalsy();
     expect(second.writer.callsFor('writeEntityFile')).toHaveLength(0);
+
+    const third = setup();
+    const fromGroup = await third.server.callTool('delete_event_from_sheet', { sheetName: 'Sheet1', sid: 230 });
+    expect(fromGroup.isError).toBeFalsy();
+    expect(JSON.stringify(written(third.writer))).toBe(JSON.stringify(expectedEvents(events => { events[4].children = []; })));
   });
 });

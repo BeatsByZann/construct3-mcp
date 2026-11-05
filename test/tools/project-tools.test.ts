@@ -4,6 +4,7 @@ import { MockReader } from '../mocks/mock-reader.js';
 import { MockWriter } from '../mocks/mock-writer.js';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
 import { registerProjectTools } from '../../src/tools/project-tools.js';
+import { PROJECT_PROPERTY_KEYS, PROJECT_TOP_LEVEL_KEYS } from '../../src/construct3/project-writer.js';
 
 function setup(readerData = {}) {
   const server = new MockServer();
@@ -97,9 +98,11 @@ describe('update_project_properties', () => {
     return project;
   }
 
-  it('registers the tool', () => {
+  it('takes every top-level key its refusal names, except name, as a parameter of its own, and none of them in properties', () => {
     const { server } = setup();
-    expect(server.hasTool('update_project_properties')).toBe(true);
+    const params = Object.keys(server.getTool('update_project_properties')!.schema);
+    for (const key of PROJECT_TOP_LEVEL_KEYS.filter(k => k !== 'name')) expect(params, key).toContain(key);
+    for (const key of PROJECT_TOP_LEVEL_KEYS) expect(PROJECT_PROPERTY_KEYS, key).not.toContain(key);
   });
 
   it('merges properties keys into project.properties in one update of the project file', async () => {
@@ -204,7 +207,7 @@ describe('update_project_properties', () => {
 
   it('rejects a non-positive viewport size', async () => {
     const { server } = setup();
-    await expect(server.callTool('update_project_properties', { viewportWidth: 0 })).rejects.toThrow();
+    await expect(server.callTool('update_project_properties', { viewportWidth: 0 })).rejects.toThrow(/viewportWidth/);
   });
 
   it('errors with no updates', async () => {

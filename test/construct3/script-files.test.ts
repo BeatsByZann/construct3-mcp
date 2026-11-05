@@ -58,7 +58,7 @@ describe('registeredScriptFiles', () => {
 });
 
 describe('scriptFilePaths', () => {
-  it('gives the same paths and unwalked folders as registeredScriptFiles for nested, itemless and over-deep folders and a non-script file entry', () => {
+  it('gives the same paths and unwalked folders as registeredScriptFiles for nested, itemless and over-deep folders and a non-.js file entry', () => {
     const script = {
       items: [{ name: 'main.js' }, { name: 'readme.txt', type: 'text/plain' }],
       subfolders: [

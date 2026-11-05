@@ -79,8 +79,9 @@ export class MockWriter {
     return `${path}.bak`;
   }
 
-  async restoreForCall(path: string, content: string | Buffer | null): Promise<void> {
-    this.calls.push({ method: 'restoreForCall', args: [path, content] });
+  /** Records the call with the writer's arguments, the expected file state included. */
+  async restoreForCall(path: string, content: string | Buffer | null, options: { expected?: unknown } = {}): Promise<void> {
+    this.calls.push({ method: 'restoreForCall', args: [path, content, options] });
   }
 
   async updateProject(change: (project: any) => boolean | void): Promise<string | undefined> {

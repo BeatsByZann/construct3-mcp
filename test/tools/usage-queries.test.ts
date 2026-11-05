@@ -558,7 +558,10 @@ describe('error results of the usage tools', () => {
     expect(text).not.toContain(tmpDir);
     expect(text).not.toContain('Elsewhere');
     expect(text).not.toContain('server');
-    expect(text).toContain('also <a path outside the project>');
+    // An unquoted drive path may hold spaces, so it runs to the end of the line, the network path after it included
+    expect(text).toContain(', also <a path outside the project>');
+    expect(text).not.toContain('share');
+    expect(text).not.toContain('z.json');
   });
 
   it('removes a drive path or network path that contains spaces whole, and keeps a URL', async () => {
