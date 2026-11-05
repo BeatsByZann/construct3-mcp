@@ -37,12 +37,12 @@ describe('scriptFilePaths', () => {
         },
       },
     };
-    expect(scriptFilePaths(project)).toEqual(['main.js', 'lib/util.js']);
+    expect(scriptFilePaths(project)).toEqual({ paths: ['main.js', 'lib/util.js'], notWalked: [] });
   });
 
   it('lists nothing for a project without script files', () => {
-    expect(scriptFilePaths({})).toEqual([]);
-    expect(scriptFilePaths(undefined)).toEqual([]);
+    expect(scriptFilePaths({})).toEqual({ paths: [], notWalked: [] });
+    expect(scriptFilePaths(undefined)).toEqual({ paths: [], notWalked: [] });
   });
 });
 

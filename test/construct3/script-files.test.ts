@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { registeredScriptFiles } from '../../src/construct3/script-files.js';
-import { getProjectIndex, resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import { getProjectIndex, resetProjectIndex, scriptFilePaths } from '../../src/construct3/analyzers/index-builder.js';
 import { findRuntimeTraps } from '../../src/construct3/analyzers/runtime-traps.js';
 import { MockReader } from '../mocks/mock-reader.js';
 import type { FileFolder, FileItem } from '../../src/construct3/types.js';
@@ -57,7 +57,28 @@ describe('registeredScriptFiles', () => {
   });
 });
 
-const DEPTH_50_DIR = Array.from({ length: 50 }, (_, i) => `d${i + 1}`).join('/');
+describe('scriptFilePaths', () => {
+  it('gives the same paths and unwalked folders as registeredScriptFiles for nested, itemless, non-script and over-deep folders', () => {
+    const script = {
+      items: [{ name: 'main.js' }, { name: 'readme.txt', type: 'text/plain' }],
+      subfolders: [
+        { name: 'lib', items: [{ name: 'b.js' }], subfolders: [] },
+        { name: 'empty', subfolders: [] },
+        chainFolder(60).subfolders[0],
+      ],
+    } as unknown as FileFolder;
+    const walked = registeredScriptFiles(script);
+    const result = scriptFilePaths({ rootFileFolders: { script } });
+    expect(result.paths).toEqual(walked.files.map(f => f.path));
+    expect(result.paths).toContain('lib/b.js');
+    expect(result.paths).toContain('readme.txt');
+    expect(result.notWalked).toEqual(walked.notWalked);
+    expect(result.notWalked).toHaveLength(1);
+    expect(result.notWalked[0].startsWith('scripts/d1/d2/')).toBe(true);
+  });
+});
+
+const DEPTH_50_DIR =Array.from({ length: 50 }, (_, i) => `d${i + 1}`).join('/');
 const DEPTH_51_DIR = `${DEPTH_50_DIR}/d51`;
 
 describe('the index script member reads use the shared walk', () => {

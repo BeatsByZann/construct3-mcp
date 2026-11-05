@@ -37,7 +37,7 @@ interface ProjectFile {
   eventSheets: Folder;
   timelines: Folder;
   containers?: Array<{ members: string[] }>;
-  rootFileFolders: { script: { items: unknown[] } };
+  rootFileFolders: { script: { items: unknown[]; subfolders?: unknown[] } };
   [key: string]: unknown;
 }
 interface AceJson {
@@ -492,6 +492,26 @@ describe('rename_object_type', () => {
     expect(data.possibleReferences).toContainEqual({ in: 'scripts/main.js', kind: 'script', value: 'const a = runtime.objects.Alpha;' });
     expect(warningsOf(data)).toContain('scripts/gone.js');
     expect(await readFile(path('scripts', 'main.js'), 'utf8')).toBe('const a = runtime.objects.Alpha;\nconst b = 1;\n');
+  });
+
+  it('lists a script in a nested script folder and warns about a script folder nested too deep to be searched', async () => {
+    type Sub = { name: string; items: unknown[]; subfolders: Sub[] };
+    const chain = (k: number): Sub => ({ name: `d${k}`, items: [], subfolders: k < 51 ? [chain(k + 1)] : [] });
+    const project = await readJson<ProjectFile>(path('project.c3proj'));
+    project.rootFileFolders.script.items = [];
+    project.rootFileFolders.script.subfolders = [
+      { name: 'lib', items: [{ name: 'nested.js', type: 'text/javascript', sid: 110000000000003 }], subfolders: [] },
+      chain(1),
+    ];
+    await writeJson(path('project.c3proj'), project);
+    await mkdir(path('scripts', 'lib'), { recursive: true });
+    await writeFile(path('scripts', 'lib', 'nested.js'), 'const a = runtime.objects.Alpha;\n');
+    await reader.loadProject();
+    const data = await rename_('Alpha', 'Gamma');
+    expect(data.success).toBe(true);
+    expect(data.possibleReferences).toContainEqual({ in: 'scripts/lib/nested.js', kind: 'script', value: 'const a = runtime.objects.Alpha;' });
+    const deepest = `scripts/${Array.from({ length: 51 }, (_, i) => `d${i + 1}`).join('/')}/`;
+    expect(warningsOf(data)).toContain(`Script folders that could not be read were not searched: ${deepest}.`);
   });
 
   it('lists a flowchart node whose "c" is the name, a parameter named like the object, and a value that differs only in case', async () => {

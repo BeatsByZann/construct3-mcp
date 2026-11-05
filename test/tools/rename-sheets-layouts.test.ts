@@ -1111,6 +1111,19 @@ describe('rename_layout: timelines and editor saves', () => {
     expect(await readFile(path('scripts', 'main.js'), 'utf8')).toContain('"Layout 1"');
   });
 
+  it('warns about a script folder nested too deep to be searched when a layout is renamed', async () => {
+    type Sub = { name: string; items: unknown[]; subfolders: Sub[] };
+    const chain = (k: number): Sub => ({ name: `d${k}`, items: [], subfolders: k < 51 ? [chain(k + 1)] : [] });
+    const project = await readJson<ProjectFile>(path('project.c3proj'));
+    project.rootFileFolders = { ...(project.rootFileFolders ?? {}), script: { items: [], subfolders: [chain(1)] } };
+    await writeJson(path('project.c3proj'), project);
+    await reader.loadProject();
+    const data = await call('rename_layout', { name: 'Layout 1', newName: 'Title Screen' });
+    expect(data.success).toBe(true);
+    const deepest = `scripts/${Array.from({ length: 51 }, (_, i) => `d${i + 1}`).join('/')}/`;
+    expect(warningsOf(data)).toContain(`Script folders that could not be read were not searched: ${deepest}.`);
+  });
+
   it('counts a timeline in a folder the tools cannot resolve as one it cannot read: refused without force', async () => {
     const project = await readJson<ProjectFile>(path('project.c3proj'));
     project.timelines = { items: [], subfolders: [{ items: [], subfolders: [] }, { items: ['Lost'], subfolders: [] }] };

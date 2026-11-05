@@ -96,6 +96,7 @@ import {
   rollBackRename,
   scriptFileUses,
   stoppedRename,
+  unsearchedScriptFolderWarnings,
   withoutAbsolutePath,
   type ReadForRename,
   type ViewStateMove,
@@ -625,6 +626,7 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   if (scripts.unreadable.length > 0) {
     warnings.push(`Script file(s) that could not be read were not searched for "${oldName}": ${listSome(scripts.unreadable)}.`);
   }
+  warnings.push(...unsearchedScriptFolderWarnings(scripts.notWalked));
   if (flowchartsUnread.length > 0) {
     warnings.push(`Flowchart file(s) that could not be read or parsed were not searched for "${oldName}": ${listSome(flowchartsUnread)}.`);
   }

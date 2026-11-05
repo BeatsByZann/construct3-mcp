@@ -452,16 +452,18 @@ export function jsQuotedNamePattern(name: string): RegExp {
 /**
  * The lines of the project script files (rootFileFolders.script, on the
  * reference index's walk) that `test` matches, and the script files that
- * could not be read. Scripts are never rewritten: the rename tools list
- * these lines and name the unreadable files in a warning.
+ * could not be read, and the script folders nested too deep to be searched.
+ * Scripts are never rewritten: the rename tools list these lines and name
+ * the unreadable files and unsearched folders in warnings.
  */
 export async function scriptFileUses(
   reader: Pick<Construct3ProjectReader, 'getProject' | 'readScriptFile'>,
   test: (line: string) => boolean,
-): Promise<{ lines: Array<{ path: string; line: string }>; unreadable: string[] }> {
+): Promise<{ lines: Array<{ path: string; line: string }>; unreadable: string[]; notWalked: string[] }> {
   const lines: Array<{ path: string; line: string }> = [];
   const unreadable: string[] = [];
-  for (const path of scriptFilePaths(reader.getProject())) {
+  const { paths, notWalked } = scriptFilePaths(reader.getProject());
+  for (const path of paths) {
     let text: string;
     try {
       text = await reader.readScriptFile(path);
@@ -471,5 +473,15 @@ export async function scriptFileUses(
     }
     for (const line of text.split(/\r?\n/)) if (test(line)) lines.push({ path: `scripts/${path}`, line: line.trim() });
   }
-  return { lines, unreadable };
+  return { lines, unreadable, notWalked };
+}
+
+/**
+ * The warning for script folders the script search did not enter (nested
+ * too deep), as a list of zero or one sentence for the rename tools to append.
+ */
+export function unsearchedScriptFolderWarnings(notWalked: readonly string[]): string[] {
+  return notWalked.length > 0
+    ? [`Script folders that could not be read were not searched: ${notWalked.join(', ')}.`]
+    : [];
 }

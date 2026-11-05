@@ -412,10 +412,14 @@ export function scriptMemberAccesses(script: string): Array<{ kind: MemberRefere
   return [...found.values()];
 }
 
-/** The paths, relative to scripts/, of the project script files rootFileFolders.script lists. */
-export function scriptFilePaths(project: unknown): string[] {
+/**
+ * The paths, relative to scripts/, of the project script files rootFileFolders.script
+ * lists, and the script folders nested too deep to be walked (their files are not in `paths`).
+ */
+export function scriptFilePaths(project: unknown): { paths: string[]; notWalked: string[] } {
   const folder = (project as { rootFileFolders?: { script?: FileFolder } } | undefined)?.rootFileFolders?.script;
-  return registeredScriptFiles(folder).files.map(f => f.path);
+  const { files, notWalked } = registeredScriptFiles(folder);
+  return { paths: files.map(f => f.path), notWalked };
 }
 
 /** The instance variables and behaviors the project script files (rootFileFolders.script) read by name. */
@@ -426,7 +430,7 @@ async function readScriptFileMemberReads(
   const unreadable: string[] = [];
   let paths: string[];
   try {
-    paths = typeof reader.getProject === 'function' ? scriptFilePaths(reader.getProject()) : [];
+    paths = typeof reader.getProject === 'function' ? scriptFilePaths(reader.getProject()).paths : [];
   } catch {
     return { reads, unreadable };
   }
