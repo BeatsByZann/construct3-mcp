@@ -8,6 +8,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { entityFilePath, type Construct3ProjectReader, type EntityCategory } from '../construct3/project-reader.js';
 import { filesLeftClause, type Construct3ProjectWriter, type EntityOnDisk } from '../construct3/project-writer.js';
 import { StaleFileError } from '../construct3/disk-state.js';
+import { errorMessage } from '../construct3/error-text.js';
 import type { IdGenerator } from '../construct3/id-generator.js';
 import { RESERVED_NAMES } from '../construct3/templates.js';
 
@@ -177,8 +178,8 @@ export async function deleteRegisteredEntity(
     backupPath = await writer.deleteEntityFile(category, name, subfolder);
   } catch (error) {
     const undo = error instanceof StaleFileError ? undefined : await writer.undoToolCall();
-    // A refusal of the writer ends with a full stop already, and says what it put back
-    const cause = error instanceof Error ? error.message : String(error);
+    // A refusal of the writer ends with a full stop already, and says what it put back; an fs error's message names absolute paths
+    const cause = errorMessage(error, writer.projectDir());
     const sentences = [cause.endsWith('.') ? cause : `${cause}.`];
     if (undo && undo.restored.length > 0) sentences.push(`Put back from its backup: ${undo.restored.join(', ')}.`);
     if (undo && undo.left.length > 0) sentences.push(`Not all of it could be undone: ${filesLeftClause(undo.left)}.`);

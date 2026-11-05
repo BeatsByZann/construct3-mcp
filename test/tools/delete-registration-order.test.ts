@@ -132,6 +132,30 @@ describe('a delete whose project.c3proj update fails changes nothing (#ISSUE)', 
   });
 });
 
+describe('a failed delete names no absolute path', () => {
+  it.each(CASES)('$tool words the paths of a failed project.c3proj replacement relative to the project', async (c) => {
+    await ok(c.create[0], c.create[1]);
+    const temp = join(dir, '.c3mcp-0123456789abcdef.tmp');
+    const projectPath = join(dir, 'project.c3proj');
+    const internals = writer as unknown as { atomicWrite: (path: string, content: string | Buffer) => Promise<void> };
+    const atomicWrite = internals.atomicWrite.bind(writer);
+    vi.spyOn(internals, 'atomicWrite').mockImplementation(async (path, content) => {
+      if (path.endsWith('project.c3proj')) {
+        throw Object.assign(new Error(`EPERM: operation not permitted, rename '${temp}' -> '${projectPath}'`),
+          { code: 'EPERM', path: temp, dest: projectPath });
+      }
+      return atomicWrite(path, content);
+    });
+
+    const result = await call(c.tool, { name: c.name, force: true });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).not.toMatch(/[A-Za-z]:[\\/]|\\\\|(?<![\w.])\/(?:tmp|var|home|Users|private)\//);
+    expect(result.text).toContain('EPERM: operation not permitted, rename \'.c3mcp-0123456789abcdef.tmp\' -> \'project.c3proj\'. '
+      + `project.c3proj still lists "${c.name}", and ${c.file} is on disk.`);
+  });
+});
+
 describe('a delete whose file delete fails puts project.c3proj back (#ISSUE)', () => {
   it.each(CASES)('B: $tool registers the entity again', async (c) => {
     await ok(c.create[0], c.create[1]);
