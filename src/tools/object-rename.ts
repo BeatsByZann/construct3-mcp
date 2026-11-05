@@ -5,25 +5,26 @@
  * custom action call, object parameters, the object of an instance variable
  * parameter and "Name.member" expressions; for an object type also the
  * layout instances, its own single-global instance, the families that list
- * it, the containers in project.c3proj, its frame image files in images/ and
- * its tilemap brush file. Strings, scripts, variable values, timeline
- * tracks, flowchart nodes and other names in expressions that may name it
- * are listed in possibleReferences and never changed.
+ * it, the containers in project.c3proj, the "objectType" of its instance
+ * tracks in timelines (timelineTrackUses), its frame image files in images/
+ * and its tilemap brush file. Strings, scripts, variable values, other
+ * timeline values, flowchart nodes and other names in expressions that may
+ * name it are listed in possibleReferences and never changed.
  *
  * The writes go in this order: the event sheets, layouts and families that
  * name it; the object type or family under its new name (its folder and
  * SID kept); its entry in project.c3proj, in place, with the containers in
- * the same write (renameInProject); the frame image files; the tilemap
- * brush file; the old file, deleted and kept as .bak; then the editor's view
- * state (rename-files.ts says why). A failure is rolled back by
- * rollBackRename, which renames the image files back and puts the brush file
- * back when a later write fails. rename_object_type runs under the
- * animation lock for the whole call, as the animation tools do, since it
- * renames frame image files.
+ * the same write (renameInProject); the timelines whose instance tracks name
+ * it; the frame image files; the tilemap brush file; the old file, deleted
+ * and kept as .bak; then the editor's view state (rename-files.ts says why).
+ * A failure is rolled back by rollBackRename, which puts the timelines back,
+ * renames the image files back and puts the brush file back when a later
+ * write fails. rename_object_type runs under the animation lock for the
+ * whole call, as the animation tools do, since it renames frame image files.
  *
- * Timeline tracks are not rewritten: no editor save has shown where a track
- * names its object, so a timeline holding the name as a value is listed, and
- * the timelines searched are named in a warning.
+ * A timeline whose instance tracks are rewritten stays in possibleReferences
+ * only when another of its values (an instance variable's property track, a
+ * track name) still equals the old name.
  *
  * The new name must be one an expression can name the object by
  * (objectNameProblem): Name.X is written with it.
@@ -77,6 +78,7 @@ import {
   renameObjectInSheet,
   renameSingleGlobalInstanceType,
   scriptReadsObject,
+  timelineTrackUses,
   type InstanceVariableObjects,
   type ObjectNameUse,
 } from '../construct3/object-name-references.js';
@@ -85,6 +87,7 @@ import { resolveProjectPath } from '../construct3/path-utils.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { StaleFileError, fileKey, noteFileWritten, statFileState } from '../construct3/disk-state.js';
 import { readRegisteredTimelines, type RegisteredTimeline } from './timeline-tools.js';
+import { jsonFileText } from './timeline-writes.js';
 import {
   assertUnchangedSinceRead,
   entityFileSegments,
@@ -93,6 +96,7 @@ import {
   newFileState,
   newSideWrites,
   readForRename,
+  replaceForRename,
   rollBackRename,
   scriptFileUses,
   stoppedRename,
@@ -214,6 +218,8 @@ interface RenamePlan {
   start: Start;
   variableNames: ReadonlySet<string>;
   referencing: ObjectNameUse[];
+  /** The timelines whose instance tracks name it, with their tracks pointed at the new name in `data` */
+  timelines: RegisteredTimeline[];
   images: ImageFileRename[];
   brush: BrushMove | undefined;
   views: ViewStateMove[];
@@ -490,9 +496,9 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   uses.push(...findFlowchartNodeUses(flowcharts, oldName));
 
   const project = reader.getProject() as unknown as Record<string, unknown>;
-  // Timelines with a value that is the name: their track shape is not verified, so they are listed, never changed
-  const trackLists: RegisteredTimeline[] = [];
-  const timelinesChecked: RegisteredTimeline[] = [];
+  // Timelines: the instance tracks that name it are pointed at the new name; another value that is the name is listed
+  const retracked: Array<{ timeline: RegisteredTimeline; tracks: number }> = [];
+  const timelinesStillNaming: RegisteredTimeline[] = [];
   let timelinesUnread: string | undefined;
   let images: ImageFileRename[] = [];
   let containers: Array<{ index: number; members: string[] }> = [];
@@ -515,13 +521,16 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     const scan = await readRegisteredTimelines(reader.getProjectDir(), project.timelines);
     const unsearched = [...scan.unreadable];
     for (const timeline of scan.timelines) {
-      const values = stringValuesOf(timeline.data);
+      // A copy: the reader's data is not changed, so a dry run or a refusal leaves it as read
+      const data = structuredClone(timeline.data);
+      const tracks = timelineTrackUses(data, oldName, newName);
+      const values = stringValuesOf(data);
       if (values === undefined) {
         unsearched.push(`${timeline.file} (more than ${MAX_SEARCHED_VALUES} values, not searched to the end)`);
         continue;
       }
-      timelinesChecked.push(timeline);
-      if (values.some(value => nameKey(value) === nameKey(oldName))) trackLists.push(timeline);
+      if (tracks > 0) retracked.push({ timeline: { ...timeline, data }, tracks });
+      if (values.some(value => nameKey(value) === nameKey(oldName))) timelinesStillNaming.push(timeline);
     }
     if (unsearched.length > 0) {
       timelinesUnread = `Timeline file(s) that could not be read, parsed or searched may have tracks of this object type: ${listSome(unsearched)}.`;
@@ -561,10 +570,11 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     ...definite.map(use => useEntry(use, fileOf)),
     ...(singleGlobal ? [{ in: ownFileLabel, kind: 'single-global instance type', value: oldName }] : []),
     ...(start.mode === 'rename' ? containers.map(c => ({ in: 'project.c3proj', kind: 'container member', path: `containers[${c.index}]`, value: oldName })) : []),
+    ...retracked.map(r => ({ in: r.timeline.file, kind: 'timeline track', tracks: r.tracks, value: oldName })),
   ];
   const possibleList = [
     ...possible.map(use => useEntry(use, fileOf)),
-    ...trackLists.map(t => ({ in: t.file, kind: 'timeline track', value: oldName })),
+    ...timelinesStillNaming.map(t => ({ in: t.file, kind: 'timeline value', value: oldName })),
   ];
   const possibleReferences = possibleList.length > 0 ? { possibleReferences: possibleList } : {};
 
@@ -630,15 +640,13 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   if (flowchartsUnread.length > 0) {
     warnings.push(`Flowchart file(s) that could not be read or parsed were not searched for "${oldName}": ${listSome(flowchartsUnread)}.`);
   }
-  if (trackLists.length > 0) {
-    warnings.push(`${trackLists.length} timeline(s) have a value that is "${oldName}", which may be the object type of a track; they ${args.dryRun ? 'would' : 'were'} NOT `
-      + `${args.dryRun ? 'be ' : ''}changed, since the track shape has not been checked against an editor save: `
-      + `${listSome(trackLists.map(t => `"${t.name}"`))}. Check them in the Construct 3 editor.`);
+  if (retracked.length > 0) {
+    const tracks = retracked.reduce((sum, r) => sum + r.tracks, 0);
+    warnings.push(`${would} ${tracks} timeline instance track(s) that named "${oldName}" at "${newName}": ${listSome(retracked.map(r => `"${r.timeline.name}"`))}.`);
   }
-  const unlisted = timelinesChecked.filter(t => !trackLists.includes(t));
-  if (unlisted.length > 0) {
-    warnings.push(`The tracks of ${unlisted.length} timeline(s) were searched only for a value equal to "${oldName}", since the track shape has not been checked `
-      + `against an editor save, so a track of this object type may be missed: ${listSome(unlisted.map(t => `"${t.name}"`))}.`);
+  if (timelinesStillNaming.length > 0) {
+    warnings.push(`${timelinesStillNaming.length} timeline(s) have another value that is "${oldName}" (such as an instance variable's property track or a track name), `
+      + `which ${args.dryRun ? 'would' : 'was'} NOT ${args.dryRun ? 'be ' : ''}changed: ${listSome(timelinesStillNaming.map(t => `"${t.name}"`))}.`);
   }
   warnings.push(...unscannedWarnings(unscanned, args.dryRun ? 'Would rename' : 'Renamed'));
   if (timelinesUnread) warnings.push(`${args.dryRun ? 'Would rename' : 'Renamed'} with force=true: ${timelinesUnread} They were NOT updated.`);
@@ -663,6 +671,7 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
       filesToWrite: [
         ...referencing.map(u => fileOf(u)),
         ...(start.mode === 'rename' ? [newFile, 'project.c3proj'] : []),
+        ...retracked.map(r => r.timeline.file),
         ...images.map(r => `images/${r.to}`),
         ...(brush?.state === 'move' ? [brush.label] : []),
       ],
@@ -674,6 +683,7 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   const declinedViews: string[] = [];
   return {
     category, oldName, newName, subfolder, start, variableNames, singleGlobal, brush, images, declinedViews,
+    timelines: retracked.map(r => r.timeline),
     referencing: referencing.filter(u => u.category === 'eventSheets' || u.category === 'layouts' || u.category === 'families'),
     views: viewStateMoves(category, oldName, newName, declinedViews),
     result: { ...common, fileDeleted: oldFile },
@@ -744,6 +754,11 @@ async function applyRename(reader: Reader, writer: Writer, plan: RenamePlan) {
         : recheck);
       writing = undefined;
       filesWritten.push('project.c3proj');
+    }
+    for (const timeline of plan.timelines) {
+      // Written only while the file is as the plan read it; put back with the other side writes on a failure
+      await replaceForRename(writer, side, timeline.read, await jsonFileText(timeline.read.path, timeline.data, reader.getProjectPath()));
+      filesWritten.push(timeline.file);
     }
     if (plan.images.length > 0) {
       // All or nothing: when one rename fails, renameImageFiles renames the others back itself
@@ -832,10 +847,11 @@ export function registerObjectRenameTools({ server: mcpServer, reader, writer }:
     {
       description: 'Rename an object type and update what names it: in event sheets the condition and action objects, custom action '
         + 'owners, object parameters, the object of an instance variable parameter and expressions that use it as an object (Name.X, Name(0).X); '
-        + 'the layout instances of it, its own single-global instance, the families and containers that list it, its frame image files in images/, '
+        + 'the layout instances of it, its own single-global instance, the families and containers that list it, the object type of its instance '
+        + 'tracks in timelines (track folders included), its frame image files in images/, '
         + 'its tilemap brush file, its entry in project.c3proj (it keeps its folder and place) and its file name (the old file is kept as .bak). '
         + 'Names are matched ignoring case. The new name must have no spaces. Strings (Create object (by name)), scripts and project '
-        + 'script files (runtime.objects.Name), timeline tracks, flowchart nodes, variable values and other names in expressions that may name it are '
+        + 'script files (runtime.objects.Name), other timeline values, flowchart nodes, variable values and other names in expressions that may name it are '
         + 'listed in possibleReferences, never changed. A failure midway puts back what the call wrote, except a file another write changed since, '
         + 'which is named; running the same call again finishes a rename that stopped. Event sheets, layouts and families that could not be parsed '
         + 'refuse without force when they possibly name it, and so does any timeline that could not be read (rename_blocked). Runs one at a time with the '

@@ -2,8 +2,8 @@
  * rename_object_type and rename_family: the object type's file, its "name" and
  * its project-bar entry change, and so does everything that names it (event
  * sheet objects, parameters and expressions, layout instances, families,
- * containers, its frame image files and its tilemap brush file); strings,
- * scripts, timeline tracks and flowchart nodes are only listed. A dry run
+ * containers, timeline instance tracks, its frame image files and its tilemap
+ * brush file); strings, scripts and flowchart nodes are only listed. A dry run
  * writes nothing; files that could not be parsed refuse without force; a
  * failure midway puts back every file; a run that stopped midway is finished
  * by the same call. Checked on a temp copy of the minimal fixture with the
@@ -296,11 +296,12 @@ describe('rename_object_type', () => {
     expect(event.actions[3].parameters?.text).toBe('"Alpha"');
     expect(event.actions[4].script).toEqual(['const a = runtime.objects.Alpha;']);
 
-    // Track shapes are listed until an editor save has shown them
+    // The instance track's object type, in the timeline file's own text style
     const now = await snapshot();
-    expect(now.get('timelines/Intro.json')).toBe(before.get('timelines/Intro.json'));
-    expect(data.possibleReferences).toContainEqual({ in: 'timelines/Intro.json', kind: 'timeline track', value: 'Alpha' });
-    expect(warningsOf(data)).toContain('1 timeline(s) have a value that is "Alpha"');
+    expect(now.get('timelines/Intro.json')).toBe(before.get('timelines/Intro.json')?.replace('"objectType": "Alpha"', '"objectType": "Gamma"'));
+    expect(data.references).toContainEqual({ in: 'timelines/Intro.json', kind: 'timeline track', tracks: 1, value: 'Alpha' });
+    expect(data.possibleReferences?.map(r => r.in)).not.toContain('timelines/Intro.json');
+    expect(warningsOf(data)).toContain('Pointed 1 timeline instance track(s) that named "Alpha" at "Gamma": "Intro".');
 
     expect(now.get('images/gamma-default-000.png')).toBe('alpha frame 0');
     expect(now.get('images/gamma-default-001.png')).toBe('alpha frame 1');
@@ -313,7 +314,7 @@ describe('rename_object_type', () => {
 
     expect(data.filesWritten).toEqual([
       'eventSheets/MainSheet.json', 'layouts/Layout 1.json', 'families/Fam.json', 'objectTypes/Gamma.json', 'project.c3proj',
-      'images/gamma-default-000.png', 'images/gamma-default-001.png',
+      'timelines/Intro.json', 'images/gamma-default-000.png', 'images/gamma-default-001.png',
     ]);
     expect(data.fileDeleted).toBe('objectTypes/Alpha.json');
     const possible = (data.possibleReferences ?? []).map(r => `${r.in}|${r.kind}`);
@@ -383,7 +384,7 @@ describe('rename_object_type', () => {
     vi.spyOn(reader, 'readFamily').mockResolvedValueOnce({ name: 'Fam', members: [], sid: 2 } as never);
     const data = await rename_('Alpha', 'Gamma');
     expect(data.success).toBe(true);
-    expect(data.filesWritten).toEqual(['objectTypes/Gamma.json', 'project.c3proj', 'images/gamma-default-000.png', 'images/gamma-default-001.png']);
+    expect(data.filesWritten).toEqual(['objectTypes/Gamma.json', 'project.c3proj', 'timelines/Intro.json', 'images/gamma-default-000.png', 'images/gamma-default-001.png']);
     for (const file of ['eventSheets/MainSheet.json', 'layouts/Layout 1.json', 'families/Fam.json']) {
       expect((await snapshot()).get(file), file).toBe(before.get(file));
     }
@@ -538,17 +539,19 @@ describe('rename_object_type', () => {
     expect((await readJson<FlowFile>(path('flowcharts', 'Flow.json'))).nodes[0].c).toBe('Alpha');
   });
 
-  it('names the timelines whose tracks it searched only for the name as a value', async () => {
+  it('leaves a timeline with no instance track of the object type as it is, and does not list it', async () => {
     const project = await readJson<ProjectFile>(path('project.c3proj'));
     project.timelines.items.push('Quiet');
     await writeJson(path('project.c3proj'), project);
-    await writeJson(path('timelines', 'Quiet.json'), { name: 'Quiet', totalTime: 5, tracks: [] });
+    await writeJson(path('timelines', 'Quiet.json'), { name: 'Quiet', totalTime: 5, tracks: [{ type: 'instance-track', objectType: 'Sprite', worldInstance: 0 }] });
     await reader.loadProject();
+    const before = await readFile(path('timelines', 'Quiet.json'), 'utf8');
     const data = await rename_('Alpha', 'Gamma');
     expect(data.success).toBe(true);
-    expect(warningsOf(data)).toContain('The tracks of 1 timeline(s) were searched only for a value equal to "Alpha"');
-    expect(warningsOf(data)).toContain('"Quiet"');
-    expect(data.possibleReferences?.map(r => r.in)).not.toContain('timelines/Quiet.json');
+    expect(await readFile(path('timelines', 'Quiet.json'), 'utf8')).toBe(before);
+    expect(data.filesWritten).not.toContain('timelines/Quiet.json');
+    expect(warningsOf(data)).not.toContain('"Quiet"');
+    expect([...(data.references ?? []), ...(data.possibleReferences ?? [])].map(r => r.in)).not.toContain('timelines/Quiet.json');
   });
 
   it('points the single-global instance of the object type at the new name', async () => {
@@ -568,7 +571,7 @@ describe('rename_object_type', () => {
     expect(data.dryRun).toBe(true);
     expect(data.filesToWrite).toEqual([
       'eventSheets/MainSheet.json', 'layouts/Layout 1.json', 'families/Fam.json', 'objectTypes/Gamma.json', 'project.c3proj',
-      'images/gamma-default-000.png', 'images/gamma-default-001.png',
+      'timelines/Intro.json', 'images/gamma-default-000.png', 'images/gamma-default-001.png',
     ]);
     expect(data.fileToDelete).toBe('objectTypes/Alpha.json');
     expect(data.imageRenames).toEqual([

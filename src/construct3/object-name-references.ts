@@ -20,7 +20,8 @@
  * - an object type also by the "type" of layout instances (layers,
  *   sub-layers, non-world instances), the "type" of its own single-global
  *   instance, the "members" of families and of project.c3proj's containers
- *   (containers.ts), and the "objectType" of timeline tracks.
+ *   (containers.ts), and the "objectType" of instance tracks in timelines,
+ *   in tracks[] and in track folders (timelineTrackUses).
  * The editor compares object class names ignoring case (names.ts), and no
  * two object types or families have names that differ only in case, so a
  * name that matches ignoring case names this one.
@@ -41,8 +42,9 @@
  * the string form (a project with the object form on it did not open).
  */
 
-import type { C3Event, EventSheet, Layout } from './types.js';
+import type { C3Event, EventSheet, Layout, Timeline } from './types.js';
 import { nameKey } from './names.js';
+import { listTracks, trackKind } from './timeline-model.js';
 import { c3StringEnd } from './event-shapes.js';
 import { expressionStringLiterals } from './layer-references.js';
 import { walkEventStrings } from './event-strings.js';
@@ -475,55 +477,34 @@ export function findFlowchartNodeUses(flowcharts: ReadonlyMap<string, unknown>, 
 }
 
 /**
- * The key path at which a timeline track names its object: keys, with "[]"
- * for "every element of this array". Empty: no editor save has shown a
- * timeline track (Construct 3 r506-2, Free edition, guest, and the local
- * saves hold none), so no track is counted or changed.
+ * The key path, relative to an instance track ("type": "instance-track"), of
+ * the value that names the track's object type. Construct 3 r506-2 (Free
+ * edition, guest) rewrote "objectType" of a root-level instance track when
+ * the object type was renamed.
  */
-export const TIMELINE_TRACK_PATH: readonly string[] = [];
+export const TIMELINE_TRACK_PATH: readonly string[] = ['objectType'];
 
 /**
- * The values at TIMELINE_TRACK_PATH (or `path`) of a timeline that name
- * `objectName`; with `newName`, they get it. Only that path is read: a key
- * of the same name elsewhere in the file is not a track's object. With an
- * empty path nothing is counted. `complete` is false when the timeline
- * does not have the path's shape (an array or record missing where the
- * path needs one), so the count may miss some.
+ * The instance tracks of a timeline whose value at TIMELINE_TRACK_PATH names
+ * `objectName`, at any track-folder depth (listTracks); with `newName`, they
+ * get it. Only that key of an instance track is read: an instance variable,
+ * a property track or a track name that equals the name is not the track's
+ * object. Untyped (legacy) tracks hold no object name and are left. Returns
+ * how many tracks name it.
  */
-export function timelineTrackUses(
-  timeline: unknown, objectName: string, newName?: string, path: readonly string[] = TIMELINE_TRACK_PATH,
-): { count: number; complete: boolean } {
+export function timelineTrackUses(timeline: Timeline, objectName: string, newName?: string): number {
   const key = nameKey(objectName);
   let count = 0;
-  let complete = true;
-  if (path.length === 0) return { count, complete };
-  let holders: unknown[] = [timeline];
-  for (const [i, step] of path.entries()) {
-    const last = i === path.length - 1;
-    const next: unknown[] = [];
-    for (const holder of holders) {
-      if (step === '[]') {
-        if (Array.isArray(holder)) next.push(...holder);
-        else complete = false;
-        continue;
-      }
-      if (!isRecord(holder)) {
-        complete = false;
-        continue;
-      }
-      if (!last) {
-        if (step in holder) next.push(holder[step]);
-        continue;
-      }
-      const value = holder[step];
-      if (typeof value === 'string' && nameKey(value) === key) {
-        count++;
-        if (newName !== undefined) holder[step] = newName;
-      }
-    }
-    holders = next;
+  for (const { track } of listTracks(timeline)) {
+    if (trackKind(track) !== 'instance-track') continue;
+    let holder: unknown = track;
+    for (const step of TIMELINE_TRACK_PATH.slice(0, -1)) holder = isRecord(holder) ? holder[step] : undefined;
+    const last = TIMELINE_TRACK_PATH[TIMELINE_TRACK_PATH.length - 1];
+    if (!isRecord(holder) || typeof holder[last] !== 'string' || nameKey(holder[last]) !== key) continue;
+    count++;
+    if (newName !== undefined) holder[last] = newName;
   }
-  return { count, complete };
+  return count;
 }
 
 /** Where a use is, for messages: '"Main" events[3] action 0 "x"', 'layout "L" instance UID 4', 'family "Fam"', 'script main.js'. */

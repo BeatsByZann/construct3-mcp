@@ -8,7 +8,7 @@ import {
   timelineTrackUses,
 } from '../../src/construct3/object-name-references.js';
 import { NON_OBJECT_PARAMETER_KEYS } from '../../src/construct3/analyzers/index-builder.js';
-import type { EventSheet, Layout } from '../../src/construct3/types.js';
+import type { EventSheet, Layout, Timeline } from '../../src/construct3/types.js';
 
 const sheet = (events: unknown[]): EventSheet => ({ name: 'S', events, sid: 1 } as unknown as EventSheet);
 
@@ -252,17 +252,25 @@ describe('layouts, families, scripts and timelines', () => {
       .map(line => scriptReadsObject(line, 'Alpha'))).toEqual([true, true, false, false]);
   });
 
-  it('finds and renames the object name of timeline tracks at the given key path only, and says when a timeline lacks its shape', () => {
-    const path = ['tracks', '[]', 'objectType'];
-    const timeline = { tracks: [{ type: 'instance-track', objectType: 'Alpha' }, { objectType: 'alpha' }, { objectType: 'Beta' }], nested: { objectType: 'Alpha' } };
-    expect(timelineTrackUses(timeline, 'Alpha', undefined, path)).toEqual({ count: 2, complete: true });
-    expect(timelineTrackUses(timeline, 'Alpha', 'Gamma', path).count).toBe(2);
-    expect(timeline.tracks.map(t => t.objectType)).toEqual(['Gamma', 'Gamma', 'Beta']);
-    // A key of that name off the path is not a track's object
-    expect(timeline.nested.objectType).toBe('Alpha');
-    expect(timelineTrackUses({ tracks: 'none' }, 'Alpha', undefined, path)).toEqual({ count: 0, complete: false });
-    // Without a recorded path nothing is counted
-    expect(timelineTrackUses(timeline, 'Gamma')).toEqual({ count: 0, complete: true });
+  it('finds and renames the object type of instance tracks in tracks[] and in track folders at any depth, and nothing else', () => {
+    const track = (objectType: string, extra: Record<string, unknown> = {}) => ({ type: 'instance-track', worldInstance: 1, objectType, ...extra });
+    const folder = (name: string, items: unknown[], subfolders: unknown[] = []) => ({ name, items, subfolders });
+    const deep = track('ALPHA', { name: 'Alpha' });
+    const data = {
+      objectType: 'Alpha',
+      tracks: [track('Alpha'), track('alpha'), track('Beta'), { worldInstance: 2, objectType: 'Alpha' }, { type: 'value-track', name: 'Alpha', objectType: 'Alpha' }],
+      tracksRoot: folder('', [track('Alpha')], [folder('A', [track('Alpha')], [folder('B', [deep])])]),
+    };
+    const timeline = data as unknown as Timeline;
+    expect(timelineTrackUses(timeline, 'Alpha')).toBe(5);
+    expect(data.tracks.map(t => t.objectType)).toEqual(['Alpha', 'alpha', 'Beta', 'Alpha', 'Alpha']);
+    expect(timelineTrackUses(timeline, 'Alpha', 'Gamma')).toBe(5);
+    // Untyped (legacy) and value tracks hold no object name, and a key off the track's path is not its object
+    expect(data.tracks.map(t => t.objectType)).toEqual(['Gamma', 'Gamma', 'Beta', 'Alpha', 'Alpha']);
+    expect(data.objectType).toBe('Alpha');
+    expect(deep).toEqual(track('Gamma', { name: 'Alpha' }));
+    expect(JSON.stringify(data.tracksRoot).match(/"objectType":"(\w+)"/g)).toEqual(['"objectType":"Gamma"', '"objectType":"Gamma"', '"objectType":"Gamma"']);
+    expect(timelineTrackUses(timeline, 'Alpha')).toBe(0);
   });
 
   it('rewrites every kind of event sheet use by default, as the editor did on a rename', () => {
@@ -271,8 +279,8 @@ describe('layouts, families, scripts and timelines', () => {
     });
   });
 
-  it('has no recorded key path for a timeline track, since no editor save has shown one', () => {
-    expect(TIMELINE_TRACK_PATH).toEqual([]);
+  it('reads the object type of an instance track at its "objectType" key', () => {
+    expect(TIMELINE_TRACK_PATH).toEqual(['objectType']);
   });
 
   it('rewrites and lists by one policy: a kind set to list is listed in every sheet and never changed, beside a kind that is rewritten', () => {
