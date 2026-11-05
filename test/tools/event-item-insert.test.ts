@@ -278,7 +278,8 @@ describe('update_event_block insertActions, insertConditions and replaceConditio
       sheetName: 'Sheet1', sid: 200, isElse: true, replaceConditions: [{ index: 0, condition: isMoving }],
     }));
     expect(data.success).toBe(true);
-    expect(data.warnings).toBeUndefined();
+    // The one warning is the catalogue's: the Sprite plugin defines no "is-moving" condition
+    expect(data.warnings).toEqual([expect.stringMatching(/^Condition "is-moving" on "Sprite1" \(SID \d+\): Construct r495\.2 defines no condition "is-moving" for the Sprite plugin\.$/)]);
     expect((blockOf(written(writer), 200).conditions as Ev[]).map(c => c.id)).toEqual(['else', 'is-moving', 'is-visible']);
   });
 

@@ -171,6 +171,7 @@ describe('add_event_block with a custom action call', () => {
   });
 
   it('resolves on the object type alone when the family files cannot be read', async () => {
+    const ACE_CHECK_NOT_RUN = 'The ACE and expression checks could not run for this change; run validate_project to check the sheet.';
     const { server, reader } = setup();
     reader.readAllFamilies = async () => { throw new Error('unreadable'); };
     const own = parse(await server.callTool('add_event_block', {
@@ -178,12 +179,13 @@ describe('add_event_block with a custom action call', () => {
       actions: [{ customAction: 'Hurt', objectClass: 'Alpha', parameters: ['1'] }],
     }));
     expect(own.success).toBe(true);
-    expect(own.warnings).toBeUndefined();
+    // The catalogue check reads the families too, so it reports that it could not run
+    expect(own.warnings).toEqual([ACE_CHECK_NOT_RUN]);
     const family = parse(await server.callTool('add_event_block', {
       sheetName: 'Sheet1', conditions: tick,
       actions: [{ customAction: 'Wave', objectClass: 'Alpha' }],
     }));
-    expect(family.warnings).toEqual([missingDefinition('Block', 'Wave', 'Alpha')]);
+    expect(family.warnings).toEqual([missingDefinition('Block', 'Wave', 'Alpha'), ACE_CHECK_NOT_RUN]);
   });
 
   it('checks and writes a custom action call in a sub-event as it does in a block', async () => {

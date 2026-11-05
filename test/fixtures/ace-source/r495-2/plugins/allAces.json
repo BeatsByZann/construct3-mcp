@@ -1,5 +1,12 @@
 {
   "system": {
+    "general": {
+      "conditions": [
+        { "id": "every-tick", "params": [] },
+        { "id": "else", "params": [] }
+      ],
+      "actions": []
+    },
     "layout": {
       "conditions": [
         { "id": "on-start-of-layout", "params": [] }

@@ -57,7 +57,7 @@ describe('buildCatalog', () => {
     expect(catalogCounts(TEST_CATALOG)).toEqual({
       plugins: 4,
       behaviors: 1,
-      aces: 7,
+      aces: 9,
       expressions: 15,
       commonAces: 4,
       commonExpressions: 5,

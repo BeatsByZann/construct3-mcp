@@ -462,9 +462,9 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
     expect(withCode(report, 'expression-unknown-name')).toEqual([]);
   });
 
-  it('runs 32 checks', async () => {
+  it('runs 33 checks', async () => {
     const { validate } = await openForValidation(MINIMAL);
-    expect((await validate()).summary.checksRun).toBe(32);
+    expect((await validate()).summary.checksRun).toBe(33);
   });
 
   it('reports a very deeply nested value as one finding and still runs every other check', async () => {
@@ -478,7 +478,7 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
     expect(grammar).toHaveLength(1);
     expect(grammar[0].message).toContain('nested more than 200 levels deep');
     expect(report.warnings.filter(w => w.check === 'ace-unknown-ace').map(w => w.entity)).toEqual([`eventSheets/MainSheet/sid:${sids.unknownAce}`]);
-    expect(report.summary.checksRun).toBe(32);
+    expect(report.summary.checksRun).toBe(33);
   });
 
   it('turns a fault inside the ACE and expression step into one info issue and keeps every other check', async () => {
@@ -497,7 +497,7 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
     expect(failed[0].message).not.toContain('private');
     expect(catalogIssues(report).map(i => i.check)).toEqual(['ace-check-failed']);
     expect(otherIssues(report)).toEqual(otherIssues(expected));
-    expect(report.summary.checksRun).toBe(32);
+    expect(report.summary.checksRun).toBe(33);
   });
 
   describe('valid projects', () => {
@@ -615,7 +615,7 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
       return open;
     }
 
-    it('reports why in one info issue, no ace or expression issue, 32 checks, and every other check as with a catalogue', async () => {
+    it('reports why in one info issue, no ace or expression issue, 33 checks, and every other check as with a catalogue', async () => {
       const reference = await (await faultyProject()).validate();
       expect(catalogIssues(reference).some(i => i.check.startsWith('ace-') && i.check !== 'ace-catalog-unavailable')).toBe(true);
 
@@ -629,10 +629,10 @@ describe('validate_project: ACE, expression and addon-definition checks', () => 
         expect(issues.map(i => i.check)).toEqual(['ace-catalog-unavailable']);
         expect(issues[0].entity).toBe('project');
         expect(issues[0].message).toContain(wording);
-        expect(report.summary.checksRun).toBe(32);
+        expect(report.summary.checksRun).toBe(33);
         expect(otherIssues(report)).toEqual(otherIssues(reference));
       }
-      expect(reference.summary.checksRun).toBe(32);
+      expect(reference.summary.checksRun).toBe(33);
       expect(offline.calls).toHaveLength(1);
     });
 

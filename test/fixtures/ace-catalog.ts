@@ -43,6 +43,8 @@ export const TEST_CATALOG: AceCatalog = {
     },
     system: {
       conditions: {
+        'every-tick': [],
+        'else': [],
         'on-start-of-layout': [],
         'compare-two-values': [
           { id: 'first-value', type: 'any' },
