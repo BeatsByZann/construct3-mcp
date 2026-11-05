@@ -918,18 +918,22 @@ describe('duplicate_object_type', () => {
     expect(existsSync(path('images', 'hero-default-001.png'))).toBe(false);
   });
 
-  it('warns when the copy names a default template, and keeps both editor fields', async () => {
+  it('clears the default template of the copy as set_default_template does, with no warning', async () => {
     const player = await readJson<Obj>('objectTypes', 'Actors', 'Player.json');
-    player.editorNewInstanceIsReplica = true;
+    player.editorNewInstanceIsReplica = false;
     player.editorNewInstanceTemplateName = 'PlayerT';
     await writeJson(['objectTypes', 'Actors', 'Player.json'], player);
     const data = await call('duplicate_object_type', { objectName: 'Player', newName: 'Hero' });
     expect(data.isError).not.toBe(true);
     const copy = await readJson<Obj>('objectTypes', 'Actors', 'Hero.json');
+    // The cleared default as set_default_template writes it with a null template: the flag true, no name
     expect(copy.editorNewInstanceIsReplica).toBe(true);
-    expect(copy.editorNewInstanceTemplateName).toBe('PlayerT');
-    expect(warningsOf(data)).toContain('The copy creates new instances from the template "PlayerT", which belongs to "Player"; no instance of "Hero" is that template. Change or clear the default template of "Hero" so that it does not name a template of another object type.');
-    expect(warningsOf(data)).not.toContain('set_default_template');
+    expect('editorNewInstanceTemplateName' in copy).toBe(false);
+    expect(warningsOf(data)).not.toContain('template');
+    // The source keeps its own default template
+    const source = await readJson<Obj>('objectTypes', 'Actors', 'Player.json');
+    expect(source.editorNewInstanceIsReplica).toBe(false);
+    expect(source.editorNewInstanceTemplateName).toBe('PlayerT');
   });
 
   it('removes the copy when the registration fails, rolling back once and creating no image first', async () => {

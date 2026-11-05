@@ -36,6 +36,7 @@ import { transitionsFolderIndex } from '../construct3/timeline-folders.js';
 import {
   hierarchyEscapes, planImageCopies, remapAllSids, remapImageSpriteIds, remapInstanceUids, sidRemapper, templateInstances,
 } from '../construct3/entity-copies.js';
+import { clearDefaultTemplate } from '../construct3/instance-templates.js';
 import type { EventSheet, Instance, Layout, ObjectType } from '../construct3/types.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { refuse } from './refusals.js';
@@ -690,10 +691,8 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         if (images.missing.length > 0) {
           warnings.push(`No image file was found in images/ for ${images.missing.slice(0, 10).join(', ')}${images.missing.length > 10 ? ', ...' : ''}; the copy has no file for those frames.`);
         }
-        if (typeof templateName === 'string' && templateName !== '') {
-          warnings.push(`The copy creates new instances from the template "${templateName}", which belongs to "${source}"; `
-            + `no instance of "${args.newName}" is that template. Change or clear the default template of "${args.newName}" so that it does not name a template of another object type.`);
-        }
+        // The template belongs to the source's instance, so the copy starts without a default template
+        if (typeof templateName === 'string' && templateName !== '') clearDefaultTemplate(copy);
 
         const side = newSideWrites();
         let backupPath: string | undefined;

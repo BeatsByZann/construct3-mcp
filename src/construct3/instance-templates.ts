@@ -190,6 +190,17 @@ export function templateKey(objectType: string, templateName: string): string {
   return `${objectType}\0${templateName}`;
 }
 
+/**
+ * Clear the default template of an object type as Construct 3 r506-2 (Free
+ * edition, guest) saves a cleared default: no template name, the replica flag
+ * true. set_default_template with a null template and duplicate_object_type
+ * both write this.
+ */
+export function clearDefaultTemplate(objectType: { editorNewInstanceIsReplica?: boolean; editorNewInstanceTemplateName?: string }): void {
+  delete objectType.editorNewInstanceTemplateName;
+  objectType.editorNewInstanceIsReplica = true;
+}
+
 /** Where a template instance is: its layout and UID. */
 export interface TemplateLocation {
   layout: string;

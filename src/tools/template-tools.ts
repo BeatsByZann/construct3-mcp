@@ -19,7 +19,7 @@ import { classifyReadError } from '../construct3/project-reader.js';
 import { unscannedFilesOf, describeReadFailure, type UnscannedFile } from '../construct3/analyzers/unscanned-uses.js';
 import { forEachLayoutInstance, findInstanceByUid } from '../construct3/layers.js';
 import {
-  buildInstanceTemplate, findTemplateInstance, readTemplate, sameTemplateName, templateKey,
+  buildInstanceTemplate, clearDefaultTemplate, findTemplateInstance, readTemplate, sameTemplateName, templateKey,
 } from '../construct3/instance-templates.js';
 
 type Reader = MutationToolDeps['reader'];
@@ -273,9 +273,7 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         }
         const warnings: string[] = [];
         if (args.templateName === null) {
-          // A cleared default as Construct 3 r506-2 (Free edition, guest) saves it: no name, the flag true.
-          delete objectType.editorNewInstanceTemplateName;
-          objectType.editorNewInstanceIsReplica = true;
+          clearDefaultTemplate(objectType);
         } else {
           const search = await layoutsForSearch(reader);
           if (!findTemplateInstance(search.layouts, args.objectName, args.templateName)) {
