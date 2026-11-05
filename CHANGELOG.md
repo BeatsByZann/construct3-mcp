@@ -55,6 +55,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Changed
 
+- `reverse_frames`, `reorder_frames` and `duplicate_frame` give an object that is not a Sprite the refusal the animation folder tools give: "is not a Sprite. Only Sprite objects have animations. Nothing was changed." (#ISSUE).
 - The files a failed or interrupted replace can leave (`.c3mcp-<16 hex digits>.tmp`, `.link` and `.old`; the `.old` one holds the previous content of the file) are left out of `pack_project` and of a `.c3p` write-back, an entry of that name that was in the original archive is still kept and written back unchanged, and `validate_project` lists them as `backup-file` info ("a file left by an interrupted write; the .old one holds the file's previous content") instead of `orphaned-image` (#ISSUE).
 - `move_project_item` moves a flowchart through the same file path and registration the flowchart tools use: a folder it creates in the `flowcharts` container is written with its keys as the editor saves them (`name`, `items`, `subfolders`), and a flowchart registered in a folder without a name is refused with the reason the flowchart tools give, instead of "not found" (#ISSUE).
 - `duplicate_object_type` clears the default template of a copy whose source names one, as `set_default_template` with `null` does (`editorNewInstanceIsReplica` true, no `editorNewInstanceTemplateName`), and no longer warns about it, since the template belongs to the source's instance (#ISSUE).

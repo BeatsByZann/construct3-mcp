@@ -599,3 +599,18 @@ describe('duplicate_frame with a frame that has two image files', () => {
     expect(await snapshot()).toEqual(before);
   });
 });
+
+describe('a frame tool on an object that is not a Sprite', () => {
+  it.each([
+    ['reverse_frames', {}],
+    ['duplicate_frame', { frameIndex: 0 }],
+  ])('%s refuses it and changes nothing', async (tool, args) => {
+    await setupFrames([{ label: 'A' }, { label: 'B' }]);
+    const obj = JSON.parse(await readFile(objectPath(), 'utf8'));
+    obj['plugin-id'] = 'Text';
+    await writeFile(objectPath(), JSON.stringify(obj, null, '\t'));
+    reader.invalidateCaches();
+    expect(await refusedUnchanged(tool, args))
+      .toContain('Object "Sprite" is not a Sprite. Only Sprite objects have animations. Nothing was changed.');
+  });
+});

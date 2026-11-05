@@ -332,9 +332,9 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
       try {
         const invalid = invalidFolderPath(args.folderPath);
         if (invalid !== undefined) return toolError(`Error creating animation folder: ${invalid}. Nothing was changed.`);
-        const sprite = await loadSpriteAnimations(reader, args.objectName, true);
+        const sprite = await loadSprite(reader, args.objectName, true);
         if (sprite.refusal !== undefined) return sprite.refusal;
-        const { obj, animations } = sprite;
+        const { object: obj, animations } = sprite;
         const clash = findFolderPathClash(animations, args.folderPath);
         if (clash !== undefined) return toolError(animationFolderCaseClashError(args.objectName, args.folderPath, clash));
 
@@ -387,9 +387,9 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         const targetPath = args.folderPath ?? '';
         const invalid = targetPath === '' ? undefined : invalidFolderPath(targetPath);
         if (invalid !== undefined) return toolError(`Error moving animation: ${invalid}. Nothing was changed.`);
-        const sprite = await loadSpriteAnimations(reader, args.objectName, false);
+        const sprite = await loadSprite(reader, args.objectName);
         if (sprite.refusal !== undefined) return sprite.refusal;
-        const { obj, animations } = sprite;
+        const { object: obj, animations } = sprite;
         const found = findAnimation<Animation>(animations, args.animationName);
         if (!found) {
           return toolError(`Animation "${args.animationName}" not found on "${args.objectName}". Available: ${describeAvailableAnimations(animations)}. Nothing was changed.`);
@@ -831,9 +831,12 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
     orderOf: (frameCount: number) => number[],
     orderGiven: boolean,
   ) => {
-    const loaded = await loadSpriteAnimation(reader, objectName, animationName);
-    if ('error' in loaded) return loaded.error;
-    const { obj, anim } = loaded;
+    const sprite = await loadSprite(reader, objectName);
+    if (sprite.refusal !== undefined) return sprite.refusal;
+    const { object: obj, animations } = sprite;
+    const loaded = findFrameAnimation(animations, objectName, animationName);
+    if (loaded.refusal !== undefined) return loaded.refusal;
+    const { anim } = loaded;
 
     const frames = anim.frames;
     const order = orderOf(frames.length);
@@ -937,9 +940,12 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
     oneAtATime(async (args) => {
       const relative = (path: string) => writer.projectRelative(path);
       try {
-        const loaded = await loadSpriteAnimation(reader, args.objectName, args.animationName);
-        if ('error' in loaded) return loaded.error;
-        const { obj, anim } = loaded;
+        const sprite = await loadSprite(reader, args.objectName);
+        if (sprite.refusal !== undefined) return sprite.refusal;
+        const { object: obj, animations } = sprite;
+        const loaded = findFrameAnimation(animations, args.objectName, args.animationName);
+        if (loaded.refusal !== undefined) return loaded.refusal;
+        const { anim } = loaded;
 
         const frameCount = anim.frames.length;
         if (args.frameIndex >= frameCount) {
@@ -1335,27 +1341,27 @@ function animationNameFileError(animationName: string, existing = false): string
  * refusal to return from the tool (the object is not found, is not a Sprite,
  * or has no animations structure); a refusal changed nothing. With
  * `folderList`, the container and its folders must have lists of
- * subfolders, as a tool that adds a folder needs.
+ * subfolders, as a tool that adds a folder needs (`folderList`).
  */
-async function loadSpriteAnimations(
+async function loadSprite(
   reader: MutationToolDeps['reader'],
   objectName: string,
-  folderList: boolean,
-): Promise<{ obj: ObjectType; animations: AnimationsContainer; refusal?: undefined } | { refusal: ReturnType<typeof toolError> }> {
-  let obj: ObjectType;
+  folderList = false,
+): Promise<{ object: ObjectType; animations: AnimationsContainer; refusal?: undefined } | { refusal: ReturnType<typeof toolError> }> {
+  let object: ObjectType;
   try {
-    obj = await reader.readObjectType(objectName);
+    object = await reader.readObjectType(objectName);
   } catch {
     return { refusal: notFoundError('Object', objectName, reader.findNearestName(objectName, 'objects'), 'list_objects') };
   }
-  if (obj['plugin-id'] !== 'Sprite') {
+  if (object['plugin-id'] !== 'Sprite') {
     return { refusal: toolError(`Object "${objectName}" is not a Sprite. Only Sprite objects have animations. Nothing was changed.`) };
   }
-  const animations = obj.animations;
+  const animations = object.animations;
   if (!animations || !Array.isArray(animations.items) || (folderList && !Array.isArray(animations.subfolders))) {
     return { refusal: toolError(`Object "${objectName}" has no animations structure${folderList ? ' with a folder list' : ''}. Nothing was changed.`) };
   }
-  return { obj, animations };
+  return { object, animations };
 }
 
 /**
@@ -1836,42 +1842,31 @@ async function recoverFrameChangeOrThrow(
 }
 
 /**
- * The Sprite `objectName` and its animation `animationName` (its exact
- * name, in any animation folder) for a frame tool that renames or writes the
- * animation's frame image files, or the tool error that says why there is
- * none to change: no such object, not a Sprite, no animations structure, no
- * such animation, an animation name that cannot be part of an image file
- * name, or an animation without a frames list or without frames. It only
- * reads.
+ * The animation `animationName` (its exact name, in any animation folder)
+ * among the `animations` of the Sprite `objectName`, for a frame tool that
+ * renames or writes the animation's frame image files, or the tool error
+ * that says why there is none to change: no such animation, an animation
+ * name that cannot be part of an image file name, or an animation without a
+ * frames list or without frames. It only reads.
  */
-async function loadSpriteAnimation(
-  reader: MutationToolDeps['reader'],
+function findFrameAnimation(
+  animations: AnimationsContainer,
   objectName: string,
   animationName: string,
-): Promise<{ obj: ObjectType; anim: Animation } | { error: ReturnType<typeof toolError> }> {
-  let obj: ObjectType;
-  try {
-    obj = await reader.readObjectType(objectName);
-  } catch {
-    return { error: notFoundError('Object', objectName, reader.findNearestName(objectName, 'objects'), 'list_objects') };
-  }
-  if (obj['plugin-id'] !== 'Sprite') return { error: toolError(`Object "${objectName}" is not a Sprite. Nothing was changed.`) };
-  if (!obj.animations || !Array.isArray(obj.animations.items)) {
-    return { error: toolError(`Object "${objectName}" has no animations structure. Nothing was changed.`) };
-  }
-  const anim = findAnimation<Animation>(obj.animations, animationName)?.animation;
+): { anim: Animation; refusal?: undefined } | { refusal: ReturnType<typeof toolError> } {
+  const anim = findAnimation<Animation>(animations, animationName)?.animation;
   if (!anim) {
-    return { error: toolError(`Animation "${animationName}" not found. Available: ${describeAvailableAnimations(obj.animations)}`) };
+    return { refusal: toolError(`Animation "${animationName}" not found. Available: ${describeAvailableAnimations(animations)}`) };
   }
   const nameError = animationNameFileError(anim.name, true);
-  if (nameError) return { error: toolError(nameError) };
+  if (nameError) return { refusal: toolError(nameError) };
   if (!Array.isArray(anim.frames)) {
-    return { error: toolError(`Animation "${anim.name}" on "${objectName}" has no frames list in its object file. Nothing was changed.`) };
+    return { refusal: toolError(`Animation "${anim.name}" on "${objectName}" has no frames list in its object file. Nothing was changed.`) };
   }
   if (anim.frames.length === 0) {
-    return { error: toolError(`Animation "${anim.name}" on "${objectName}" has no frames. Nothing was changed.`) };
+    return { refusal: toolError(`Animation "${anim.name}" on "${objectName}" has no frames. Nothing was changed.`) };
   }
-  return { obj, anim };
+  return { anim };
 }
 
 /**
