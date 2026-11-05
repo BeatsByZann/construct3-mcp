@@ -13,7 +13,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │  MCP Protocol Layer                                      │  │
 │  │  Resources (9) · Query Tools (9) · Analysis (11)         │  │
-│  │  Mutations (48) · Runtime (19) · Prompts (7)             │  │
+│  │  Mutations (141) · Runtime (19) · Prompts (7)            │  │
 │  └──────────┬───────────────────────────────────────────────┘  │
 │             │                                                  │
 │  ┌──────────▼───────────────────────────────────────────────┐  │
@@ -43,7 +43,7 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 └────────────────────────────────┘
 ```
 
-The server registers 85 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_addons`, `list_timelines`, `get_timeline_details`, `list_timeline_tracks`, `list_eases`, `list_flowcharts`, `get_flowchart_details`, `get_tilemap_data`, `list_tilemap_brushes`, `list_templates` and `list_changes` count as mutations: they live in the project, timeline, flowchart, tilemap, template and change modules.
+The server registers 186 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `get_timeline_details`, `list_timeline_tracks`, `list_eases`, `list_flowcharts`, `get_flowchart_details`, `get_tilemap_data`, `list_tilemap_brushes`, `list_templates` and `list_changes`, and `load_addon_definitions`, which writes nothing to the project, count as mutations: they live in the container, project, effect, timeline, flowchart, tilemap, template and change modules.
 
 ## Core Components
 
@@ -324,7 +324,7 @@ The cross-reference index (`ProjectIndex`) is cached per reader, so projects ope
 | Query Tools | `tools/query.ts` | 9 | List, search, get details |
 | Analysis Tools | `tools/analysis.ts` | 11 | Deep analysis, validation, event locating, runtime traps |
 | Usage Tools | `tools/usage-tools.ts` | 6 | Read-only project settings, instance counts, text search and usage queries that say how complete their answer is |
-| Mutation Tools | `tools/mutations.ts` → `object-tools.ts` (6), `event-tools.ts` (19), `layout-tools.ts` (9), `bulk-instance-tools.ts` (3), `layer-rename.ts` (1), `layer-order.ts` (4), `animation-tools.ts` (8), `effect-tools.ts` (5), `container-tools.ts` (4), `timeline-tools.ts` (5), `timeline-instance-tools.ts` (7), `timeline-track-tools.ts` (7), `timeline-ease-tools.ts` (4), `flowchart-tools.ts` (13), `tilemap-data-tools.ts` (3), `tilemap-brush-tools.ts` (4), `project-tools.ts` (4), `file-tools.ts` (6), `template-tools.ts` (3), `hierarchy-tools.ts` (2), `object-rename.ts` (2), `replace-tools.ts` (2), `structure-tools.ts` (1), `duplicate-tools.ts` (5), `entity-rename.ts` (2), `change-tools.ts` (2) | 45 | Safe create, update, delete; list and revert the change journal |
+| Mutation Tools | `tools/mutations.ts` calls `object-tools.ts` (8), `event-tools.ts` (19), `layout-tools.ts` (9), `bulk-instance-tools.ts` (3), `layer-rename.ts` (1), `layer-order.ts` (4), `animation-tools.ts` (14), `effect-tools.ts` (5), `container-tools.ts` (4), `timeline-tools.ts` (5), `timeline-instance-tools.ts` (7), `timeline-track-tools.ts` (7), `timeline-ease-tools.ts` (4), `flowchart-tools.ts` (13), `tilemap-data-tools.ts` (3), `tilemap-brush-tools.ts` (4), `project-tools.ts` (6), `file-tools.ts` (6), `template-tools.ts` (3), `hierarchy-tools.ts` (2), `object-rename.ts` (2), `replace-tools.ts` (2), `structure-tools.ts` (1), `duplicate-tools.ts` (5), `entity-rename.ts` (2), `change-tools.ts` (2) | 141 | Safe create, update, delete; list and revert the change journal |
 | Runtime Tools | `tools/runtime-tools.ts` | 19 | Runtime bridge (inject, remove, commands), game connection, bridge calls, conditions, event buffers, input, canvas, screenshots, preview server, preview checks, project clone, `.c3p` packing |
 | Prompts | `prompts/workflows.ts` | 7 | Workflow templates |
 

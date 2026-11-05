@@ -158,7 +158,7 @@ construct3-mcp/
 │   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
 │   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)
 │   │   ├── effect-tools.ts         # Effect tools (5)
-│   │   ├── animation-tools.ts      # Sprite animation and frame tools (8)
+│   │   ├── animation-tools.ts      # Sprite animation, animation folder, frame and image tools (14)
 │   │   ├── container-tools.ts      # Container tools (4)
 │   │   ├── timeline-tools.ts       # Timeline tools (5)
 │   │   ├── layer-order.ts          # Layer and instance order tools (4)
@@ -173,7 +173,7 @@ construct3-mcp/
 │   │   ├── tilemap-brush-tools.ts  # Tilemap brush tools (4)
 │   │   ├── tilemap-support.ts      # Refusals, name checks and path-free messages the tilemap tools share
 │   │   ├── file-tools.ts           # Script and Project File tools (6)
-│   │   ├── project-tools.ts        # Project metadata and addon tools (4)
+│   │   ├── project-tools.ts        # Project metadata, project properties and addon tools (6)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   ├── flowchart-tools.ts      # Flowchart tools (13)
 │   │   ├── template-tools.ts       # Instance template tools (3)

@@ -27,10 +27,10 @@ This guide is for Construct 3 developers who want to use the server with Claude 
 
 ## What it does and what it doesn't
 
-construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 87 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
+construct3-mcp is a small program (an "MCP server") that your AI tool starts in the background. It gives the AI 186 tools, 9 resources (5 fixed ones and 4 templates that take the name of an object, event sheet, layout or manual topic) and 7 prompts for one Construct 3 project:
 
 - **Read and explain**: list objects, layouts, event sheets, families, timelines, flowcharts and addons, show an event sheet as a readable outline with the editor's event numbers, find where an object is used, map functions, find unused objects and assets.
-- **Check**: `validate_project` runs 30 checks, including rules the Construct 3 editor enforces when it opens a project. `find_runtime_traps` looks for logic that loads fine but hangs or does nothing.
+- **Check**: `validate_project` runs 36 checks, including rules the Construct 3 editor enforces when it opens a project. `find_runtime_traps` looks for logic that loads fine but hangs or does nothing.
 - **Edit**: create, change and delete objects, families, event sheets and events, layouts, layers, instances, animations, timelines and flowcharts, and change the project metadata (name, version, author, description). Names and references are checked before anything is written, and most rewritten files get a `.bak` copy (exceptions under [.bak files](#bak-files)).
 - **Open your project as saved**: it opens projects saved as a folder and single-file `.c3p` projects (through a working folder: see [Single-file `.c3p` projects](#single-file-c3p-projects)).
 - **Test the running game**: add a "bridge" script to your project, serve an export of the game, and let the AI read variables, call functions, wait for states, click, type and take screenshots in the running game.
@@ -150,7 +150,7 @@ To see the tool list without any AI tool, use the MCP Inspector in CLI mode:
 npx -y @modelcontextprotocol/inspector --cli node "C:/Tools/construct3-mcp/dist/index.js" "C:/Games/My Game" --method tools/list
 ```
 
-This prints a JSON list of 85 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line, which is harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
+This lists 186 tools. The first run downloads the Inspector and can take a few minutes. It may also print a `npm warn deprecated` line and a `Schema portability` line; both are harmless. Without `--cli` the Inspector starts a browser UI and keeps running.
 
 ### Alternative: run from GitHub without cloning
 
@@ -289,7 +289,7 @@ This format works, and so does the one `claude mcp add` writes (the same with `"
 
 #### Tool permissions
 
-Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 28 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
+Claude Code asks before it uses an MCP tool. In Claude Code the tools are named `mcp__construct3__<tool>`, for example `mcp__construct3__list_objects`. The server does not mark its tools as read-only or destructive, so your client cannot tell them apart by itself. These rules allow exactly the 42 read-only tools and nothing else. Put them in `~/.claude/settings.json` (applies in every folder, which fits the `user` setup above), or in `.claude/settings.json` inside the game folder you start `claude` in (Claude Code reads it only from the start folder, not from parent folders, and applies its allow rules only after you trusted that folder). You can also add them with `/permissions`:
 
 ```json
 {
@@ -309,7 +309,7 @@ Claude Code asks before it uses an MCP tool. In Claude Code the tools are named 
 }
 ```
 
-Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 28 read-only tools was checked against the server's tool list over stdio (106 tools). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
+Keep the write tools on "ask" so you see each change before it happens. The rule syntax is from the Claude Code permissions documentation. That the patterns match exactly the 42 read-only tools was checked against the tool list this version returns over stdio (186 tools). `get_*` includes `get_canvas_size`, which reads the canvas of a game you connected to and changes nothing.
 
 ### Claude Desktop
 
@@ -382,12 +382,12 @@ Confirm the trust prompt when the server starts. Logs: Command Palette > **MCP: 
 
 *From each vendor's documentation, not tested for this guide.* Always pass an explicit project path.
 
-- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. Cascade allows at most 100 tools in total and this server alone brings 87, so disable other servers or tools you don't need if you hit the limit.
+- **Windsurf** (now "Devin Desktop", agent "Cascade"): Cascade panel > `...` menu > **Open MCP config file**. Same `mcpServers` JSON as Claude Desktop. This server alone registers 186 tools, more than Windsurf's 100; turn off the tools you do not need in Cascade's MCP settings.
 - **Antigravity**: open the file through the Agent panel > **MCP Servers** > **Manage MCP Servers** > **View raw config**. Current documentation names `~/.gemini/config/mcp_config.json` (global) and `.agents/mcp_config.json` (per workspace).
 
 ### Check that it works
 
-Your client should show `construct3` with 87 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
+Your client should show `construct3` with 186 tools (plus 5 resources, 4 resource templates and 7 prompts). In Claude Code, start `claude` (in your game folder if your setup has no project path), type `/mcp` and select `construct3` to see its status and tools. Then type:
 
 > Give me an overview of this project.
 
@@ -430,7 +430,7 @@ You don't need tool names. Ask in plain language and the AI picks the tools. The
 "Is the project OK?" calls `validate_project`:
 
 ```json
-{ "valid": true, "complete": true, "summary": { "errors": 0, "warnings": 0, "info": 0, "checksRun": 30, "entitiesScanned": 3, "unscanned": 0 }, "errors": [], "warnings": [], "info": [], "unscannedFiles": [] }
+{ "valid": true, "complete": true, "summary": { "errors": 0, "warnings": 0, "info": 0, "checksRun": 36, "entitiesScanned": 3, "unscanned": 0 }, "errors": [], "warnings": [], "info": [], "unscannedFiles": [] }
 ```
 
 `info` is 0 here because the definitions of the project's release could be had. When they cannot, or the project's release is not served and release r495.2 is used instead, the result carries one info issue that says so (`ace-catalog-unavailable` or `ace-catalog-other-release`).
@@ -653,7 +653,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 ## Read tools and write tools
 
-**Read-only tools (27)**, safe to auto-approve:
+**Read-only tools (42)**, safe to auto-approve:
 
 - Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `list_timeline_tracks`, `list_eases`, `list_flowcharts`, `list_templates`, `search_objects`, `list_changes` (what recent calls changed, and their backups)
 - Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`, `get_flowchart_details`
@@ -662,9 +662,9 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Usage: `get_project_properties`, `get_instance_counts`, `search_project`, `find_behavior_usage`, `find_effect_usage`, `find_instance_variable_references` (all but `get_project_properties` say whether their answer is complete and what they could not read)
 - Runtime helpers that only return text: `get_bridge_commands`, `generate_bridge_eval_script`
 - Tilemaps: `get_tilemap_data`, `list_tilemap_brushes`
-- Runtime read: `get_canvas_size` (the canvas geometry of a game you connected to with `connect_to_game`; it sends nothing to the game)
+- Runtime read: `get_canvas_size` (the canvas geometry of a game the AI connected to; it sends nothing to the game)
 
-**Tools that write files (51)**, review before approving:
+**Tools that write files (133)**, review before approving:
 
 - Objects, families and containers: `create_object`, `update_object_properties`, `delete_object`, `rename_object_type`, `create_family`, `update_family`, `update_instance_variable`, `reorder_behaviors`, `delete_family`, `rename_family`, `create_container`, `update_container`, `delete_container`
 - Event sheets: `create_event_sheet`, `add_event_to_sheet`, `add_event_block`, `add_custom_action`, `update_function`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `update_event_group`, `update_comment`, `update_script_event`, `move_events_between_sheets`, `move_event_block`, `move_event_block_items`, `delete_event_from_sheet`, `remove_event_from_sheet`, `delete_event_sheet`, `rename_event_sheet`, `fix_legacy_behavior_keys`, `fix_legacy_event_shapes`
@@ -824,4 +824,4 @@ Install it and add one object that uses the addon in the Construct 3 editor, sav
 - Third-party addons must be installed and added in the editor; `register_addon` only edits the addon list.
 - The documentation resources only return links to the Construct 3 manual.
 - The runtime tools need Node.js 22 or later and Chrome or Edge, start from an export or the editor's preview (the server cannot export), and the bridge must be removed before you ship.
-- Windsurf / Devin Desktop allows 100 tools in total; this server uses 87 of them.
+- Windsurf / Devin Desktop: this server alone registers 186 tools, more than Windsurf's 100; turn off the tools you do not need in Cascade's MCP settings.
