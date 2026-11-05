@@ -13,7 +13,10 @@
  * Construct 3 r506-2 (Free edition, guest) opened a project laid out this way
  * after moves of a layout, an object type and an event sheet, and saved its
  * own files at the same paths. Not checked: the editor moving an item
- * itself, and flowcharts, families, scripts, imported files and brush files.
+ * itself, and families, scripts, imported files and brush files. A
+ * flowchart's file and entry are placed by the flowchart modules
+ * (flowchartFilePath, registerFlowchart, unregisterFlowchart), as
+ * create_flowchart and delete_flowchart place them.
  * A view-state file is moved as bytes, unread; r506-2 refused to open a
  * project whose layout `.uistate.json` had no `grid` object.
  *
@@ -31,6 +34,8 @@ import { z } from 'zod';
 import { readFile } from 'fs/promises';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { StaleFileError } from '../construct3/disk-state.js';
+import { flowchartFilePath, registerFlowchart, unregisterFlowchart, type ProjectWithFlowcharts } from '../construct3/flowchart-files.js';
+import { locateFlowcharts } from '../construct3/flowchart-model.js';
 import { findFolderPathClash } from '../construct3/names.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { classifyReadError } from '../construct3/project-reader.js';
@@ -165,6 +170,26 @@ function listToolFor(category: string): string {
   }
 }
 
+/**
+ * Move a flowchart's entry in the flowcharts container from `from` to `to`
+ * (folder names below the container), in the way create_flowchart and
+ * delete_flowchart edit it: the name is taken out of its folder, then
+ * registered at the end of the destination with any missing folder made in the
+ * key order the editor saves (name, items, subfolders). Returns the paths of
+ * the folders made. Throws, with the entry as it was found, when the name is
+ * not registered in `from` or is already registered in `to`.
+ */
+function moveFlowchartRegistration(
+  project: ProjectWithFlowcharts, name: string, from: readonly string[], to: readonly string[],
+): string[] {
+  unregisterFlowchart(project, name, from);
+  const made = registerFlowchart(project, name, to);
+  if (made === undefined) throw new Error(`"${name}" changed in project.c3proj during the move`);
+  const created: string[] = [];
+  for (let depth = to.length - made.foldersMade + 1; depth <= to.length; depth++) created.push(to.slice(0, depth).join('/'));
+  return created;
+}
+
 /** Whether the object type file's bytes say it is a Tilemap. */
 function isTilemapFile(bytes: Buffer): boolean {
   try {
@@ -240,6 +265,9 @@ export function registerStructureTools({ server: mcpServer, reader, writer }: Mu
         const placesBefore = found.map(loc => loc.path).sort();
         if (isFile && args.sourceFolder !== undefined) found = found.filter(loc => loc.path === args.sourceFolder);
         if (found.length === 0) {
+          if (args.category === 'flowchart' && locateFlowcharts(root).unresolved.has(args.name)) {
+            return refuse(`Flowchart "${args.name}" is registered in project.c3proj in a folder without a name, so its file cannot be resolved. The Project Bar move does not touch it.`);
+          }
           if (!isFile) {
             const missing = unregisteredNameMessage(label, args.name, allTreeNames(root, false),
               () => suggestionsFor(reader, args.category, args.name), listToolFor(args.category));
@@ -270,7 +298,10 @@ export function registerStructureTools({ server: mcpServer, reader, writer }: Mu
         let missingBrush = false;
         let tilemap = false;
         for (const r of relocations.filter(r => !r.viewState)) {
-          const read = await readSource(resolveProjectPath(projectDir, ...r.from), rel(r.from));
+          // A flowchart's file is placed by the flowchart modules, which confine it to the flowcharts folder
+          const flowchartFile = args.category === 'flowchart' && r.required;
+          const from = flowchartFile ? flowchartFilePath(projectDir, args.name, splitPath(fromPath)) : resolveProjectPath(projectDir, ...r.from);
+          const read = await readSource(from, rel(r.from));
           if ('problem' in read) return refuse(read.problem);
           if (read.bytes === null) {
             if (r.required) return refuse(`${rel(r.from)} is registered but does not exist on disk.`);
@@ -278,7 +309,7 @@ export function registerStructureTools({ server: mcpServer, reader, writer }: Mu
             continue;
           }
           if (args.category === 'objectType' && r.required) tilemap = isTilemapFile(read.bytes);
-          const to = resolveProjectPath(projectDir, ...r.to);
+          const to = flowchartFile ? flowchartFilePath(projectDir, args.name, splitPath(requested)) : resolveProjectPath(projectDir, ...r.to);
           const taken = await findFileIgnoringCase(to);
           if (taken !== undefined) return refuse(`${writer.projectRelative(taken)} already exists; move or delete it first.`);
           sources.push({ ...r, read, toPath: to });
@@ -304,6 +335,10 @@ export function registerStructureTools({ server: mcpServer, reader, writer }: Mu
             if (!freshRoot) throw new Error(`project.c3proj has no ${treeKey} tree`);
             const again = locateInTree(freshRoot, args.name).filter(loc => loc.path === fromPath);
             if (again.length !== 1) throw new Error(`"${args.name}" changed in project.c3proj during the move`);
+            if (args.category === 'flowchart') {
+              foldersCreated = moveFlowchartRegistration(project as unknown as ProjectWithFlowcharts, args.name, splitPath(fromPath), splitPath(requested));
+              return;
+            }
             const [item] = again[0].folder.items.splice(again[0].index, 1);
             const ensured = ensureTreeFolder(freshRoot, requested);
             ensured.folder.items.push(item);

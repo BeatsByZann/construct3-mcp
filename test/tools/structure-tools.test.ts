@@ -16,6 +16,7 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import { registerFlowchartTools } from '../../src/tools/flowchart-tools.js';
 import { registerStructureTools } from '../../src/tools/structure-tools.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'rename-project');
@@ -228,6 +229,90 @@ describe('move_project_item', () => {
     expect(await text('flowcharts', 'A', 'Graph.json')).toBe('{"name":"Graph"}');
     expect(existsSync(path('flowcharts', 'Graph.json'))).toBe(false);
     expect((await project()).flowcharts?.subfolders[0]).toEqual({ items: ['Graph'], subfolders: [], name: 'A' });
+  });
+
+  describe('flowcharts', () => {
+    /** Register the flowchart tools beside move_project_item, so a moved flowchart is read back the way a caller reads it. */
+    const readers = async (name: string): Promise<{ listed: string[]; details: ToolData }> => {
+      const list = JSON.parse((await server.callTool('list_flowcharts', {})).content[0].text) as { flowcharts: string[] };
+      const details = await server.callTool('get_flowchart_details', { name });
+      return {
+        listed: list.flowcharts,
+        details: details.isError ? { isError: true, text: details.content[0].text } : JSON.parse(details.content[0].text) as ToolData,
+      };
+    };
+
+    beforeEach(async () => {
+      registerFlowchartTools({ server, reader, writer, idGen: new IdGenerator() } as unknown as Parameters<typeof registerFlowchartTools>[0]);
+      await mkdir(path('flowcharts', 'Old'), { recursive: true });
+      await writeFile(path('flowcharts', 'Root.json'), '{"nodes":[],"marker":"root"}');
+      await writeFile(path('flowcharts', 'Root.uistate.json'), '{"view":"root"}');
+      await writeFile(path('flowcharts', 'Old', 'Inner.json'), '{"nodes":[],"marker":"inner"}');
+      await writeFile(path('flowcharts', 'Old', 'Inner.uistate.json'), '{"view":"inner"}');
+      await editProject(p => {
+        p.flowcharts = { items: ['Root'], subfolders: [{ name: 'Old', items: ['Inner'], subfolders: [] }] };
+      });
+    });
+
+    it('moves a flowchart registered in no folder into new folders, in the key order the editor saves them, with its editor state', async () => {
+      const data = await call({ category: 'flowchart', name: 'Root', folder: 'Boss/Arena' });
+      expect(data.isError).not.toBe(true);
+      expect(data.from).toBe('');
+      expect(data.to).toBe('Boss/Arena');
+      expect(data.foldersCreated).toEqual(['Boss', 'Boss/Arena']);
+      expect(data.filesMoved).toEqual([
+        { from: 'flowcharts/Root.json', to: 'flowcharts/Boss/Arena/Root.json' },
+        { from: 'flowcharts/Root.uistate.json', to: 'flowcharts/Boss/Arena/Root.uistate.json' },
+      ]);
+      expect(await text('flowcharts', 'Boss', 'Arena', 'Root.json')).toBe('{"nodes":[],"marker":"root"}');
+      expect(await text('flowcharts', 'Boss', 'Arena', 'Root.uistate.json')).toBe('{"view":"root"}');
+      expect(existsSync(path('flowcharts', 'Root.json'))).toBe(false);
+      expect(existsSync(path('flowcharts', 'Root.uistate.json'))).toBe(false);
+
+      const container = (await project()).flowcharts!;
+      expect(container.items).toEqual([]);
+      const boss = container.subfolders[1];
+      expect(Object.keys(boss)).toEqual(['name', 'items', 'subfolders']);
+      expect(Object.keys(boss.subfolders[0])).toEqual(['name', 'items', 'subfolders']);
+      expect(boss.subfolders[0]).toEqual({ name: 'Arena', items: ['Root'], subfolders: [] });
+
+      const after = await readers('Root');
+      expect(after.listed).toEqual(['Inner', 'Root']);
+      expect(after.details.marker).toBe('root');
+    });
+
+    it('moves a flowchart out of a named folder to the root and to another folder, with its editor state', async () => {
+      const toRoot = await call({ category: 'flowchart', name: 'Inner', folder: '' });
+      expect(toRoot.isError).not.toBe(true);
+      expect(toRoot.from).toBe('Old');
+      expect(toRoot.filesMoved).toEqual([
+        { from: 'flowcharts/Old/Inner.json', to: 'flowcharts/Inner.json' },
+        { from: 'flowcharts/Old/Inner.uistate.json', to: 'flowcharts/Inner.uistate.json' },
+      ]);
+      expect(await text('flowcharts', 'Inner.uistate.json')).toBe('{"view":"inner"}');
+      expect(existsSync(path('flowcharts', 'Old', 'Inner.json'))).toBe(false);
+      expect(existsSync(path('flowcharts', 'Old', 'Inner.uistate.json'))).toBe(false);
+      expect((await project()).flowcharts!.items).toEqual(['Root', 'Inner']);
+      expect((await readers('Inner')).details.marker).toBe('inner');
+
+      const toFolder = await call({ category: 'flowchart', name: 'Inner', folder: 'Old' });
+      expect(toFolder.isError).not.toBe(true);
+      expect(toFolder.from).toBe('');
+      expect(toFolder.foldersCreated).toEqual([]);
+      expect(await text('flowcharts', 'Old', 'Inner.uistate.json')).toBe('{"view":"inner"}');
+      expect((await project()).flowcharts!.subfolders[0]).toEqual({ name: 'Old', items: ['Inner'], subfolders: [] });
+      const after = await readers('Inner');
+      expect(after.listed).toEqual(['Root', 'Inner']);
+      expect(after.details.marker).toBe('inner');
+    });
+
+    it('refuses a flowchart registered in a folder without a name, as the flowchart tools do, and changes nothing', async () => {
+      await editProject(p => {
+        p.flowcharts!.subfolders.push({ items: ['Hidden'], subfolders: [] });
+      });
+      await refusal({ category: 'flowchart', name: 'Hidden', folder: 'Old' },
+        'Flowchart "Hidden" is registered in project.c3proj in a folder without a name, so its file cannot be resolved.');
+    });
   });
 
   it('moves a registered script and keeps its registration entry, warning about module imports', async () => {
