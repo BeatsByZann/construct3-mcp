@@ -70,6 +70,159 @@ describe('update_project_metadata', () => {
   });
 });
 
+// ─── update_project_properties ────────────────────────────
+
+describe('update_project_properties', () => {
+  function withLayout() {
+    return setup({ layouts: new Map([['Level 1', { name: 'Level 1', layers: [], sid: 1 }]]) });
+  }
+
+  /** The project file as the writer hands it to the change callback. */
+  function projectFile(): Record<string, any> {
+    return {
+      name: 'Game',
+      firstLayout: 'Layout 1',
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      properties: { author: 'Dev', fullscreenMode: 'off', zFar: 10000 },
+    };
+  }
+
+  /** Run the change the tool passed to updateProject on a project file. */
+  function applyWrittenChange(writer: ReturnType<typeof setup>['writer'], project = projectFile()) {
+    const calls = writer.callsFor('updateProject');
+    expect(calls).toHaveLength(1);
+    const change = calls[0].args[0] as (project: any) => boolean | void;
+    expect(change(project)).not.toBe(false);
+    return project;
+  }
+
+  it('registers the tool', () => {
+    const { server } = setup();
+    expect(server.hasTool('update_project_properties')).toBe(true);
+  });
+
+  it('merges properties keys into project.properties in one update of the project file', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', {
+      properties: { fullscreenMode: 'letterbox-scale', sampling: 'nearest', zFar: 5000 },
+    });
+    expect(parseResult(result).success).toBe(true);
+    expect(writer.callsFor('updateProjectProperties')).toHaveLength(0);
+    const project = applyWrittenChange(writer);
+    expect(project.properties).toEqual({ author: 'Dev', fullscreenMode: 'letterbox-scale', sampling: 'nearest', zFar: 5000 });
+    expect(project.name).toBe('Game');
+    expect(project.firstLayout).toBe('Layout 1');
+  });
+
+  it('writes the top-level settings at the top level, not into properties, in the same single update', async () => {
+    const { server, writer } = withLayout();
+    const result = await server.callTool('update_project_properties', {
+      properties: { sampling: 'nearest' },
+      firstLayout: 'Level 1',
+      viewportWidth: 960,
+      viewportHeight: 540,
+      useWorker: 'dom',
+      functionsName: 'Fn',
+    });
+    expect(parseResult(result).success).toBe(true);
+    const project = applyWrittenChange(writer);
+    expect(project).toMatchObject({
+      firstLayout: 'Level 1',
+      viewportWidth: 960,
+      viewportHeight: 540,
+      useWorker: 'dom',
+      functionsName: 'Fn',
+    });
+    expect(project.properties).toEqual({ author: 'Dev', fullscreenMode: 'off', zFar: 10000, sampling: 'nearest' });
+  });
+
+  it('accepts fixedFramerate, which real r495 projects carry', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', {
+      properties: { framerateMode: 'fixed', fixedFramerate: 30 },
+    });
+    expect(parseResult(result).success).toBe(true);
+    expect(applyWrittenChange(writer).properties.fixedFramerate).toBe(30);
+  });
+
+  it('rejects an unknown properties key, lists the valid ones and writes nothing', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', { properties: { notAProperty: 1 } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('notAProperty');
+    expect(result.content[0].text).toContain('fullscreenMode');
+    expect(result.content[0].text).toContain('uidAllocationMode');
+    expect(writer.callsFor('updateProject')).toHaveLength(0);
+  });
+
+  it('rejects a top-level key given in properties and points to the right parameter', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', {
+      properties: { name: 'Renamed', firstLayout: 'Level 1' },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('update_project_metadata');
+    expect(writer.callsFor('updateProject')).toHaveLength(0);
+  });
+
+  it('refuses an argument the tool does not take, by name, instead of dropping it', async () => {
+    const { server, writer } = withLayout();
+    // Without a strict schema the unknown key is stripped and the rest is written
+    await expect(server.callTool('update_project_properties', { firstLayout: 'Level 1', fullscreenMode: 'off' }))
+      .rejects.toThrow(/"fullscreenMode"/);
+    expect(writer.callsFor('updateProject')).toHaveLength(0);
+  });
+
+  it('sets firstLayout to the registered spelling of a layout named in another letter case', async () => {
+    const { server, writer } = withLayout();
+    const result = await server.callTool('update_project_properties', { firstLayout: 'level 1' });
+    expect(parseResult(result).success).toBe(true);
+    expect(applyWrittenChange(writer).firstLayout).toBe('Level 1');
+  });
+
+  it('refuses a firstLayout that names no registered layout and says nothing was changed', async () => {
+    const { server, writer } = withLayout();
+    const result = await server.callTool('update_project_properties', {
+      properties: { sampling: 'nearest' },
+      firstLayout: 'Ghost',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('"Ghost"');
+    expect(result.content[0].text).toContain('Level 1');
+    expect(result.content[0].text.endsWith('Nothing was changed.')).toBe(true);
+    expect(writer.callsFor('updateProject')).toHaveLength(0);
+  });
+
+  it('rejects a functionsName that is not an identifier', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', { functionsName: 'my funcs!' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('identifier');
+    expect(writer.callsFor('updateProject')).toHaveLength(0);
+  });
+
+  it('rejects a non-positive viewport size', async () => {
+    const { server } = setup();
+    await expect(server.callTool('update_project_properties', { viewportWidth: 0 })).rejects.toThrow();
+  });
+
+  it('errors with no updates', async () => {
+    const { server, writer } = setup();
+    const result = await server.callTool('update_project_properties', {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates');
+    expect(writer.callsFor('updateProject')).toHaveLength(0);
+  });
+
+  it('errors on an empty properties object', async () => {
+    const { server } = setup();
+    const result = await server.callTool('update_project_properties', { properties: {} });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No updates');
+  });
+});
+
 // ─── list_addons ──────────────────────────────────────────
 
 describe('list_addons', () => {

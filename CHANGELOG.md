@@ -4,6 +4,10 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `update_project_properties`: sets any key of `project.properties` and the top-level startup layout (`firstLayout`), viewport size, worker mode (`useWorker`) and functions name (`functionsName`) of `project.c3proj`, all in one update through the project writer (backed up once per call, a change saved in the editor meanwhile is merged). `firstLayout` is matched with the editor's name rules against the project's layouts, written in the registered spelling, and refused with the layout names and `Nothing was changed.` when it names none. Arguments the tool does not take are refused by name instead of being dropped. `fixedFramerate` is a `project.properties` key the tool accepts (#ISSUE).
+
 ### Changed
 
 - `delete_object` renames the object's frame images under the animation lock, as the animation tools do, so a parallel animation tool cannot move the same files meanwhile (#ISSUE).

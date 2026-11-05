@@ -50,13 +50,19 @@ const PROPERTIES_KEY_MAP: Record<keyof ProjectProperties, true> = {
   fullscreenMode: true, fullscreenQuality: true, viewportFit: true,
   backgroundColor: true, splashColor: true, useThemeColor: true,
   themeColor: true, orientations: true, webgpu: true, multitexturing: true, gpuPreference: true,
-  scriptsType: true, framerateMode: true, sampling: true, downscaling: true,
+  scriptsType: true, framerateMode: true, fixedFramerate: true, sampling: true, downscaling: true,
   renderingMode: true, anisotropicFiltering: true, zNear: true, zFar: true,
   maxSpriteSheetSize: true, loaderStyle: true, preloadSounds: true,
   cordovaiOSScheme: true, cordovaAndroidScheme: true,
   exportFileStructure: true, uidAllocationMode: true,
 };
 const ALLOWED_PROPERTIES = new Set(Object.keys(PROPERTIES_KEY_MAP));
+
+/** The keys of `project.properties` the project tools write, sorted. */
+export const PROJECT_PROPERTY_KEYS: readonly string[] = [...ALLOWED_PROPERTIES].sort();
+
+/** The keys at the top level of project.c3proj that the project tools write, sorted. */
+export const PROJECT_TOP_LEVEL_KEYS: readonly string[] = ['firstLayout', 'functionsName', 'name', 'useWorker', 'viewportHeight', 'viewportWidth'];
 
 type EntityCategory = 'objectTypes' | 'eventSheets' | 'layouts' | 'families';
 

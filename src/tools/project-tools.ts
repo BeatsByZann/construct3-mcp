@@ -1,13 +1,19 @@
 /**
- * Project metadata tools: update_project_metadata, list_addons, register_addon, unregister_addon.
+ * Project metadata tools: update_project_metadata, update_project_properties, list_addons, register_addon, unregister_addon.
  */
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, Addon } from '../construct3/types.js';
-import { toolResult, toolError } from './shared.js';
+import { toolResult, toolError, boundedRecord } from './shared.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from '../construct3/templates.js';
+import { PROJECT_PROPERTY_KEYS, PROJECT_TOP_LEVEL_KEYS } from '../construct3/project-writer.js';
+import { nameKey } from '../construct3/names.js';
 import { withProjectSync } from './project-sync.js';
+import { unknownKeysErrorMap } from './event-helpers.js';
+
+/** How many registered layout names a refusal of an unknown firstLayout lists. */
+const MAX_LISTED_LAYOUTS = 20;
 
 export function registerProjectTools({ server: mcpServer, reader, writer }: MutationToolDeps) {
   const server = withProjectSync(mcpServer, reader);
@@ -45,6 +51,100 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
       } catch (error) {
         console.error('[update_project_metadata] failed:', error);
         return toolError(`Error updating project metadata: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  );
+
+  // ─── update_project_properties ────────────────────────────
+
+  // Registered with a strict object schema, so unknown arguments are refused
+  // (server.tool() with a raw shape would drop them; see Strict Input in event-helpers.ts).
+  server.registerTool(
+    'update_project_properties',
+    {
+      description: 'Update project settings: any key of project.properties plus the top-level firstLayout, viewport size, worker mode and functions name, in one write of project.c3proj. Use update_project_metadata for name, version, author and description. Unknown arguments are refused, never dropped.',
+      inputSchema: z.object({
+        properties: boundedRecord(60, 3).optional().describe('Values merged into project.properties, keyed by Construct property name (e.g. fullscreenMode, sampling, zFar); unknown keys are rejected'),
+        firstLayout: z.string().max(200).optional().describe('Startup layout name; it must be a layout of the project (letter case is ignored, the registered spelling is written)'),
+        viewportWidth: z.number().int().positive().max(100_000).optional().describe('Project viewport width in pixels'),
+        viewportHeight: z.number().int().positive().max(100_000).optional().describe('Project viewport height in pixels'),
+        useWorker: z.string().max(50).optional().describe('Worker mode; Construct writes values such as "dom" or "auto"'),
+        functionsName: z.string().max(200).optional().describe('Script-interface name for functions (a JavaScript identifier, e.g. "Fn")'),
+      }, {
+        errorMap: unknownKeysErrorMap(
+          'the arguments of update_project_properties',
+          'update_project_properties takes properties, firstLayout, viewportWidth, viewportHeight, useWorker and functionsName; project.properties keys go inside "properties".',
+        ),
+      }).strict(),
+    },
+    async (args) => {
+      try {
+        // Settings of project.properties and settings at the top level of project.c3proj
+        const propertyUpdates: Record<string, unknown> = {};
+        const topLevelUpdates: Record<string, unknown> = {};
+
+        if (args.properties !== undefined) {
+          const invalid = Object.keys(args.properties).filter(k => !PROJECT_PROPERTY_KEYS.includes(k));
+          if (invalid.length > 0) {
+            return toolError(
+              `Unknown project property key(s): ${invalid.join(', ')}. ` +
+              `Valid keys for "properties" are: ${PROJECT_PROPERTY_KEYS.join(', ')}. ` +
+              `Top-level settings (${PROJECT_TOP_LEVEL_KEYS.join(', ')}) have their own parameters here or in update_project_metadata.`
+            );
+          }
+          Object.assign(propertyUpdates, args.properties);
+        }
+
+        if (args.firstLayout !== undefined) {
+          const layouts = await reader.listLayouts();
+          const key = nameKey(args.firstLayout);
+          const registered = layouts.find(name => nameKey(name) === key);
+          if (registered === undefined) {
+            const listed = layouts.slice(0, MAX_LISTED_LAYOUTS).join(', ');
+            const more = layouts.length > MAX_LISTED_LAYOUTS ? `, and ${layouts.length - MAX_LISTED_LAYOUTS} more` : '';
+            return toolError(
+              `Layout "${args.firstLayout}" is not a layout of this project, so firstLayout cannot name it. ` +
+              (layouts.length > 0 ? `The project's layouts are: ${listed}${more}. ` : 'The project has no layouts. ') +
+              'Nothing was changed.'
+            );
+          }
+          topLevelUpdates.firstLayout = registered;
+        }
+
+        if (args.viewportWidth !== undefined) topLevelUpdates.viewportWidth = args.viewportWidth;
+        if (args.viewportHeight !== undefined) topLevelUpdates.viewportHeight = args.viewportHeight;
+        if (args.useWorker !== undefined) topLevelUpdates.useWorker = args.useWorker;
+
+        if (args.functionsName !== undefined) {
+          if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(args.functionsName)) {
+            return toolError(`functionsName "${args.functionsName}" is not a valid JavaScript identifier; scripts address functions through this name.`);
+          }
+          topLevelUpdates.functionsName = args.functionsName;
+        }
+
+        if (Object.keys(propertyUpdates).length === 0 && Object.keys(topLevelUpdates).length === 0) {
+          return toolError('No updates provided. Specify at least one of: properties, firstLayout, viewportWidth, viewportHeight, useWorker, functionsName.');
+        }
+
+        // One update of project.c3proj through the writer: backed up once per call, and a change saved in the editor meanwhile is merged into
+        const backupPath = await writer.updateProject(project => {
+          Object.assign(project, topLevelUpdates);
+          if (Object.keys(propertyUpdates).length > 0) {
+            project.properties = Object.assign(project.properties ?? {}, propertyUpdates);
+          }
+        });
+
+        const result: WriteResult = {
+          success: true,
+          entity: 'project',
+          category: 'project',
+          action: 'updated',
+          backupFile: backupPath,
+        };
+        return toolResult(result);
+      } catch (error) {
+        console.error('[update_project_properties] failed:', error);
+        return toolError(`Error updating project properties: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );

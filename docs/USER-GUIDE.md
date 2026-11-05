@@ -618,7 +618,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Layouts, layers, instances: `create_layout`, `update_layout`, `delete_layout`, `add_layer`, `update_layer`, `delete_layer`, `add_instance_to_layout`, `update_instance`, `delete_instance_from_layout`
 - Animations: `add_animation_to_sprite`, `update_animation_properties`, `rename_animation`, `delete_animation`, `add_frame_to_animation`, `update_frame`, `delete_frame_from_animation`, `replace_sprite_image`
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`
-- Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
+- Project and addons: `update_project_metadata`, `update_project_properties`, `register_addon`, `unregister_addon`
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
 
 **Tools that act on the running game** (they change nothing in the project, but run functions, set variables and send input in the game they connect to, and `serve_preview` starts a local web server and a browser): `connect_to_game`, `disconnect_from_game`, `call_bridge`, `wait_for_condition`, `subscribe_events`, `read_events`, `unsubscribe_events`, `simulate_input`, `serve_preview`, `stop_preview`.
