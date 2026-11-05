@@ -25,6 +25,7 @@ import {
   type FileState,
 } from './disk-state.js';
 import { describeFileSizeLimit, describeSize, fileSizeLimit } from './file-size-limit.js';
+import { errorMessage } from './error-text.js';
 
 /**
  * Scan raw JSON text for "uid"/"parent-uid"/"sid" values without parsing it (the scan
@@ -127,11 +128,11 @@ export function classifyReadError(error: unknown): ReadFailureCode {
   return 'E_READ_ERROR';
 }
 
-/** The record a bulk read keeps for an entity it skipped. */
-function toReadFailure(error: unknown): ReadFailure {
+/** The record a bulk read keeps for an entity it skipped; a path in the message inside `projectDir` is shown project-relative. */
+function toReadFailure(error: unknown, projectDir: string): ReadFailure {
   return {
     code: classifyReadError(error),
-    message: error instanceof Error ? error.message : String(error),
+    message: errorMessage(error, projectDir),
   };
 }
 
@@ -247,7 +248,7 @@ export class Construct3ProjectReader {
       return this.projectData;
     } catch (error) {
       throw new Error(
-        `Failed to load Construct3 project: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to load Construct3 project: ${errorMessage(error, this.getProjectDir())}`
       );
     }
   }
@@ -313,7 +314,7 @@ export class Construct3ProjectReader {
       if (error instanceof Error && error.message.includes('Path traversal')) throw error;
       throw new ProjectReadError(
         classifyReadError(error),
-        `Failed to read ${ENTITY_KINDS[category]} "${name}": ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to read ${ENTITY_KINDS[category]} "${name}": ${errorMessage(error, this.getProjectDir())}`,
         { cause: error }
       );
     }
@@ -359,7 +360,7 @@ export class Construct3ProjectReader {
     } catch (error) {
       if (error instanceof Error && error.message.includes('Path traversal')) throw error;
       throw new Error(
-        `Failed to read script "${relativePath}": ${error instanceof Error ? error.message : String(error)}`
+        `Failed to read script "${relativePath}": ${errorMessage(error, this.getProjectDir())}`
       );
     }
   }
@@ -377,7 +378,7 @@ export class Construct3ProjectReader {
     } catch (error) {
       if (error instanceof Error && error.message.includes('Path traversal')) throw error;
       throw new Error(
-        `Failed to read project file "${relativePath}": ${error instanceof Error ? error.message : String(error)}`
+        `Failed to read project file "${relativePath}": ${errorMessage(error, this.getProjectDir())}`
       );
     }
   }
@@ -424,7 +425,7 @@ export class Construct3ProjectReader {
     } catch (error) {
       throw new ProjectReadError(
         classifyReadError(error),
-        `Failed to read ${folder} file "${relativePath}": ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to read ${folder} file "${relativePath}": ${errorMessage(error, this.getProjectDir())}`,
         { cause: error }
       );
     }
@@ -529,7 +530,7 @@ export class Construct3ProjectReader {
         states.set(fileKey(this.resolveEntityPath(category, name)), state);
       } catch (error) {
         // Skip unreadable files, but record why so callers can report/recover
-        failures.set(name, toReadFailure(error));
+        failures.set(name, toReadFailure(error, this.getProjectDir()));
       }
     }
     // The failures describe this map, so the caller can take them right
@@ -710,7 +711,7 @@ export class Construct3ProjectReader {
       // Keep trying on the next call rather than serve the old project
       this.projectStale = true;
       throw new Error(
-        `project.c3proj changed on disk and could not be read again (${error instanceof Error ? error.message : String(error)}). ` +
+        `project.c3proj changed on disk and could not be read again (${errorMessage(error, this.getProjectDir())}). ` +
         'If Construct 3 or git is still writing the project, try again once it is done.'
       );
     }

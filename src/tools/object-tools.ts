@@ -80,6 +80,7 @@ import {
 import { withProjectSync } from './project-sync.js';
 import { syncLayoutInstances, type InstanceSyncPlan } from './instance-sync.js';
 import { rollBackFailedCall } from './call-rollback.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 export function registerObjectTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
   const server = withProjectSync(mcpServer, reader);
@@ -197,7 +198,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[create_object] failed:', error);
-        return toolError(`Error creating object: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error creating object: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -392,7 +393,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[update_object_properties] failed:', error);
-        return toolError(`Error updating object: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating object: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -495,7 +496,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
             });
             return { images: planned, backupPath: backup };
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message = errorMessage(error, reader.getProjectDir());
             if (renames.length === 0) throw new Error(message);
             // The images go back to their live names only when the delete was
             // undone: project.c3proj lists the object and its file is there. An
@@ -528,7 +529,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[delete_object] failed:', error);
-        return toolError(`Error deleting object: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting object: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -618,7 +619,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[create_family] failed:', error);
-        return toolError(`Error creating family: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error creating family: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -827,7 +828,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[update_family] failed:', error);
-        return toolError(`Error updating family: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating family: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -877,7 +878,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
           owner = isFamily ? await reader.readFamily(ownerName) : await reader.readObjectType(ownerName) as unknown as Record<string, unknown>;
         } catch (error) {
           return toolError(`${isFamily ? 'Family' : 'Object type'} "${ownerName}" could not be read: `
-            + `${error instanceof Error ? error.message : String(error)}. Nothing was changed.`);
+            + `${errorMessage(error, reader.getProjectDir())}. Nothing was changed.`);
         }
         const definitions = Array.isArray(owner.instanceVariables) ? owner.instanceVariables as Array<Record<string, unknown>> : [];
         const target = definitions.find(v => v.name === args.variableName);
@@ -915,7 +916,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
           try {
             validateName(newName);
           } catch (error) {
-            return toolError(`Invalid new name: ${error instanceof Error ? error.message : String(error)}. Nothing was changed.`);
+            return toolError(`Invalid new name: ${errorMessage(error, reader.getProjectDir())}. Nothing was changed.`);
           }
           // Another variable the instances hold a value for, ignoring case: events match the names ignoring case
           const key = nameKey(newName);
@@ -1009,7 +1010,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         });
       } catch (error) {
         console.error('[update_instance_variable] failed:', error);
-        return toolError(`Error updating instance variable: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating instance variable: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1047,7 +1048,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
           owner = isFamily ? await reader.readFamily(ownerName) : await reader.readObjectType(ownerName) as unknown as Record<string, unknown>;
         } catch (error) {
           return toolError(`${isFamily ? 'Family' : 'Object type'} "${ownerName}" could not be read: `
-            + `${error instanceof Error ? error.message : String(error)}. Nothing was changed.`);
+            + `${errorMessage(error, reader.getProjectDir())}. Nothing was changed.`);
         }
         const behaviors = Array.isArray(owner.behaviorTypes) ? owner.behaviorTypes as Array<Record<string, unknown>> : [];
         const current = behaviors.map(b => String(b.name));
@@ -1103,7 +1104,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         });
       } catch (error) {
         console.error('[reorder_behaviors] failed:', error);
-        return toolError(`Error reordering behaviors: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error reordering behaviors: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1242,7 +1243,7 @@ export function registerObjectTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[delete_family] failed:', error);
-        return toolError(`Error deleting family: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting family: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1263,7 +1264,7 @@ async function renameObjectImagesBack(
     await writer.renameImageFiles(renames.map(r => ({ from: r.to, to: r.from })).reverse());
     return 'Its image files were renamed back from .bak.';
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
+    const message = errorMessage(e, writer.projectDir());
     return `Renaming its image files back from .bak failed too (${message}); rename them back by hand: ` +
       `${renames.map(r => `"images/${r.to}" \u2192 "images/${r.from}"`).join(', ')}.`;
   }

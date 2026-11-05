@@ -31,6 +31,7 @@ import type { C3pArchive } from '../construct3/c3p-archive.js';
 import { PreviewManager, isLoopbackHost } from '../runtime/preview-server.js';
 import { RuntimeConnectionManager } from '../runtime/cdp-client.js';
 import type { RuntimeCondition, SimulatedInputAction } from '../runtime/cdp-client.js';
+import { errorMessage } from '../construct3/error-text.js';
 /** The host part of a ws:// or wss:// endpoint, or the endpoint itself when it does not parse. */
 function hostOfEndpoint(endpoint: string): string {
   try {
@@ -296,7 +297,7 @@ async function planBridgeImport(projectDir: string, mainScript: string): Promise
     state = await statFileState(file);
     before = await readFile(file, 'utf-8');
   } catch (error) {
-    throw new Error(`The bridge was not added, nothing was changed: project.c3proj names scripts/${mainScript} as the main script, which imports the bridge, but that file could not be read (${error instanceof Error ? error.message : String(error)}). Add the file, or choose another main script in the editor, then try again.`);
+    throw new Error(`The bridge was not added, nothing was changed: project.c3proj names scripts/${mainScript} as the main script, which imports the bridge, but that file could not be read (${errorMessage(error, projectDir)}). Add the file, or choose another main script in the editor, then try again.`);
   }
   if (BRIDGE_IMPORT_LINE.test(before)) return undefined;
   const bom = before.startsWith('\uFEFF') ? '\uFEFF' : '';
@@ -342,7 +343,7 @@ interface UnreadableScript {
 function readFailure(error: unknown): string {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   if (typeof code === 'string') return code;
-  return error instanceof Error ? error.message : String(error);
+  return errorMessage(error);
 }
 
 /**
@@ -439,7 +440,7 @@ async function applyAllOrNothing(projectDir: string, steps: readonly BridgeStep[
       }
     }
     // A cause that ends with a full stop (a refusal) gets no second one
-    const message = (error instanceof Error ? error.message : String(error)).replace(/\.\s*$/u, '');
+    const message = errorMessage(error, projectDir).replace(/\.\s*$/u, '');
     throw new Error(notRestored.length === 0
       ? `${message}. The bridge was not ${what}: the files this call had written are back as they were.`
       : `${message}. The bridge was not ${what}, and ${notRestored.join(', ')} could not be put back as ${notRestored.length === 1 ? 'it was' : 'they were'}: check ${notRestored.length === 1 ? 'it' : 'them'} before going on.`);
@@ -451,8 +452,10 @@ async function applyAllOrNothing(projectDir: string, steps: readonly BridgeStep[
  * undefined when there is none. Refuses, before anything is written, when
  * something else is in its place (a folder), which the write would fail on,
  * or it cannot be read, so it could not be put back if a later write failed.
+ * `projectDir` is the project folder, so the reason names a path inside it
+ * project-relative.
  */
-async function bridgeFileBefore(bridgePath: string): Promise<string | undefined> {
+async function bridgeFileBefore(bridgePath: string, projectDir: string): Promise<string | undefined> {
   const label = `scripts/${BRIDGE_FILENAME}`;
   const refusal = (reason: string) => new Error(`The bridge was not added, nothing was changed: ${reason}`);
   let info;
@@ -460,7 +463,7 @@ async function bridgeFileBefore(bridgePath: string): Promise<string | undefined>
     info = await stat(bridgePath);
   } catch (error) {
     if (isNotFound(error)) return undefined;
-    throw refusal(`${label} could not be read (${error instanceof Error ? error.message : String(error)}).`);
+    throw refusal(`${label} could not be read (${errorMessage(error, projectDir)}).`);
   }
   if (!info.isFile()) {
     throw refusal(`${label} is ${info.isDirectory() ? 'a folder' : 'not a file'}, where the bridge script goes. Rename or remove it, then try again.`);
@@ -468,7 +471,7 @@ async function bridgeFileBefore(bridgePath: string): Promise<string | undefined>
   try {
     return await readFile(bridgePath, 'utf-8');
   } catch (error) {
-    throw refusal(`${label} could not be read (${error instanceof Error ? error.message : String(error)}).`);
+    throw refusal(`${label} could not be read (${errorMessage(error, projectDir)}).`);
   }
 }
 
@@ -618,7 +621,7 @@ async function installBridge(
 
   const bridgePath = join(projectDir, getBridgeScriptPath());
   const bridgeState = await statFileState(bridgePath);
-  const bridgeBefore = await bridgeFileBefore(bridgePath);
+  const bridgeBefore = await bridgeFileBefore(bridgePath, projectDir);
   const bridgeText = generateBridgeScript();
   let createdDir: string | undefined;
   const steps: BridgeStep[] = [
@@ -770,7 +773,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         }, { projectWritten: true });
       } catch (error) {
         console.error('[inject_runtime_bridge] failed:', error);
-        return toolError(`Failed to inject runtime bridge: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to inject runtime bridge: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -798,7 +801,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         }, { projectWritten: true });
       } catch (error) {
         console.error('[remove_runtime_bridge] failed:', error);
-        return toolError(`Failed to remove runtime bridge: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to remove runtime bridge: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -921,7 +924,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult(connected, { projectWritten: false });
       } catch (error) {
         console.error('[connect_to_game] failed:', error);
-        return toolError(`Failed to connect to game: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to connect to game: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -941,7 +944,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult({ connectionId, disconnected: true }, { projectWritten: false });
       } catch (error) {
         console.error('[disconnect_from_game] failed:', error);
-        return toolError(`Failed to disconnect from game: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to disconnect from game: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -972,7 +975,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult(result, { projectWritten: false });
       } catch (error) {
         console.error('[call_bridge] failed:', error);
-        return toolError(`Failed to call runtime bridge: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to call runtime bridge: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1007,7 +1010,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult({ subscriptionId: result.subscriptionId, eventType, filter: filter ?? {}, bufferSize }, { projectWritten: false });
       } catch (error) {
         console.error('[subscribe_events] failed:', error);
-        return toolError(`Failed to subscribe: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to subscribe: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1026,7 +1029,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult({ events: result.events, count: result.count }, { projectWritten: false });
       } catch (error) {
         console.error('[read_events] failed:', error);
-        return toolError(`Failed to read events: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to read events: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1044,7 +1047,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult({ subscriptionId: result.subscriptionId, unsubscribed: result.unsubscribed === true }, { projectWritten: false });
       } catch (error) {
         console.error('[unsubscribe_events] failed:', error);
-        return toolError(`Failed to unsubscribe: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to unsubscribe: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1077,7 +1080,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         }, { projectWritten: false });
       } catch (error) {
         console.error('[wait_for_condition] failed:', error);
-        return toolError(`Failed to wait for condition: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to wait for condition: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1109,7 +1112,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult(result, { projectWritten: false });
       } catch (error) {
         console.error('[simulate_input] failed:', error);
-        return toolError(`Failed to simulate input: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to simulate input: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1127,7 +1130,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult(await connections.getCanvasGeometry(connectionId), { projectWritten: false });
       } catch (error) {
         console.error('[get_canvas_size] failed:', error);
-        return toolError(`Failed to read canvas size: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to read canvas size: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1156,7 +1159,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult({ success: true, path: outputPath, bytes: shot.data.length, format: shot.format, clip: shot.clip }, { projectWritten: false });
       } catch (error) {
         console.error('[screenshot_game] failed:', error);
-        return toolError(`Failed to capture a screenshot: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to capture a screenshot: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1204,7 +1207,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         }, { projectWritten: false });
       } catch (error) {
         console.error('[serve_preview] failed:', error);
-        return toolError(`Failed to serve the preview: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to serve the preview: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1226,7 +1229,7 @@ export function registerRuntimeTools({ server: mcpServer, reader, writer, archiv
         return toolResult({ success: true, stopped: [stopped] }, { projectWritten: false });
       } catch (error) {
         console.error('[stop_preview] failed:', error);
-        return toolError(`Failed to stop the preview: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to stop the preview: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1353,7 +1356,7 @@ print(json.dumps({
         }, { projectWritten: injectBridge });
       } catch (error) {
         console.error('[export_for_preview] failed:', error);
-        return toolError(`Failed to prepare for preview: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to prepare for preview: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1393,7 +1396,7 @@ print(json.dumps({
         }, { projectWritten: false });
       } catch (error) {
         console.error('[clone_project] failed:', error);
-        return toolError(`Failed to clone project: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to clone project: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );
@@ -1448,7 +1451,7 @@ print(json.dumps({
         }, { projectWritten: injectBridge });
       } catch (error) {
         console.error('[pack_project] failed:', error);
-        return toolError(`Failed to pack project: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Failed to pack project: ${errorMessage(error, reader.getProjectDir())}`);
       }
     },
   );

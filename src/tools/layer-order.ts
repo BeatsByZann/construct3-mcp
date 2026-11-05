@@ -25,6 +25,7 @@ import { writeEntityOrRollBack } from './call-rollback.js';
 import { withProjectSync } from './project-sync.js';
 import { refuse, stoppedBeforeWrite } from './refusals.js';
 import { MAX_BULK_INSTANCES, applyItems, readRegisteredLayout } from './bulk-instance-tools.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -304,7 +305,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         return toolResult({ ...common, action: 'updated', backupFile: backupPath, warnings: warnings.length > 0 ? warnings : undefined });
       } catch (error) {
         console.error('[reorder_layers] failed:', error);
-        return toolError(`Error reordering layers: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error reordering layers: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -379,7 +380,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         return toolResult({ ...common, action: 'updated', backupFile: backupPath, warnings: warnings.length > 0 ? warnings : undefined });
       } catch (error) {
         console.error('[move_layer] failed:', error);
-        return toolError(`Error moving layer: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error moving layer: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -417,7 +418,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         return toolResult({ ...common, action: 'updated', backupFile: backupPath });
       } catch (error) {
         console.error('[move_instance] failed:', error);
-        return toolError(`Error moving instance: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error moving instance: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -468,7 +469,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
         } catch (error) {
           // writeEntityOrRollBack's message says what is on disk
           console.error('[move_instances] write failed:', error);
-          return toolError(`Error writing layout "${args.layoutName}": ${error instanceof Error ? error.message : String(error)}`);
+          return toolError(`Error writing layout "${args.layoutName}": ${errorMessage(error, reader.getProjectDir())}`);
         }
         return toolResult({ ...common, action: 'updated', backupFile: backupPath });
       } catch (error) {

@@ -11,7 +11,7 @@ import type { MutationToolDeps } from './shared.js';
 import type { Instance, Layout, ObjectType, WriteResult } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
 import { withProjectSync } from './project-sync.js';
-import { errorReason } from '../construct3/error-text.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
 import { unregisteredNameMessage } from './registered-names.js';
 import { refuse } from './refusals.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
@@ -237,7 +237,7 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         try {
           backupPath = await writeEntityOrRollBack(writer, 'layouts', layoutName, layout);
         } catch (error) {
-          return toolError(error instanceof Error ? error.message : String(error));
+          return toolError(errorMessage(error, reader.getProjectDir()));
         }
         const result: WriteResult = {
           success: true, entity: `${layoutName}#${uid}`, category: 'template', action,
@@ -288,7 +288,7 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
         try {
           backupPath = await writeEntityOrRollBack(writer, 'objectTypes', args.objectName, objectType);
         } catch (error) {
-          return toolError(error instanceof Error ? error.message : String(error));
+          return toolError(errorMessage(error, reader.getProjectDir()));
         }
         const result: WriteResult = {
           success: true, entity: args.objectName, category: 'objecttype',

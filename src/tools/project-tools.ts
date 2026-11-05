@@ -13,6 +13,7 @@ import { withProjectSync } from './project-sync.js';
 import { addonDefinitionsOf, type AddonDefinitions } from '../construct3/addon-definitions.js';
 import type { AddonDefinition } from '../construct3/ace-types.js';
 import { unknownKeysErrorMap } from './event-helpers.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /** How many registered layout names a refusal of an unknown firstLayout lists. */
 const MAX_LISTED_LAYOUTS = 20;
@@ -52,7 +53,7 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
         return toolResult(result);
       } catch (error) {
         console.error('[update_project_metadata] failed:', error);
-        return toolError(`Error updating project metadata: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating project metadata: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -146,7 +147,7 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
         return toolResult(result);
       } catch (error) {
         console.error('[update_project_properties] failed:', error);
-        return toolError(`Error updating project properties: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating project properties: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -169,7 +170,7 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
         });
       } catch (error) {
         console.error('[list_addons] failed:', error);
-        return toolError(`Error listing addons: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing addons: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -223,7 +224,7 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
         return toolResult(result);
       } catch (error) {
         console.error('[register_addon] failed:', error);
-        return toolError(`Error registering addon: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error registering addon: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -269,7 +270,7 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
         return toolResult(result);
       } catch (error) {
         console.error('[unregister_addon] failed:', error);
-        return toolError(`Error unregistering addon: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error unregistering addon: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );

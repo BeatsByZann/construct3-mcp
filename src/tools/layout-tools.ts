@@ -63,6 +63,7 @@ import {
 import { EntityWriteError, failedWriteLeftReason, filesLeftClause, type RestoreFailedWriteResult } from '../construct3/project-writer.js';
 import { StaleFileError } from '../construct3/disk-state.js';
 import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /**
  * What delete_layout looks for in the text of a layout file it could not
@@ -649,7 +650,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[create_layout] failed:', error);
-        return toolError(`Error creating layout: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error creating layout: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -695,7 +696,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[add_instance_to_layout] failed:', error);
-        return toolError(`Error adding instance: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error adding instance: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -788,7 +789,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[delete_layout] failed:', error);
-        return toolError(`Error deleting layout: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting layout: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -849,7 +850,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[update_layout] failed:', error);
-        return toolError(`Error updating layout: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating layout: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -914,7 +915,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[add_layer] failed:', error);
-        return toolError(`Error adding layer: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error adding layer: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -993,7 +994,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[delete_layer] failed:', error);
-        return toolError(`Error deleting layer: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting layer: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1093,7 +1094,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[update_layer] failed:', error);
-        return toolError(`Error updating layer: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating layer: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1139,7 +1140,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[delete_instance_from_layout] failed:', error);
-        return toolError(`Error deleting instance: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting instance: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1184,7 +1185,7 @@ export function registerLayoutTools({ server: mcpServer, reader, writer, idGen }
         return toolResult(result);
       } catch (error) {
         console.error('[update_instance] failed:', error);
-        return toolError(`Error updating instance: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating instance: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1239,7 +1240,7 @@ export async function rollBackLayerRename(
   writer: MutationToolDeps['writer'], error: unknown, written: 'the layout' | 'the layouts' | 'nothing' = 'the layout',
 ): Promise<string> {
   // A refusal of the writer ends with a full stop already
-  const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
+  const cause = errorMessage(error, writer.projectDir()).replace(/\.$/, '');
   const failed: string[] = [];
   const kept: Array<{ label: string; reason: RestoreFailedWriteResult['reason'] }> = [];
   let otherWrite = '';

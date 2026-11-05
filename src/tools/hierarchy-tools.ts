@@ -23,6 +23,7 @@ import { findInstanceByUid, forEachLayoutInstance } from '../construct3/layers.j
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { withProjectSync } from './project-sync.js';
 import { refuse } from './refusals.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /** Register set_instance_parent and remove_instance_children. */
 export function registerHierarchyTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
@@ -129,7 +130,7 @@ export function registerHierarchyTools({ server: mcpServer, reader, writer }: Mu
         });
       } catch (error) {
         console.error('[set_instance_parent] failed:', error);
-        return toolError(`Error setting the hierarchy parent: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error setting the hierarchy parent: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -179,7 +180,7 @@ export function registerHierarchyTools({ server: mcpServer, reader, writer }: Mu
         });
       } catch (error) {
         console.error('[remove_instance_children] failed:', error);
-        return toolError(`Error removing hierarchy children: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error removing hierarchy children: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );

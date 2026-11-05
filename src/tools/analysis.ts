@@ -16,6 +16,7 @@ import type { EventSheet } from '../construct3/types.js';
 import { notFoundError, toolError, toolResult } from './shared.js';
 import { findRuntimeTraps } from '../construct3/analyzers/runtime-traps.js';
 import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 const detailSchema = z.enum(['summary', 'standard', 'full']).optional().default('standard')
   .describe('Level of detail: summary (<2K tokens), standard, or full');
@@ -43,7 +44,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -69,7 +70,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -95,7 +96,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -115,7 +116,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -143,7 +144,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -169,7 +170,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -189,7 +190,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -217,7 +218,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -236,7 +237,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
       if (!listed) {
         return { error: notFoundError('Event sheet', name, reader.findNearestName(name, 'eventsheets'), 'list_eventsheets') };
       }
-      return { error: toolError(`Error reading event sheet "${name}": ${error instanceof Error ? error.message : String(error)}`) };
+      return { error: toolError(`Error reading event sheet "${name}": ${errorMessage(error, reader.getProjectDir())}`) };
     }
   }
 
@@ -271,7 +272,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
           actionIndexBase: args.actionIndexBase === 0 ? 0 : 1,
         }));
       } catch (error) {
-        return toolError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -304,7 +305,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         });
         return { content: [{ type: 'text' as const, text: page.text }] };
       } catch (error) {
-        return toolError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -328,7 +329,7 @@ export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3Pr
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }

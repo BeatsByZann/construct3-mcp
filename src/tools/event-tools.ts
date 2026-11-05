@@ -180,6 +180,7 @@ import {
 import { applyCustomEaseParameter } from '../construct3/ease-params.js';
 import { withProjectSync } from './project-sync.js';
 import { checkEventChange, warmAceCatalog } from '../construct3/event-change-check.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /** Per-sheet cap on change details returned by fix_legacy_behavior_keys. */
 const MAX_REPORTED_CHANGES = 100;
@@ -349,7 +350,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         return toolResult(result);
       } catch (error) {
         console.error('[create_event_sheet] failed:', error);
-        return toolError(`Error creating event sheet: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error creating event sheet: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -552,7 +553,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           undoPlacement();
           if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
-        return toolError(`Error adding event: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error adding event: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -690,7 +691,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           undoPlacement();
           if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
-        return toolError(`Error adding event block: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error adding event block: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -837,7 +838,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
           }
         }
-        return toolError(`Error adding custom action: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error adding custom action: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1217,7 +1218,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[update_function] failed:', error);
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error, reader.getProjectDir());
         if (restoreAll) {
           restoreAll();
           // Nothing reached the disk: every sheet in memory is as it was
@@ -1349,7 +1350,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         return toolResult(danglingCount > 0 ? { ...result, references: danglingReferenceList(dangling) } : result);
       } catch (error) {
         console.error('[delete_event_sheet] failed:', error);
-        return toolError(`Error deleting event sheet: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting event sheet: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1589,7 +1590,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[delete_event_from_sheet] failed:', error);
-        return toolError(`Error deleting event: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting event: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1646,7 +1647,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[remove_event_from_sheet] failed:', error);
-        return toolError(`Error removing include: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error removing include: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1722,7 +1723,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           try {
             callArgs = toPositionalArguments(args.parameters, signature, label);
           } catch (error) {
-            return toolError(error instanceof Error ? error.message : String(error));
+            return toolError(errorMessage(error, reader.getProjectDir()));
           }
           warnings = checkFunctionCallArguments(callArgs, signature, name, label);
           if (isLegacyFunctionCall(action)) {
@@ -1770,7 +1771,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[update_event_block_action] failed:', error);
-        return toolError(`Error updating action: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating action: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -2083,7 +2084,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[move_events_between_sheets] failed:', error);
-        return toolError(`Error moving events: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error moving events: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -2282,7 +2283,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
           }
         }
-        return toolError(`Error moving items: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error moving items: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -2784,7 +2785,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         restoreSheet?.();
         // Before the write nothing reached the disk, also when the error came before the snapshot
         if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
-        return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating event block: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -2846,7 +2847,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         try {
           intoItself = container.owner !== undefined && (container.owner === moving || isWithin(moving, container.owner));
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         if (intoItself) {
           return refuse(`The event with SID ${args.sid} cannot go into its own sub-events: the destination is inside the event being moved.`);
@@ -2961,7 +2962,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           undoPlacement();
           if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
-        return toolError(`Error moving event: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error moving event: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -3095,7 +3096,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const partial = writtenSheets.length > 0
           ? ` Sheets already rewritten before the failure: ${writtenSheets.join(', ')}.`
           : '';
-        return toolError(`Error fixing legacy behavior keys: ${error instanceof Error ? error.message : String(error)}${partial}`);
+        return toolError(`Error fixing legacy behavior keys: ${errorMessage(error, reader.getProjectDir())}${partial}`);
       }
     }
   );
@@ -3220,7 +3221,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const partial = writtenSheets.length > 0
           ? ` Sheets already rewritten before the failure: ${writtenSheets.join(', ')}.`
           : '';
-        return toolError(`Error fixing legacy event shapes: ${error instanceof Error ? error.message : String(error)}${partial}`);
+        return toolError(`Error fixing legacy event shapes: ${errorMessage(error, reader.getProjectDir())}${partial}`);
       }
     }
   );
@@ -3385,7 +3386,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         return toolResult({ ...result, eventPath: findResult.path, sheetsWritten, ...renameFields });
       } catch (error) {
         console.error('[update_event_variable] failed:', error);
-        return toolError(`Error updating event variable: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating event variable: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -3513,7 +3514,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[update_event_group] failed:', error);
-        return toolError(`Error updating group: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating group: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -3576,7 +3577,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', eventPath, backupFile: backupPath });
       } catch (error) {
         console.error('[update_comment] failed:', error);
-        return toolError(`Error updating comment: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating comment: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -3673,7 +3674,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         });
       } catch (error) {
         console.error('[update_script_event] failed:', error);
-        return toolError(`Error updating script event: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating script event: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );

@@ -15,6 +15,7 @@ import { unscannedFields } from '../construct3/analyzers/unscanned-uses.js';
 import { StaleFileError } from '../construct3/disk-state.js';
 import { withProjectSync } from './project-sync.js';
 import { layerNameClashError, listUses, planLayerReferences, resolveLayer, rollBackLayerRename } from './layout-tools.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /**
  * The layer rename_layer renames in one layout: the one update_layer finds
@@ -75,7 +76,7 @@ export function registerLayerRenameTools({ server: mcpServer, reader, writer }: 
           try {
             layout = await reader.readLayout(name);
           } catch (error) {
-            return toolError(`Layout "${name}" could not be read: ${error instanceof Error ? error.message : String(error)}. Nothing was changed.`);
+            return toolError(`Layout "${name}" could not be read: ${errorMessage(error, reader.getProjectDir())}. Nothing was changed.`);
           }
           const found = layerToRename(layout, args.layerName, name);
           if ('error' in found) return toolError(`${found.error} Nothing was changed.`);
@@ -134,7 +135,7 @@ export function registerLayerRenameTools({ server: mcpServer, reader, writer }: 
         return toolResult({ ...common, action: 'renamed', filesWritten: files });
       } catch (error) {
         console.error('[rename_layer] failed:', error);
-        const cause = error instanceof Error ? error.message : String(error);
+        const cause = errorMessage(error, reader.getProjectDir());
         // Before the first write nothing on disk changed; after it, the message of a rollback or a stale refusal says what became of the files
         return toolError(`Error renaming layer: ${writing ? cause : `${cause.replace(/\.$/, '')}. Nothing was changed.`}`);
       }

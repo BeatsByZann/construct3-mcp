@@ -15,7 +15,7 @@ import { folderCaseClashError, toolError, toolResult, validateFileName, validate
 import { withProjectSync } from './project-sync.js';
 import { refuse } from './refusals.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
-import { errorReason } from '../construct3/error-text.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
 import { StaleFileError, statFileState } from '../construct3/disk-state.js';
 import { filesLeftClause } from '../construct3/project-writer.js';
 import { nameKey } from '../construct3/names.js';
@@ -107,7 +107,7 @@ function nameRefusal(
       for (const part of subfolder.split('/')) validateFileName(part, 'Subfolder part');
     }
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return errorMessage(error);
   }
   return caseRefusal(project, folder, name, subfolder, kind, options);
 }
@@ -610,7 +610,7 @@ export function registerFileTools({ server: mcpServer, reader, writer }: Mutatio
         try {
           built = buildDataFileBody(args.kind, args.content, args.arraySize);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         const destination = resolveProjectPath(reader.getProjectDir(), directory, ...subfolderParts, args.name);
         if (await findFileIgnoringCase(destination)) {

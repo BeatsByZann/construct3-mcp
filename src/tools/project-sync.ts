@@ -15,6 +15,7 @@ import type { Construct3ProjectReader } from '../construct3/project-reader.js';
 import { currentToolCall, runInToolCall } from '../construct3/disk-state.js';
 import { changedFilesLine, recordToolCall, type JournalEntry } from '../construct3/change-journal.js';
 import { toolError } from './shared.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /** The registration methods whose last argument is the handler (McpServer and the test double). */
 const TOOL_METHODS = new Set(['tool', 'registerTool']);
@@ -64,7 +65,7 @@ function syncedHandler(
       try {
         await reader.checkProjectFile();
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error, reader.getProjectDir());
         if (isTool) return toolError(message);
         throw new Error(message);
       }

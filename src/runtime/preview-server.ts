@@ -21,6 +21,7 @@ import { tmpdir, platform } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { connect, type AddressInfo } from 'node:net';
+import { errorMessage } from '../construct3/error-text.js';
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -402,7 +403,7 @@ function isFile(path: string): boolean {
 function startError(executable: string, error: unknown): Error {
   console.error(`[serve_preview] could not start ${executable}:`, error);
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return new Error(`The browser could not be started (${code ?? (error instanceof Error ? error.message : String(error))}); the executable is named in the server log. Set CHROME_PATH to a Chrome or Edge executable.`);
+  return new Error(`The browser could not be started (${code ?? errorMessage(error)}); the executable is named in the server log. Set CHROME_PATH to a Chrome or Edge executable.`);
 }
 
 /**

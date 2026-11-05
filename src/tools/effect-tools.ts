@@ -48,6 +48,7 @@ import { resolveLayer } from './layout-tools.js';
 import { rollBackFailedCall, writeEntityOrRollBack } from './call-rollback.js';
 import { syncLayoutInstances, type InstanceSyncPlan } from './instance-sync.js';
 import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /** The sentences every write tool's description ends with. */
 const WRITE_NOTE = 'The layouts the instance entries change are written first and the holder\'s file last, and a failed write is rolled back; '
@@ -189,7 +190,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
       try {
         layout = await reader.readLayout(args.layoutName);
       } catch (error) {
-        return { refusal: refuse(`Layout "${args.layoutName}" could not be read: ${error instanceof Error ? error.message : String(error)}`) };
+        return { refusal: refuse(`Layout "${args.layoutName}" could not be read: ${errorMessage(error, reader.getProjectDir())}`) };
       }
       if (args.layerName === undefined) {
         return { target: { kind: 'layout', entity: args.layoutName, holder: layout, layout, label: `layout "${args.layoutName}"` } };
@@ -218,7 +219,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
       const holder = isFamily ? await reader.readFamily(name) : await reader.readObjectType(name) as unknown as Record<string, unknown>;
       return { target: { kind: isFamily ? 'family' : 'object', entity: name, holder, label: `${isFamily ? 'family' : 'object type'} "${name}"` } };
     } catch (error) {
-      return { refusal: refuse(`${isFamily ? 'Family' : 'Object type'} "${name}" could not be read: ${error instanceof Error ? error.message : String(error)}`) };
+      return { refusal: refuse(`${isFamily ? 'Family' : 'Object type'} "${name}" could not be read: ${errorMessage(error, reader.getProjectDir())}`) };
     }
   }
 
@@ -333,7 +334,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         });
       } catch (error) {
         console.error('[list_effects] failed:', error);
-        return toolError(`Error listing effects: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing effects: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -374,7 +375,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         try {
           validateName(name);
         } catch (error) {
-          return refuse(`Invalid effect name: ${error instanceof Error ? error.message : String(error)}`);
+          return refuse(`Invalid effect name: ${errorMessage(error, reader.getProjectDir())}`);
         }
 
         // The name must not match another effect the instances key an entry by, ignoring case
@@ -415,7 +416,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         });
       } catch (error) {
         console.error('[add_effect] failed:', error);
-        return toolError(`Error adding effect: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error adding effect: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -468,7 +469,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         try {
           layout = await reader.readLayout(args.instanceLayoutName);
         } catch (error) {
-          return refuse(`Layout "${args.instanceLayoutName}" could not be read: ${error instanceof Error ? error.message : String(error)}`);
+          return refuse(`Layout "${args.instanceLayoutName}" could not be read: ${errorMessage(error, reader.getProjectDir())}`);
         }
         const location = findInstanceByUid(layout, args.instanceUid);
         if (!location) return refuse(`Layout "${args.instanceLayoutName}" has no instance with UID ${args.instanceUid}`);
@@ -493,7 +494,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         });
       } catch (error) {
         console.error('[update_effect] failed:', error);
-        return toolError(`Error updating effect: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating effect: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -604,7 +605,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         });
       } catch (error) {
         console.error('[remove_effect] failed:', error);
-        return toolError(`Error removing effect: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error removing effect: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -651,7 +652,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         });
       } catch (error) {
         console.error('[reorder_effects] failed:', error);
-        return toolError(`Error reordering effects: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error reordering effects: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );

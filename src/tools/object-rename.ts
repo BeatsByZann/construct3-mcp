@@ -109,6 +109,7 @@ import {
 import { unknownKeysErrorMap } from './event-helpers.js';
 import { refuse, stoppedBeforeWrite } from './refusals.js';
 import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 type Category = 'objectTypes' | 'families';
 type Reader = MutationToolDeps['reader'];
@@ -401,7 +402,7 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   try {
     validateName(newName);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     const shown = message.startsWith('Name must start') ? 'Name must start with a letter or underscore and contain only letters, digits and underscores' : message;
     return refuse(`${shown}.${punctuationSuggestion(newName)}`);
   }
@@ -823,7 +824,7 @@ export function registerObjectRenameTools({ server: mcpServer, reader, writer }:
     } catch (error) {
       console.error(`[${tool}] failed:`, error);
       const shown = withoutAbsolutePath(writer, error);
-      return toolError(`Error renaming ${label}: ${shown instanceof Error ? shown.message : String(shown)}`);
+      return toolError(`Error renaming ${label}: ${errorMessage(shown, reader.getProjectDir())}`);
     }
   };
 

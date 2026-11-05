@@ -52,6 +52,7 @@ import { addonDefinitionsOf } from '../addon-definitions.js';
 import { buildAceContext, checkEventAces, describeEventAceProblem, isBuiltInAddon } from '../ace-catalog.js';
 import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../expression-check.js';
 import type { ProjectData } from '../ace-types.js';
+import { errorMessage } from '../error-text.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -382,7 +383,7 @@ async function readTimelineFiles(
       // Gone between the listing and the read: nothing on disk escaped the checks
       if (code === 'E_FILE_NOT_FOUND') continue;
       unscannedFiles.push(entity);
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error, reader.getProjectDir());
       if (code === 'E_FILE_TOO_LARGE') {
         warnings.push({
           check: 'unscanned-file',

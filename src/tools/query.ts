@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ProjectReadError, type Construct3ProjectReader } from '../construct3/project-reader.js';
 import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /**
  * The name hint for a failed get_*_details read. A read that found the file
@@ -41,7 +42,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error listing objects: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error listing objects: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -60,7 +61,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error listing event sheets: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error listing event sheets: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -79,7 +80,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error listing layouts: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error listing layouts: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -98,7 +99,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error listing families: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error listing families: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -118,7 +119,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
       } catch (error) {
         const hint = nameHint(reader, error, args.name, 'objects', 'list_objects');
         return {
-          content: [{ type: 'text' as const, text: `Error reading object "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}` }],
+          content: [{ type: 'text' as const, text: `Error reading object "${args.name}": ${errorMessage(error, reader.getProjectDir())}${hint}` }],
           isError: true,
         };
       }
@@ -138,7 +139,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
       } catch (error) {
         const hint = nameHint(reader, error, args.name, 'eventsheets', 'list_eventsheets');
         return {
-          content: [{ type: 'text' as const, text: `Error reading event sheet "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}` }],
+          content: [{ type: 'text' as const, text: `Error reading event sheet "${args.name}": ${errorMessage(error, reader.getProjectDir())}${hint}` }],
           isError: true,
         };
       }
@@ -158,7 +159,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
       } catch (error) {
         const hint = nameHint(reader, error, args.name, 'layouts', 'list_layouts');
         return {
-          content: [{ type: 'text' as const, text: `Error reading layout "${args.name}": ${error instanceof Error ? error.message : String(error)}${hint}` }],
+          content: [{ type: 'text' as const, text: `Error reading layout "${args.name}": ${errorMessage(error, reader.getProjectDir())}${hint}` }],
           isError: true,
         };
       }
@@ -177,7 +178,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error searching objects: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error searching objects: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -221,7 +222,7 @@ export function registerQueryTools(mcpServer: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Error getting project summary: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Error getting project summary: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }

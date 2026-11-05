@@ -24,7 +24,7 @@ import { findEffectUses } from '../construct3/analyzers/effect-uses.js';
 import { registeredScriptFiles } from '../construct3/script-files.js';
 import { notFoundError, toolError, toolResult } from './shared.js';
 import { withProjectSync } from './project-sync.js';
-import { errorReason } from '../construct3/error-text.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
 
 /** What a usage query says about the parts of the project its answer leaves out. */
 export interface Completeness {
@@ -579,7 +579,7 @@ export function registerUsageTools(mcpServer: McpServer, reader: Construct3Proje
               try {
                 sheets.set(name, await reader.readEventSheet(name));
               } catch (error) {
-                failed.set(name, { code: classifyReadError(error), message: error instanceof Error ? error.message : String(error) });
+                failed.set(name, { code: classifyReadError(error), message: errorMessage(error, reader.getProjectDir()) });
               }
             }
             failures = failed;

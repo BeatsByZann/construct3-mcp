@@ -501,7 +501,7 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
       let opened: OpenedBrushFile;
       let brushes: TilemapBrush[];
       try {
-        try { validateName(args.name); } catch (e) { return refuse(e instanceof Error ? e.message : String(e)); }
+        try { validateName(args.name); } catch (e) { return refuse(errorMessage(e, reader.getProjectDir())); }
         const problem = validateBrushData(args.type, args.data);
         if (problem) return refuse(problem);
         const found = await openBrushFile(args.objectName, false);
@@ -554,7 +554,7 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
           return refuse('Changing a brush\'s type requires new data: the grid size differs per type.');
         }
         if (args.newName !== undefined) {
-          try { validateName(args.newName); } catch (e) { return refuse(e instanceof Error ? e.message : String(e)); }
+          try { validateName(args.newName); } catch (e) { return refuse(errorMessage(e, reader.getProjectDir())); }
         }
         const found = await openBrushFile(args.objectName, false);
         if ('error' in found) return refuse(found.error);

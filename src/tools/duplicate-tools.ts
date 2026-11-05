@@ -47,6 +47,7 @@ import {
 } from './rename-files.js';
 import { rollBackStructureCall } from './side-files.js';
 import { toolError, toolResult, validateName, type MutationToolDeps } from './shared.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 type Reader = MutationToolDeps['reader'];
 type Writer = MutationToolDeps['writer'];
@@ -285,7 +286,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         try {
           validateName(args.newName);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         const clash = findNameClash(args.newName, layouts);
         if (clash !== undefined) return refuse(`A layout named "${clash}" already exists. Layout names are compared without case because they are file names.`);
@@ -324,7 +325,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
           sids = sidRemapper(reader, idGen);
           sidCount = await remapAllSids(copy, sids.fresh);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         copy.name = args.newName;
 
@@ -403,7 +404,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         try {
           validateName(args.newName);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         // A fresh parse: this call's own object, changed in place below and written back
         let layout: Layout;
@@ -455,7 +456,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
           sids = sidRemapper(reader, idGen);
           await remapAllSids(copy, sids.fresh);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         copy.name = args.newName;
         location.siblings.splice(location.index + 1, 0, copy);
@@ -483,7 +484,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         try {
           backupPath = await writeEntityOrRollBack(writer, 'layouts', args.layoutName, layout);
         } catch (error) {
-          return toolError(error instanceof Error ? error.message : String(error));
+          return toolError(errorMessage(error, reader.getProjectDir()));
         }
 
         return toolResult({
@@ -530,7 +531,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         try {
           validateName(args.newName);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         const clash = findNameClash(args.newName, sheets);
         if (clash !== undefined) return refuse(`An event sheet named "${clash}" already exists. Sheet names are compared without case because they are file names.`);
@@ -559,7 +560,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         try {
           reassigned = await remapAllSids(copy, sidRemapper(reader, idGen).fresh);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         copy.name = args.newName;
 
@@ -615,7 +616,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         try {
           validateName(args.newName);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         const families = await reader.listFamilies();
         const clash = findNameClash(args.newName, [...objects, ...families]);
@@ -672,7 +673,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
           sidCount = await remapAllSids(copy, sidRemapper(reader, idGen).fresh);
           imageIds = await remapImageSpriteIds(copy, () => idGen.generateImageSpriteId(reader));
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         copy.name = args.newName;
 
@@ -744,7 +745,7 @@ export function registerDuplicateTools({ server: mcpServer, reader, writer, idGe
         try {
           validateName(args.newName);
         } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
         const root: unknown = reader.getProject().timelines;
         if (!isTree(root)) return refuse('project.c3proj has no timelines tree.');

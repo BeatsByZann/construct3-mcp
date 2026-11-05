@@ -38,6 +38,7 @@ import {
   setContainerMembers,
 } from '../construct3/containers.js';
 import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /** The parts of a parsed project.c3proj the container tools read. */
 interface ContainerProject {
@@ -133,7 +134,7 @@ export function registerContainerTools({ server: mcpServer, reader, writer }: Mu
         return toolResult({ containers, count: containers.length });
       } catch (error) {
         console.error('[list_containers] failed:', error);
-        return toolError(`Error listing containers: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing containers: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );

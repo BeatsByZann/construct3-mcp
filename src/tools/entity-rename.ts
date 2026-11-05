@@ -76,6 +76,7 @@ import {
 import { unknownKeysErrorMap } from './event-helpers.js';
 import { refuse, stoppedBeforeWrite } from './refusals.js';
 import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 type Category = 'eventSheets' | 'layouts';
 type Reader = MutationToolDeps['reader'];
@@ -214,7 +215,7 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   try {
     validateName(newName);
   } catch (error) {
-    return refuse(error instanceof Error ? error.message : String(error));
+    return refuse(errorMessage(error, reader.getProjectDir()));
   }
   // The name check refuses a leading space; a trailing one it accepts
   if (newName !== newName.trimEnd()) {
@@ -499,7 +500,7 @@ export function registerEntityRenameTools({ server: mcpServer, reader, writer }:
     } catch (error) {
       console.error(`[${tool}] failed:`, error);
       const shown = withoutAbsolutePath(writer, error);
-      return toolError(`Error renaming ${label}: ${shown instanceof Error ? shown.message : String(shown)}`);
+      return toolError(`Error renaming ${label}: ${errorMessage(shown, reader.getProjectDir())}`);
     }
   };
 

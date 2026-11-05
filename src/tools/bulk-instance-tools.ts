@@ -153,7 +153,7 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
     } catch (error) {
       // writeEntityOrRollBack's message says what is on disk
       console.error(`[bulk ${layoutName}] write failed:`, error);
-      return toolError(`Error writing layout "${layoutName}": ${error instanceof Error ? error.message : String(error)}`);
+      return toolError(`Error writing layout "${layoutName}": ${errorMessage(error, reader.getProjectDir())}`);
     }
     return toolResult({ ...base, action: 'updated', backupFile: backupPath });
   }

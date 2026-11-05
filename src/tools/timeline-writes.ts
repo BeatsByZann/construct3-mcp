@@ -12,7 +12,7 @@ import { toolError, validateName, validateSubfolder } from './shared.js';
 import { EntityWriteError, failedWriteLeftReason, filesLeftClause } from '../construct3/project-writer.js';
 import { fileKey, noteFileRead, statFileState, StaleFileError, type FileState } from '../construct3/disk-state.js';
 import { existingSpelling } from '../construct3/atomic-write.js';
-import { errorReason } from '../construct3/error-text.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
 import { nameKey } from '../construct3/names.js';
 import { resolveJsonTextStyle, serializeJson } from '../construct3/json-format.js';
 
@@ -24,7 +24,7 @@ function refusalOf(check: () => void): string | undefined {
     check();
     return undefined;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return errorMessage(error);
   }
 }
 

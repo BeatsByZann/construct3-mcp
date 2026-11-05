@@ -341,7 +341,7 @@ export class Construct3ProjectWriter {
     try {
       existing = await statFileState(filePath);
     } catch (e: unknown) {
-      throw new Error(`Cannot access file for backup: ${fileErrorText(e, p => this.projectRelative(p))}`, { cause: e });
+      throw new Error(`Cannot access file for backup: ${fileErrorText(e, p => this.projectRelative(p), this.reader.getProjectDir())}`, { cause: e });
     }
     // The file's state before the call first touched it (change journal)
     noteFirstTouch(key, existing);
@@ -990,7 +990,7 @@ export class Construct3ProjectWriter {
       content = await readFile(filePath, 'utf-8');
       parseJsonText(content);
     } catch (e) {
-      throw new Error(`Post-write verification failed for "${entityName}": file may be corrupted. A .bak backup exists. Error: ${fileErrorText(e, p => this.projectRelative(p))}`, { cause: e });
+      throw new Error(`Post-write verification failed for "${entityName}": file may be corrupted. A .bak backup exists. Error: ${fileErrorText(e, p => this.projectRelative(p), this.reader.getProjectDir())}`, { cause: e });
     }
     if (content !== expected) {
       throw new ConcurrentWriteError(`Post-write verification failed for "${entityName}": the file was changed by another write during this one (concurrent writes to the same file?). It holds valid JSON, but not this call's changes. Re-read it and retry.`);
@@ -1708,7 +1708,7 @@ export class Construct3ProjectWriter {
       const code = typeof error === 'object' && error !== null && 'code' in error ? (error as { code?: unknown }).code : undefined;
       const cause = typeof code === 'string' && current !== undefined && typeof error === 'object' && error !== null && renameCallErrors.has(error)
         ? `${code} renaming images/${current.from} to images/${current.to}`
-        : fileErrorText(error, path => this.projectRelative(path)).replace(/\.$/, '');
+        : fileErrorText(error, path => this.projectRelative(path), this.reader.getProjectDir()).replace(/\.$/, '');
       const after = done.length === 0
         ? 'No image file was renamed.'
         : notRestored.length === 0

@@ -61,7 +61,7 @@ import { writeEntityOrRollBack } from './call-rollback.js';
 import { checkLoadRulesBeforeWrite, loadRuleErrorMessage, snapshotEvents } from './event-helpers.js';
 import { checkEventChange, warmAceCatalog } from '../construct3/event-change-check.js';
 import type { C3Event } from '../construct3/types.js';
-import { errorReason } from '../construct3/error-text.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
 import { refuse } from './refusals.js';
 import { unregisteredNameMessage } from './registered-names.js';
 import { withProjectSync } from './project-sync.js';
@@ -692,7 +692,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
             try {
               await writeEntityOrRollBack(writer, 'eventSheets', name, sheet);
             } catch (error) {
-              return toolError(error instanceof Error ? error.message : String(error));
+              return toolError(errorMessage(error, reader.getProjectDir()));
             }
             filesWritten.push(file);
           }
@@ -869,7 +869,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
             try {
               await writeEntityOrRollBack(writer, 'eventSheets', name, data);
             } catch (error) {
-              return toolError(error instanceof Error ? error.message : String(error));
+              return toolError(errorMessage(error, reader.getProjectDir()));
             }
             filesWritten.push(reader.getEntityRelativePath('eventSheets', name));
           }

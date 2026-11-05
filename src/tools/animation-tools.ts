@@ -44,6 +44,7 @@ import {
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
 import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 export function registerAnimationTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
   const server = withProjectSync(mcpServer, reader);
@@ -176,7 +177,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return toolResult(result);
       } catch (error) {
         console.error('[add_animation_to_sprite] failed:', error);
-        return toolError(`Error adding animation: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error adding animation: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }),
   );
@@ -256,7 +257,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return toolResult(result);
       } catch (error) {
         console.error('[update_animation_properties] failed:', error);
-        return toolError(`Error updating animation: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating animation: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }),
   );
@@ -312,7 +313,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return toolResult(result);
       } catch (error) {
         console.error('[delete_animation] failed:', error);
-        return toolError(`Error deleting animation: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting animation: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }),
   );
@@ -364,7 +365,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[create_animation_folder] failed:', error);
-        return toolError(`Error creating animation folder: ${fileErrorText(error, relative)}`);
+        return toolError(`Error creating animation folder: ${fileErrorText(error, relative, writer.projectDir())}`);
       }
     }),
   );
@@ -428,7 +429,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[move_animation_to_folder] failed:', error);
-        return toolError(`Error moving animation: ${fileErrorText(error, relative)}`);
+        return toolError(`Error moving animation: ${fileErrorText(error, relative, writer.projectDir())}`);
       }
     }),
   );
@@ -580,7 +581,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
           }
         } catch (error) {
           // A refusal of the writer ends with a full stop already
-          const cause = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '');
+          const cause = errorMessage(error, reader.getProjectDir()).replace(/\.$/, '');
           throw new Error(`${cause}. ${await rollBackAnimationRename(writer, error, writing, images.renames)}`.trimEnd());
         }
 
@@ -619,7 +620,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return toolResult(result);
       } catch (error) {
         console.error('[rename_animation] failed:', error);
-        return toolError(`Error renaming animation: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error renaming animation: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }),
   );
@@ -724,7 +725,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return toolResult(result);
       } catch (error) {
         console.error('[add_frame_to_animation] failed:', error);
-        return toolError(`Error adding frame: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error adding frame: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }),
   );
@@ -810,7 +811,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return toolResult(result);
       } catch (error) {
         console.error('[delete_frame_from_animation] failed:', error);
-        return toolError(`Error deleting frame: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting frame: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }),
   );
@@ -903,7 +904,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return await reorderFrames(args.objectName, args.animationName, () => args.order, true);
       } catch (error) {
         console.error('[reorder_frames] failed:', error);
-        return toolError(`Error reordering frames: ${fileErrorText(error, path => writer.projectRelative(path))}`);
+        return toolError(`Error reordering frames: ${fileErrorText(error, path => writer.projectRelative(path), writer.projectDir())}`);
       }
     }),
   );
@@ -920,7 +921,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return await reorderFrames(args.objectName, args.animationName, count => Array.from({ length: count }, (_, k) => count - 1 - k), false);
       } catch (error) {
         console.error('[reverse_frames] failed:', error);
-        return toolError(`Error reversing frames: ${fileErrorText(error, path => writer.projectRelative(path))}`);
+        return toolError(`Error reversing frames: ${fileErrorText(error, path => writer.projectRelative(path), writer.projectDir())}`);
       }
     }),
   );
@@ -1018,7 +1019,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[duplicate_frame] failed:', error);
-        return toolError(`Error duplicating frame: ${fileErrorText(error, relative)}`);
+        return toolError(`Error duplicating frame: ${fileErrorText(error, relative, writer.projectDir())}`);
       }
     }),
   );
@@ -1089,7 +1090,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return toolResult(result);
       } catch (error) {
         console.error('[update_frame] failed:', error);
-        return toolError(`Error updating frame: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating frame: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }),
   );
@@ -1190,7 +1191,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         return toolResult(result);
       } catch (error) {
         console.error('[replace_sprite_image] failed:', error);
-        return toolError(`Error replacing sprite image: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error replacing sprite image: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }),
   );
@@ -1262,7 +1263,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
           const where = error instanceof UnconfirmedWriteError && kept?.existed
             ? ` The file this call kept before writing the image is ${relative(kept.path)}.`
             : '';
-          throw new Error(`${fileErrorText(error, relative).replace(/\.$/, '')}. The object file was not written.${where}`);
+          throw new Error(`${fileErrorText(error, relative, writer.projectDir()).replace(/\.$/, '')}. The object file was not written.${where}`);
         }
 
         // The object file is always written, also when its record did not change: the write checks that it did not
@@ -1293,7 +1294,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[replace_object_image] failed:', error);
-        return toolError(`Error replacing object image: ${fileErrorText(error, relative)}`);
+        return toolError(`Error replacing object image: ${fileErrorText(error, relative, writer.projectDir())}`);
       }
     }),
   );
@@ -1375,7 +1376,7 @@ async function writeObjectOrRollBack(writer: MutationToolDeps['writer'], objectN
   try {
     return await writer.writeEntityFile('objectTypes', objectName, obj, subfolder);
   } catch (error) {
-    const cause = fileErrorText(error, path => writer.projectRelative(path)).replace(/\.$/, '');
+    const cause = fileErrorText(error, path => writer.projectRelative(path), writer.projectDir()).replace(/\.$/, '');
     throw new Error(`${cause}. ${await rollBackObjectWrite(writer, error)}`);
   }
 }
@@ -1403,7 +1404,7 @@ function invalidFolderPath(path: string): string | undefined {
     validateSubfolder(path);
     return undefined;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return errorMessage(error);
   }
 }
 
@@ -1477,7 +1478,7 @@ async function rollBackObjectWrite(writer: MutationToolDeps['writer'], error: un
  * JSON. Used by every animation tool that puts an object file back.
  */
 function restoreFailureText(writer: MutationToolDeps['writer'], label: string, restoreError: unknown): string {
-  const reason = fileErrorText(restoreError, path => writer.projectRelative(path)).replace(/\.$/, '');
+  const reason = fileErrorText(restoreError, path => writer.projectRelative(path), writer.projectDir()).replace(/\.$/, '');
   return `Restoring ${label} from its backup failed: ${reason}; ${label}.bak holds the previous JSON.`;
 }
 
@@ -1518,7 +1519,7 @@ function recoveryErrorMessage(
   outcome: { message: string; complete: boolean },
 ): string {
   // A refusal of the writer ends with a full stop already
-  let cause = fileErrorText(error, path => writer.projectRelative(path)).replace(/\.$/, '');
+  let cause = fileErrorText(error, path => writer.projectRelative(path), writer.projectDir()).replace(/\.$/, '');
   if (!outcome.complete) cause = cause.replace(/ Run the tool again: it reads the files? as (?:it is|they are) now$/, '');
   return `${cause}. ${outcome.message}`;
 }
@@ -1719,7 +1720,7 @@ async function renameImagesBack(writer: MutationToolDeps['writer'], renames: rea
     await writer.renameImageFiles(back);
     return undefined;
   } catch (e) {
-    cause = (e instanceof Error ? e.message : String(e)).replace(/\.$/, '');
+    cause = errorMessage(e, writer.projectDir()).replace(/\.$/, '');
   }
   const present = new Map<string, number>();
   const count = (name: string, n: number) => present.set(nameKey(name), (present.get(nameKey(name)) ?? 0) + n);
@@ -1827,7 +1828,7 @@ async function recoverFrameChange(
         failed.push(`${label} (it is not known to hold what this call wrote, or it changed on disk after this call wrote it, so it was left as it is)`);
       }
     } catch (e) {
-      failed.push(`${label} (${fileErrorText(e, relative).replace(/\.$/, '')}; it was left as it is)`);
+      failed.push(`${label} (${fileErrorText(e, relative, writer.projectDir()).replace(/\.$/, '')}; it was left as it is)`);
     }
   }
   const imagesLeft = await renameImagesBack(writer, change.renames);
@@ -1981,7 +1982,7 @@ async function rollBackAnimationRename(
       await writer.renameImageFiles(renames.map(r => ({ from: r.to, to: r.from })).reverse());
       return undefined;
     } catch (e) {
-      return `renaming its frame image files back failed (${e instanceof Error ? e.message : String(e)}); rename them back by hand: `
+      return `renaming its frame image files back failed (${errorMessage(e, writer.projectDir())}); rename them back by hand: `
         + renames.map(r => `"images/${r.to}" → "images/${r.from}"`).join(', ');
     }
   };
@@ -2005,7 +2006,7 @@ async function rollBackAnimationRename(
         else problems.push(`${failedFile} was left as it is, since ${failedWriteLeftReason(reason)} (${failedFile}.bak holds the previous JSON)`);
       } catch (restoreError) {
         // The reason as every animation tool words it (restoreFailureText): the fs code and the project-relative path
-        const reason = fileErrorText(restoreError, path => writer.projectRelative(path)).replace(/\.$/, '');
+        const reason = fileErrorText(restoreError, path => writer.projectRelative(path), writer.projectDir()).replace(/\.$/, '');
         problems.push(`restoring ${failedFile} from its backup failed: ${reason} (${failedFile}.bak holds the previous JSON)`);
       }
     }
@@ -2169,7 +2170,7 @@ async function recoverObjectImage(
         + 'after this call wrote it, so neither is known to hold the image from before the call');
     }
   } catch (e) {
-    problems.push(`${image} (${fileErrorText(e, relative).replace(/\.$/, '')}; it was left as it is)`);
+    problems.push(`${image} (${fileErrorText(e, relative, writer.projectDir()).replace(/\.$/, '')}; it was left as it is)`);
   }
   if (restoredFile) done.push(`${objectFile} was restored from its backup (its .bak stays)`);
   const otherWriteNote = otherWrite
