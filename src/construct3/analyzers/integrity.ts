@@ -286,7 +286,7 @@ function addLoadRuleIssues(
  * Property tracks on a property their instance does not have. Construct 3
  * r506-2 refused to open a project whose timeline had a property track on a
  * property it could not resolve (a Text instance's `angle`), with "property
- * track type undefined is not valid". The property is resolved the way the
+ * track type 'undefined' is not valid". The property is resolved the way the
  * timeline tools do (resolveTimelineProperty): an unresolved name on a
  * world-instance source is an error, on an instance-variable or plugin source
  * a warning, since only the world-instance case is on record. A track whose
@@ -324,7 +324,7 @@ function checkTimelinePropertyTrackTypes(
         const resolved = resolveTimelineProperty(propertyTrack.property, instance, objectType);
         if (!resolved.ok || resolved.spec.verified) continue;
         const refusal = 'Construct 3 r506-2 refused to open a project whose timeline had a property track on a property it could not resolve '
-          + '(a Text instance\'s `angle`), with "property track type undefined is not valid".';
+          + '(a Text instance\'s `angle`), with "property track type \'undefined\' is not valid".';
         const subject = `Property track "${propertyTrack.property}" of instance UID ${instance.uid} (${instance.type}) names a property that is not a world property, an instance variable or a plugin property of that instance. `;
         const suggestion = `Remove the property track with remove_property_track, or animate a property the instance has (world properties: ${Object.keys(WORLD_PROPERTIES).join(', ')}).`;
         if (type === 'world-instance') {

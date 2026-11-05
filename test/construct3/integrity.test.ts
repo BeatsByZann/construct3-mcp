@@ -119,7 +119,7 @@ describe('validateProjectIntegrity', () => {
       expect(found[0].entity).toBe('timelines/Intro');
       expect(found[0].message).toContain('"angle"');
       expect(found[0].message).toContain('r506-2');
-      expect(found[0].message).toContain('property track type undefined is not valid');
+      expect(found[0].message).toContain('property track type \'undefined\' is not valid');
       expect(found[0].suggestion).toBeDefined();
       expect(result.valid).toBe(false);
     });
@@ -139,6 +139,22 @@ describe('validateProjectIntegrity', () => {
       ])]);
       const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
       expect(trackTypeErrors(result)).toEqual([]);
+      expect(trackTypeWarnings(result)).toEqual([]);
+    });
+
+    it.each([
+      ['instance-variable', 'uid'],
+      ['plugin', 'uid'],
+    ])('warns, and does not report an error, for an unresolved name on a %s source', async (sourceType, key) => {
+      const text = timelineText([textTrack([named('nosuch', { type: sourceType, [key]: 'nosuch' })])]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+      const found = trackTypeWarnings(result);
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Intro');
+      expect(found[0].message).toContain('"nosuch"');
+      expect(found[0].message.endsWith(`a ${sourceType} source was not tested.`)).toBe(true);
+      expect(result.valid).toBe(true);
     });
 
     it('does not report a track whose instance or object type cannot be found', async () => {
