@@ -18,6 +18,7 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { registerEventTools } from '../../src/tools/event-tools.js';
+import { registerMutationTools } from '../../src/tools/mutations.js';
 import { registerQueryTools } from '../../src/tools/query.js';
 import { registerProjectResources } from '../../src/resources/project.js';
 import { readZip } from '../../src/runtime/zip-reader.js';
@@ -105,6 +106,25 @@ describe('withArchiveSync', () => {
     expect(files.get('eventSheets/MainSheet.json')).toContain('written through the tool');
     expect(notesOf(result)).toEqual([
       'Changed 1 file(s): eventSheets/MainSheet.json (1 with a .bak backup; revert_last_change undoes this call).',
+      `Saved the project to "${archivePath}" (${files.size} files).`,
+    ]);
+  });
+
+  it('a write through the mutation tools, registered on the archive\'s view as index.ts does, ends with the change journal\'s line, then the archive\'s note', async () => {
+    archive = await C3pArchive.open(archivePath, { workRoot: work });
+    const reader = new Construct3ProjectReader(archive.projectFile);
+    await reader.loadProject();
+    const idGen = new IdGenerator();
+    server = new MockServer();
+    const wrapped = withArchiveSync(server, archive);
+    close = wrapped.close;
+    registerMutationTools(wrapped.server as never, reader, new Construct3ProjectWriter(reader, idGen), idGen);
+
+    const result = await server.callTool('add_layer', { layoutName: 'Layout 1', layerName: 'HUD' });
+    expect(result.isError).toBeFalsy();
+    const files = await archiveFiles();
+    expect(texts(result).slice(-2)).toEqual([
+      'Changed 1 file(s): layouts/Layout 1.json (1 with a .bak backup; revert_last_change undoes this call).',
       `Saved the project to "${archivePath}" (${files.size} files).`,
     ]);
   });
