@@ -1175,7 +1175,7 @@ export function elsePredecessors(events: readonly unknown[]): Map<number, number
  */
 export function elsePredecessorWarnings(before: readonly unknown[], after: readonly unknown[]): string[] {
   const was = elsePredecessors(before);
-  const named = (sid: number | undefined) => (sid === undefined ? 'an event without a SID' :`the event with SID ${sid}`);
+  const named = (sid: number | undefined) => (sid === undefined ? 'an event without a SID' : `the event with SID ${sid}`);
   const warnings: string[] = [];
   for (const [sid, now] of elsePredecessors(after)) {
     if (!was.has(sid) || was.get(sid) === now) continue;

@@ -191,7 +191,7 @@ describe('scope helpers', () => {
     const events = [null, 'text', 7, [elseBlock(60)], block(61), elseBlock(), elseBlock(62), { eventType: 'block', conditions: [], actions: [] }, elseBlock(63)];
     expect([...elsePredecessors(events)]).toEqual([[62, undefined], [63, undefined]]);
     // The scan goes on below an entry it skipped over, and below an else block with no SID
-    const nested = [block(70, [null as unknown as Ev, elseBlock(), elseBlock(71)]),{ eventType: 'comment', text: 'c' }];
+    const nested = [block(70, [null as unknown as Ev, elseBlock(), elseBlock(71)]), { eventType: 'comment', text: 'c' }];
     expect([...elsePredecessors(nested)]).toEqual([[71, undefined]]);
   });
 

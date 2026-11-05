@@ -104,7 +104,7 @@ function setup() {
 }
 
 /** The text of an error result, or '' for a result that is not an error. */
-const errorText =(result: { content: Array<{ text: string }>; isError?: boolean }) => (result.isError ? result.content[0].text : '');
+const errorText = (result: { content: Array<{ text: string }>; isError?: boolean }) => (result.isError ? result.content[0].text : '');
 
 describe('update_event_block: a refusal after other changes', () => {
   it('refuses an inserted custom action call that the custom action checks refuse, with no toggle or update left applied', async () => {
@@ -150,7 +150,7 @@ describe('update_event_block: a refusal after other changes', () => {
 
 const NOTHING_CHANGED = 'Nothing was changed.';
 /** The refusal for a custom action call on an owner that is not an object type or family. */
-const unknownOwner =(name: string) => `Unknown objectClass "${name}". A custom action belongs to an object type or family (not System or the Functions object). ${NOTHING_CHANGED}`;
+const unknownOwner = (name: string) => `Unknown objectClass "${name}". A custom action belongs to an object type or family (not System or the Functions object). ${NOTHING_CHANGED}`;
 const tick = { id: 'every-tick', objectClass: 'System' };
 
 /** Every refusal the handler can produce, each with the arguments that reach it. */
