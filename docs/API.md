@@ -1966,6 +1966,21 @@ Update project-level metadata.
 
 At least one parameter must be provided.
 
+### `update_project_properties`
+
+Update project settings: any key of `project.properties` plus the top-level startup layout, viewport size, worker mode and functions name. Use [`update_project_metadata`](#update_project_metadata) for name, version, author and description.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `properties` | object | No | Values merged into `project.properties`, keyed by Construct property name (e.g. `fullscreenMode`, `sampling`, `zFar`, `fixedFramerate`); up to 60 keys. A key that is not a `project.properties` key is refused with the list of valid ones |
+| `firstLayout` | string | No | Startup layout. It must be a layout of the project; letter case is ignored and the registered spelling is written |
+| `viewportWidth` | integer | No | Viewport width in pixels (1 to 100000) |
+| `viewportHeight` | integer | No | Viewport height in pixels (1 to 100000) |
+| `useWorker` | string | No | Worker mode; Construct writes values such as `"dom"` or `"auto"` |
+| `functionsName` | string | No | Name of the built-in Functions object in scripts; a JavaScript identifier |
+
+At least one parameter must be provided. An argument that is not in the table is refused by name, not dropped, and nothing is written. A `firstLayout` that names no layout of the project is refused with the project's layout names and the text `Nothing was changed.` All settings of one call are written in one update of `project.c3proj` through the project writer: backed up once per call (`project.c3proj.bak`), written through a temp file and read back. A `project.c3proj` saved in the editor during the call is merged with the update, not refused.
+
 ### `register_addon`
 
 Add an addon to the project's `usedAddons`. Known Scirra plugins and behaviors are registered automatically by `create_object` and `update_object_properties`; effects are not, so register them with this tool. The ID is not checked: any ID is written, and afterwards `create_object` accepts objects of that plugin. Registering a third-party addon does not install it; add third-party addons in the editor.

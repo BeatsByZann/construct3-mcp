@@ -677,7 +677,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Timelines: `create_timeline`, `update_timeline`, `delete_timeline`, `add_timeline_track`, `remove_timeline_track`, `add_property_track`, `remove_property_track`, `set_keyframe`, `delete_keyframe`, `update_track`, `add_value_track`, `add_audio_track`, `add_timeline_folder`, `rename_timeline_folder`, `delete_timeline_folder`, `move_timeline_track`, `create_ease`, `update_ease`, `delete_ease`
 - Flowcharts: `create_flowchart`, `delete_flowchart`, `add_flowchart_node`, `update_flowchart_node`, `delete_flowchart_node`, `add_flowchart_output`, `update_flowchart_output`, `delete_flowchart_output`, `reorder_flowchart_outputs`, `connect_flowchart_nodes`, `disconnect_flowchart_nodes`
 - Tilemaps: `set_tilemap_tiles`, `set_tilemap_data`, `add_tilemap_brush`, `update_tilemap_brush`, `delete_tilemap_brush`
-- Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
+- Project and addons: `update_project_metadata`, `update_project_properties`, `register_addon`, `unregister_addon`
 - Scripts and Project Files: `register_script_file`, `deregister_script_file`, `set_main_script`, `register_project_file`, `deregister_project_file`, `create_data_file`
 - Change journal: `revert_last_change` (puts back the files of the most recent call that changed files, from their `.bak` backups; see [Undo the last change](#undo-the-last-change))
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)

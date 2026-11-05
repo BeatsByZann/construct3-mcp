@@ -327,6 +327,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | Tool | Description |
 |------|-------------|
 | `update_project_metadata` | Update project name, version, author, or description |
+| `update_project_properties` | Update project settings: `project.properties` keys, startup layout, viewport size, worker mode, functions name |
 | `register_addon` | Add a plugin, behavior or effect to `usedAddons` |
 | `unregister_addon` | Remove an addon from `usedAddons` (built-ins need `force`) |
 | `list_effects` | List the effects of an object type, a family, a layout or a layer, and the effect addons registered in the project |
