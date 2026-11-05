@@ -19,7 +19,7 @@
  */
 
 import { z } from 'zod';
-import { dirname, relative, sep } from 'path';
+import { relative, sep } from 'path';
 import type { MutationToolDeps } from './shared.js';
 import type { Timeline, TimelineFolder, WriteResult } from '../construct3/types.js';
 import { newProjectFolder } from '../construct3/project-writer.js';
@@ -27,7 +27,7 @@ import { toolResult, toolError, folderCaseClashError } from './shared.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { existingSpelling, findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { findFolderPathClash, nameKey } from '../construct3/names.js';
-import { parseJsonText, resolveJsonTextStyle, serializeJson } from '../construct3/json-format.js';
+import { parseJsonText } from '../construct3/json-format.js';
 import { StaleFileError, type FileState } from '../construct3/disk-state.js';
 import {
   TRANSITIONS_DIR,
@@ -46,7 +46,7 @@ import {
   audioProjectFilePath,
   type CustomEase,
 } from '../construct3/timeline-model.js';
-import { listRegisteredFileEntries } from '../construct3/registered-file-entries.js';
+import { listFileEntries } from '../construct3/file-registration.js';
 import { refreshModeValues, legacyTracksFollowingTimeline, folderModeError } from '../construct3/timeline-result-modes.js';
 import { loadCustomEases } from '../construct3/ease-params.js';
 import {
@@ -259,12 +259,6 @@ export async function readRegisteredTimelines(
     }
   }
   return { timelines, unreadable };
-}
-
-/** The text a timeline file is written with: the existing file's text style, or the project's for a new one. */
-export async function timelineFileText(filePath: string, data: Timeline, projectPath: string): Promise<string> {
-  const target = await existingSpelling(filePath);
-  return serializeJson(data, await resolveJsonTextStyle(target, projectPath, dirname(target)));
 }
 
 /** Whether two project-bar folder paths are the same folder (names compared ignoring case). */
@@ -541,7 +535,7 @@ export function registerTimelineTools({ server: mcpServer, reader, writer, idGen
     const folders: Array<'sound' | 'music'> = folder ? [folder] : ['sound', 'music'];
     const matches: Array<{ entry: Record<string, unknown>; audioType: 'sound' | 'music'; subfolder?: string }> = [];
     for (const f of folders) {
-      for (const { entry, subfolder } of listRegisteredFileEntries(project, f)) {
+      for (const { entry, subfolder } of listFileEntries(project, f)) {
         if (entry.name === name) matches.push({ entry: entry as unknown as Record<string, unknown>, audioType: f, subfolder });
       }
     }

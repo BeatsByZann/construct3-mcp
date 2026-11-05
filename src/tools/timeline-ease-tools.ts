@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { readFile } from 'fs/promises';
 import { parseJsonText } from '../construct3/json-format.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
-import { listRegisteredFileEntries } from '../construct3/registered-file-entries.js';
+import { getFileFolderDirectory, listFileEntries } from '../construct3/file-registration.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { StaleFileError, type FileState } from '../construct3/disk-state.js';
 import type { MutationToolDeps } from './shared.js';
@@ -133,8 +133,8 @@ export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineT
         unreadable.push(`event sheet "${sheet}"`);
       }
     }
-    for (const { entry, subfolder } of listRegisteredFileEntries(reader.getProject(), 'script')) {
-      const parts = ['scripts', ...(subfolder ? subfolder.split('/') : []), entry.name];
+    for (const { entry, subfolder } of listFileEntries(reader.getProject(), 'script')) {
+      const parts = [getFileFolderDirectory('script'),...(subfolder ? subfolder.split('/') : []), entry.name];
       try {
         if (pattern.test(await readFile(resolveProjectPath(reader.getProjectDir(), ...parts), 'utf-8'))) hits.push(`script "${parts.join('/')}"`);
       } catch {

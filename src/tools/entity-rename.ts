@@ -55,7 +55,8 @@ import {
   type EntityNameUse,
 } from '../construct3/entity-name-references.js';
 import { parseJsonText } from '../construct3/json-format.js';
-import { readRegisteredTimelines, timelineFileText, type RegisteredTimeline } from './timeline-tools.js';
+import { readRegisteredTimelines, type RegisteredTimeline } from './timeline-tools.js';
+import { jsonFileText } from './timeline-writes.js';
 import {
   assertUnchangedSinceRead,
   entityFileSegments,
@@ -439,7 +440,7 @@ async function applyRename(reader: Reader, writer: Writer, plan: RenamePlan) {
     }
     for (const timeline of plan.startingOn) {
       timeline.data.startOnLayout = newName;
-      await replaceForRename(writer, side, timeline.read, await timelineFileText(timeline.read.path, timeline.data, reader.getProjectPath()));
+      await replaceForRename(writer, side, timeline.read, await jsonFileText(timeline.read.path, timeline.data, reader.getProjectPath()));
       filesWritten.push(timeline.file);
     }
     // The old file last of the writes that matter: a rename that stops before this write

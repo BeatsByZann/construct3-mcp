@@ -1,5 +1,5 @@
 /**
- * readRegisteredTimelines and timelineFileText: the registered timelines
+ * readRegisteredTimelines and jsonFileText: the registered timelines
  * read with their file states, the ones that cannot be read named, and the
  * text a timeline is written with. On a temp copy of the minimal fixture; the
  * timeline names and folders are synthetic.
@@ -11,7 +11,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { runInToolCall, statFileState } from '../../src/construct3/disk-state.js';
 import { listSome } from '../../src/construct3/analyzers/unscanned-uses.js';
-import { readRegisteredTimelines, timelineFileText, type Timeline } from '../../src/tools/timeline-tools.js';
+import { readRegisteredTimelines, type Timeline } from '../../src/tools/timeline-tools.js';
+import { jsonFileText } from '../../src/tools/timeline-writes.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
@@ -83,12 +84,12 @@ describe('readRegisteredTimelines', () => {
   });
 });
 
-describe('timelineFileText', () => {
+describe('jsonFileText for a timeline', () => {
   it('keeps the line endings of an existing file, and follows the project for a new one', async () => {
     const projectPath = at('project.c3proj');
-    const existing = await timelineFileText(at('timelines', 'Intro.json'), timeline, projectPath);
+    const existing = await jsonFileText(at('timelines', 'Intro.json'), timeline, projectPath);
     expect(existing).toBe(JSON.stringify(timeline, null, '\t').replace(/\n/g, '\r\n'));
-    const created = await timelineFileText(at('timelines', 'New.json'), timeline, projectPath);
+    const created = await jsonFileText(at('timelines', 'New.json'), timeline, projectPath);
     expect(created).toBe(JSON.stringify(timeline, null, '\t'));
   });
 });

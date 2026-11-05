@@ -102,7 +102,6 @@ construct3-mcp/
 │   │   ├── timeline-properties.ts  # What a property track stores for each kind of property
 │   │   ├── timeline-result-modes.ts # Which result mode is in force for a keyframe, and how stored values follow a change
 │   │   ├── ease-params.ts          # Custom eases inside event sheet ease parameters
-│   │   ├── registered-file-entries.ts # Scripts, sounds and music files the project registers
 │   │   ├── tilemap-data.ts         # Codec for a Tilemap instance's tile data string
 │   │   ├── project-tree.ts         # Project Bar trees: finding, creating and registering folders and items, folder path checks (move and duplicate tools)
 │   │   ├── types.ts                # TypeScript type definitions

@@ -327,6 +327,41 @@ describe('listFileEntries', () => {
   it('returns [] for a family the project lacks', () => {
     expect(listFileEntries(projectWith({ script: folder() }), 'sound')).toEqual([]);
   });
+
+  it('gives root entries no subfolder and entries in subfolders their slash-separated path, for sound and music', () => {
+    const blip = { name: 'Blip.webm', type: 'audio/webm', sid: 1 };
+    const chime = { name: 'Chime.webm', type: 'audio/webm', sid: 2 };
+    const rumble = { name: 'Rumble.webm', type: 'audio/webm', sid: 3 };
+    const project = projectWith({
+      sound: {
+        items: [blip],
+        subfolders: [{ name: 'A', items: [chime], subfolders: [{ name: 'B', items: [rumble], subfolders: [] }] }],
+      },
+      music: { items: [blip], subfolders: [] },
+    });
+    expect(listFileEntries(project, 'sound')).toEqual([
+      { entry: blip, subfolder: undefined },
+      { entry: chime, subfolder: 'A' },
+      { entry: rumble, subfolder: 'A/B' },
+    ]);
+    expect(listFileEntries(project, 'music')).toEqual([{ entry: blip, subfolder: undefined }]);
+  });
+
+  it('returns [] for a project without rootFileFolders', () => {
+    expect(listFileEntries({} as unknown as Construct3Project, 'sound')).toEqual([]);
+  });
+
+  it('reads a family folder that has no items array', () => {
+    const blip = { name: 'Blip.webm', type: 'audio/webm', sid: 1 };
+    const project = projectWith({ sound: { subfolders: [{ name: 'A', items: [blip], subfolders: [] }] } });
+    expect(listFileEntries(project, 'sound')).toEqual([{ entry: blip, subfolder: 'A' }]);
+  });
+
+  it('reads a subfolder that has no subfolders array', () => {
+    const blip = { name: 'Blip.webm', type: 'audio/webm', sid: 1 };
+    const project = projectWith({ sound: { items: [], subfolders: [{ name: 'B', items: [blip] }] } });
+    expect(listFileEntries(project, 'sound')).toEqual([{ entry: blip, subfolder: 'B' }]);
+  });
 });
 
 describe('a malformed family root', () => {

@@ -278,7 +278,6 @@ Supporting modules next to the templates:
 | `construct3/timeline-properties.ts` | What a property track stores for each kind of property: the world properties, instance variables and plugin properties, the absolute and relative values of a keyframe, and the order of property tracks |
 | `construct3/timeline-result-modes.ts` | The result mode in force for a keyframe, how stored values follow a result mode change, and the tracks the tools must not recompute |
 | `construct3/ease-params.ts` | Custom eases inside event sheet ease parameters (the Tween ease parameter): loading the project's custom eases, reading the ease name of a parameter, building the object that embeds an ease, and walking the ease parameters of an event sheet |
-| `construct3/registered-file-entries.ts` | The scripts, sounds and music files the project registers in `rootFileFolders`, read only |
 | `construct3/flowchart-model.ts` | The flowchart file's types and the in-memory changes of the flowchart tools (locating registered flowcharts, nodes, outputs, connections, comment nodes); no file access |
 | `construct3/flowchart-files.ts` | Reading a flowchart through the reader, writing it through `replaceFile` with the state it was read in, creating and deleting it together with its `project.c3proj` entry |
 | `construct3/types.ts` | TypeScript types for project files and analysis results |
