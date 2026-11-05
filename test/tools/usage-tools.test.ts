@@ -230,7 +230,7 @@ describe('registration', () => {
   it('is called by the server entry point with the reader', async () => {
     const entry = await readFile(join(__dirname, '..', '..', 'src', 'index.ts'), 'utf-8');
     expect(entry).toContain("import { registerUsageTools } from './tools/usage-tools.js';");
-    expect(entry).toContain('registerUsageTools(server, reader);');
+    expect(entry).toContain('registerUsageTools(served, reader);');
   });
 
   it('registers the six usage tools', async () => {
