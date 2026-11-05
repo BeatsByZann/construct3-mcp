@@ -7,6 +7,9 @@ import type { Construct3Project, EventSheet, ObjectType, Layout, FileItem } from
 import { scanIdsInText, ProjectReadError, type EntityCategory, type ReadFailure } from '../../src/construct3/project-reader.js';
 import { searchText, type RawTextTerm } from '../../src/construct3/raw-text-search.js';
 
+/** The release the mock project records: the one the hand-written catalogue fixtures hold, so no substitute is needed. */
+export const MOCK_SAVED_WITH_RELEASE = 49502;
+
 export interface MockReaderData {
   objects?: Map<string, Record<string, unknown>>;
   eventSheets?: Map<string, Record<string, unknown>>;
@@ -170,7 +173,7 @@ export class MockReader {
   getProject(): Construct3Project {
     return {
       projectFormatVersion: 1,
-      savedWithRelease: 40000,
+      savedWithRelease: MOCK_SAVED_WITH_RELEASE,
       name: this.meta.name!,
       runtime: this.meta.runtime!,
       useWorker: 'auto',

@@ -5,6 +5,7 @@ import { MockWriter } from '../mocks/mock-writer.js';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
 import { registerEventTools } from '../../src/tools/event-tools.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import { withoutAceLookupWarnings } from './ace-warning-filter.js';
 
 function setup(readerData = {}) {
   const server = new MockServer();
@@ -273,7 +274,7 @@ describe('add_event_block', () => {
     });
     const data = parseResult(result);
     expect(data.success).toBe(true);
-    expect(data.warnings).toBeUndefined();
+    expect(withoutAceLookupWarnings(data.warnings)).toEqual([]);
     const child = (writer.callsFor('writeEntityFile')[0].args[2] as any).events.at(-1).children[0];
     expect(child.conditions).toEqual([]);
     expect(typeof child.actions[0].sid).toBe('number');
@@ -2511,9 +2512,10 @@ describe('event tool fixes from the #32 review', () => {
       sheetName: 'Sheet1', isElse: true, conditions: [{ id: 'on-start-of-layout', objectClass: 'System' }],
     }));
     expect(data.success).toBe(true);
-    expect(data.warnings).toHaveLength(1);
-    expect(data.warnings[0]).toContain('holds the trigger "on-start-of-layout"');
-    expect(data.warnings[0]).not.toContain('Put the trigger first');
+    const warnings = withoutAceLookupWarnings(data.warnings);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('holds the trigger "on-start-of-layout"');
+    expect(warnings[0]).not.toContain('Put the trigger first');
   });
 
   it('warns about an else block as first sub-event, once', async () => {
@@ -2616,7 +2618,7 @@ describe('event tool fixes from the #32 review', () => {
     // On a block without conditions it lands first: no warning
     let ctx = setup({ eventSheets: sheets() });
     let data = parseResult(await ctx.server.callTool('update_event_block', { sheetName: 'Sheet1', sid: 20, isElse: true, addConditions: [elseCond] }));
-    expect(data.warnings).toBeUndefined();
+    expect(withoutAceLookupWarnings(data.warnings)).toEqual([]);
     expect(written(ctx.writer)[1].conditions.map((c: any) => c.id)).toEqual(['else']);
 
     // With isElse: true on a block with conditions it would be a second one: dropped
@@ -3661,13 +3663,13 @@ describe('built-in Functions object (#32)', () => {
       sheetName: 'Sheet1', sid: 30, addActions: [setReturn('1')],
     }));
     expect(updated.success).toBe(true);
-    expect(updated.warnings).toEqual([expect.stringContaining('is not inside a function block')]);
+    expect(withoutAceLookupWarnings(updated.warnings)).toEqual([expect.stringContaining('is not inside a function block')]);
 
     const added = parseResult(await server.callTool('add_event_block', {
       sheetName: 'Sheet1', conditions: [{ id: 'every-tick', objectClass: 'System' }], actions: [setReturn('1')],
     }));
     expect(added.success).toBe(true);
-    expect(added.warnings).toEqual([expect.stringContaining('is not inside a function block')]);
+    expect(withoutAceLookupWarnings(added.warnings)).toEqual([expect.stringContaining('is not inside a function block')]);
     expect(writtenEvents(writer).at(-1).actions[0]).toMatchObject(setReturn('1'));
   });
 

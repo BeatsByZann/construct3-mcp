@@ -334,6 +334,7 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_effect` | Change an effect's `isEnabled` and `parameters`: a layer's or layout's in its entry, an object type's or family's on one placed instance |
 | `remove_effect` | Remove an effect; refused while event sheets name it (`force` removes it anyway, and the uses are not changed) |
 | `reorder_effects` | Put the effects of a holder in a new order, and the placed instances' entries of an object type's or family's effects with them |
+| `load_addon_definitions` | Load a third-party addon's definitions (`addon.json` and `aces.json`, from a folder or a `.c3addon` archive) so that `validate_project` and the event tools can check its conditions, actions and expressions; changes only what this server checks, no project file |
 
 ### Runtime Tools (Live Game Control)
 
@@ -650,6 +651,13 @@ construct3-mcp/
 │   │   ├── project-source.ts       # The project path: a folder, a .c3proj or a .c3p
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
 │   │   ├── script-files.ts         # The script files a project registers, walked once for the index, the runtime-trap check and the usage queries
+│   │   ├── ace-types.ts            # Types of the ACE catalogue, addon definitions and the project data the checks read
+│   │   ├── ace-catalog-source.ts   # Builds an ACE catalogue from the editor's files; its cache file, fetch and build script entry
+│   │   ├── ace-catalog-provider.ts # Hands out the catalogue of a release: local copy, cache or fetch, with the fallback release
+│   │   ├── ace-catalog.ts          # Checks a condition or action against a catalogue (validate_project, event tool warnings)
+│   │   ├── addon-definitions.ts    # Third-party addon definitions (addon.json, aces.json) read from folders and .c3addon archives
+│   │   ├── expression-check.ts     # Parses the expressions in ACE parameters and resolves their names
+│   │   ├── event-change-check.ts   # Warnings an event tool adds for the conditions and actions it wrote
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
 │   │   ├── timeline-model.ts       # Track kinds, track folders and custom eases inside timeline files
 │   │   ├── timeline-properties.ts  # What a property track stores for each kind of property
@@ -857,7 +865,7 @@ We welcome contributions! Here's how to get started:
 - **Editor Holds the Project in Memory**: Close and reopen the project in Construct 3 after MCP edits and before saving there, or the editor can overwrite them
 - **No Rename Refactoring**: Timelines and flowcharts cannot be renamed (`rename_event_sheet`, `rename_layout`, `rename_object_type` and `rename_family` rename event sheets, layouts, object types and families with what names them); renaming an event variable (`update_event_variable`) updates only the uses in System variable conditions and actions and in function and custom action call arguments (others are listed, and refuse without force), and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38); `rename_layer` renames it in several layouts in one call. `rename_animation` renames the frame images and the layout instances' start animation, but not text in events. Renaming with reference updates is planned (Phase 7)
 - **Runtime Testing Needs an Export or the Editor's Preview**: Only the Construct editor exports or previews a project, so the runtime tools start from an exported folder (`serve_preview`) or a preview in a browser with a debugging port; they drive Chromium-based browsers (Chrome, Edge) only
-- **No ACE Validation**: Event block conditions/actions are not validated against plugin schemas (the AI caller is expected to know valid ACE IDs). Only the editor load-time rules listed under `validate_project` are checked; triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only. OR blocks are created with `isOrBlock`
+- **ACE Validation**: ACE validation covers the built-in plugins and behaviors of the project's release (when the definitions can be built), built on first use from three files that the server requests from editor.construct.net and cached per user, and the addons whose definitions are loaded; findings are warnings; without network access (or a local copy named by C3_ACE_SOURCE_DIR) these checks are skipped and validate_project says so. The editor load-time rules listed under `validate_project` are checked too; triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only. OR blocks are created with `isOrBlock`
 
 ## License
 

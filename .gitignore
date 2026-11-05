@@ -70,3 +70,7 @@ test-*.cjs
 *-output.txt
 *-output[0-9]*.txt
 *-screenshot.png
+
+# Generated ACE catalogue (built per user, never committed)
+src/construct3/ace-catalog-data.ts
+/ace-catalog/

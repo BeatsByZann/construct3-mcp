@@ -40,6 +40,13 @@ import {
   describeEvent,
   type LoadRuleIssue,
 } from './load-rules.js';
+import { unscannedFilesOf } from './unscanned-uses.js';
+import { aceCatalogProviderFor, describeCatalogSubstitute } from '../ace-catalog-provider.js';
+import { releaseLabel } from '../ace-catalog-source.js';
+import { addonDefinitionsOf } from '../addon-definitions.js';
+import { buildAceContext, checkEventAces, describeEventAceProblem, isBuiltInAddon } from '../ace-catalog.js';
+import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../expression-check.js';
+import type { ProjectData } from '../ace-types.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -168,6 +175,32 @@ export async function validateProjectIntegrity(
   checkMissingAddons(objects, reader, warnings);
   checkMissingBehaviorEntries(layouts, objects, families, warnings);
 
+  // Conditions, actions and expressions against Construct's definitions
+  // A fault inside this step becomes one info issue, so no single value can take the whole report down.
+  try {
+    await checkAcesAndExpressions(
+      reader,
+      {
+        objects,
+        families,
+        sheets: eventSheets,
+        unreadable: {
+          objectTypes: unscannedFilesOf('objectTypes', registeredObjects, objects, objectFailures).map(f => f.file),
+          families: unscannedFilesOf('families', registeredFamilies, families, familyFailures).map(f => f.file),
+          eventSheets: unscannedFilesOf('eventSheets', registeredSheets, eventSheets, sheetFailures).map(f => f.file),
+        },
+      },
+      warnings,
+      info,
+    );
+  } catch {
+    info.push({
+      check: 'ace-check-failed',
+      entity: 'project',
+      message: 'The check of conditions, actions and expressions stopped on an unexpected fault, so it may have found less than it would otherwise. The other checks ran.',
+    });
+  }
+
   // Info checks (orphaned files also warn about file-name-case-mismatch)
   await checkOrphanedFiles(reader, project, warnings, info);
   await checkBackupFiles(reader, info);
@@ -181,8 +214,12 @@ export async function validateProjectIntegrity(
   // expression-syntax, empty-expression, trigger-placement, else-placement,
   // duplicate-object-name, family-plugin-mismatch, file-name-case-mismatch,
   // duplicate-layer-name, missing-behavior-entry, missing-behavior-or-variable,
-  // frame-image, hierarchy-link, orphaned-image, duplicate-function-name, container-member
-  const checksRun = 30;
+  // frame-image, hierarchy-link, orphaned-image, duplicate-function-name,
+  // container-member + the ace- codes, the expression- codes of the
+  // parameters and ace-definitions-unavailable; these count whether or not a
+  // catalogue was found, since they ran and reported why they found nothing
+  // to check
+  const checksRun = 33;
 
   return {
     valid: errors.length === 0 && unscannedFiles.length === 0,
@@ -1226,6 +1263,83 @@ async function checkMissingBehaviorsAndVariables(
         `: ${listFew(where)}. ${kind === 'behavior' ? 'Behaviors' : 'Instance variables'} it has: ${available.length > 0 ? listFew(available.map(n => `"${n}"`)) : 'none'}.`,
       suggestion: `Add the ${kind} to "${objectClass}"${isFamily ? '' : ' or one of its families'} again, or change or delete these conditions and actions. ` +
         'update_object_properties and update_family refuse to remove an instance variable or behavior that events use unless forced.',
+    });
+  }
+}
+
+// ─── Check 6a-2: Conditions, Actions and Expressions ────────
+
+/**
+ * Conditions, actions and the expressions in their parameters, checked against
+ * the definitions of the release the project was saved with (or the fallback
+ * release, said in an info issue), plus the used addons whose definitions are
+ * neither built in nor loaded. Warnings, because the catalogue may lag the
+ * editor. Without a catalogue one info issue says why and nothing else is
+ * reported by these checks. `data` is what the other checks already read, so
+ * the project is not read again.
+ */
+async function checkAcesAndExpressions(
+  reader: Construct3ProjectReader,
+  data: ProjectData,
+  warnings: IntegrityIssue[],
+  info: IntegrityIssue[]
+): Promise<void> {
+  const savedWith = reader.getProject().savedWithRelease;
+  const lookup = await aceCatalogProviderFor(reader).catalogFor(savedWith);
+  if (!lookup.ok) {
+    info.push({ check: 'ace-catalog-unavailable', entity: 'project', message: lookup.message });
+    return;
+  }
+  const substitute = describeCatalogSubstitute(lookup);
+  if (substitute) {
+    info.push({ check: 'ace-catalog-other-release', entity: 'project', message: substitute });
+  }
+
+  const catalog = lookup.catalog;
+  const addons = addonDefinitionsOf(reader);
+  const aceContext = buildAceContext(data);
+  const expressionContext = buildExpressionContext(data, aceContext);
+  /** The entity of a finding: the sheet, and the ACE's SID when it has one. */
+  const where = (sheet: string, sid: number | undefined) =>
+    sid === undefined ? `eventSheets/${sheet}` : `eventSheets/${sheet}/sid:${sid}`;
+
+  for (const [name, sheet] of data.sheets) {
+    for (const problem of checkEventAces(sheet.events, aceContext, addons, catalog)) {
+      warnings.push({
+        check: `ace-${problem.code}`,
+        entity: where(name, problem.sid),
+        message: describeEventAceProblem(problem, catalog.release, savedWith),
+      });
+    }
+  }
+
+  for (const [name, sheet] of data.sheets) {
+    for (const problem of checkEventExpressions(sheet.events, expressionContext, aceContext, addons, catalog)) {
+      warnings.push({
+        check: problem.code,
+        entity: where(name, problem.sid),
+        message: describeEventExpressionProblem(problem, catalog.release, savedWith),
+      });
+    }
+  }
+  if (!expressionContext.complete) {
+    info.push({
+      check: 'expression-names-unchecked',
+      entity: 'project',
+      message: `Names in expressions were only partly checked, because these files could not be read and may declare objects, families, functions or variables: ${listFew(expressionContext.unreadable)}.`,
+    });
+  }
+
+  const seen = new Set<string>();
+  for (const addon of reader.getUsedAddons()) {
+    if ((addon.type !== 'plugin' && addon.type !== 'behavior') || seen.has(`${addon.type}:${addon.id}`)) continue;
+    seen.add(`${addon.type}:${addon.id}`);
+    if (isBuiltInAddon(addon.type, addon.id, catalog) || addons.get(addon.type, addon.id) !== undefined) continue;
+    info.push({
+      check: 'ace-definitions-unavailable',
+      entity: `usedAddons/${addon.type}:${addon.id}`,
+      message: `The ${addon.type} "${addon.id}" is not one of Construct ${releaseLabel(catalog.release)}'s built-in ${addon.type}s and no definitions are loaded for it, so its conditions, actions and expressions were not checked.`,
+      suggestion: 'Load its definitions with load_addon_definitions (the folder holds addon.json and aces.json).',
     });
   }
 }

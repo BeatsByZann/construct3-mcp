@@ -1,5 +1,5 @@
 /**
- * Project metadata tools: update_project_metadata, list_addons, register_addon, unregister_addon.
+ * Project metadata tools: update_project_metadata, list_addons, register_addon, unregister_addon, load_addon_definitions.
  */
 
 import { z } from 'zod';
@@ -8,6 +8,8 @@ import type { WriteResult, Addon } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from '../construct3/templates.js';
 import { withProjectSync } from './project-sync.js';
+import { addonDefinitionsOf, type AddonDefinitions } from '../construct3/addon-definitions.js';
+import type { AddonDefinition } from '../construct3/ace-types.js';
 
 export function registerProjectTools({ server: mcpServer, reader, writer }: MutationToolDeps) {
   const server = withProjectSync(mcpServer, reader);
@@ -171,4 +173,47 @@ export function registerProjectTools({ server: mcpServer, reader, writer }: Muta
       }
     }
   );
+
+  // ─── load_addon_definitions ───────────────────────────────
+
+  server.tool(
+    'load_addon_definitions',
+    'Load a third-party addon\'s definitions (addon.json and aces.json) so that validate_project and the event tools can check its conditions, actions and expressions. '
+      + 'The path is an addon folder, or a folder holding several addon folders; give an absolute path, because a relative one is resolved against the folder the server was started in. '
+      + 'The path must lie inside the project folder (for a .c3p project, the folder that holds the .c3p) or inside a root named in the C3_ADDON_DEFINITIONS variable. '
+      + 'Call it without a path to list the definitions loaded so far. '
+      + 'It changes only what this server checks; it writes nothing to the project.',
+    {
+      path: z.string().min(1).max(4096).optional().describe('Addon folder, or a folder holding addon folders; omit to list what is loaded'),
+    },
+    async (args) => {
+      try {
+        const defs = addonDefinitionsOf(reader);
+        if (args.path === undefined) {
+          return toolResult({ loaded: defs.list().map(summaryOf), skipped: [], nowLoaded: nowLoaded(defs) });
+        }
+        const report = await defs.load(args.path);
+        if (report.loaded.length === 0) {
+          const joined = report.skipped.map(s => `${s.name}: ${s.reason}`).join('; ');
+          const text = joined.endsWith('.') ? joined : `${joined}.`;
+          return toolError(`Error loading addon definitions: ${text}${text.endsWith('Nothing was loaded.') ? '' : ' Nothing was loaded.'}`);
+        }
+        return toolResult({ loaded: report.loaded, skipped: report.skipped, nowLoaded: nowLoaded(defs) });
+      } catch (error) {
+        console.error('[load_addon_definitions] failed:', error);
+        return toolError('Error loading addon definitions. Nothing was loaded.');
+      }
+    }
+  );
+}
+
+/** A definition without its ACEs, as a load report lists it. */
+function summaryOf(definition: AddonDefinition): Omit<AddonDefinition, 'aces'> {
+  const { aces: _aces, ...summary } = definition;
+  return summary;
+}
+
+/** The loaded definitions as "<type>:<id>". */
+function nowLoaded(defs: AddonDefinitions): string[] {
+  return defs.list().map(d => `${d.type}:${d.id}`);
 }

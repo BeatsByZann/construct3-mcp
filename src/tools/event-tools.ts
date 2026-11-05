@@ -174,6 +174,7 @@ import {
   createCustomActionEvent,
 } from '../construct3/templates.js';
 import { withProjectSync } from './project-sync.js';
+import { checkEventChange, warmAceCatalog } from '../construct3/event-change-check.js';
 
 /** Per-sheet cap on change details returned by fix_legacy_behavior_keys. */
 const MAX_REPORTED_CHANGES = 100;
@@ -582,6 +583,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       let undoPlacement: (() => void) | undefined;
       let writeStarted = false;
       try {
+        // The catalogue first: a fetch must not run between the read and the write
+        if (args.conditions.length > 0 || args.actions.length > 0 || args.children.length > 0) await warmAceCatalog(reader);
         // Read the target event sheet
         let sheet: EventSheet;
         try {
@@ -650,6 +653,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         warnings.push(...loadCheck.warnings);
         // A block right before an else block (or between a block and its else block) makes that block continue it; both arrangements load, so the gate does not report it
         warnings.push(...elsePredecessorWarnings(beforeEvents, sheet.events));
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
@@ -1648,6 +1652,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
     },
     async (args) => {
       try {
+        await warmAceCatalog(reader);
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
@@ -1729,6 +1734,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
         warnings.push(...loadCheck.warnings);
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
@@ -2339,6 +2345,10 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices, removeConditionIndices.');
         }
 
+        // The catalogue first: a fetch must not run between the read and the write
+        if (args.updateActions?.length || args.updateConditions?.length || args.addActions?.length || args.addConditions?.length) {
+          await warmAceCatalog(reader);
+        }
         // Read the event sheet
         let sheet: EventSheet;
         try {
@@ -2724,6 +2734,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
         warnings.push(...loadCheck.warnings);
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         // Write back
         writeStarted = true;

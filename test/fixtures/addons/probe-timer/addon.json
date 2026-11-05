@@ -1,0 +1,11 @@
+{
+	"$schema": "../../addon.schema.json",
+	"is-c3-addon": true,
+	"sdk-version": 2,
+	"type": "plugin",
+	"name": "Probe Timer",
+	"id": "ProbeTimer",
+	"version": "1.0.0.0",
+	"author": "test fixture",
+	"description": "A plugin definition for the tests: one condition, one action with a combo, one expression."
+}

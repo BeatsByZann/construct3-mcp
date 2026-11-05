@@ -21,6 +21,8 @@ import { registerRuntimeTools } from './tools/runtime-tools.js';
 import { startC3pSession } from './construct3/project-source.js';
 import { findLeftWorkFolders } from './construct3/c3p-archive.js';
 import { describeArchiveClose, withArchiveSync } from './tools/archive-sync.js';
+import { addonDefinitionsOf, addonRootsFor, loadAddonDefinitionsFromEnv } from './construct3/addon-definitions.js';
+import { delimiter } from 'node:path';
 
 // The project: a folder, its .c3proj file, or a single-file .c3p (served through a working folder); else the working directory
 const projectPath: string = process.argv[2] || process.env.C3_PROJECT_PATH || process.cwd();
@@ -58,6 +60,12 @@ async function main() {
 
     await startC3pSession(projectPath, async (sourcePath, archive) => {
       const reader = await initializeProject(sourcePath);
+      // Addon definitions may be read from the project folder (for a .c3p, the folder that holds it) and the roots the variable names
+      const addons = addonDefinitionsOf(reader);
+      await addons.setRoots(addonRootsFor(reader.getProjectDir(), archive?.archivePath, process.env.C3_ADDON_DEFINITIONS, delimiter));
+      const fromEnv = await loadAddonDefinitionsFromEnv(addons, process.env.C3_ADDON_DEFINITIONS, delimiter);
+      for (const entry of fromEnv.loaded) console.error(`Loaded addon definitions: ${entry.id} (${entry.source})`);
+      for (const entry of fromEnv.skipped) console.error(`Skipped addon definitions: ${entry.name}: ${entry.reason}`);
       let served = server;
       let closeArchive: () => Promise<void> = async () => {};
       if (archive) {
