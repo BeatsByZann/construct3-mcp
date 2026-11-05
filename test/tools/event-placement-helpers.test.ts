@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  elsePlacementError,
   insertIntoContainer,
   placedKindOf,
   placementError,
@@ -94,5 +95,39 @@ describe('placement rules', () => {
     expect(placedKindOf('animation')).toBeUndefined();
     expect(placedKindOf('toString')).toBeUndefined();
     expect(placedKindOf(undefined)).toBeUndefined();
+  });
+});
+
+describe('elsePlacementError', () => {
+  it('accepts an else after a block, also with comments between them, as editor saves have it', () => {
+    const events = [block(1), { eventType: 'comment', text: 'note' }];
+    expect(elsePlacementError({ targetEvents: events, kind: 'root' }, 'end')).toBeUndefined();
+    expect(elsePlacementError({ targetEvents: [block(1)], kind: 'root' }, 'end')).toBeUndefined();
+  });
+
+  it('refuses an else with no event block before it', () => {
+    expect(elsePlacementError({ targetEvents: [], kind: 'root' }, 'end')).toMatch(/cannot be the first event/);
+    expect(elsePlacementError({ targetEvents: [block(1)], kind: 'root' }, 'start')).toMatch(/cannot be the first event/);
+    const onlyComment = [{ eventType: 'comment', text: 'x' }];
+    expect(elsePlacementError({ targetEvents: onlyComment, kind: 'root' }, 'end')).toMatch(/cannot be the first event/);
+  });
+
+  it('refuses an else after a group, variable or include', () => {
+    const group = { eventType: 'group', sid: 2, title: 'G', children: [] };
+    expect(elsePlacementError({ targetEvents: [block(1), group], kind: 'root' }, 'end')).toMatch(/"group" event/);
+    const variable = { eventType: 'variable', sid: 3, name: 'v' };
+    expect(elsePlacementError({ targetEvents: [block(1), variable], kind: 'root' }, 'end')).toMatch(/"variable" event/);
+    const include = { eventType: 'include', includeSheet: 'Other' };
+    expect(elsePlacementError({ targetEvents: [block(1), include], kind: 'root' }, 'end')).toMatch(/"include" event/);
+  });
+
+  it('looks before the sibling for position before, and ignores the event being moved', () => {
+    const a = block(1);
+    const b = block(2);
+    const events = [a, b];
+    expect(elsePlacementError({ targetEvents: events, siblingEvent: b, kind: 'root' }, 'before')).toBeUndefined();
+    expect(elsePlacementError({ targetEvents: events, siblingEvent: a, kind: 'root' }, 'before')).toMatch(/first event/);
+    expect(elsePlacementError({ targetEvents: events, kind: 'root' }, 'end', b)).toBeUndefined();
+    expect(elsePlacementError({ targetEvents: [a], kind: 'root' }, 'end', a)).toMatch(/first event/);
   });
 });

@@ -314,7 +314,7 @@ describe('add_event_block', () => {
     expect(JSON.stringify(block)).not.toContain('isElse');
   });
 
-  it('warns when an else block has no block before it', async () => {
+  it('refuses an else block that has no block before it, and adds one after a block', async () => {
     const { server } = setup({
       eventSheets: new Map([['Sheet1', {
         name: 'Sheet1',
@@ -322,9 +322,9 @@ describe('add_event_block', () => {
         sid: 10,
       }]]),
     });
-    const atStart = parseResult(await server.callTool('add_event_block', { sheetName: 'Sheet1', isElse: true, position: 'start' }));
-    expect(atStart.success).toBe(true);
-    expect(atStart.warnings.some((w: string) => w.includes('no event comes before it'))).toBe(true);
+    const atStart = await server.callTool('add_event_block', { sheetName: 'Sheet1', isElse: true, position: 'start' });
+    expect(atStart.isError).toBe(true);
+    expect(atStart.content[0].text).toContain('cannot be the first event there. Nothing was changed.');
 
     const afterBlock = parseResult(await server.callTool('add_event_block', { sheetName: 'Sheet1', isElse: true }));
     expect(afterBlock.warnings?.some((w: string) => w.includes('before it')) ?? false).toBe(false);
@@ -2527,6 +2527,25 @@ describe('event tool fixes from the #32 review', () => {
     expect(data.success).toBe(true);
     expect(data.warnings.filter((w: string) => w.includes('Else block'))).toHaveLength(1);
     expect(data.warnings[0]).toContain('no event comes before it');
+  });
+
+  it('refuses an else block that would have no event block before it, writing nothing', async () => {
+    const elseCondition = { id: 'else', objectClass: 'System' };
+    const group = { eventType: 'group', sid: 20, title: 'G', description: '', isActiveOnStart: true, children: [] };
+    const sheet = () => ({ eventSheets: new Map([['Sheet1', { name: 'Sheet1', sid: 2, events: [{ eventType: 'block', sid: 10, conditions: [every(11)], actions: [] }, group] }]]) });
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ isElse: true, position: 'start' }, /cannot be the first event there/],
+      [{ conditions: [elseCondition], siblingSid: 10, position: 'before' }, /cannot be the first event there/],
+      [{ isElse: true, position: 'end' }, /but the event before it would be a "group" event/],
+    ];
+    for (const [args, message] of cases) {
+      const { server, writer } = setup(sheet());
+      const result = await server.callTool('add_event_block', { sheetName: 'Sheet1', ...args });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(message);
+      expect(result.content[0].text).toMatch(/ Nothing was changed\.$/);
+      expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    }
   });
 
   it('adds an else block after a block and a trailing comment without an else-placement warning', async () => {

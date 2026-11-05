@@ -991,6 +991,47 @@ export function placementError(kind: PlacedEventKind, container: ResolvedContain
   return `${KIND_LABELS[kind]} is not placed ${CONTAINER_LABELS[container.kind]}: ${reason}. It can go ${allowed}.`;
 }
 
+/**
+ * Why an else block cannot be inserted at the requested position, or
+ * undefined when it can. Construct's editor only offers "else" on an event
+ * block that follows another block in the same container (editor saves have
+ * at most comments between them), so an else with no event block before it,
+ * or after a group, variable, include, function or script, has no editor-made
+ * counterpart and is refused rather than written unverified. Whether the
+ * block before it is triggered is left to the else-placement load rule.
+ * `exclude` is an event being moved, which no longer counts as a neighbour.
+ */
+export function elsePlacementError(
+  container: ResolvedContainer,
+  position: InsertPosition,
+  exclude?: Record<string, unknown>,
+): string | undefined {
+  const events = container.targetEvents.filter(e => e !== exclude);
+  const { siblingEvent } = container;
+  let index: number;
+  if (siblingEvent && (position === 'before' || position === 'after')) {
+    const at = events.indexOf(siblingEvent);
+    index = position === 'after' ? at + 1 : at;
+  } else {
+    index = position === 'end' ? events.length : 0;
+  }
+  // The nearest event before the insertion point that is not a comment
+  let previous: Record<string, unknown> | undefined;
+  for (let i = index - 1; i >= 0; i--) {
+    if (events[i]?.eventType !== 'comment') {
+      previous = events[i];
+      break;
+    }
+  }
+  if (previous === undefined) {
+    return 'An else block needs an event block before it in the same container (only comments may stand between them); it cannot be the first event there.';
+  }
+  if (previous.eventType !== 'block') {
+    return `An else block must follow an event block (only comments may stand between them), but the event before it would be a "${String(previous.eventType)}" event.`;
+  }
+  return undefined;
+}
+
 /** The placement kind of a stored event type, or undefined for a type the placing tools do not handle. */
 export function placedKindOf(eventType: unknown): PlacedEventKind | undefined {
   return typeof eventType === 'string' && Object.hasOwn(KIND_LABELS, eventType) ? eventType as PlacedEventKind : undefined;

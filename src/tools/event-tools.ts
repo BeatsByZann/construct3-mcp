@@ -62,6 +62,7 @@ import {
   parseEventPath,
   ambiguousSidMessage,
   insertIntoContainer,
+  elsePlacementError,
   placementError,
   placedKindOf,
   type PlacedEventKind,
@@ -91,6 +92,7 @@ import {
 import { nothingChanged, stoppedBeforeWrite } from './refusals.js';
 import {
   isElseCondition,
+  isElseBlock,
   createElseCondition,
   setKeyAfterSid,
   setConditionParameters,
@@ -609,6 +611,11 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const container = resolution.container;
         const placement = placementError('block', container);
         if (placement) return toolError(nothingChanged(placement));
+        // An else block needs an event block before it where it lands
+        if (args.isElse || isElseCondition(args.conditions[0])) {
+          const elsePlacement = elsePlacementError(container, args.position);
+          if (elsePlacement) return toolError(nothingChanged(elsePlacement));
+        }
 
         // Collect all objectClass references from entire tree (parent + descendants)
         const allRefs: ObjectRef[] = [];
@@ -2846,6 +2853,11 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
         const placement = placementError(kind, container);
         if (placement) return refuse(placement);
+        // An else block keeps needing an event block before it where it lands
+        if (isElseBlock(moving)) {
+          const elsePlacement = elsePlacementError(container, args.position, moving);
+          if (elsePlacement) return refuse(elsePlacement);
+        }
         // A function block, or an event that holds one, goes only where a function block is placed
         const functionRefusal = movedFunctionBlockRefusal(moving, containerParents(sheet.events, container));
         if (functionRefusal) return refuse(functionRefusal);

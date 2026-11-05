@@ -256,6 +256,22 @@ describe('move_event_block', () => {
     expect(String(blocked.message)).toContain('"amt"');
   });
 
+  it('refuses to move an else block where no event block would come before it, changing nothing', async () => {
+    const { server, reader, writer } = setup();
+    const sheet = await reader.readEventSheet('Sheet1');
+    (sheet.events as unknown as Ev[]).push(block(80), block(82, { conditions: [{ id: 'else', objectClass: 'System', sid: 83 }] }));
+    const toStart = await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 82, position: 'start' });
+    expect(errorText(toStart)).toMatch(/^An else block needs an event block before it in the same container .+ cannot be the first event there\. Nothing was changed\.$/);
+    const intoGroup = await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 82, groupPath: 'H' });
+    expect(errorText(intoGroup)).toMatch(/cannot be the first event there\. Nothing was changed\.$/);
+    // The moved else block itself does not count as the event before its own new place
+    const alone = await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 82, siblingSid: 82, position: 'after' });
+    expect(errorText(alone)).toBe('An event cannot be placed beside itself. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    // Behind a block it moves
+    expect(parse(await server.callTool('move_event_block', { sheetName: 'Sheet1', sid: 82, siblingSid: 20, position: 'after' })).success).toBe(true);
+  });
+
   it('warns when an else block continues another block after the move', async () => {
     const { server, reader } = setup();
     const sheet = await reader.readEventSheet('Sheet1');
