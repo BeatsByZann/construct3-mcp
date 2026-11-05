@@ -122,7 +122,7 @@ describe('add_animation_to_sprite', () => {
   });
 
   it('errors on non-Sprite object', async () => {
-    const { server } = setup({
+    const { server, writer } = setup({
       objects: new Map([['Label', { name: 'Label', 'plugin-id': 'Text', sid: 1 }]]),
     });
     const result = await server.callTool('add_animation_to_sprite', {
@@ -130,7 +130,9 @@ describe('add_animation_to_sprite', () => {
       animationName: 'Walk',
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('not a Sprite');
+    expect(result.content[0].text)
+      .toBe('Object "Label" is not a Sprite. Only Sprite objects have animations. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
   it('errors on duplicate animation name', async () => {
@@ -240,7 +242,7 @@ describe('update_animation_properties', () => {
   });
 
   it('errors on non-Sprite', async () => {
-    const { server } = setup({
+    const { server, writer } = setup({
       objects: new Map([['Label', { name: 'Label', 'plugin-id': 'Text', sid: 1 }]]),
     });
     const result = await server.callTool('update_animation_properties', {
@@ -249,7 +251,9 @@ describe('update_animation_properties', () => {
       speed: 5,
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('not a Sprite');
+    expect(result.content[0].text)
+      .toBe('Object "Label" is not a Sprite. Only Sprite objects have animations. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
   it('warns when isLooping:true and repeatCount>1 are set simultaneously', async () => {

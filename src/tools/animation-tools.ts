@@ -81,7 +81,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
 
         // Verify it's a Sprite
         if (obj['plugin-id'] !== 'Sprite') {
-          return toolError(`Object "${args.objectName}" is a "${obj['plugin-id']}" plugin, not a Sprite. Only Sprite objects have animations.`);
+          return notASprite(args.objectName);
         }
 
         // Navigate to animations.items
@@ -206,7 +206,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
 
         // Verify it's a Sprite
         if (obj['plugin-id'] !== 'Sprite') {
-          return toolError(`Object "${args.objectName}" is a "${obj['plugin-id']}" plugin, not a Sprite. Only Sprite objects have animations.`);
+          return notASprite(args.objectName);
         }
 
         // Navigate to animations.items
