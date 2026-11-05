@@ -95,7 +95,11 @@ function comparable(path: string): string {
   return path.replace(/\\/g, '/').replace(/(?<!^)\/{2,}/g, '/').replace(/^[A-Za-z]:/, drive => drive.toLowerCase());
 }
 
-/** What `path` is shown as: a relative path as it is; an absolute one in its project-relative form when it is the project folder or inside it, else a placeholder. */
+/**
+ * What `path` is shown as: a relative path as it is (the `path` field of an fs error that is relative is taken
+ * as project-relative already); an absolute one in its project-relative form when it is the project folder or
+ * inside it, else a placeholder.
+ */
 function shownPath(path: string, projectDir: string | undefined): string {
   if (!/^(?:[A-Za-z]:[\\/]|[\\/])/.test(path)) return path;
   if (projectDir === undefined || projectDir === '') return OUTSIDE_PATH;

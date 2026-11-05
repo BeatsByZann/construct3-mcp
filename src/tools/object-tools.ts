@@ -11,6 +11,7 @@ import type { Construct3ProjectReader } from '../construct3/project-reader.js';
 import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
 import { validateName, validateSubfolder, toolResult, toolError, notFoundError, folderCaseClashError, deleteRegisteredEntity } from './shared.js';
 import { findFolderPathClash, nameKey } from '../construct3/names.js';
+import { unregisteredNameMessage } from './registered-names.js';
 import {
   getProjectIndex,
   toFamilyMemberUse,
@@ -1670,11 +1671,7 @@ function removalForcedWarnings(entity: string, uses: MemberReference[], verb: 'R
 function entityNotFound(
   kind: 'Object' | 'Family', name: string, registered: string[], suggestions: string[], listTool: string,
 ): ReturnType<typeof toolError> {
-  const sameIgnoringCase = registered.find(n => n.toLowerCase() === name.toLowerCase());
-  if (sameIgnoringCase !== undefined) {
-    return toolError(`${kind} "${name}" not found: names are matched with their letter case. Did you mean "${sameIgnoringCase}"?`);
-  }
-  return notFoundError(kind, name, suggestions, listTool);
+  return toolError(unregisteredNameMessage(kind, name, registered, () => suggestions, listTool) ?? `${kind} "${name}" not found.`);
 }
 
 /** Event uses as listed in a refusal: where and how. */

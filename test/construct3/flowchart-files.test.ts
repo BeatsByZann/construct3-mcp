@@ -67,6 +67,11 @@ describe('describeError', () => {
   it('takes any other absolute path out of the text', () => {
     expect(describeError(new Error('Cannot read C:\\Users\\x\\y.json.'))).toBe('Cannot read <a path outside the project>');
   });
+
+  it('shows a path inside the project folder as a project-relative path', () => {
+    expect(describeError(new Error('Cannot read C:\\Users\\x\\flowcharts\\y.json.'), 'C:\\Users\\x')).toBe('Cannot read flowcharts/y.json');
+    expect(describeError(new Error('Cannot read C:\\Users\\z\\y.json.'), 'C:\\Users\\x')).toBe('Cannot read <a path outside the project>');
+  });
 });
 
 describe('openFlowchart', () => {
@@ -108,6 +113,17 @@ describe('openFlowchart', () => {
       expect(opened.refusal.endsWith('.')).toBe(true);
     });
   }
+
+  it('names a file inside the project by its project-relative path when the read fails', async () => {
+    await registerByHand(project, 'Graph', chartText());
+    const failure = new Error(`Cannot read ${flowchartFile(project.dir, 'Graph')} now.`);
+    vi.spyOn(project.reader, 'readDataFileText').mockRejectedValue(failure);
+    const opened = await inCall(() => openFlowchart(project.reader, 'Graph', []));
+    expect(opened.ok).toBe(false);
+    if (opened.ok) return;
+    expect(opened.refusal).toContain('could not be read: Cannot read flowcharts/Graph.json now.');
+    expect(opened.refusal).not.toContain(project.dir);
+  });
 
   it('opens a node that has no outputs entry, and a node with a list of objects', async () => {
     await registerByHand(project, 'Graph', '{"nodes":[{"sid":1},{"sid":2,"outputs":[{"sid":3}]}]}');

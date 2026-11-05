@@ -21,6 +21,8 @@ import type { MutationToolDeps } from './shared.js';
 import type { Layout } from '../construct3/types.js';
 import type { UnscannedFileReport } from '../construct3/analyzers/unscanned-uses.js';
 import { validateName, toolResult, toolError, notFoundError, boundedRecord } from './shared.js';
+import { refuse } from './refusals.js';
+import { unregisteredNameMessage } from './registered-names.js';
 import { nameKey } from '../construct3/names.js';
 import { findInstanceByUid, layerPathLabel } from '../construct3/layers.js';
 import {
@@ -89,11 +91,6 @@ const targetShape = {
 
 type TargetArgs = { objectName?: string; familyName?: string; layoutName?: string; layerName?: string };
 
-/** `message` as a refusal, ending with "Nothing was changed." */
-function refusal(message: string): ReturnType<typeof toolError> {
-  return toolError(`${message}${message.endsWith('.') ? '' : '.'} Nothing was changed.`);
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -129,11 +126,11 @@ function unsoundStack(target: Target): ReturnType<typeof toolError> | undefined 
   const stack = target.holder.effectTypes;
   if (stack === undefined) return undefined;
   if (!Array.isArray(stack)) {
-    return refusal(`The effectTypes of the ${target.label} is not a list, so this tool does not edit its effects: fix or remove it in the Construct 3 editor first`);
+    return refuse(`The effectTypes of the ${target.label} is not a list, so this tool does not edit its effects: fix or remove it in the Construct 3 editor first`);
   }
   const at = stack.findIndex(e => !isRecord(e) || typeof e.name !== 'string');
   if (at === -1) return undefined;
-  return refusal(`Entry ${at} of the effects of the ${target.label} is not a record with a name, so this tool does not edit its effects `
+  return refuse(`Entry ${at} of the effects of the ${target.label} is not a record with a name, so this tool does not edit its effects `
     + '(it would drop an entry or write the wrong ones): rename or remove it in the Construct 3 editor first');
 }
 
@@ -170,11 +167,7 @@ function useList(uses: readonly EffectUse[]): Array<Record<string, unknown>> {
 
 /** Not found, with the hint for a name that differs only in letter case (names must be the registered ones). */
 function notFound(kind: 'Object' | 'Family', name: string, registered: string[], suggestions: string[], listTool: string) {
-  const sameIgnoringCase = registered.find(n => n.toLowerCase() === name.toLowerCase());
-  if (sameIgnoringCase !== undefined) {
-    return toolError(`${kind} "${name}" not found: names are matched with their letter case. Did you mean "${sameIgnoringCase}"?`);
-  }
-  return notFoundError(kind, name, suggestions, listTool);
+  return toolError(unregisteredNameMessage(kind, name, registered, () => suggestions, listTool) ?? `${kind} "${name}" not found.`);
 }
 
 /** Register list_effects, add_effect, update_effect, remove_effect and reorder_effects. */
@@ -184,9 +177,9 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
   /** The target the arguments name, or the refusal. */
   async function resolveTarget(args: TargetArgs): Promise<{ target: Target } | { refusal: ReturnType<typeof toolError> }> {
     const given = [args.objectName, args.familyName, args.layoutName].filter(v => v !== undefined).length;
-    if (given !== 1) return { refusal: refusal('Give exactly one of objectName, familyName and layoutName.') };
+    if (given !== 1) return { refusal: refuse('Give exactly one of objectName, familyName and layoutName.') };
     if (args.layerName !== undefined && args.layoutName === undefined) {
-      return { refusal: refusal('layerName needs layoutName: it names a layer of that layout.') };
+      return { refusal: refuse('layerName needs layoutName: it names a layer of that layout.') };
     }
     if (args.layoutName !== undefined) {
       if (!(await reader.listLayouts()).includes(args.layoutName)) {
@@ -196,13 +189,13 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
       try {
         layout = await reader.readLayout(args.layoutName);
       } catch (error) {
-        return { refusal: refusal(`Layout "${args.layoutName}" could not be read: ${error instanceof Error ? error.message : String(error)}`) };
+        return { refusal: refuse(`Layout "${args.layoutName}" could not be read: ${error instanceof Error ? error.message : String(error)}`) };
       }
       if (args.layerName === undefined) {
         return { target: { kind: 'layout', entity: args.layoutName, holder: layout, layout, label: `layout "${args.layoutName}"` } };
       }
       const resolved = findLayer(layout, args.layerName, args.layoutName);
-      if ('error' in resolved) return { refusal: refusal(resolved.error) };
+      if ('error' in resolved) return { refusal: refuse(resolved.error) };
       const path = layerPathLabel(resolved.entry);
       return {
         target: {
@@ -225,7 +218,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
       const holder = isFamily ? await reader.readFamily(name) : await reader.readObjectType(name) as unknown as Record<string, unknown>;
       return { target: { kind: isFamily ? 'family' : 'object', entity: name, holder, label: `${isFamily ? 'family' : 'object type'} "${name}"` } };
     } catch (error) {
-      return { refusal: refusal(`${isFamily ? 'Family' : 'Object type'} "${name}" could not be read: ${error instanceof Error ? error.message : String(error)}`) };
+      return { refusal: refuse(`${isFamily ? 'Family' : 'Object type'} "${name}" could not be read: ${error instanceof Error ? error.message : String(error)}`) };
     }
   }
 
@@ -313,7 +306,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
     const names = effectNames(target.holder);
     const other = names.find(n => nameKey(n) === nameKey(name));
     return {
-      refusal: refusal(`The ${target.label} has no effect "${name}" (names are matched with their letter case${other ? `; did you mean "${other}"?` : ''}). `
+      refusal: refuse(`The ${target.label} has no effect "${name}" (names are matched with their letter case${other ? `; did you mean "${other}"?` : ''}). `
         + `Its effects: ${quoted(names) || '(none)'}`),
     };
   }
@@ -374,14 +367,14 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         if (unsound) return unsound;
 
         if (!reader.getUsedAddons().some(a => a.type === 'effect' && a.id === args.effectId)) {
-          return refusal(`Effect "${args.effectId}" is not a usedAddons entry of type effect. Register the addon with register_addon (type "effect") first; `
+          return refuse(`Effect "${args.effectId}" is not a usedAddons entry of type effect. Register the addon with register_addon (type "effect") first; `
             + 'this tool does not register addons, since the addon\'s files must be in the project');
         }
         const name = args.name ?? `${args.effectId.charAt(0).toUpperCase()}${args.effectId.slice(1)}`;
         try {
           validateName(name);
         } catch (error) {
-          return refusal(`Invalid effect name: ${error instanceof Error ? error.message : String(error)}`);
+          return refuse(`Invalid effect name: ${error instanceof Error ? error.message : String(error)}`);
         }
 
         // The name must not match another effect the instances key an entry by, ignoring case
@@ -396,13 +389,13 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         existing.push(...effectNames(target.holder).map(n => ({ who: `The ${target.label}`, name: n })));
         const clash = existing.find(e => nameKey(e.name) === nameKey(name));
         if (clash) {
-          return refusal(`${clash.who} already has an effect "${clash.name}"${hasInstances(target) ? ' (its own or a family\'s)' : ''}, `
+          return refuse(`${clash.who} already has an effect "${clash.name}"${hasInstances(target) ? ' (its own or a family\'s)' : ''}, `
             + 'and this tool does not accept a name that differs only in letter case. Choose another name');
         }
 
         const entries = effectEntries(target.holder);
         if (args.index !== undefined && args.index > entries.length) {
-          return refusal(`The index ${args.index} is past the end: the ${target.label} has ${entries.length} effect(s), so 0 to ${entries.length} are valid`);
+          return refuse(`The index ${args.index} is past the end: the ${target.label} has ${entries.length} effect(s), so 0 to ${entries.length} are valid`);
         }
 
         const parameters = (args.parameters ?? {}) as Parameters;
@@ -452,7 +445,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         const found = findEntry(target, args.name);
         if ('refusal' in found) return found.refusal;
         if (args.isEnabled === undefined && args.parameters === undefined) {
-          return refusal('Nothing to update: give isEnabled or parameters');
+          return refuse('Nothing to update: give isEnabled or parameters');
         }
         const change = { isEnabled: args.isEnabled, parameters: args.parameters as Parameters | undefined };
         const names = effectNames(target.holder);
@@ -466,7 +459,7 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         }
 
         if (args.instanceLayoutName === undefined || args.instanceUid === undefined) {
-          return refusal(`The settings of an effect of the ${target.label} live on each placed instance: give instanceLayoutName and instanceUid for the one to change`);
+          return refuse(`The settings of an effect of the ${target.label} live on each placed instance: give instanceLayoutName and instanceUid for the one to change`);
         }
         if (!(await reader.listLayouts()).includes(args.instanceLayoutName)) {
           return notFoundError('Layout', args.instanceLayoutName, reader.findNearestName(args.instanceLayoutName, 'layouts'), 'list_layouts');
@@ -475,19 +468,19 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         try {
           layout = await reader.readLayout(args.instanceLayoutName);
         } catch (error) {
-          return refusal(`Layout "${args.instanceLayoutName}" could not be read: ${error instanceof Error ? error.message : String(error)}`);
+          return refuse(`Layout "${args.instanceLayoutName}" could not be read: ${error instanceof Error ? error.message : String(error)}`);
         }
         const location = findInstanceByUid(layout, args.instanceUid);
-        if (!location) return refusal(`Layout "${args.instanceLayoutName}" has no instance with UID ${args.instanceUid}`);
+        if (!location) return refuse(`Layout "${args.instanceLayoutName}" has no instance with UID ${args.instanceUid}`);
         const instance = location.instance as unknown as Record<string, unknown>;
         const holders = await instanceHolders(target);
         if (typeof instance.type !== 'string' || !holders.includes(instance.type)) {
-          return refusal(`Instance UID ${args.instanceUid} of layout "${args.instanceLayoutName}" is a "${String(instance.type)}", `
+          return refuse(`Instance UID ${args.instanceUid} of layout "${args.instanceLayoutName}" is a "${String(instance.type)}", `
             + `not an instance of ${target.kind === 'family' ? `a member of family "${target.entity}"` : `"${target.entity}"`}`);
         }
         const state = isRecord(instance.effects) ? instance.effects[args.name] : undefined;
         if (state === undefined) {
-          return refusal(`Instance UID ${args.instanceUid} of "${instance.type}" in layout "${args.instanceLayoutName}" has no entry for the effect "${args.name}". `
+          return refuse(`Instance UID ${args.instanceUid} of "${instance.type}" in layout "${args.instanceLayoutName}" has no entry for the effect "${args.name}". `
             + 'Instances placed after the effect was added get none, because add_instance_to_layout does not write effect entries');
         }
         const { next, changed } = mergedState(state, change);
@@ -639,12 +632,12 @@ export function registerEffectTools({ server: mcpServer, reader, writer }: Mutat
         const current = entries.map(e => String(e.name));
         const repeated = [...new Set(current.filter((n, i) => current.indexOf(n) !== i))];
         if (repeated.length > 0) {
-          return refusal(`Effects of the ${target.label} share a name (${quoted(repeated)}): rename one in the Construct 3 editor first`);
+          return refuse(`Effects of the ${target.label} share a name (${quoted(repeated)}): rename one in the Construct 3 editor first`);
         }
         const valid = args.names.length === current.length
           && new Set(args.names).size === args.names.length && args.names.every(n => current.includes(n));
         if (!valid) {
-          return refusal(`names must list every effect of the ${target.label} exactly once, with its exact name. `
+          return refuse(`names must list every effect of the ${target.label} exactly once, with its exact name. `
             + `Current order: ${quoted(current) || '(no effects)'}`);
         }
         if (args.names.every((n, i) => n === current[i])) {

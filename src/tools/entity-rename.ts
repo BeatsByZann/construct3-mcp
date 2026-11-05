@@ -29,7 +29,7 @@ import type { MutationToolDeps } from './shared.js';
 import type { EventSheet, Layout } from '../construct3/types.js';
 import { validateName, toolResult, toolError, notFoundError, caseClashError } from './shared.js';
 import { findNameClash, nameKey } from '../construct3/names.js';
-import { ProjectReadError, classifyReadError } from '../construct3/project-reader.js';
+import { classifyReadError } from '../construct3/project-reader.js';
 import {
   blocksWithoutForce,
   checkUnscannedFiles,
@@ -55,8 +55,6 @@ import {
   type EntityNameUse,
 } from '../construct3/entity-name-references.js';
 import { parseJsonText } from '../construct3/json-format.js';
-import { StaleFileError } from '../construct3/disk-state.js';
-import { EntityWriteError } from '../construct3/project-writer.js';
 import { readRegisteredTimelines, timelineFileText, type RegisteredTimeline } from './timeline-tools.js';
 import {
   assertUnchangedSinceRead,
@@ -65,11 +63,11 @@ import {
   moveViewStateFiles,
   newFileState,
   newSideWrites,
-  reasonOf,
   replaceForRename,
   rollBackRename,
   scriptFileUses,
   stoppedRename,
+  withoutAbsolutePath,
   type ReadForRename,
   type ViewStateMove,
 } from './rename-files.js';
@@ -188,24 +186,6 @@ function viewStateMoves(category: Category, subfolder: string | undefined, oldNa
     moves.push({ from: ['layouts', 'uistate', ...folders, `${oldName}.instancesBar.json`], to: ['layouts', 'uistate', ...folders, `${newName}.instancesBar.json`] });
   }
   return moves;
-}
-
-/**
- * An error as a message may show it: an fs error (it carries a code and a
- * path) becomes a plain error with its code and the file's path in the
- * project, since its own message spells the absolute path. A stale-file
- * error and an entity write error are returned as they are (the writer
- * words them).
- */
-function withoutAbsolutePath(writer: Writer, error: unknown): unknown {
-  if (error instanceof StaleFileError || error instanceof EntityWriteError) return error;
-  if (error instanceof ProjectReadError) {
-    // Its message spells the absolute path of the file; the cause names it by code and project path
-    const head = /^Failed to read [^"]*"[^"]*"/.exec(error.message)?.[0] ?? 'Failed to read a file';
-    return new Error(`${head}: ${reasonOf(error.cause ?? error, file => writer.projectRelative(file))}`);
-  }
-  const { code, path } = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; path?: unknown };
-  return typeof code === 'string' && typeof path === 'string' ? new Error(reasonOf(error, file => writer.projectRelative(file))) : error;
 }
 
 /** A use as tool results list it, in the file `fileOf` names (project-relative, with its folder and extension). */

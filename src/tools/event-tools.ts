@@ -17,6 +17,7 @@ import {
   deleteRegisteredEntity,
 } from './shared.js';
 import { findFolderPathClash, findNameClash, nameKey } from '../construct3/names.js';
+import { unregisteredNameMessage } from './registered-names.js';
 import type { CustomActionCall } from '../construct3/types.js';
 import {
   SYSTEM_EXPRESSIONS_NOT_IN_R449,
@@ -3997,13 +3998,10 @@ async function unregisteredSheetError(
   reader: MutationToolDeps['reader'],
   name: string,
 ): Promise<ReturnType<typeof toolError> | undefined> {
-  const registered = await reader.listEventSheets();
-  if (registered.includes(name)) return undefined;
-  const sameIgnoringCase = registered.find(n => n.toLowerCase() === name.toLowerCase());
-  if (sameIgnoringCase !== undefined) {
-    return toolError(`Event sheet "${name}" not found: names are matched with their letter case. Did you mean "${sameIgnoringCase}"?`);
-  }
-  return notFoundError('Event sheet', name, reader.findNearestName(name, 'eventsheets'), 'list_eventsheets');
+  const message = unregisteredNameMessage(
+    'Event sheet', name, await reader.listEventSheets(), () => reader.findNearestName(name, 'eventsheets'), 'list_eventsheets',
+  );
+  return message === undefined ? undefined : toolError(message);
 }
 
 /**

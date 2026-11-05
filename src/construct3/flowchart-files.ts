@@ -36,20 +36,21 @@ export type Reader = Pick<Construct3ProjectReader, 'getProjectDir' | 'getProject
 
 /** What these functions use of the writer. */
 export type Writer = Pick<Construct3ProjectWriter,
-  'replaceFile' | 'deleteFile' | 'restoreForCall' | 'updateProject' | 'assertProjectFileCurrent' | 'projectRelative'>;
+  'replaceFile' | 'deleteFile' | 'restoreForCall' | 'updateProject' | 'assertProjectFileCurrent' | 'projectRelative' | 'projectDir'>;
 
 // ─── Messages and paths ────────────────────────────────────
 
 /**
  * An error's message for a tool result: without the ", <syscall> '<path>'"
- * Node appends to fs errors (the project's absolute path), and without a
- * trailing full stop, so a sentence can follow.
+ * Node appends to fs errors (the project's absolute path), without a
+ * trailing full stop, so a sentence can follow, and with any other absolute
+ * path replaced (a path inside `projectDir` by its project-relative form).
  */
-export function describeError(error: unknown): string {
+export function describeError(error: unknown, projectDir?: string): string {
   const message = error instanceof Error ? error.message : String(error);
   return withoutAbsolutePaths(message
     .replace(/,? ?(?:open|read|stat|lstat|scandir|access|rename|unlink|copyfile|mkdir|rmdir|link|symlink|utime) '.*'$/, '')
-    .replace(/\.$/, ''));
+    .replace(/\.$/, ''), projectDir);
 }
 
 /** The project-relative path of a flowchart file, as shown in messages. */
@@ -124,14 +125,14 @@ export async function openFlowchart(reader: Reader, name: string, folders: reado
   try {
     text = await reader.readDataFileText('flowcharts', [...folders, `${name}.json`].join('/'));
   } catch (error) {
-    const reason = describeError(error).replace(/^Failed to read flowcharts file "[^"]*": /, '');
+    const reason = describeError(error, reader.getProjectDir()).replace(/^Failed to read flowcharts file "[^"]*": /, '');
     return { ok: false, refusal: `${registered} could not be read: ${reason}.` };
   }
   let data: unknown;
   try {
     data = parseJsonText(text);
   } catch (error) {
-    return { ok: false, refusal: `${registered} is not valid JSON: ${describeError(error)}.` };
+    return { ok: false, refusal: `${registered} is not valid JSON: ${describeError(error, reader.getProjectDir())}.` };
   }
   const problem = flowchartShapeProblem(data);
   if (problem !== undefined) return { ok: false, refusal: `${registered} does not hold a flowchart: ${problem}.` };
@@ -160,7 +161,7 @@ interface WriteTarget {
  */
 async function failedWriteMessage(writer: Writer, error: unknown, target: WriteTarget): Promise<string> {
   if (error instanceof StaleFileError) return error.message;
-  const cause = describeError(error);
+  const cause = describeError(error, writer.projectDir());
   let untouched = false;
   try {
     untouched = target.state !== undefined && sameFileState(await statFileState(target.filePath), target.state);
@@ -395,9 +396,9 @@ function closing(clean: boolean): string {
  */
 async function failedNewFileMessage(writer: Writer, error: unknown, filePath: string, label: string): Promise<string> {
   if (await removeCreatedFile(writer, filePath)) {
-    return `${describeError(error)}. ${label}, which this call created, was removed again. Nothing was changed.`;
+    return `${describeError(error, writer.projectDir())}. ${label}, which this call created, was removed again. Nothing was changed.`;
   }
-  return `${describeError(error)}. ${label} may have been written by this call and is not registered in project.c3proj; ` +
+  return `${describeError(error, writer.projectDir())}. ${label} may have been written by this call and is not registered in project.c3proj; ` +
     'it could not be removed again, so it was left as it is. Check it before you run the tool again.';
 }
 
@@ -434,8 +435,8 @@ async function failedCreateMessage(reader: Reader, writer: Writer, error: unknow
   const lead = error instanceof CreateRefusedError ? ' project.c3proj was saved while this call was working, after its checks.' : '';
   if (registered !== false) {
     const why = registered === true ? 'project.c3proj still registers it' : 'project.c3proj could not be read to check that it does not register it';
-    const failure = withdraw?.error !== undefined ? ` The registration could not be removed again: ${describeError(withdraw.error)}.` : '';
-    return `${describeError(error)}.${lead} ${label}, which this call created, was kept: ${why}.${failure} ${closing(false)}`;
+    const failure = withdraw?.error !== undefined ? ` The registration could not be removed again: ${describeError(withdraw.error, writer.projectDir())}.` : '';
+    return `${describeError(error, writer.projectDir())}.${lead} ${label}, which this call created, was kept: ${why}.${failure} ${closing(false)}`;
   }
   const removed = await removeCreatedFile(writer, filePath);
   const sentences = [
@@ -445,7 +446,7 @@ async function failedCreateMessage(reader: Reader, writer: Writer, error: unknow
   ];
   if (withdraw?.wrote) sentences.push(`The registration of "${name}" was removed from project.c3proj again.`);
   const end = removed && withdraw?.wrote ? rollbackClosing(shapeChanges) : closing(removed);
-  return `${describeError(error)}.${lead} ${sentences.join(' ')} ${end}`;
+  return `${describeError(error, writer.projectDir())}.${lead} ${sentences.join(' ')} ${end}`;
 }
 
 /**
@@ -561,7 +562,7 @@ interface DeleteTarget {
  */
 async function failedUnregisterMessage(reader: Reader, writer: Writer, error: unknown, target: DeleteTarget, removed: boolean): Promise<string> {
   const { name, folders } = target;
-  const cause = describeError(error);
+  const cause = describeError(error, writer.projectDir());
   if (!removed) return `${cause}. Nothing was changed.`;
   let registered = await registeredOnDisk(reader, name, folders);
   let put: UpdateAttempt = { wrote: false };
@@ -574,7 +575,7 @@ async function failedUnregisterMessage(reader: Reader, writer: Writer, error: un
       ? `${cause}. The registration of "${name}" was put back in project.c3proj. ${rollbackClosing(target.shapeChanges)}`
       : `${cause}. Nothing was changed.`;
   }
-  const why = put.error !== undefined ? ` (${describeError(put.error)})` : '';
+  const why = put.error !== undefined ? ` (${describeError(put.error, writer.projectDir())})` : '';
   const state = registered === false ? `project.c3proj no longer registers "${name}"` : 'project.c3proj could not be read to check that it still registers it';
   return `${cause}. ${state} and the registration could not be put back${why}; ${target.label} was not deleted. ${CHECK_THE_PROJECT}`;
 }
@@ -592,7 +593,7 @@ async function restoreDeletedFile(writer: Writer, filePath: string): Promise<str
     await writer.restoreForCall(filePath, await readFile(backup.path));
     return undefined;
   } catch (error) {
-    return describeError(error);
+    return describeError(error, writer.projectDir());
   }
 }
 
@@ -606,7 +607,7 @@ async function restoreDeletedFile(writer: Writer, filePath: string): Promise<str
  */
 async function failedFileDeleteMessage(reader: Reader, writer: Writer, error: unknown, target: DeleteTarget): Promise<string> {
   const { name, folders, filePath, label } = target;
-  const cause = describeError(error);
+  const cause = describeError(error, writer.projectDir());
   let present: boolean | undefined;
   try {
     present = (await statFileState(filePath)) !== null;
@@ -635,7 +636,7 @@ async function failedFileDeleteMessage(reader: Reader, writer: Writer, error: un
       ? `${cause}.${restored} The registration of "${name}" was put back in project.c3proj. ${rollbackClosing(target.shapeChanges)}`
       : `${cause}.${restored} Nothing was changed.`;
   }
-  const why = put.error !== undefined ? ` (${describeError(put.error)})` : '';
+  const why = put.error !== undefined ? ` (${describeError(put.error, writer.projectDir())})` : '';
   return `${cause}.${restored} The registration of "${name}" could not be put back in project.c3proj${why}, so ${label} is there without a registration. ${CHECK_THE_PROJECT}`;
 }
 
@@ -653,7 +654,7 @@ async function deleteEditorStateFile(writer: Writer, statePath: string, seen: Fi
     return [`Also deleted the editor-state file ${stateLabel}${backup ? ` (its copy is in ${writer.projectRelative(backup)})` : ''}.`];
   } catch (error) {
     if (error instanceof StaleFileError) return [`The editor-state file ${stateLabel} changed on disk during the call, so it was left in place.`];
-    return [`The editor-state file ${stateLabel} could not be deleted: ${describeError(error)}. It was left in place.`];
+    return [`The editor-state file ${stateLabel} could not be deleted: ${describeError(error, writer.projectDir())}. It was left in place.`];
   }
 }
 

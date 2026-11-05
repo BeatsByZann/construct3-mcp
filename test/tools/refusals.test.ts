@@ -58,6 +58,13 @@ describe('nothingChanged and refuse', () => {
     expect(nothingChanged('')).toBe('Nothing was changed.');
   });
 
+  it('puts the full stop before an ending that follows a message without one', () => {
+    expect(nothingChanged('Layout "A" not found Nothing was changed.')).toBe('Layout "A" not found. Nothing was changed.');
+    expect(nothingChanged('Is it there? Nothing was changed.')).toBe('Is it there? Nothing was changed.');
+    expect(nothingChanged('Is it there?Nothing was changed.')).toBe('Is it there? Nothing was changed.');
+    expect(nothingChanged('Layout "A" not found.Nothing was changed.')).toBe('Layout "A" not found. Nothing was changed.');
+  });
+
   it('refuse ends the message once with "Nothing was changed."', () => {
     for (const text of ['No timeline.', 'No timeline. Nothing was changed.', 'No timeline']) {
       const result = refuse(text);

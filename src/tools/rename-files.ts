@@ -19,8 +19,8 @@
 
 import { readFile } from 'fs/promises';
 import { basename } from 'path';
-import type { Construct3ProjectReader } from '../construct3/project-reader.js';
-import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
+import { ProjectReadError, type Construct3ProjectReader } from '../construct3/project-reader.js';
+import { EntityWriteError, type Construct3ProjectWriter } from '../construct3/project-writer.js';
 import type { ImageFileRename } from '../construct3/animation-rename.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
@@ -157,6 +157,24 @@ export function newSideWrites(): RenameSideWrites {
  */
 export function reasonOf(error: unknown, relative: (path: string) => string): string {
   return errorReason(error, { relative });
+}
+
+/**
+ * An error as a message may show it: an fs error (it carries a code and a
+ * path) becomes a plain error with its code and the file's path in the
+ * project, since its own message spells the absolute path. A stale-file
+ * error and an entity write error are returned as they are (the writer
+ * words them).
+ */
+export function withoutAbsolutePath(writer: Pick<Construct3ProjectWriter, 'projectRelative'>, error: unknown): unknown {
+  if (error instanceof StaleFileError || error instanceof EntityWriteError) return error;
+  if (error instanceof ProjectReadError) {
+    // Its message spells the absolute path of the file; the cause names it by code and project path
+    const head = /^Failed to read [^"]*"[^"]*"/.exec(error.message)?.[0] ?? 'Failed to read a file';
+    return new Error(`${head}: ${reasonOf(error.cause ?? error, file => writer.projectRelative(file))}`);
+  }
+  const { code, path } = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; path?: unknown };
+  return typeof code === 'string' && typeof path === 'string' ? new Error(reasonOf(error, file => writer.projectRelative(file))) : error;
 }
 
 /**

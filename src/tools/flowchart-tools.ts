@@ -257,7 +257,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         return toolResult({ flowcharts: names, count: names.length });
       } catch (error) {
         console.error('[list_flowcharts] failed:', error);
-        return toolError(`Error listing flowcharts: ${describeError(error)}.`);
+        return toolError(`Error listing flowcharts: ${describeError(error, reader.getProjectDir())}.`);
       }
     }
   );
@@ -279,7 +279,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         return toolResult(opened.flowchart.data);
       } catch (error) {
         console.error('[get_flowchart_details] failed:', error);
-        return toolError(`Error getting flowchart details: ${describeError(error)}.`);
+        return toolError(`Error getting flowchart details: ${describeError(error, reader.getProjectDir())}.`);
       }
     }
   );

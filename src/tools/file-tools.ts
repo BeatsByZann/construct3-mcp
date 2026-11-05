@@ -13,6 +13,7 @@ import { basename, dirname, isAbsolute, relative, sep } from 'node:path';
 import type { MutationToolDeps } from './shared.js';
 import { folderCaseClashError, toolError, toolResult, validateFileName, validateSubfolder } from './shared.js';
 import { withProjectSync } from './project-sync.js';
+import { refuse } from './refusals.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { errorReason } from '../construct3/error-text.js';
 import { StaleFileError, statFileState } from '../construct3/disk-state.js';
@@ -37,11 +38,6 @@ type Reader = MutationToolDeps['reader'];
  * scripts, not parsed JSON.
  */
 export const MAX_PROJECT_FILE_BYTES = 100 * 1024 * 1024;
-
-/** A refusal made before anything was changed: the message, then "Nothing was changed.". */
-function refuse(message: string) {
-  return toolError(`${message.replace(/\.$/, '')}. Nothing was changed.`);
-}
 
 /** A refusal found inside a project update, which then writes nothing; the tool answers it with refuse(). */
 class Refusal extends Error {}
