@@ -20,6 +20,13 @@ describe('stoppedBeforeWrite', () => {
       .toBe('The change was stopped before anything was written: Layout is gone. Nothing was changed.');
   });
 
+  it('adds no full stop after a question mark or an exclamation mark', () => {
+    expect(stoppedBeforeWrite(new Error('Is layout "A" open in the editor?'), PROJECT))
+      .toBe('The change was stopped before anything was written: Is layout "A" open in the editor? Nothing was changed.');
+    expect(stoppedBeforeWrite(new Error('Stop!'), PROJECT))
+      .toBe('The change was stopped before anything was written: Stop! Nothing was changed.');
+  });
+
   it('shows no absolute path, and words an fs error from its code and path', () => {
     expect(stoppedBeforeWrite(new Error('Cannot read C:\\G\\layouts\\A.json and D:\\Other\\b.json'), PROJECT))
       .toBe('The change was stopped before anything was written: Cannot read layouts/A.json and <a path outside the project>. Nothing was changed.');

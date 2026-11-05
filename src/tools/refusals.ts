@@ -34,5 +34,5 @@ export function refuse(message: string) {
  */
 export function stoppedBeforeWrite(error: unknown, projectDir?: string): string {
   const reason = errorReason(error, { projectDir }).replace(/\.\s*Nothing was written$/, '');
-  return `The change was stopped before anything was written: ${reason}. Nothing was changed.`;
+  return nothingChanged(`The change was stopped before anything was written: ${reason}`);
 }
