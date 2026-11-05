@@ -53,7 +53,7 @@ All notable changes to the Construct3 MCP Server are documented here.
 
 ### Changed
 
-- `update_script_event` (remove) and `delete_event_from_sheet` write an event left without sub-events without the `children` key, as `move_event_block` does and as the editor saves such an event; a group keeps its list (#ISSUE).
+- `update_script_event` (remove) and `delete_event_from_sheet` write an event left without sub-events without the `children` key, as `move_event_block` does and as editor-saved blocks almost always are; a group keeps its list (#ISSUE).
 - Error text in tool results no longer shows an absolute path: one error-text helper words a path inside the project folder as its project-relative path (written with `/`, the folder itself as `.`) and any other drive, UNC or POSIX path as `<a path outside the project>`, for the timeline, tilemap, template, replace, usage, file, flowchart and rename tools and for a failed entity write and its rollback message. A POSIX path with a space in it that a message prints unquoted is cut at the space (#ISSUE).
 - `add_event_to_sheet` refuses an argument it does not take whose name ends in `sid`, `eventpath` or `grouppath` (ignoring case), such as a misspelled `parentSid`, instead of dropping it and adding the event at the top level. `add_event_block` warns that "Set return value" is used outside a function only when the new block does not go inside a function block (before, it always did), and an error in either tool after the event is placed in memory now reads "The change was stopped before anything was written: ..." and ends with "Nothing was changed." (#ISSUE).
 - `pack_project` marks the names of archive entries that hold characters outside ASCII as UTF-8 (flag bit 11), as ZIP readers expect (#ISSUE).

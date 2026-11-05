@@ -896,8 +896,10 @@ export type PlacedEventKind = 'block' | 'comment' | 'script' | 'variable' | 'gro
 /**
  * After an event was taken out of `owner`'s sub-events: drop the `children` key
  * when the list is now empty, so an event left without sub-events is written
- * without the key, as the editor writes it. A group keeps its list, and the top
- * level (`owner` undefined) has none.
+ * without the key, as editor-saved blocks almost always are (a few carry
+ * `"children": []`; the editor loads both forms). A group keeps its list, since
+ * the editor saves an empty group with one, and the top level (`owner`
+ * undefined) has none.
  */
 export function dropEmptiedChildren(owner: Record<string, unknown> | undefined): void {
   if (owner === undefined || owner.eventType === 'group') return;
