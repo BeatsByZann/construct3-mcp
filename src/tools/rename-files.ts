@@ -444,11 +444,6 @@ export function joinRollbackMessages(core: string, extras: { putBack: string[]; 
   return `${head} Of the other files the call changed: ${parts.join('; ')}.${CHECK}`;
 }
 
-/** A JavaScript string literal (double, single or back quotes) that is `name`, ignoring case. */
-export function jsQuotedNamePattern(name: string): RegExp {
-  return new RegExp(`(["'\`])${name.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}\\1`, 'iu');
-}
-
 /**
  * The lines of the project script files (rootFileFolders.script, on the
  * reference index's walk) that `test` matches, and the script files that

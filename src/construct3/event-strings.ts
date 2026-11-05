@@ -65,8 +65,8 @@ export function walkEventStrings(sheet: EventSheet | undefined, visitor: EventSt
             ...(typeof ace.id === 'string' ? { id: ace.id } : {}),
           };
           visitor.ace?.(site, ace);
-          if (Array.isArray(ace.script)) {
-            for (const line of ace.script) {
+          if (typeof ace.script === 'string' || Array.isArray(ace.script)) {
+            for (const line of Array.isArray(ace.script) ? ace.script : [ace.script]) {
               if (typeof line === 'string') visitor.scriptLine?.(site, line);
             }
           }
@@ -97,7 +97,13 @@ export function walkEventStrings(sheet: EventSheet | undefined, visitor: EventSt
   }
 }
 
-/** A pattern that finds `name` quoted in script text (double, single or back quotes), ignoring case. */
-export function quotedNamePattern(name: string): RegExp {
-  return new RegExp(`(["'\`])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\1`, 'i');
+/**
+ * A pattern that finds `name` quoted in script text (double, single or back
+ * quotes), ignoring case. With `unicode` it compiles with the `u` flag, so a
+ * character outside the Basic Multilingual Plane is one character and case is
+ * folded the Unicode way, as a JavaScript string literal in a script file is
+ * compared.
+ */
+export function quotedNamePattern(name: string, options: { unicode: boolean }): RegExp {
+  return new RegExp(`(["'\`])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\1`, options.unicode ? 'iu' : 'i');
 }

@@ -128,7 +128,7 @@ export function findLayoutBindings(layouts: ReadonlyMap<string, Layout>, sheetNa
 function walkLayoutNameUses(sheet: EventSheet, file: string, layoutName: string, newName?: string): EntityNameUse[] {
   const uses: EntityNameUse[] = [];
   const key = nameKey(layoutName);
-  const scriptPattern = quotedNamePattern(layoutName);
+  const scriptPattern = quotedNamePattern(layoutName, { unicode: false });
   /** Whether the condition or action being visited belongs to System (the ace visitor runs before its parameters) */
   let onSystem = false;
   const variableValue = (variable: Record<string, unknown>, eventPath: string) => {

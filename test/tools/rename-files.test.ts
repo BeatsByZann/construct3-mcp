@@ -15,12 +15,12 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { currentToolCall, fileKey, runInToolCall, StaleFileError, statFileState } from '../../src/construct3/disk-state.js';
+import { quotedNamePattern } from '../../src/construct3/event-strings.js';
 import {
   assertUnchangedSinceRead,
   createFileForCall,
   entityFileSegments,
   joinRollbackMessages,
-  jsQuotedNamePattern,
   moveFileForRename,
   moveViewStateFiles,
   newFileState,
@@ -668,9 +668,9 @@ describe('joinRollbackMessages', () => {
   });
 });
 
-describe('jsQuotedNamePattern and scriptFileUses', () => {
+describe('quotedNamePattern (unicode) and scriptFileUses', () => {
   it('finds the name in a JavaScript string literal of any quote, ignoring case, and not a longer name', () => {
-    const pattern = jsQuotedNamePattern('Level 2');
+    const pattern = quotedNamePattern('Level 2', { unicode: true });
     expect(pattern.test('goToLayout("level 2")')).toBe(true);
     expect(pattern.test("'Level 2'")).toBe(true);
     expect(pattern.test('`Level 2`')).toBe(true);
@@ -688,7 +688,7 @@ describe('jsQuotedNamePattern and scriptFileUses', () => {
     await writeFile(at('scripts', 'main.js'), 'start();\r\n  goToLayout("level 2");\r\n');
     await writeFile(at('scripts', 'lib', 'util.js'), "const name = 'Level 2';\nconst other = \"Level 22\";\n");
     await load();
-    const pattern = jsQuotedNamePattern('Level 2');
+    const pattern = quotedNamePattern('Level 2', { unicode: true });
     const result = await scriptFileUses(reader, line => pattern.test(line));
     expect(result.lines).toEqual([
       { path: 'scripts/main.js', line: 'goToLayout("level 2");' },

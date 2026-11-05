@@ -21,7 +21,7 @@ describe('resolveEventBySid argument', () => {
   });
 
   it('names the given argument in the ambiguous-SID message', () => {
-    const found = resolveEventBySid(twice(), 7, { sheetName: 'S', action: 'put the event into', argument: 'parentEventPath' });
+    const found = resolveEventBySid(twice(), 7, { sheetName: 'S', action: 'place the event in', argument: 'parentEventPath' });
     expect('error' in found && found.error).toContain('Call again with parentEventPath set to the path of the event you mean');
     expect('error' in found && found.error).not.toContain('with eventPath');
   });

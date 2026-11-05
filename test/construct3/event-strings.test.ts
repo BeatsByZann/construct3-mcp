@@ -52,6 +52,13 @@ describe('walkEventStrings', () => {
     expect(lines.sort()).toEqual(['action 1:one', 'action 1:two', 'script:whole'].sort());
   });
 
+  it('hands the line of a script action whose script is one string, as it does for a script event', () => {
+    const lines: string[] = [];
+    const oneString = [{ eventType: 'block', conditions: [], actions: [{ type: 'script', script: 'single' }, { type: 'script', script: 5 }, { type: 'script', script: ['a', 'b'] }] }];
+    walkEventStrings(sheet(oneString), { scriptLine: (site, line) => lines.push(`${site.ace}:${line}`) });
+    expect(lines).toEqual(['action 0:single', 'action 2:a', 'action 2:b']);
+  });
+
   it('takes a sheet without events', () => {
     const seen: string[] = [];
     walkEventStrings(undefined, { event: (_e, p) => seen.push(p) });
@@ -62,11 +69,24 @@ describe('walkEventStrings', () => {
 
 describe('quotedNamePattern', () => {
   it('finds the name in double, single and back quotes, ignoring case, with regex characters escaped', () => {
-    const pattern = quotedNamePattern('Level (2).x');
-    expect(pattern.test('go("level (2).X")')).toBe(true);
-    expect(pattern.test("go('Level (2).x')")).toBe(true);
-    expect(pattern.test('go(`Level (2).x`)')).toBe(true);
-    expect(pattern.test('go("Level 2x")')).toBe(false);
-    expect(pattern.test('go("Level (2).x\')')).toBe(false);
+    for (const unicode of [false, true]) {
+      const pattern = quotedNamePattern('Level (2).x', { unicode });
+      expect(pattern.test('go("level (2).X")')).toBe(true);
+      expect(pattern.test("go('Level (2).x')")).toBe(true);
+      expect(pattern.test('go(`Level (2).x`)')).toBe(true);
+      expect(pattern.test('go("Level 2x")')).toBe(false);
+      expect(pattern.test('go("Level (2).x\')')).toBe(false);
+      expect(pattern.test('"Level (2).xy"')).toBe(false);
+    }
+  });
+
+  it('folds letter case the Unicode way only when asked to', () => {
+    // U+212A (the Kelvin sign) is the capital of "k" only under Unicode case folding
+    expect(quotedNamePattern('k', { unicode: true }).test('"K"')).toBe(true);
+    expect(quotedNamePattern('k', { unicode: false }).test('"K"')).toBe(false);
+    expect(quotedNamePattern('K', { unicode: false }).test('"k"')).toBe(true);
+    // A name with characters outside the Basic Multilingual Plane matches whole
+    expect(quotedNamePattern('\u{10428}', { unicode: true }).test('"\u{10400}"')).toBe(true);
+    expect(quotedNamePattern('\u{10428}', { unicode: true }).test('"\uD801"')).toBe(false);
   });
 });

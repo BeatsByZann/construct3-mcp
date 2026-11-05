@@ -99,14 +99,16 @@ describe('resolveContainer', () => {
     expect(errorOf(resolveContainer(sheet(), 'S', { siblingSid: 99, position: 'after' })))
       .toContain('Event with SID 99 not found in sheet "S"');
     const events = [block(7), { eventType: 'group', title: 'H', children: [block(7)], sid: 9 }];
-    expect(errorOf(resolveContainer(events, 'S', { siblingSid: 7, position: 'after' })))
-      .toContain('Call again with siblingEventPath set to the path of the event you mean');
+    const sibling = errorOf(resolveContainer(events, 'S', { siblingSid: 7, position: 'after' }));
+    expect(sibling).toContain('Call again with siblingEventPath set to the path of the event you mean');
+    expect(sibling).toContain('refusing to guess which one to place the event beside.');
   });
 
   it('refuses a parentSid several events share and names parentEventPath', () => {
     const events = [block(7), { eventType: 'group', title: 'H', children: [block(7)], sid: 9 }];
-    expect(errorOf(resolveContainer(events, 'S', { parentSid: 7, position: 'end' })))
-      .toContain('Call again with parentEventPath set to the path of the event you mean');
+    const parent = errorOf(resolveContainer(events, 'S', { parentSid: 7, position: 'end' }));
+    expect(parent).toContain('Call again with parentEventPath set to the path of the event you mean');
+    expect(parent).toContain('refusing to guess which one to place the event in.');
   });
 
   it('picks one of several parents with parentEventPath', () => {
@@ -182,6 +184,28 @@ describe('scope helpers', () => {
     expect(elsePredecessorWarnings(before, [block(30), block(31), block(33), elseBlock(32)])).toHaveLength(1);
     // A comment placed between them changes nothing
     expect(elsePredecessorWarnings(before, [block(30), block(31), { eventType: 'comment', text: 'c' }, elseBlock(32)])).toEqual([]);
+  });
+
+  it('elsePredecessors skips an entry that is not an object and an else block with no SID', () => {
+    const elseBlock = (sid?: number): Ev => ({ eventType: 'block', conditions: [{ id: 'else', objectClass: 'System', sid: 1 }], actions: [], ...(sid === undefined ? {} : { sid }) });
+    const events = [null, 'text', 7, [elseBlock(60)], block(61), elseBlock(), elseBlock(62), { eventType: 'block', conditions: [], actions: [] }, elseBlock(63)];
+    expect([...elsePredecessors(events)]).toEqual([[62, undefined], [63, undefined]]);
+    // The scan goes on below an entry it skipped over, and below an else block with no SID
+    const nested = [block(70, [null as unknown as Ev, elseBlock(), elseBlock(71)]),{ eventType: 'comment', text: 'c' }];
+    expect([...elsePredecessors(nested)]).toEqual([[71, undefined]]);
+  });
+
+  it('elsePredecessorWarnings says an event without a SID where the neighbour had none', () => {
+    const elseBlock = (sid: number): Ev => ({ eventType: 'block', conditions: [{ id: 'else', objectClass: 'System', sid: sid + 1 }], actions: [], sid });
+    const noSid = { eventType: 'block', conditions: [], actions: [] };
+    expect(elsePredecessorWarnings([noSid, elseBlock(32)], [block(210), elseBlock(32)])).toEqual([
+      'The else block with SID 32 now follows the event with SID 210 instead of an event without a SID, so it runs when that event\'s conditions are false.',
+    ]);
+    expect(elsePredecessorWarnings([block(210), elseBlock(32)], [noSid, elseBlock(32)])).toEqual([
+      'The else block with SID 32 now follows an event without a SID instead of the event with SID 210, so it runs when that event\'s conditions are false.',
+    ]);
+    // An else block with no SID, and one that was not there before, give no warning
+    expect(elsePredecessorWarnings([block(210), elseBlock(32)], [block(211), { ...elseBlock(32), sid: undefined }, elseBlock(40)])).toEqual([]);
   });
 
   it('stops scanning for else blocks in a sheet nested deeper or larger than the search limits', () => {

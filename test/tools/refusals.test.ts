@@ -58,6 +58,13 @@ describe('nothingChanged and refuse', () => {
     expect(nothingChanged('')).toBe('Nothing was changed.');
   });
 
+  it('puts the full stop after a closing quote, and adds no second ending to one that has it', () => {
+    expect(nothingChanged('Layout "A"')).toBe('Layout "A". Nothing was changed.');
+    expect(nothingChanged('Layout "A" Nothing was changed.')).toBe('Layout "A". Nothing was changed.');
+    expect(nothingChanged('Layout "A". Nothing was changed.')).toBe('Layout "A". Nothing was changed.');
+    expect(nothingChanged(' Nothing was changed.')).toBe('Nothing was changed.');
+  });
+
   it('puts the full stop before an ending that follows a message without one', () => {
     expect(nothingChanged('Layout "A" not found Nothing was changed.')).toBe('Layout "A" not found. Nothing was changed.');
     expect(nothingChanged('Is it there? Nothing was changed.')).toBe('Is it there? Nothing was changed.');

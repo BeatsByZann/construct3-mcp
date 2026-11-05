@@ -54,13 +54,13 @@ import {
   renameSheetIncludes,
   type EntityNameUse,
 } from '../construct3/entity-name-references.js';
+import { quotedNamePattern } from '../construct3/event-strings.js';
 import { parseJsonText } from '../construct3/json-format.js';
 import { readRegisteredTimelines, type RegisteredTimeline } from './timeline-tools.js';
 import { jsonFileText } from './timeline-writes.js';
 import {
   assertUnchangedSinceRead,
   entityFileSegments,
-  jsQuotedNamePattern,
   moveViewStateFiles,
   newFileState,
   newSideWrites,
@@ -274,7 +274,7 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     uses = [...findLayoutNameUses(sheets, oldName), ...findInstanceVariableValues(await reader.readAllLayouts(), oldName)];
   }
   // Project script files: listed, never changed
-  const quoted = jsQuotedNamePattern(oldName);
+  const quoted = quotedNamePattern(oldName, { unicode: true });
   const scripts = await scriptFileUses(reader, line => quoted.test(line));
   const scriptEntries = scripts.lines.map(l => ({ in: l.path, kind: 'script file', value: l.line }));
   const definite = uses.filter(u => u.definite);

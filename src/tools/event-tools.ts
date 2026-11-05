@@ -198,12 +198,17 @@ const DANGLING_KIND_LABELS: Record<DeleteReferenceKind, string> = {
 /**
  * Why a reference check that stopped at its traversal limit refuses without
  * force: what it did not reach is unknown, as for a file it could not parse.
- * `limit` says which limit it was: the event count (the default) or the depth
- * events are nested to.
+ * `limit` says which limit it was: the event count (the default), the depth
+ * events are nested to, or both.
  */
 function traversalLimitReason(checked: string, limit: ReferenceCheckLimit = 'events'): string {
   if (limit === 'depth') {
     return `The check for ${checked} stopped at its nesting-depth limit (events nested more than ${REFERENCE_CHECK_MAX_DEPTH} deep), ` +
+      'so uses further on are unknown.';
+  }
+  if (limit === 'both') {
+    return `The check for ${checked} stopped at both its traversal limit (${REFERENCE_CHECK_MAX_EVENTS.toLocaleString('en-US')} events ` +
+      `across all event sheets) and its nesting-depth limit (events nested more than ${REFERENCE_CHECK_MAX_DEPTH} deep), ` +
       'so uses further on are unknown.';
   }
   return `The check for ${checked} stopped at its traversal limit (${REFERENCE_CHECK_MAX_EVENTS.toLocaleString('en-US')} events ` +

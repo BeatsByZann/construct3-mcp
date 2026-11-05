@@ -920,7 +920,7 @@ export function insertIntoContainer(container: ResolvedContainer, position: Inse
  * none of these is refused (placementError).
  *
  * Entries decided by an editor run or a count. Editor runs: Construct 3
- * r506-2, free edition, opened a project with the event there, saved it and
+ * r506-2, Free edition, opened a project with the event there, saved it and
  * reopened it. Counts: an r495.2 editor-saved project.
  * - function-block in group: opened and kept by Construct 3 r506-2
  * - function-block in block: opened and kept by r506-2 under a block with no
@@ -1087,7 +1087,7 @@ export function resolveContainer(
   }
   if (locator.parentSid !== undefined) {
     const found = resolveEventBySid(events, locator.parentSid, {
-      sheetName, action: 'put the event into', eventPath: locator.parentEventPath, argument: 'parentEventPath',
+      sheetName, action: 'place the event in', eventPath: locator.parentEventPath, argument: 'parentEventPath',
     });
     if ('error' in found) return { error: found.error };
     const owner = found.match.event;
@@ -1099,7 +1099,7 @@ export function resolveContainer(
   }
   if (locator.siblingSid !== undefined) {
     const found = resolveEventBySid(events, locator.siblingSid, {
-      sheetName, action: 'put the event beside', eventPath: locator.siblingEventPath, argument: 'siblingEventPath',
+      sheetName, action: 'place the event beside', eventPath: locator.siblingEventPath, argument: 'siblingEventPath',
     });
     if ('error' in found) return { error: found.error };
     const enclosing = findEnclosingEvents(events as unknown as C3Event[], found.match.event as unknown as C3Event) ?? [];
@@ -1175,7 +1175,7 @@ export function elsePredecessors(events: readonly unknown[]): Map<number, number
  */
 export function elsePredecessorWarnings(before: readonly unknown[], after: readonly unknown[]): string[] {
   const was = elsePredecessors(before);
-  const named = (sid: number | undefined) => (sid === undefined ? 'no event with a SID' : `the event with SID ${sid}`);
+  const named = (sid: number | undefined) => (sid === undefined ? 'an event without a SID' :`the event with SID ${sid}`);
   const warnings: string[] = [];
   for (const [sid, now] of elsePredecessors(after)) {
     if (!was.has(sid) || was.get(sid) === now) continue;

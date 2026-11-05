@@ -42,6 +42,7 @@ import {
   isRecord,
   mentionsAny,
   NAME_PARAMETER_KEYS,
+  combineLimits,
   referenceAt,
   REFERENCE_CHECK_MAX_DEPTH,
   REFERENCE_CHECK_MAX_EVENTS,
@@ -331,14 +332,14 @@ export function variableScriptReads(
       const frame = stack.pop()!;
       if (frame.depth > REFERENCE_CHECK_MAX_DEPTH) {
         result.complete = false;
-        result.limit ??= 'depth';
+        result.limit = combineLimits(result.limit, 'depth');
         continue;
       }
       const localScopes = frame.depth === 0 ? frame.scopes : [...frame.scopes, frame.list];
       for (const ev of frame.list) {
         if (++nodes > REFERENCE_CHECK_MAX_EVENTS) {
           result.complete = false;
-          result.limit = 'events';
+          result.limit = combineLimits(result.limit, 'events');
           return result;
         }
         if (!isRecord(ev)) continue;
@@ -452,7 +453,7 @@ export async function planVariableRename(
     ...found.notUpdated,
     ...scripts.reads.map((r): UseNotUpdated => ({ sheet: r.sheet, path: r.path, ...(r.sid !== undefined ? { sid: r.sid } : {}), value: r.line, reason: 'script' })),
   ];
-  const limit = found.limit ?? scripts.limit;
+  const limit = combineLimits(found.limit, scripts.limit);
   return {
     found,
     notUpdated,

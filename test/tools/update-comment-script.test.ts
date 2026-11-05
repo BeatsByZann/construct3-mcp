@@ -186,7 +186,7 @@ describe('update_script_event', () => {
     const { server, writer } = setup();
     const data = parse(await server.callTool(SCRIPT_TOOL, { sheetName: 'Sheet1', groupPath: 'G', index: 2, remove: true, expectedText: 'a = 1;' }));
     expect(data).toMatchObject({ success: true, action: 'deleted', eventPath: 'events[1].children[2]' });
-    expect(data.warnings).toEqual(['The else block with SID 230 now follows the event with SID 210 instead of no event with a SID, so it runs when that event\'s conditions are false.']);
+    expect(data.warnings).toEqual(['The else block with SID 230 now follows the event with SID 210 instead of an event without a SID, so it runs when that event\'s conditions are false.']);
     expect(groupG(written(writer)).map(e => e.eventType)).toEqual(['comment', 'block', 'block']);
   });
 

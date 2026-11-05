@@ -102,6 +102,18 @@ describe('event sheet uses', () => {
     expect(JSON.stringify(data)).toContain('"parameters":{"alpha":"a value","text":"\\"x\\""}');
   });
 
+  it('lists an object a script action reads when its script is one string, not a list of lines', () => {
+    const oneString = () => [{ eventType: 'block', conditions: [], actions: [
+      { type: 'script', script: 'runtime.objects.Alpha.getFirstInstance();' },
+      { type: 'script', script: 'runtime.objects.Beta.getFirstInstance();' },
+    ] }];
+    const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(oneString())]]), 'Alpha', 'list');
+    expect(uses.map(u => `${u.kind}:${u.ace}:${u.value}`)).toEqual(['script:action 0:runtime.objects.Alpha.getFirstInstance();']);
+    const data = sheet(oneString());
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(oneString()), 'list')).toBe(0);
+    expect(JSON.stringify(data)).toContain('"script":"runtime.objects.Alpha.getFirstInstance();"');
+  });
+
   it('says where a use is', () => {
     const [use] = findObjectNameUsesInSheets(new Map([['Main', sheet(events())]]), 'Alpha', 'list').filter(u => u.kind === 'expression' && u.parameter === 'x');
     expect(objectNameUseLocation(use)).toBe('"Main" events[2] action 0 "x"');

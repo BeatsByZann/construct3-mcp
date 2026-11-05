@@ -47,8 +47,14 @@ const MAX_DEPTH = 50;
 /** Nesting depth (lists inside lists) beyond which a check stops, reporting complete: false */
 export const REFERENCE_CHECK_MAX_DEPTH = MAX_DEPTH;
 
-/** Which traversal limit stopped a check: more events than the event limit, or events nested deeper than the depth limit. */
-export type ReferenceCheckLimit = 'events' | 'depth';
+/** Which traversal limit stopped a check: more events than the event limit, events nested deeper than the depth limit, or both. */
+export type ReferenceCheckLimit = 'events' | 'depth' | 'both';
+
+/** The limit a check stopped at when two walks of it stopped at `first` and `second` (either may be undefined): both when they differ. */
+export function combineLimits(first: ReferenceCheckLimit | undefined, second: ReferenceCheckLimit | undefined): ReferenceCheckLimit | undefined {
+  if (first === undefined || first === second) return second ?? first;
+  return second === undefined ? first : 'both';
+}
 
 /**
  * System ACEs whose "variable" parameter names an event variable (parameter
@@ -170,7 +176,8 @@ interface AceSite {
 /**
  * Visit every condition and action of `sheets`, except those of the events in
  * `skip` (and below them). Returns the limit that stopped the walk, or
- * undefined when it reached everything (the event limit when both stopped it).
+ * undefined when it reached everything ('both' when events were nested too
+ * deep and there were also too many events).
  */
 function walkAces(sheets: ReadonlyMap<string, unknown>, skip: ReadonlySet<object>, visit: (site: AceSite) => void): ReferenceCheckLimit | undefined {
   interface Frame {
@@ -189,14 +196,14 @@ function walkAces(sheets: ReadonlyMap<string, unknown>, skip: ReadonlySet<object
     while (stack.length > 0) {
       const frame = stack.pop()!;
       if (frame.depth > MAX_DEPTH) {
-        stopped ??= 'depth';
+        stopped = combineLimits(stopped, 'depth');
         continue;
       }
       // Variables beside an event are local unless the list is a sheet's top level (globals)
       const localScopes = frame.depth === 0 ? frame.scopes : [...frame.scopes, frame.list];
       for (const ev of frame.list) {
         if (++nodes > MAX_NODES) {
-          stopped = 'events';
+          stopped = combineLimits(stopped, 'events');
           break;
         }
         if (!isRecord(ev) || skip.has(ev)) continue;
@@ -416,7 +423,7 @@ export function findReferencesLeftByDelete(
   });
   if (stopped) {
     report.complete = false;
-    report.limit ??= stopped;
+    report.limit = combineLimits(report.limit, stopped);
   }
 
   for (const [key, references] of functionRefs) report.functions.push({ name: deletedFunctions.get(key)!, references });
@@ -556,7 +563,7 @@ export function findVariableReferencesLostByChange(
   });
   if (stopped) {
     report.complete = false;
-    report.limit ??= stopped;
+    report.limit = combineLimits(report.limit, stopped);
   }
   for (const [key, references] of refs) report.variables.push({ name: before.variables.get(key)!, references });
   return report;
@@ -685,8 +692,8 @@ export function findVariableBindingChanges(
   if (stopped) {
     lost.complete = false;
     rebound.complete = false;
-    lost.limit ??= stopped;
-    rebound.limit ??= stopped;
+    lost.limit = combineLimits(lost.limit, stopped);
+    rebound.limit = combineLimits(rebound.limit, stopped);
   }
   for (const [key, references] of lostRefs) lost.variables.push({ name: before.variables.get(key)!, references });
   for (const [key, references] of reboundRefs) rebound.variables.push({ name: before.variables.get(key)!, references });

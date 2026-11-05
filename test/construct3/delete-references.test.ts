@@ -359,4 +359,18 @@ describe('scope bindings', () => {
     const wide = Array.from({ length: 100_001 }, () => ({ eventType: 'comment', text: '' }));
     expect(findReferencesLeftByDelete(sheetsOf([global, ...wide]), global, 'Functions').limit).toBe('events');
   });
+
+  it('names both limits when one sheet nests too deep and another has too many events', () => {
+    const global = variable('Score', 1);
+    let inner: Record<string, unknown> = block(2, [setVar('Score')]);
+    for (let i = 0; i < 52; i++) inner = block(i + 3, [], { children: [inner] });
+    const wide = Array.from({ length: 100_001 }, () => ({ eventType: 'comment', text: '' }));
+    const names = new Map([['score', 'Score']]);
+    const sheets = new Map<string, unknown>([['Deep', [global, inner]], ['Wide', wide]]);
+    const scopes = recordVariableScopes(sheets, names);
+    expect([scopes.complete, scopes.limit]).toEqual([false, 'both']);
+    expect(findVariableReferencesLostByChange(scopes, sheets).limit).toBe('both');
+    expect(findVariableBindingChanges(recordVariableBindings(sheets, names), sheets).lost.limit).toBe('both');
+    expect(findReferencesLeftByDelete(sheets, global, 'Functions').limit).toBe('both');
+  });
 });
