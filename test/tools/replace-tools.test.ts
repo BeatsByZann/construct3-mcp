@@ -828,7 +828,8 @@ describe('replace_in_expressions', () => {
 
     const named = parseExpr(await replaceText({ find: 'Player', replace: 'Hero', parameterKeys: ['object'] }));
     expect(named.changes.map(c => [c.key, c.before, c.after])).toEqual([['object', 'Player', 'Hero']]);
-    expect(named.warnings).toBeUndefined();
+    // No match was left in a protected parameter (the changed condition's catalogue lines are not this test's subject)
+    expect((named.warnings ?? []).filter(w => w.includes('hold a name or a combo choice'))).toEqual([]);
     expect(await mainParameters(MAIN_BLOCK, 'conditions', 1)).toEqual({ object: 'Hero', expression: 'Player.X > Hostiles.health' });
   });
 

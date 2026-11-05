@@ -18,7 +18,10 @@
  * event-sheet command.
  *
  * All changed sheets are decided in memory first and written together; a
- * failed write puts the earlier sheets back. Sheets that could not be parsed
+ * failed write puts the earlier sheets back. Before the first write every
+ * changed sheet passes the editor load-time gate (a new error refuses the
+ * call, nothing written), and the conditions and actions the call changed are
+ * checked against the catalogue of the project's release (warnings). Sheets that could not be parsed
  * are never changed; they are listed, with what a text search of them found.
  *
  * replace_in_expressions finds and replaces text in the parameter values of
@@ -54,6 +57,9 @@ import {
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
+import { checkLoadRulesBeforeWrite, loadRuleErrorMessage, snapshotEvents } from './event-helpers.js';
+import { checkEventChange, warmAceCatalog } from '../construct3/event-change-check.js';
+import type { C3Event } from '../construct3/types.js';
 import { errorReason } from '../construct3/error-text.js';
 import { refuse } from './refusals.js';
 import { unregisteredNameMessage } from './registered-names.js';
@@ -417,6 +423,34 @@ function unparsedSheetWarnings(reports: readonly UnscannedFileReport[]): string[
   });
 }
 
+/** A sheet the call changed in memory, with its events as they were read. */
+interface ChangedSheet {
+  name: string;
+  sheet: EventSheet;
+  before: C3Event[];
+}
+
+/**
+ * The load-time gate and the ACE check for every sheet a replace changed,
+ * before any is written: a new load-time error puts every sheet back and gives
+ * the refusal text; otherwise the gate's warnings and the ACE check's, each
+ * ACE warning prefixed with its sheet's name, are added to `warnings`.
+ */
+async function checkChangedSheets(reader: Reader, changed: readonly ChangedSheet[], warnings: string[]): Promise<string | undefined> {
+  for (const { name, sheet, before } of changed) {
+    const loadCheck = await checkLoadRulesBeforeWrite(reader, name, before, sheet.events);
+    if (loadCheck.errors.length > 0) {
+      for (const c of changed) c.sheet.events = c.before;
+      return loadRuleErrorMessage(loadCheck.errors);
+    }
+    warnings.push(...loadCheck.warnings);
+  }
+  for (const { name, sheet, before } of changed) {
+    warnings.push(...(await checkEventChange(reader, name, before, sheet.events)).map(w => `${name}: ${w}`));
+  }
+  return undefined;
+}
+
 // ─── Expression find-and-replace ───────────────────────────
 
 /**
@@ -573,7 +607,8 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
       + '(objectClass, object parameters, the object-valued instance variable parameter, and ObjectName.Member expressions). '
       + 'An event is swapped only when the replacement has the behaviors, instance variables and effects it uses; a sub-event goes with its parent, '
       + 'and other events are left unchanged and listed with the reason. Layouts are not changed. '
-      + 'Both names must be given as registered, in that letter case. All changed sheets are written together, and a failed write is rolled back; '
+      + 'Both names must be given as registered, in that letter case. A swap that would add an editor load-time error is refused, nothing written. '
+      + 'All changed sheets are written together, and a failed write is rolled back; '
       + 'sheets that could not be parsed are listed and not changed, and a global variable declared in one of them is not known to the swap.',
     {
       fromObject: z.string().max(200).describe('Object type or family to replace (as registered, in that letter case)'),
@@ -609,6 +644,8 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
           const missing = unregisteredNameMessage('Event sheet', args.sheetName, registered, () => reader.findNearestName(args.sheetName!, 'eventsheets'), 'list_eventsheets');
           if (missing !== undefined) return refuse(missing);
         }
+        // The catalogue for the ACE check, obtained before the sheets are read, so a fetch does not run between the reads and the writes
+        if (!args.dryRun) await warmAceCatalog(reader);
         // The project's variable names decide whether a whole-value parameter is a variable or the object; read-only
         const all = await reader.readAllEventSheets();
         const unparsed = unscannedFilesOf('eventSheets', registered, all, reader.getReadFailures('eventSheets'));
@@ -618,7 +655,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
 
         // Everything is decided and changed in memory first; nothing is written until all sheets are done
         const scope = args.sheetName !== undefined ? [args.sheetName] : registered.filter(n => !unparsed.some(f => f.name === n));
-        const changed: Array<{ name: string; sheet: EventSheet; file: string }> = [];
+        const changed: Array<ChangedSheet & { file: string }> = [];
         const swapped: ObjectNameUse[] = [];
         const skipped: SkippedEvent[] = [];
         const notChanged: ObjectNameUse[] = [];
@@ -629,12 +666,13 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
           } catch (error) {
             return refuse(`Cannot read event sheet "${name}" (${describeReadFailure(classifyReadError(error))}).`);
           }
+          const before = snapshotEvents(sheet.events);
           const file = reader.getEntityRelativePath('eventSheets', name);
           const scan = replaceInSheet(file, sheet, ctx, !args.dryRun, warnings);
           swapped.push(...scan.swapped);
           skipped.push(...scan.skipped);
           notChanged.push(...scan.notChanged);
-          if (scan.swapped.length > 0) changed.push({ name, sheet, file });
+          if (scan.swapped.length > 0) changed.push({ name, sheet, before, file });
         }
         // Sheets that could not be parsed are outside a call limited to one sheet
         const outOfScope = args.sheetName === undefined ? unparsed : [];
@@ -646,6 +684,8 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
 
         const filesWritten: string[] = [];
         if (!args.dryRun) {
+          const refusal = await checkChangedSheets(reader, changed, warnings);
+          if (refusal !== undefined) return refuse(refusal);
           for (const { name, sheet, file } of changed) {
             try {
               await writeEntityOrRollBack(writer, 'eventSheets', name, sheet);
@@ -681,6 +721,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
     'Find and replace text in condition and action parameter values (the expressions shown in event sheets) across the project or chosen sheets. '
       + 'Parameters that hold a name (variable, instance-variable, object, layout, timeline, ...) or a combo choice are left alone unless parameterKeys names them. '
       + 'Comments, scripts and variable declarations are not touched. Matching is limited to 2 seconds in total. '
+      + 'A replacement that would add an editor load-time error is refused, nothing written. '
       + 'Sheets that could not be parsed are listed in unscannedFiles (with complete: false), were not changed, and are only searched as text for a plain name. '
       + 'Use dryRun to see every change first.',
     {
@@ -714,6 +755,8 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
           });
           return refuse(`Event sheet(s) not found: ${shown.join(', ')}. Use list_eventsheets to see all names.`);
         }
+        // The catalogue for the ACE check, obtained before the sheets are read, so a fetch does not run between the reads and the writes
+        if (!args.dryRun) await warmAceCatalog(reader);
         // Sheets that cannot be parsed are outside a call that names its sheets
         let unparsed: UnscannedFile[] = [];
         if (requested === undefined) {
@@ -727,7 +770,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
         const warnings: string[] = [];
 
         // Phase 1: collect every candidate parameter without matching, in each sheet's order.
-        const sheets: Array<{ name: string; data: EventSheet }> = [];
+        const sheets: Array<{ name: string; data: EventSheet; before: C3Event[] }> = [];
         const slots: ParameterSlot[] = [];
         for (const name of scope) {
           let data: EventSheet;
@@ -736,7 +779,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
           } catch (error) {
             return refuse(`Cannot read event sheet "${name}" (${describeReadFailure(classifyReadError(error))}).`);
           }
-          const sheetIndex = sheets.push({ name, data }) - 1;
+          const sheetIndex = sheets.push({ name, data, before: snapshotEvents(data.events) }) - 1;
           const found: ParameterSlot[] = [];
           const sids = new Map<string, number>();
           walkEventStrings(data, {
@@ -816,6 +859,9 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
         const touched = [...perSheet].sort((x, y) => x[0] - y[0]);
         const filesWritten: string[] = [];
         if (!args.dryRun) {
+          const changedSheets = touched.map(([index]) => ({ name: sheets[index].name, sheet: sheets[index].data, before: sheets[index].before }));
+          const refusal = await checkChangedSheets(reader, changedSheets, warnings);
+          if (refusal !== undefined) return refuse(refusal);
           for (const [index] of touched) {
             const { name, data } = sheets[index];
             try {

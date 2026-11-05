@@ -149,6 +149,11 @@ interface UnknownAceCase {
   objectClass: string;
 }
 
+/** Hero, a second Sprite object type, for the replace tools. */
+const createHero = async (server: MockServer): Promise<void> => {
+  expect((await call(server, 'create_object', { name: 'Hero', pluginId: 'Sprite' })).data.success).toBe(true);
+};
+
 const UNKNOWN_ACE_CASES: UnknownAceCase[] = [
   { tool: 'add_event_block', args: { sheetName: SHEET, conditions: [], actions: [flyAway()] }, sheet: SHEET, prefix: '', objectClass: 'Sprite' },
   {
@@ -170,6 +175,16 @@ const UNKNOWN_ACE_CASES: UnknownAceCase[] = [
     tool: 'move_events_between_sheets', main: [unknownBlock()], others: { Other: [] },
     args: { sourceSheet: SHEET, targetSheet: 'Other', sids: [900] },
     sheet: 'Other', prefix: '', objectClass: 'Sprite',
+  },
+  {
+    tool: 'replace_object_in_events', main: [unknownBlock()], prepare: createHero,
+    args: { fromObject: 'Sprite', toObject: 'Hero' },
+    sheet: SHEET, prefix: `${SHEET}: `, objectClass: 'Hero',
+  },
+  {
+    tool: 'replace_in_expressions', main: [unknownBlock()],
+    args: { find: 'Speed', replace: 'Pace' },
+    sheet: SHEET, prefix: `${SHEET}: `, objectClass: 'Sprite',
   },
 ];
 
@@ -212,6 +227,12 @@ const LOAD_ERROR_CASES: LoadErrorCase[] = [
     others: { Other: [] },
     args: { sourceSheet: SHEET, targetSheet: 'Other', sids: [920] },
   },
+  {
+    tool: 'replace_object_in_events', prepare: createHero,
+    main: [{ eventType: 'block', conditions: [], actions: [{ id: 'set-position', objectClass: 'System', sid: 931, parameters: { x: 'Sprite.X & "', y: '1' } }], sid: 930 }],
+    args: { fromObject: 'Sprite', toObject: 'Hero' },
+  },
+  { tool: 'replace_in_expressions', args: { find: '100', replace: '"' } },
 ];
 
 describe('a new load-time error is refused, and nothing is written', () => {
@@ -279,5 +300,78 @@ describe('the change check when the families cannot be read', () => {
     expect(warnings).not.toContain(FIXED_FAILURE);
     expect(warnings.filter(w => unknownAction('Sprite').test(w))).toHaveLength(1);
     expect(warnings).toContain('Conditions and actions that depend on these files were not checked, because they could not be read: families/Movers.');
+  });
+});
+
+describe('replace tools: swaps and rewrites checked against the catalogue', () => {
+  it('replace_object_in_events leaves an event alone when a same-named behavior is of another kind', async () => {
+    const { dir, server } = await open();
+    expect((await call(server, 'create_object', { name: 'Hero', pluginId: 'Sprite' })).data.success).toBe(true);
+    expect((await call(server, 'create_object', { name: 'Rocket', pluginId: 'Sprite' })).data.success).toBe(true);
+    expect((await call(server, 'update_object_properties', { name: 'Hero', addBehaviors: [{ behaviorId: 'Platform', name: 'Move' }] })).data.success).toBe(true);
+    expect((await call(server, 'update_object_properties', { name: 'Rocket', addBehaviors: [{ behaviorId: 'Bullet', name: 'Move' }] })).data.success).toBe(true);
+    expect((await call(server, 'add_event_block', {
+      sheetName: SHEET,
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+      actions: [{ id: 'simulate-control', objectClass: 'Hero', behaviorType: 'Move', parameters: { control: 'jump' } }],
+    })).data.success).toBe(true);
+    const before = await sheetText(dir);
+
+    const result = await call(server, 'replace_object_in_events', { fromObject: 'Hero', toObject: 'Rocket' });
+    expect(result.data.success).toBe(true);
+    expect((result.data.references as { total: number }).total).toBe(0);
+    const skipped = result.data.skippedEvents as Array<{ reasons: string[] }>;
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].reasons).toEqual(['"simulate-control" uses behavior "Move": it is a Platform behavior on Hero but a Bullet behavior on Rocket']);
+    expect(await sheetText(dir)).toBe(before);
+  });
+
+  it('replace_object_in_events checks the ACEs it swaps and not the others', async () => {
+    const { server } = await open();
+    await createHero(server);
+    // A wrong choice already in a source sub-event is reported once the swap has touched it
+    expect((await call(server, 'add_event_block', {
+      sheetName: SHEET,
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+      children: [{ conditions: [{ id: 'every-tick', objectClass: 'System' }], actions: [{ id: 'set-animation', objectClass: 'Sprite', parameters: { animation: '"Walk"', from: 'start' } }] }],
+    })).data.success).toBe(true);
+    // An unrelated wrong ACE in a sub-event is not the swap's to report
+    expect((await call(server, 'add_event_block', {
+      sheetName: SHEET,
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+      children: [{ conditions: [{ id: 'every-tick', objectClass: 'System' }], actions: [{ id: 'teleport', objectClass: 'System', parameters: {} }] }],
+    })).data.success).toBe(true);
+
+    const result = await call(server, 'replace_object_in_events', { fromObject: 'Sprite', toObject: 'Hero' });
+    expect(result.data.success).toBe(true);
+    const warnings = aceWarnings(result.data);
+    expect(warnings.some(w => w.includes('teleport'))).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^MainSheet: Action "set-animation" on "Hero" \(SID \d+\): Parameter "from" of the action "set-animation" is "start"; the Sprite plugin accepts "current-frame", "beginning"\.$/);
+  });
+
+  it('replace_in_expressions warns when a rewritten combo value stops being a choice, and not about ACEs it did not change', async () => {
+    const { server } = await open();
+    expect((await call(server, 'add_event_block', {
+      sheetName: SHEET,
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+      actions: [{ id: 'set-animation', objectClass: 'Sprite', parameters: { animation: '"Walk"', from: 'beginning' } }],
+    })).data.success).toBe(true);
+    // An unrelated wrong ACE elsewhere is not the rewrite's to report
+    expect((await call(server, 'add_event_block', {
+      sheetName: SHEET,
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+      actions: [{ id: 'teleport', objectClass: 'Sprite', parameters: {} }],
+    })).data.success).toBe(true);
+
+    const fine = await call(server, 'replace_in_expressions', { find: 'Walk', replace: 'Run' });
+    expect(fine.data.success).toBe(true);
+    expect(aceWarnings(fine.data)).toEqual([]);
+
+    const broken = await call(server, 'replace_in_expressions', { find: 'beginning', replace: 'start', parameterKeys: ['from'] });
+    expect(broken.data.success).toBe(true);
+    const warnings = aceWarnings(broken.data);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^MainSheet: Action "set-animation" on "Sprite" \(SID \d+\): Parameter "from" of the action "set-animation" is "start"; the Sprite plugin accepts "current-frame", "beginning"\.$/);
   });
 });
