@@ -118,11 +118,16 @@ describe('add_event_block destinations', () => {
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
-  it('warns, and does not refuse, an else block with no block before it in its list', async () => {
-    const { server } = setup();
-    const data = parse(await server.callTool('add_event_block', { sheetName: 'Sheet1', groupPath: 'G', position: 'start', isElse: true, actions: [setVisible] }));
-    expect(data.success).toBe(true);
-    expect(String(data.warnings)).toContain('Else block:');
+  it('refuses an else block with no block before it in its list, writing nothing and leaving the sheet as it was', async () => {
+    const { server, reader, writer } = setup();
+    const before = JSON.stringify((await reader.readEventSheet('Sheet1')).events);
+    const result = await server.callTool('add_event_block', { sheetName: 'Sheet1', groupPath: 'G', position: 'start', isElse: true, actions: [setVisible] });
+    expect(result.isError).toBe(true);
+    const text = errorText(result);
+    expect(text).toMatch(/^An else block needs an event block before it/);
+    expect(text).toMatch(/Nothing was changed\.$/);
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(JSON.stringify((await reader.readEventSheet('Sheet1')).events)).toBe(before);
   });
 
   it('warns when a block placed before an else block makes it continue the new block', async () => {
