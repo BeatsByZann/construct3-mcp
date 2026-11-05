@@ -44,9 +44,12 @@ export interface MockReaderData {
   containers?: unknown[];
   /**
    * Files below flowcharts/ and timelines/ (`path` relative to the folder);
-   * reading one fails when it has no `text`.
+   * reading one fails when it has no `text`, or throws the typed `failure`
+   * (a size-limit failure, for example) when it has one.
    */
-  dataFiles?: Array<{ folder: 'flowcharts' | 'timelines'; path: string; text?: string }>;
+  dataFiles?: Array<{ folder: 'flowcharts' | 'timelines'; path: string; text?: string; failure?: ReadFailure }>;
+  /** Names registered in the c3proj `timelines` container (no subfolders). */
+  registeredTimelines?: string[];
 }
 
 export type MockFileFolderKey = 'sound' | 'music' | 'video' | 'font' | 'icon' | 'general';
@@ -64,6 +67,7 @@ export class MockReader {
   private files: NonNullable<MockReaderData['files']>;
   private containers: unknown[];
   private dataFiles: NonNullable<MockReaderData['dataFiles']>;
+  private registeredTimelines: string[];
   // Names registered in c3proj but without corresponding data (for file-existence testing)
   private registeredOnly: { objects: string[]; eventSheets: string[]; layouts: string[] } = {
     objects: [], eventSheets: [], layouts: [],
@@ -97,6 +101,7 @@ export class MockReader {
     this.files = data.files ?? [];
     this.containers = data.containers ?? [];
     this.dataFiles = data.dataFiles ?? [];
+    this.registeredTimelines = data.registeredTimelines ?? [];
     this.addons = data.usedAddons ?? [
       { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
     ];
@@ -194,7 +199,7 @@ export class MockReader {
         general: this.mediaFolder('general'),
       },
       containers: this.containers,
-      timelines: { items: [], subfolders: [] },
+      timelines: { items: [...this.registeredTimelines], subfolders: [] },
       properties: {
         description: this.meta.description!,
         version: this.meta.version!,
@@ -291,6 +296,7 @@ export class MockReader {
 
   async readDataFileText(folder: 'flowcharts' | 'timelines', relativePath: string): Promise<string> {
     const file = this.dataFiles.find(f => f.folder === folder && f.path === relativePath);
+    if (file?.failure) throw new ProjectReadError(file.failure.code, file.failure.message);
     if (file?.text === undefined) throw new Error(`Failed to read ${folder} file "${relativePath}"`);
     return file.text;
   }

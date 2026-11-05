@@ -7,18 +7,20 @@
 import { readdir } from 'fs/promises';
 import { join } from 'path';
 import {
+  classifyReadError,
   entityFolderPaths,
   entityFilePath,
   type Construct3ProjectReader,
   type EntityCategory,
   type ReadFailure,
 } from '../project-reader.js';
-import type { C3Event, Construct3Project, Layout, ObjectType, EventSheet, Timeline } from '../types.js';
+import type { C3Event, Construct3Project, Instance, Layout, ObjectType, EventSheet, Timeline } from '../types.js';
 import { getProjectIndex, OBJECT_SID_PROPERTIES, type MemberReference, type MemberReferenceForm } from './index-builder.js';
 import { isNamelessFolder, transitionsFolderIndex } from '../timeline-folders.js';
-import { listPropertyTracks, listTracks, PROPERTY_TRACK_SOURCE_TYPES } from '../timeline-model.js';
+import { listPropertyTracks, listTracks, PROPERTY_TRACK_SOURCE_TYPES, trackKind } from '../timeline-model.js';
+import { resolveTimelineProperty, WORLD_PROPERTIES } from '../timeline-properties.js';
 import { readTemplate } from '../instance-templates.js';
-import { forEachLayoutInstance, layerEntries, layerPath, layerPathLabel, repeatedLayerNames, type LayerEntry } from '../layers.js';
+import { findInstanceByUid, forEachLayoutInstance, layerEntries, layerPath, layerPathLabel, repeatedLayerNames, type LayerEntry } from '../layers.js';
 import { findOrphanedObjects } from './object-deps.js';
 import { scanLegacyBehaviorKeys, hasOnlyLegacyBehaviorName, describeLegacyHit } from './legacy-behavior-keys.js';
 import { scanLegacyEventShapes, describeLegacyEventShapeHit } from './legacy-event-shapes.js';
@@ -70,7 +72,8 @@ export interface IntegrityResult {
   valid: boolean;
   /**
    * Every object type, family, event sheet and layout file that is registered
-   * in project.c3proj and exists on disk was read and checked. False when one
+   * in project.c3proj and exists on disk, and every file below timelines/, was
+   * read and checked. False when one
    * of them was not (over the reader's size limit (10MB by default), invalid JSON, unreadable):
    * those files are listed in unscannedFiles, and no check (duplicate
    * UIDs/SIDs, references, load-time rules) covered their contents. A
@@ -162,7 +165,8 @@ export async function validateProjectIntegrity(
   }
   addLoadRuleIssues(checkObjectClassNames(project), errors, warnings);
   addLoadRuleIssues(checkFamilyPlugins(families, objects as Map<string, Record<string, unknown>>), errors, warnings);
-  await checkTimelinePropertyTrackTypes(reader, errors);
+  const timelines = await readTimelineFiles(reader, project, errors, warnings, unscannedFiles);
+  checkTimelinePropertyTrackTypes(timelines, layouts, objects, errors, warnings);
   checkTemplatesOnNonWorldInstances(layouts, errors);
 
   // Duplicate SIDs: errors for object type/family SIDs, warnings otherwise
@@ -251,7 +255,8 @@ function flattenContainer(container: { items: string[]; subfolders: Array<{ item
   const result = [...container.items];
   const walk = (subfolders: Array<{ items: string[]; subfolders: unknown[]; name: string }>) => {
     for (const sf of subfolders) {
-      result.push(...sf.items);
+      // A subfolder without an items array is reported by checkSubfolderStructure
+      if (Array.isArray(sf.items)) result.push(...sf.items);
       if (Array.isArray(sf.subfolders)) {
         walk(sf.subfolders as Array<{ items: string[]; subfolders: unknown[]; name: string }>);
       }
@@ -278,39 +283,136 @@ function addLoadRuleIssues(
 }
 
 /**
- * Property tracks whose `source.type` is missing or not one the timeline
- * model knows. Construct 3 r506-2 refused to open such a project ("property
- * track type undefined is not valid"). A timeline file that cannot be read or
- * parsed is skipped: the file-level checks report it.
+ * Property tracks on a property their instance does not have. Construct 3
+ * r506-2 refused to open a project whose timeline had a property track on a
+ * property it could not resolve (a Text instance's `angle`), with "property
+ * track type undefined is not valid". The property is resolved the way the
+ * timeline tools do (resolveTimelineProperty): an unresolved name on a
+ * world-instance source is an error, on an instance-variable or plugin source
+ * a warning, since only the world-instance case is on record. A track whose
+ * instance or object type is not found is not reported. A missing or unknown
+ * `source.type` is a warning: the known set is not proven complete.
  */
-async function checkTimelinePropertyTrackTypes(
-  reader: Construct3ProjectReader,
-  errors: IntegrityIssue[]
-): Promise<void> {
-  for (const relative of await reader.listDataFiles('timelines')) {
-    let timeline: unknown;
-    try {
-      timeline = JSON.parse(await reader.readDataFileText('timelines', relative));
-    } catch {
-      continue;
-    }
-    if (!timeline || typeof timeline !== 'object' || Array.isArray(timeline)) continue;
-    for (const { track } of listTracks(timeline as Timeline)) {
+function checkTimelinePropertyTrackTypes(
+  timelines: Map<string, Timeline>,
+  layouts: Map<string, Layout>,
+  objects: Map<string, ObjectType>,
+  errors: IntegrityIssue[],
+  warnings: IntegrityIssue[]
+): void {
+  for (const [relative, timeline] of timelines) {
+    const entity = `timelines/${relative.replace(/\.json$/, '')}`;
+    for (const { track } of listTracks(timeline)) {
+      const kind = trackKind(track);
+      const uid = kind === 'instance-track' || kind === 'legacy-instance-track' ? track.worldInstance : undefined;
+      const instance = typeof uid === 'number' ? findInstanceInLayouts(layouts, uid) : undefined;
+      const objectType = instance ? objects.get(instance.type) : undefined;
       for (const { propertyTrack } of listPropertyTracks(track)) {
         const type: unknown = propertyTrack.source?.type;
-        if (typeof type === 'string' && PROPERTY_TRACK_SOURCE_TYPES.has(type)) continue;
-        const shown = typeof type === 'string' ? `"${type}"` : 'no type';
-        errors.push({
-          check: 'timeline-property-track-type',
-          entity: `timelines/${relative.replace(/\.json$/, '')}`,
-          message: `Property track "${propertyTrack.property}" has ${typeof type === 'string' ? 'the source type ' : ''}${shown}`
-            + `, which is not one of ${[...PROPERTY_TRACK_SOURCE_TYPES].join(', ')}. `
-            + 'Construct 3 r506-2 refused to open a project with such a property track ("property track type undefined is not valid").',
-          suggestion: 'Set the property track\'s source type to one of those values, or remove the property track with remove_property_track.',
-        });
+        if (typeof type !== 'string' || !PROPERTY_TRACK_SOURCE_TYPES.has(type)) {
+          warnings.push({
+            check: 'timeline-property-track-type',
+            entity,
+            message: `Property track "${propertyTrack.property}" has ${typeof type === 'string' ? `the source type "${type}"` : 'no source type'}`
+              + `, which is not one of the source types the tools write (${[...PROPERTY_TRACK_SOURCE_TYPES].join(', ')}). `
+              + 'Whether Construct 3 accepts it was not checked.',
+            suggestion: 'Check the property track in the Construct 3 editor, or remove it with remove_property_track.',
+          });
+        }
+        // Instance or object type not found: the property cannot be resolved, so nothing is reported
+        if (!instance || !objectType) continue;
+        const resolved = resolveTimelineProperty(propertyTrack.property, instance, objectType);
+        if (!resolved.ok || resolved.spec.verified) continue;
+        const refusal = 'Construct 3 r506-2 refused to open a project whose timeline had a property track on a property it could not resolve '
+          + '(a Text instance\'s `angle`), with "property track type undefined is not valid".';
+        const subject = `Property track "${propertyTrack.property}" of instance UID ${instance.uid} (${instance.type}) names a property that is not a world property, an instance variable or a plugin property of that instance. `;
+        const suggestion = `Remove the property track with remove_property_track, or animate a property the instance has (world properties: ${Object.keys(WORLD_PROPERTIES).join(', ')}).`;
+        if (type === 'world-instance') {
+          errors.push({ check: 'timeline-property-track-type', entity, message: subject + refusal, suggestion });
+        } else if (type === 'instance-variable' || type === 'plugin') {
+          // Only the world-instance case is on record; the other sources are not tested
+          warnings.push({
+            check: 'timeline-property-track-type',
+            entity,
+            message: `${subject}${refusal} That case had a world-instance source; a ${type} source was not tested.`,
+            suggestion,
+          });
+        }
       }
     }
   }
+}
+
+/** The instance with this UID on any layer of any layout, or among its non-world instances. */
+function findInstanceInLayouts(layouts: Map<string, Layout>, uid: number): Instance | undefined {
+  for (const layout of layouts.values()) {
+    const found = findInstanceByUid(layout, uid);
+    if (found) return found.instance;
+  }
+  return undefined;
+}
+
+/**
+ * Reads every file below timelines/ once and reports the ones that cannot be
+ * checked, the way checkFileExistence does for the other registered files: a
+ * file over the size limit is an `unscanned-file` warning, a file that cannot
+ * be read or parsed is a `file-existence` error, and both are listed in
+ * unscannedFiles so the result is not complete. A timeline registered in
+ * project.c3proj with no file of that name is a `file-existence` error that
+ * leaves the result complete.
+ * @returns The timelines that were read and parsed, by path below timelines/
+ */
+async function readTimelineFiles(
+  reader: Construct3ProjectReader,
+  project: Construct3Project,
+  errors: IntegrityIssue[],
+  warnings: IntegrityIssue[],
+  unscannedFiles: string[]
+): Promise<Map<string, Timeline>> {
+  const timelines = new Map<string, Timeline>();
+  const paths = await reader.listDataFiles('timelines');
+  for (const relative of paths) {
+    const entity = `timelines/${relative.replace(/\.json$/, '')}`;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await reader.readDataFileText('timelines', relative));
+    } catch (error) {
+      const code = classifyReadError(error);
+      // Gone between the listing and the read: nothing on disk escaped the checks
+      if (code === 'E_FILE_NOT_FOUND') continue;
+      unscannedFiles.push(entity);
+      const message = error instanceof Error ? error.message : String(error);
+      if (code === 'E_FILE_TOO_LARGE') {
+        warnings.push({
+          check: 'unscanned-file',
+          entity,
+          message: `UNSCANNED: ${message} — timeline checks (property tracks) did not cover this file`,
+          suggestion: 'The results are partial (complete: false); check this file another way, e.g. in the Construct 3 editor',
+        });
+      } else {
+        errors.push({
+          check: 'file-existence',
+          entity,
+          message: `Timeline file could not be read: ${withoutFsPath(message)}`,
+          suggestion: `Check that timelines/${relative} is a readable file with valid JSON`,
+        });
+      }
+      continue;
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) timelines.set(relative, parsed as Timeline);
+  }
+
+  const present = new Set(paths.map(p => nameKey((p.split('/').pop() ?? p).replace(/\.json$/, ''))));
+  for (const name of project.timelines ? flattenContainer(project.timelines) : []) {
+    if (present.has(nameKey(name))) continue;
+    errors.push({
+      check: 'file-existence',
+      entity: `timelines/${name}`,
+      message: `Registered in c3proj but no file named ${name}.json exists below timelines/`,
+      suggestion: `Create the timeline file or remove "${name}" from project.c3proj`,
+    });
+  }
+  return timelines;
 }
 
 /**

@@ -414,6 +414,7 @@ export class Construct3ProjectReader {
   /**
    * Read a file listed by listDataFiles as text.
    * @param relativePath  Path inside the folder, e.g. "Flow 1.json"
+   * @throws ProjectReadError carrying the failure code (over the size limit, missing, unreadable)
    */
   async readDataFileText(folder: 'flowcharts' | 'timelines', relativePath: string): Promise<string> {
     const root = resolveProjectPath(this.getProjectDir(), folder);
@@ -421,8 +422,10 @@ export class Construct3ProjectReader {
     try {
       return await this.readProjectFile(filePath);
     } catch (error) {
-      throw new Error(
-        `Failed to read ${folder} file "${relativePath}": ${error instanceof Error ? error.message : String(error)}`
+      throw new ProjectReadError(
+        classifyReadError(error),
+        `Failed to read ${folder} file "${relativePath}": ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
       );
     }
   }

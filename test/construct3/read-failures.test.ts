@@ -317,6 +317,34 @@ describe('validateProjectIntegrity — real files', () => {
     expect(err!.message).not.toContain(tmpDir);
   });
 
+  it('reports an oversized timeline as UNSCANNED with complete: false', async () => {
+    await mkdir(join(tmpDir, 'timelines'), { recursive: true });
+    await writeFile(join(tmpDir, 'timelines', 'Big.json'), oversizedJson('{"name":"Big","padding":"', '"}'));
+    const reader = await openReader(tmpDir);
+
+    const result = await validateProjectIntegrity(reader);
+    const warning = result.warnings.find(w => w.check === 'unscanned-file' && w.entity === 'timelines/Big');
+    expect(warning).toBeDefined();
+    expect(warning!.message).not.toContain(tmpDir);
+    expect(result.errors.find(e => e.entity === 'timelines/Big')).toBeUndefined();
+    expect(result.unscannedFiles).toContain('timelines/Big');
+    expect(result.complete).toBe(false);
+  });
+
+  it('reports a timeline with invalid JSON as an error and as not checked (complete: false)', async () => {
+    await mkdir(join(tmpDir, 'timelines'), { recursive: true });
+    await writeFile(join(tmpDir, 'timelines', 'Broken.json'), '{ "name": "Broken", not json');
+    const reader = await openReader(tmpDir);
+
+    const result = await validateProjectIntegrity(reader);
+    const err = result.errors.find(e => e.check === 'file-existence' && e.entity === 'timelines/Broken');
+    expect(err).toBeDefined();
+    expect(err!.message).toContain('could not be read');
+    expect(err!.message).not.toContain(tmpDir);
+    expect(result.unscannedFiles).toContain('timelines/Broken');
+    expect(result.complete).toBe(false);
+  });
+
   it('reports a directory in place of a layout as an error and as not checked (complete: false)', async () => {
     await registerInProject(tmpDir, 'layouts', 'Bad');
     await mkdir(join(tmpDir, 'layouts', 'Bad.json'));

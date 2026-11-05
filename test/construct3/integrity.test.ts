@@ -81,42 +81,98 @@ describe('validateProjectIntegrity', () => {
       return JSON.stringify({ name: 'Intro', tracks, ...extra });
     }
 
-    function readerWithTimelines(files: Array<{ path: string; text: string }>) {
+    function readerWithTimelines(
+      files: Array<{ path: string; text?: string; failure?: { code: 'E_FILE_TOO_LARGE' | 'E_READ_ERROR'; message: string } }>,
+      registeredTimelines: string[] = [],
+    ) {
       const base = validProject();
+      const layout = base.layouts.get('Layout 1');
+      layout.layers[0].instances.push({ type: 'Text', uid: 1, sid: 303, properties: { text: 'hello' }, world: { x: 0, y: 0, width: 10, height: 10, angle: 0 } });
       return createReader({
-        objects: base.objects,
+        objects: new Map([
+          ...base.objects,
+          ['Text', { name: 'Text', 'plugin-id': 'Text', sid: 101, instanceVariables: [{ name: 'hp', type: 'number', sid: 102 }] }],
+        ]),
         eventSheets: base.eventSheets,
         layouts: base.layouts,
-        usedAddons: base.addons,
+        usedAddons: [...base.addons, { type: 'plugin', id: 'Text', name: 'Text', author: 'Scirra', bundled: false }],
         dataFiles: files.map(file => ({ folder: 'timelines' as const, ...file })),
+        registeredTimelines,
       });
     }
 
     const instanceTrack = (propertyTracks: unknown[], extra: Record<string, unknown> = {}) =>
       ({ type: 'instance-track', worldInstance: 0, objectType: 'Sprite', propertyTracks, ...extra });
+    const textTrack = (propertyTracks: unknown[]) =>
+      ({ type: 'instance-track', worldInstance: 1, objectType: 'Text', propertyTracks });
+    const named = (property: string, source: unknown) => ({ ...propertyTrack(source), property });
+    const trackTypeErrors = (result: Awaited<ReturnType<typeof validateProjectIntegrity>>) =>
+      result.errors.filter(e => e.check === 'timeline-property-track-type');
+    const trackTypeWarnings = (result: Awaited<ReturnType<typeof validateProjectIntegrity>>) =>
+      result.warnings.filter(e => e.check === 'timeline-property-track-type');
 
-    it('reports a property track with no source type', async () => {
-      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack({ uid: 0 })])]) }]);
-      const result = await validateProjectIntegrity(reader);
-      const found = result.errors.filter(e => e.check === 'timeline-property-track-type');
+    it('reports a property track on a property its instance does not have', async () => {
+      const text = timelineText([textTrack([named('angle', { type: 'world-instance', uid: 1 })])]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      const found = trackTypeErrors(result);
       expect(found).toHaveLength(1);
       expect(found[0].entity).toBe('timelines/Intro');
-      expect(found[0].message).toContain('"offsetX"');
+      expect(found[0].message).toContain('"angle"');
       expect(found[0].message).toContain('r506-2');
+      expect(found[0].message).toContain('property track type undefined is not valid');
       expect(found[0].suggestion).toBeDefined();
       expect(result.valid).toBe(false);
     });
 
-    it('reports a property track with no source at all', async () => {
-      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack(undefined)])]) }]);
-      const result = await validateProjectIntegrity(reader);
-      expect(result.errors.filter(e => e.check === 'timeline-property-track-type')).toHaveLength(1);
+    it('accepts the world property offsetAngle on the same instance', async () => {
+      const text = timelineText([textTrack([named('offsetAngle', { type: 'world-instance', uid: 1 })])]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+      expect(trackTypeWarnings(result)).toEqual([]);
+      expect(result.valid).toBe(true);
     });
 
-    it('reports a property track whose source type the timeline model does not know', async () => {
+    it('accepts an instance variable and a plugin property of the instance', async () => {
+      const text = timelineText([textTrack([
+        named('hp', { type: 'instance-variable', uid: 'hp' }),
+        named('text', { type: 'plugin', uid: 'Text' }),
+      ])]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+    });
+
+    it('does not report a track whose instance or object type cannot be found', async () => {
+      const text = timelineText([
+        { type: 'instance-track', worldInstance: 99, objectType: 'Text', propertyTracks: [named('angle', { type: 'world-instance', uid: 99 })] },
+      ]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+    });
+
+    it('warns about a property track with no source type', async () => {
+      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack({ uid: 0 })])]) }]);
+      const result = await validateProjectIntegrity(reader);
+      expect(trackTypeErrors(result)).toEqual([]);
+      const found = trackTypeWarnings(result);
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Intro');
+      expect(found[0].message).toContain('"offsetX"');
+      expect(found[0].suggestion).toBeDefined();
+      expect(result.valid).toBe(true);
+    });
+
+    it('warns about a property track with no source at all', async () => {
+      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack(undefined)])]) }]);
+      const result = await validateProjectIntegrity(reader);
+      expect(trackTypeErrors(result)).toEqual([]);
+      expect(trackTypeWarnings(result)).toHaveLength(1);
+    });
+
+    it('warns about a property track whose source type the timeline model does not know', async () => {
       const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack({ type: 'banana', uid: 0 })])]) }]);
       const result = await validateProjectIntegrity(reader);
-      const found = result.errors.filter(e => e.check === 'timeline-property-track-type');
+      expect(trackTypeErrors(result)).toEqual([]);
+      const found = trackTypeWarnings(result);
       expect(found).toHaveLength(1);
       expect(found[0].message).toContain('"banana"');
     });
@@ -127,7 +183,7 @@ describe('validateProjectIntegrity', () => {
       });
       const text = timelineText([], { tracksRoot: { name: 'Track Folder', items: [], subfolders: [{ name: 'Group', items: [folderTrack], subfolders: [] }] } });
       const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
-      expect(result.errors.filter(e => e.check === 'timeline-property-track-type')).toHaveLength(1);
+      expect(trackTypeWarnings(result)).toHaveLength(1);
     });
 
     it('accepts every property track source type the timeline model knows', async () => {
@@ -137,13 +193,60 @@ describe('validateProjectIntegrity', () => {
         { type: 'audio-track', name: 'Music', propertyTracks: [propertyTrack({ type: 'audio', uid: 'audio' })] },
       ];
       const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text: timelineText(tracks) }]));
-      expect(result.errors.filter(e => e.check === 'timeline-property-track-type')).toEqual([]);
+      expect(trackTypeErrors(result)).toEqual([]);
+      expect(trackTypeWarnings(result)).toEqual([]);
       expect(result.valid).toBe(true);
     });
 
-    it('does not report a timeline that cannot be parsed a second time', async () => {
+    // ─── Timeline files that cannot be checked ──────────────
+
+    it('reports a timeline over the size limit as unscanned and the result as incomplete', async () => {
+      const failure = { code: 'E_FILE_TOO_LARGE' as const, message: 'File too large (11 MB exceeds 10 MB)' };
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'sub/Huge.json', failure }]));
+      expect(result.unscannedFiles).toEqual(['timelines/sub/Huge']);
+      expect(result.complete).toBe(false);
+      expect(result.valid).toBe(false);
+      const found = result.warnings.filter(w => w.check === 'unscanned-file');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/sub/Huge');
+      expect(found[0].message).toContain('UNSCANNED');
+    });
+
+    it('reports a timeline that is not valid JSON as an error and as unscanned', async () => {
       const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Broken.json', text: '{ not json' }]));
-      expect(result.errors.filter(e => e.check === 'timeline-property-track-type')).toEqual([]);
+      const found = result.errors.filter(e => e.check === 'file-existence');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Broken');
+      expect(found[0].message).toContain('could not be read');
+      expect(result.unscannedFiles).toEqual(['timelines/Broken']);
+      expect(result.complete).toBe(false);
+    });
+
+    it('reports a timeline that cannot be read as an error and as unscanned', async () => {
+      const failure = { code: 'E_READ_ERROR' as const, message: 'EACCES: permission denied' };
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Locked.json', failure }]));
+      expect(result.errors.filter(e => e.check === 'file-existence' && e.entity === 'timelines/Locked')).toHaveLength(1);
+      expect(result.unscannedFiles).toEqual(['timelines/Locked']);
+    });
+
+    it('reports a registered timeline that has no file, and leaves the result complete', async () => {
+      const result = await validateProjectIntegrity(readerWithTimelines(
+        [{ path: 'Intro.json', text: timelineText([]) }],
+        ['Intro', 'Gone'],
+      ));
+      const found = result.errors.filter(e => e.check === 'file-existence');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Gone');
+      expect(found[0].message).toContain('no file');
+      expect(result.complete).toBe(true);
+    });
+
+    it('finds the file of a registered timeline kept in a subfolder', async () => {
+      const result = await validateProjectIntegrity(readerWithTimelines(
+        [{ path: 'transitions/Swipe.json', text: timelineText([]) }],
+        ['Swipe'],
+      ));
+      expect(result.errors.filter(e => e.check === 'file-existence')).toEqual([]);
     });
   });
 
@@ -1416,8 +1519,10 @@ describe('validateProjectIntegrity', () => {
   // ─── Check 3b: subfolder-structure ────────────────────────
 
   /** validProject() with its project.c3proj containers patched */
-  function withContainers(containers: Record<string, unknown>) {
+  function withContainers(containers: Record<string, unknown>, timelineFiles: string[] = []) {
     const reader = validProject();
+    // Registered timelines need a file each, or they are file-existence errors
+    reader.dataFiles = timelineFiles.map(path => ({ folder: 'timelines', path, text: '{}' }));
     const origGetProject = reader.getProject.bind(reader);
     reader.getProject = () => ({ ...origGetProject(), ...containers });
     return reader;
@@ -1451,7 +1556,7 @@ describe('validateProjectIntegrity', () => {
     for (const items of [['Transition1'], []]) {
       const reader = withContainers({
         timelines: { items: ['Timeline1'], subfolders: [{ items, subfolders: [] }] },
-      });
+      }, ['Timeline1.json', ...items.map(name => `${name}.json`)]);
       const result = await validateProjectIntegrity(reader);
       expect(subfolderErrors(result), `items ${JSON.stringify(items)}`).toEqual([]);
       expect(result.valid).toBe(true);
@@ -1467,7 +1572,7 @@ describe('validateProjectIntegrity', () => {
           { items: ['Transition1'], subfolders: [] },
         ],
       },
-    });
+    }, ['Timeline1.json', 'Transition1.json']);
     const result = await validateProjectIntegrity(reader);
     expect(subfolderErrors(result)).toEqual([]);
   });
