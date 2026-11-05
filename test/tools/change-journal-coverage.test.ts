@@ -1,9 +1,11 @@
 /**
  * revert_last_change after the tools that write project files outside
  * writeEntityFile (timelines, addons, images, the runtime bridge) and the
- * frame tools that rename images: the call reverts itself, not the call
- * before it, and every file returns to its state before the call. A call
- * whose own rollback put everything back records nothing.
+ * frame tools that rename images, and the tools that change several files
+ * in one call (containers, layer and layout renames, instance variables,
+ * flowcharts): the call reverts itself, not the call before it, and every
+ * file returns to its state before the call. A call whose own rollback put
+ * everything back records nothing.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -102,7 +104,22 @@ describe('revert_last_change returns every file to its state before the call', (
     ['add_animation_to_sprite', [['create_object', HERO]], { objectName: 'Hero', animationName: 'Run' }],
     ['inject_runtime_bridge', [], {}],
     ['remove_runtime_bridge', [['inject_runtime_bridge', {}]], {}],
-  ] as Array<[string, Array<[string, Record<string, unknown>]>, Record<string, unknown>]>)('%s', async (tool, setup, args) => {
+    ['delete_object of a container member', [['create_object', HERO], ['create_object', { name: 'Shadow', pluginId: 'Sprite' }],
+      ['create_container', { members: ['Hero', 'Shadow'] }]], { name: 'Hero', force: true }],
+    ['rename_layer over two layouts', [['create_layout', { name: 'Level 2', layers: ['Main'] }]],
+      { layoutNames: ['Layout 1', 'Level 2'], layerName: 'Main', newName: 'Ground' }],
+    // The second frame gets other bytes than the placeholder, so a frame image left under the other frame's name shows
+    ['reorder_frames', [['create_object', HERO], ['add_frame_to_animation', FRAME],
+      ['replace_sprite_image', { ...FRAME, frameIndex: 1, pngBase64: PNG }]], { ...FRAME, order: [1, 0] }],
+    ['update_instance_variable across a layout and an object type',
+      [['update_object_properties', { name: 'Sprite', addVariables: [{ name: 'hp', type: 'number' }] }]],
+      { objectName: 'Sprite', variableName: 'hp', newName: 'health' }],
+    ['rename_layout with a timeline that starts on it', [['create_timeline', { name: 'T1', startOnLayout: 'Layout 1' }]],
+      { name: 'Layout 1', newName: 'Level 1' }],
+    ['create_flowchart', [], { name: 'Flow' }],
+  ] as Array<[string, Array<[string, Record<string, unknown>]>, Record<string, unknown>]>)('%s', async (title, setup, args) => {
+    // A title is the tool's name, or the name followed by the case
+    const tool = title.split(' ')[0];
     for (const [name, a] of setup) await ok(name, a);
     const before = await snapshot();
     await ok(tool, args);
