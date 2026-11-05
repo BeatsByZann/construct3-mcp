@@ -300,6 +300,75 @@ describe('move_events_between_sheets and event variables taken out of scope (#38
   });
 });
 
+// ─── custom action parameters in the scope checks ────
+
+describe('a custom action parameter is in scope in the body of its custom action block', () => {
+  const SCORE_SID = 787000000000001;
+  const OUTSIDE_SID = 787000000000002;
+  const BODY_SID = 787000000000010;
+
+  /**
+   * MainSheet: global Score, a block outside any custom action using Score,
+   * and a custom action block with a parameter "Score" whose body block uses
+   * Score (the parameter, not the global). Other: group G.
+   */
+  async function setUp(): Promise<void> {
+    const main = await readSheet('MainSheet');
+    main.events.unshift(variable('Score', SCORE_SID));
+    main.events.push(
+      block(OUTSIDE_SID, [setX('Score * 2', 787000000000003)]),
+      {
+        eventType: 'custom-ace-block', aceType: 'action', aceName: 'Do', objectClass: 'Sprite', functionDescription: '', functionCategory: '',
+        functionReturnType: 'none', functionCopyPicked: false, functionIsAsync: false,
+        functionParameters: [{ name: 'Score', type: 'number', initialValue: '0', comment: '', sid: 787000000000011 }],
+        conditions: [], actions: [], sid: 787000000000012,
+        children: [block(BODY_SID, [setX('Score + 1', 787000000000013)])],
+      },
+    );
+    await writeFile(join(tmpDir, 'eventSheets', 'MainSheet.json'), JSON.stringify(main, null, '\t'));
+    await addSheet('Other', [group('G', 787000000000020, [])]);
+    await startServer();
+  }
+  const listedSids = (blocked: Record<string, any>): unknown[] => blocked.references.variableReferences.map((r: any) => r.sid);
+
+  it('move_events_between_sheets lists only the use outside the body when it moves the global of that name into a group', async () => {
+    await setUp();
+    const move = { sourceSheet: 'MainSheet', targetSheet: 'Other', sids: [SCORE_SID], deleteSource: true, targetGroupPath: 'G' };
+    const blocked = await call('move_events_between_sheets', move);
+    expect(blocked.action).toBe('move_blocked');
+    expect(blocked.message).toContain('Event variable "Score" is still used 1 time(s) where it is no longer in scope after the move');
+    expect(listedSids(blocked)).toEqual([OUTSIDE_SID]);
+    expect((await readSheet('MainSheet')).events[0].name).toBe('Score');
+    expect((await readSheet('Other')).events[0].children).toEqual([]);
+
+    // Without the use outside the body, the parameter takes the use in the body and the move needs no force
+    const main = await readSheet('MainSheet');
+    main.events = main.events.filter((e: any) => e.sid !== OUTSIDE_SID);
+    await writeFile(join(tmpDir, 'eventSheets', 'MainSheet.json'), JSON.stringify(main, null, '\t'));
+    await startServer();
+    const moved = await call('move_events_between_sheets', move);
+    expect(moved.success).toBe(true);
+    expect((await readSheet('Other')).events[0].children.map((e: any) => e.name)).toEqual(['Score']);
+  });
+
+  it('delete_event_from_sheet lists only the use outside the body when it deletes the global of that name', async () => {
+    await setUp();
+    const blocked = await call('delete_event_from_sheet', { sheetName: 'MainSheet', sid: SCORE_SID });
+    expect(blocked.action).toBe('delete_blocked');
+    expect(blocked.message).toContain('Event variable "Score" is still used 1 time(s)');
+    expect(listedSids(blocked)).toEqual([OUTSIDE_SID]);
+    expect((await readSheet('MainSheet')).events[0].name).toBe('Score');
+
+    const main = await readSheet('MainSheet');
+    main.events = main.events.filter((e: any) => e.sid !== OUTSIDE_SID);
+    await writeFile(join(tmpDir, 'eventSheets', 'MainSheet.json'), JSON.stringify(main, null, '\t'));
+    await startServer();
+    const deleted = await call('delete_event_from_sheet', { sheetName: 'MainSheet', sid: SCORE_SID });
+    expect(deleted.success).toBe(true);
+    expect((await readSheet('MainSheet')).events.some((e: any) => e.sid === SCORE_SID)).toBe(false);
+  });
+});
+
 // ─── sheet names spelled otherwise than registered (#38) ────
 
 describe('sheet names that differ from the registered name in case (#38)', () => {
