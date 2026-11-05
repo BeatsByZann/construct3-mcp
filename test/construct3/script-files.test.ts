@@ -58,7 +58,7 @@ describe('registeredScriptFiles', () => {
 });
 
 describe('scriptFilePaths', () => {
-  it('gives the same paths and unwalked folders as registeredScriptFiles for nested, itemless, non-script and over-deep folders', () => {
+  it('gives the same paths and unwalked folders as registeredScriptFiles for nested, itemless and over-deep folders and a non-script file entry', () => {
     const script = {
       items: [{ name: 'main.js' }, { name: 'readme.txt', type: 'text/plain' }],
       subfolders: [
@@ -78,7 +78,7 @@ describe('scriptFilePaths', () => {
   });
 });
 
-const DEPTH_50_DIR =Array.from({ length: 50 }, (_, i) => `d${i + 1}`).join('/');
+const DEPTH_50_DIR = Array.from({ length: 50 }, (_, i) => `d${i + 1}`).join('/');
 const DEPTH_51_DIR = `${DEPTH_50_DIR}/d51`;
 
 describe('the index script member reads use the shared walk', () => {

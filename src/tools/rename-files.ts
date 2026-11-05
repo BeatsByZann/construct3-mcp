@@ -478,7 +478,7 @@ export async function scriptFileUses(
 
 /**
  * The warning for script folders the script search did not enter (nested
- * too deep), as a list of zero or one sentence for the rename tools to append.
+ * too deep), as a list of zero or one warning for the rename tools to append.
  */
 export function unsearchedScriptFolderWarnings(notWalked: readonly string[]): string[] {
   return notWalked.length > 0
