@@ -44,7 +44,7 @@ import {
   rollBackToolCall,
   type ChangedFile,
 } from './timeline-writes.js';
-import { refuse } from './refusals.js';
+import { refuse, stoppedBeforeWrite } from './refusals.js';
 
 const handleSchema = z.object({
   x: z.number().min(-10).max(10),
@@ -348,6 +348,13 @@ export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineT
             const value = params[EASE_PARAMETER_KEY];
             if (typeof value !== 'string' && easeParameterName(value) === args.name) params[EASE_PARAMETER_KEY] = easeParameterValue(ease);
           });
+        }
+        // A text over the size limit is refused before the first backup or write (an event sheet is checked by its own write)
+        try {
+          for (const t of timelineWrites) writer.assertWritableSize(t.text, writer.projectRelative(t.path));
+          writer.assertWritableSize(easeText, writer.projectRelative(filePath));
+        } catch (error) {
+          return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
         // Writes: event sheets, then timelines, then the ease file, so the file that defines the ease changes last
         const changed: ChangedFile[] = [];

@@ -16,6 +16,7 @@ import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, relative } from 'path';
 import { StaleFileError } from '../../src/construct3/disk-state.js';
+import { describeFileSizeLimit } from '../../src/construct3/file-size-limit.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter, UnconfirmedWriteError } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
@@ -859,6 +860,39 @@ describe('custom eases (real project on disk)', () => {
       expect(entityWrites).not.toHaveBeenCalled();
       expect(projectWrites).not.toHaveBeenCalled();
       expect(await snapshot()).toEqual(before);
+    });
+
+    /** Pad the ease file Bouncy to 8 bytes under the 1 MB size limit with a key the tools keep, so new points make its text too large. */
+    async function padEaseToLimit() {
+      const ease = JSON.parse(await readText('timelines/transitions/Bouncy.json')) as Json;
+      const textOf = (padding: number) => JSON.stringify({ ...ease, padding: 'x'.repeat(padding) }, null, '\t');
+      await writeFile(file('timelines/transitions/Bouncy.json'), textOf(1024 * 1024 - Buffer.byteLength(textOf(0)) - 8), 'utf-8');
+      await boot();
+    }
+
+    it.each([
+      ['the ease text', async () => { await ok('create_ease', { name: 'Bouncy', points: POINTS }); }, 'timelines/transitions/Bouncy.json'],
+      ['a timeline text', async () => setupUsed(['MainSheet', 'Second']), 'timelines/Move.json'],
+    ])('update_ease refuses %s over the size limit before any backup or write', async (_what, setup, tooLarge) => {
+      vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+      await setup();
+      await padEaseToLimit();
+      const before = await snapshot();
+      const replaces = recordReplaces();
+      const entityWrites = vi.spyOn(writer, 'writeEntityFile');
+      const projectWrites = vi.spyOn(writer, 'updateProject');
+
+      const refused = await call('update_ease', { name: 'Bouncy', points: NEW_POINTS });
+      expect(refused.isError).toBe(true);
+      const text = refused.content[0].text;
+      expect(text).toContain(`Generated JSON for "${tooLarge}" is too large (`);
+      expect(text).toContain(`over the ${describeFileSizeLimit()}). Nothing was changed.`);
+      expect(slashed(text)).not.toContain(slashed(tmpDir));
+      expect(replaces).toEqual([]);
+      expect(entityWrites).not.toHaveBeenCalled();
+      expect(projectWrites).not.toHaveBeenCalled();
+      expect(await snapshot()).toEqual(before);
+      expect(existsSync(file('timelines/transitions/Bouncy.json.bak'))).toBe(false);
     });
 
     it('gives create_ease no backup file, and update_ease and delete_ease one', async () => {

@@ -508,6 +508,24 @@ describe('the brush file text and what is read', () => {
     const list = await call('list_tilemap_brushes', { objectName: 'Tiles' });
     expect(list.text).toContain(`over the ${describeFileSizeLimit()})`);
   });
+
+  it('refuses a brush list whose new text is over the size limit before any backup or write', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const cell = [{ index: 1, probability: 0.5 }];
+    const side = 200;
+    const patch = { width: side, height: side, data: Array.from({ length: side }, () => Array.from({ length: side }, () => cell)) };
+    const before = await brushBytes(TILES_BRUSH_PATH);
+    const replace = vi.spyOn(writer, 'replaceFile');
+    const result = await call('add_tilemap_brush', { objectName: 'Tiles', name: 'Huge', type: 'patch', data: patch });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(`Generated JSON for "${TILES_BRUSH_PATH}" is too large (`);
+    expect(result.text).toContain(`over the ${describeFileSizeLimit()}). ${ENDING}`);
+    expect(result.text.endsWith(ENDING)).toBe(true);
+    expectNoFolder(result.text);
+    expect(replace).not.toHaveBeenCalled();
+    expect(await brushBytes(TILES_BRUSH_PATH)).toBe(before);
+    expect(await readdir(at('tilemapBrushes/objectTypes'))).not.toContain('Tiles.brush.json.bak');
+  });
 });
 
 describe('what a call changes', () => {

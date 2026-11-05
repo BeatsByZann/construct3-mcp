@@ -357,6 +357,12 @@ async function writeBrushFile(
   writer: MutationToolDeps['writer'], projectDir: string, location: BrushLocation, read: BrushRead, brushes: TilemapBrush[],
 ): Promise<{ backupPath: string | undefined } | { failure: ReturnType<typeof toolError> }> {
   const text = brushFileText(brushes, read.text);
+  // Refused before a backup or write, as the writer refuses an entity file over the size limit
+  try {
+    writer.assertWritableSize(text, location.label);
+  } catch (error) {
+    return { failure: toolError(stoppedBeforeWrite(error, projectDir)) };
+  }
   let folderExisted = true;
   if (read.state === null) {
     try {
