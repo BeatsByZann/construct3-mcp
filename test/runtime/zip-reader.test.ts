@@ -6,7 +6,7 @@
  * synthetic.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { deflateRawSync } from 'node:zlib';
 import { readZip, readZipArchive, checkEntryPath, decodeCp437 } from '../../src/runtime/zip-reader.js';
 import { zipBuffer, crc32, tableCrc32 } from '../../src/runtime/zip-writer.js';
@@ -285,6 +285,21 @@ describe('readZip', () => {
     const badSize = base();
     badSize.writeUInt32LE(json.length + 1, central + 24);
     expect(() => readZip(badSize)).toThrow(/archive says/);
+  });
+
+  it('refuses a stored entry whose stored size differs from its declared size before copying its bytes', () => {
+    const zip = zipBuffer([{ path: 'project.c3proj', data: json }]);
+    const [central] = centralEntries(zip);
+    // The stored extent is one byte short of the size the archive declares
+    zip.writeUInt32LE(json.length - 1, central + 20);
+    const from = vi.spyOn(Buffer, 'from');
+    try {
+      expect(() => readZip(zip)).toThrow(`Zip entry "project.c3proj" is ${json.length - 1} bytes, but the archive says ${json.length}`);
+      const copies = from.mock.calls.filter(([arg]) => arg instanceof Uint8Array && arg.length === json.length - 1);
+      expect(copies).toEqual([]);
+    } finally {
+      from.mockRestore();
+    }
   });
 
   it('refuses what is not a zip, a truncated zip, and a ZIP64 placeholder with no ZIP64 field', () => {
