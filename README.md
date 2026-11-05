@@ -336,6 +336,17 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `reorder_effects` | Put the effects of a holder in a new order, and the placed instances' entries of an object type's or family's effects with them |
 | `load_addon_definitions` | Load a third-party addon's definitions (`addon.json` and `aces.json`, from a folder or a `.c3addon` archive) so that `validate_project` and the event tools can check its conditions, actions and expressions; changes only what this server checks, no project file |
 
+**Scripts and Project Files**
+
+| Tool | Description |
+|------|-------------|
+| `register_script_file` | Register a script in `rootFileFolders.script` with `script-info` metadata and a collision-safe SID; repairs an older registration |
+| `deregister_script_file` | Remove a script registration; the script file is kept |
+| `set_main_script` | Mark one registered script as the main script and clear `main` from the others |
+| `register_project_file` | Copy a file into its family's directory (`files/`, `sounds/`, `music/`, `videos/`, `fonts/`) and register it |
+| `deregister_project_file` | Remove a Project File registration and delete its file; a `.bak` copy is kept |
+| `create_data_file` | Create an Array, Dictionary, JSON or text data file under `files/` and register it |
+
 ### Runtime Tools (Live Game Control)
 
 | Tool | Description |
@@ -404,6 +415,7 @@ Mutation tools follow a strict safety protocol (exceptions below):
 Every project file a tool writes through the project writer is backed up once per call (item 2 of the list above) and written through a temp file (item 4): objects, families, event sheets, layouts, animations, project metadata, addon registration, timelines, flowcharts, the runtime bridge files and images. Item 5 is a read-back compared byte for byte, and for entity files and `project.c3proj` updates made through `updateProject` it is also re-parsed. The JSON check before a write (`validateJsonData`) runs only for those files too. Each write, delete and restore of a file through the writer takes the file's one lock (the project lock for `project.c3proj`); renaming image files (`renameImageFiles`) makes no backup, and every rename of image files runs under the animation lock and also takes the lock of its target file, never two file locks at once (the animation tools hold the animation lock for their whole call; `delete_object` holds it around its renames, its delete and its rollback, and checks references outside it). The differences:
 - `register_addon` and `unregister_addon` update `project.c3proj` through the writer: it is backed up once per call, the result is read back, and a change saved in the editor during the call is merged in, not refused.
 - The timeline and flowchart tools back up their files once per call, write them through a temp file and read them back. The flowchart tools also refuse to write a flowchart file that changed on disk after the call read it.
+- The file tools (`register_script_file`, `deregister_script_file`, `set_main_script`, `register_project_file`, `deregister_project_file`, `create_data_file`) update `project.c3proj` once through the writer (backed up once per call, read back, a change saved in the editor during the call merged in). `register_project_file` and `create_data_file` register first and then write the file, putting the registration back when the write fails; `deregister_project_file` removes the registration first and then deletes the file, keeping a `.bak` copy, and leaves the registration removed when the delete does not happen (the error says so).
 - The runtime tools (`inject_runtime_bridge`, `remove_runtime_bridge`, and `export_for_preview` / `pack_project` when they inject the bridge) write `project.c3proj` (only when the registration changes), the bridge script and the one import line in the main script through the writer. Each write step backs its file up once per call, reads it back, and is refused when the file changed since the tool read it. The delete of the bridge script by `remove_runtime_bridge` takes no such check: the file is backed up and deleted under its lock, a change made to it after the tool read it is not refused, and its `.bak` keeps the state just before the delete. `remove_runtime_bridge` also takes out bridge import lines typed by hand, and refuses before writing anything while a script uses the bridge in a way it cannot take out, or a script it has to check cannot be read. When a step fails, the tools still undo their own steps, putting back the files they wrote before. A write step whose read-back does not find the bytes it wrote (another write landed right after it, or the file could not be read) is not put back, since the file may hold that other write; the error names it as a file to check. `clone_project`, when it adds the bridge, is the exception: it writes the copy directly, not through the writer. The copy is a new folder outside the open project, so that install takes no lock and makes no backup; a failed write puts back the files it wrote before.
 - PNG images are backed up once per call under the first free `.bak` name (`<file>.bak`, then `<file>.1.bak`, ...), so a backup the frame tools kept is never replaced; `replace_object_image` keeps the image it replaces the same way (see *Frame images move with their frames* below). Image backups therefore accumulate, one more for each call that writes the image, and nothing removes them. `delete_object` keeps the image files of the object it deletes the same way.
 
@@ -643,6 +655,8 @@ construct3-mcp/
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
 │   │   ├── flowchart-model.ts      # Flowchart file shape and the in-memory changes of the flowchart tools
 │   │   ├── flowchart-files.ts      # Reading, writing, creating and deleting flowchart files and their project.c3proj entry
+│   │   ├── file-registration.ts    # rootFileFolders entries of scripts and Project Files
+│   │   ├── data-file-body.ts       # Data file bodies and Project File MIME types
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
 │   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
@@ -734,6 +748,7 @@ construct3-mcp/
 │   │   ├── tilemap-data-tools.ts   # Tilemap tile data tools (3)
 │   │   ├── tilemap-brush-tools.ts  # Tilemap brush tools (4)
 │   │   ├── tilemap-support.ts      # Refusals, name checks and path-free messages the tilemap tools share
+│   │   ├── file-tools.ts           # Script and Project File tools (6)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   ├── flowchart-tools.ts      # Flowchart tools (13)

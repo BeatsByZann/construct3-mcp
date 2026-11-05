@@ -669,6 +669,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Flowcharts: `create_flowchart`, `delete_flowchart`, `add_flowchart_node`, `update_flowchart_node`, `delete_flowchart_node`, `add_flowchart_output`, `update_flowchart_output`, `delete_flowchart_output`, `reorder_flowchart_outputs`, `connect_flowchart_nodes`, `disconnect_flowchart_nodes`
 - Tilemaps: `set_tilemap_tiles`, `set_tilemap_data`, `add_tilemap_brush`, `update_tilemap_brush`, `delete_tilemap_brush`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
+- Scripts and Project Files: `register_script_file`, `deregister_script_file`, `set_main_script`, `register_project_file`, `deregister_project_file`, `create_data_file`
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
 
 **Editing a timeline.** The timeline tools edit a timeline piece by piece: an instance track animates one instance of a layout (one property track for each animated property), value and audio tracks hold a named number or a sound over time, track folders group the tracks, and custom eases are curves that timelines and Tween actions can name. Every call backs up the files it changes once, as `.bak` files, and a call that is refused changes nothing. A project that is open in Construct 3 must be closed and reopened there before it is saved, or the editor can overwrite these changes.

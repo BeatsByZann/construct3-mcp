@@ -28,6 +28,7 @@ import { registerTemplateTools } from './template-tools.js';
 import { registerReplaceTools } from './replace-tools.js';
 import { registerStructureTools } from './structure-tools.js';
 import { registerDuplicateTools } from './duplicate-tools.js';
+import { registerFileTools } from './file-tools.js';
 
 export function registerMutationTools(
   server: McpServer,
@@ -57,4 +58,5 @@ export function registerMutationTools(
   registerReplaceTools(deps);
   registerStructureTools(deps);
   registerDuplicateTools(deps);
+  registerFileTools(deps);
 }

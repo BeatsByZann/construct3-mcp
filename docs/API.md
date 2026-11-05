@@ -549,7 +549,7 @@ Exactly one of `objectName` and `familyName` is required. An unknown owner or an
 
 ## Mutation Tools
 
-Mutation tools that write entity files through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate -> backup -> write -> verify -> invalidate caches. The other project-file writes go through the writer's `replaceFile`, `deleteFile`, `restoreForCall` and `updateProject` methods, under the file's one lock. `replaceFile`, `deleteFile` and `updateProject` back the file up once per call; `restoreForCall` takes no backup, since it puts back what the call wrote. A write goes through a temp file, and `replaceFile`, `restoreForCall` and `updateProject` read it back and compare the bytes; `deleteFile` does no read-back (it records the file as absent). Renaming image files makes no backup; every rename of image files runs under the animation lock, and each one also takes the lock of its target file (never two at once) and checks there that no other file has the name, so a write of that name through the writer that took the lock first is never renamed over. The JSON check (`validateJsonData`) and the re-parse run only for entity files and for `project.c3proj` updates made through `updateProject`. The differences: `register_addon` / `unregister_addon` back up `project.c3proj` once per call and merge a change the editor saved during the call; the timeline and flowchart tools back up their files once per call, and the flowchart tools refuse a flowchart file that changed on disk after the call read it; the runtime tools refuse a write step whose file changed since the tool read it (the delete of the bridge script by [`remove_runtime_bridge`](#remove_runtime_bridge) takes no such check); PNG images are backed up once per call under the first free `.bak` name (image backups therefore accumulate, one more for each call that writes the image, and nothing removes them). Mutation tools return a `WriteResult` object on success.
+Mutation tools that write entity files through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate -> backup -> write -> verify -> invalidate caches. The other project-file writes go through the writer's `replaceFile`, `deleteFile`, `restoreForCall` and `updateProject` methods, under the file's one lock. `replaceFile`, `deleteFile` and `updateProject` back the file up once per call; `restoreForCall` takes no backup, since it puts back what the call wrote. A write goes through a temp file, and `replaceFile`, `restoreForCall` and `updateProject` read it back and compare the bytes; `deleteFile` does no read-back (it records the file as absent). Renaming image files makes no backup; every rename of image files runs under the animation lock, and each one also takes the lock of its target file (never two at once) and checks there that no other file has the name, so a write of that name through the writer that took the lock first is never renamed over. The JSON check (`validateJsonData`) and the re-parse run only for entity files and for `project.c3proj` updates made through `updateProject`. The file tools (`register_project_file`, `deregister_project_file`, `create_data_file`) update the registration in `project.c3proj` first and then write or delete the file. The differences: `register_addon` / `unregister_addon` back up `project.c3proj` once per call and merge a change the editor saved during the call; the timeline and flowchart tools back up their files once per call, and the flowchart tools refuse a flowchart file that changed on disk after the call read it; the runtime tools refuse a write step whose file changed since the tool read it (the delete of the bridge script by [`remove_runtime_bridge`](#remove_runtime_bridge) takes no such check); PNG images are backed up once per call under the first free `.bak` name (image backups therefore accumulate, one more for each call that writes the image, and nothing removes them). Mutation tools return a `WriteResult` object on success.
 
 **Text style.** An overwritten file keeps its line endings (LF or CRLF), exact trailing whitespace and BOM. A new file follows `project.c3proj`, then the first JSON file with line breaks in its target folder, then Construct 3's own style: tab-indented JSON with LF line endings, no trailing newline and no BOM. Only files already in that tab layout get line-level diffs; files indented another way are re-indented in full.
 
@@ -557,7 +557,7 @@ Mutation tools that write entity files through the project writer (objects, fami
 
 **Names and file names.** Entity files are named after the entity (`<category>/<folders>/<name>.json`, folders mirroring the project bar), and on Windows and macOS names that differ only in case name the same file. Create and rename tools therefore compare names the way the Construct 3 editor does: event sheet and layout names project-wide ignoring case, object type and family names in one namespace ignoring case, layer names per layout ignoring case (sub-layers included; the editor cannot load a layout with two such layers), animation names per sprite ignoring case (in any animation folder), event variable names ignoring case within the variable's scope (see [Event variable names](#event-variable-names)), and sibling project-bar folders (`subfolder` segments) ignoring case; a case-only clash is refused with an error naming the existing entity or folder. Create tools also refuse to write an entity JSON file, a timeline file or a flowchart file where one already exists, including one whose name differs only in case; nothing is backed up or replaced, and the error says to choose another name or, for a leftover of a deleted entity, to check and remove the file first. Placeholder PNGs are not refused: `create_object` and `add_animation_to_sprite` write them over an image file of the same name in `images/`, e.g. one a deleted animation left behind, but first keep that image as `<file>.bak` (`<file>.1.bak`, ... when taken), so nothing is replaced without a backup (`delete_object` keeps the images of the object it deletes the same way; `add_frame_to_animation` renames such a file first). Rewrites of an existing file keep its name on disk exactly, including case, and the `.bak` backup takes that name. The event sheet tools that check a sheet together with the other event sheets (`add_event_to_sheet`, `delete_event_sheet`, `delete_event_from_sheet`, `update_event_variable`, `move_events_between_sheets`, `update_function`, `rename_event_sheet`) take a sheet name only as the project registers it: a name that differs only in letter case is refused as not found, with the registered name in the error, also on Windows and macOS, where the file would open (`rename_event_sheet` words it *is named "X" in the project. Use name "X".*). Their checks know the other sheets by their registered names, so they would see that sheet twice, once as saved; a move whose target was its source spelled in another case lost the moved events.
 
-**Editor reload note.** Every response that reports a completed write includes `editorNote`: *"If this project is open in Construct 3, close and reopen it there before saving, or the editor can overwrite these changes."* The editor keeps an open project in memory, so saving from a session opened before the edit can overwrite it; its Project Bar reload (F9) re-reads script files only. A `WriteResult` with `success: true` counts as a write unless it is a dry run. Tools whose success does not imply a write carry no note: the `already_registered` no-op of `register_addon`, `fix_legacy_behavior_keys` with `dryRun: false` when it found nothing to rename, `fix_legacy_event_shapes` with `dryRun: false` when it found nothing to convert, `clone_project`, and `export_for_preview` / `pack_project` with `injectBridge: false`. Error responses never carry the note, even when a multi-step tool (e.g. `create_object`) failed after an earlier step had already written.
+**Editor reload note.** Every response that reports a completed write includes `editorNote`: *"If this project is open in Construct 3, close and reopen it there before saving, or the editor can overwrite these changes."* The editor keeps an open project in memory, so saving from a session opened before the edit can overwrite it; its Project Bar reload (F9) re-reads script files only. A `WriteResult` with `success: true` counts as a write unless it is a dry run. Tools whose success does not imply a write carry no note: the `already_registered` no-op of `register_addon`, `register_script_file` and `register_project_file`, `set_main_script` when the script already was the main script, `fix_legacy_behavior_keys` with `dryRun: false` when it found nothing to rename, `fix_legacy_event_shapes` with `dryRun: false` when it found nothing to convert, `clone_project`, and `export_for_preview` / `pack_project` with `injectBridge: false`. Error responses never carry the note, even when a multi-step tool (e.g. `create_object`) failed after an earlier step had already written.
 
 **Files the server could not parse.** The reference checks work from the cross-reference index, which holds only the files the reader could parse. A registered layout, event sheet or family file over the size limit (10MB by default), not valid JSON or unreadable is left out (`validate_project` lists it in `unscannedFiles`). The checks of `delete_object`, `delete_family`, `delete_layout`, `delete_event_sheet`, `delete_event_from_sheet`, `move_events_between_sheets`, `update_event_variable` (for a rename), `update_object_properties`, `update_family`, `update_function`, `rename_object_type`, `rename_family`, `rename_event_sheet` and `rename_layout` therefore search such files as text for the names they look for (the tool sections say which): whole words ignoring case (`Enemy` matches `"Enemy"`, `Enemy.X`, `enemy(0)` and `runtime.objects.Enemy`, not `EnemyBullet`), as JSON writes them inside a string, and whole numbers for SIDs. Names outside ASCII are also searched as `\u` escapes (Python's `json.dump` writes them so), a `\uXXXX` escape next to a name counts as the character it stands for, and a file with a UTF-16LE byte order mark is read as UTF-16LE; a file in another encoding (UTF-16BE, NUL characters) cannot be searched. The file is streamed without a size limit (about 0.1 seconds for 50MB while the names are rare in the text, up to about 0.3 seconds when a name is common inside other words, and about 2 seconds in a constructed worst case of 200 very common short names) and only while there are such files. Each searched file is listed in `unscannedFiles` as `{ file, reason, textSearch, names?, searchedFor?, unchecked? }`: `file` is `category/name` as in `validate_project`, `reason` is `over the 10MB size limit` (the megabytes of the setting in effect), `not valid JSON` or `could not be read`, and `textSearch` is:
 - `possible-use`: the text holds what the check looks for (`names` lists what it found). This is a possible use, not a confirmed one: the search cannot tell a use from the same name in another string (a comment, a text property). It refuses like a use (`delete_blocked` / `move_blocked` / `update_blocked` / `rename_blocked`, message *There are possible uses in files that could not be parsed: ...*); with `force=true` the tool goes ahead and names the files in a warning, without changing them;
@@ -2084,6 +2084,131 @@ Returns `{ loaded, skipped, nowLoaded }`. `loaded` lists each addon read in this
 **Allowed locations.** A path must lie inside the project folder (for a `.c3p` project, the folder that holds the `.c3p` file, not its temporary working folder) or inside a path named in `C3_ADDON_DEFINITIONS`. A path outside both is refused, and so is a network path. Symbolic links and junctions are followed to their target and the target is what is checked: for the path given, for every addon found under it and for each definition file, so a link that leads out of the allowed folders is refused. A hard link is not detected. A process that can write the project folder and replaces a checked path between the check and the read is not guarded against.
 **Limits.** An `addon.json` or `aces.json` of at most 10MB; a `.c3addon` archive of at most 25MB, listing at most 10,000 entries and no path deeper than 16 folders. Of an archive only `addon.json` and `aces.json` at its root or one folder deep are read: at most four definition files and 20MB of them together, and exactly one `addon.json` and one `aces.json` in the same folder. A reason in the report is a fixed text chosen by the kind of failure.
 
+### `register_script_file`
+
+Register an existing script file in `rootFileFolders.script` with `script-info` metadata. Only `project.c3proj` is changed: the script file is neither copied nor checked.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Script file name, without a folder path |
+| `type` | string | No | MIME type recorded for a new entry (default: `"application/javascript"`) |
+| `purpose` | string | No | `script-info` purpose, any string of up to 100 characters (Construct 3 uses `"main"`, `"imports-for-events"` and `"none"`). A new entry gets `"none"` when omitted; an existing entry keeps its purpose |
+| `subfolder` | string | No | Slash-separated script subfolder |
+
+**Notes:**
+- One update of `project.c3proj` through the writer: backed up once per call (`project.c3proj.bak`); a change saved in the editor during the call is merged. The SID is taken for a new entry only, and is collision-safe
+- An entry that is registered already keeps its SID and type, and returns `action: "already_registered"` with `generatedSid` set to its SID. An older registration is repaired in the same update (a `file-info` key replaced by `script-info`, a missing `script-info` added, a purpose changed, duplicate registrations of the name removed) and the result lists the repairs in `repaired`. When nothing needs repair nothing is written
+- `purpose: "main"` is refused while another script is the main script (use [`set_main_script`](#set_main_script)); the check runs again inside the update, so a script that became main meanwhile is refused too
+- Names and subfolders are matched with their letter case. A name or subfolder that differs only in case from a registered one is refused, with the registered spelling named, also when the case variant is saved during the call
+- A name or a subfolder part that Windows cannot store as one plain file is refused: the characters `< > : " | ? *` and control characters, a trailing dot or space, the device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1` to `COM9`, `LPT1` to `LPT9` and their superscript forms, with or without an extension) and a name longer than 251 characters (so that `<name>.tmp` and `<name>.bak` fit in 255)
+- A refusal made before anything is changed ends with "Nothing was changed." An unexpected error puts back what the call wrote and says so
+
+### `deregister_script_file`
+
+Remove a script registration from `rootFileFolders.script` (every registration of the name in that folder). The script file is kept.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Script file name |
+| `subfolder` | string | No | Slash-separated script subfolder |
+
+**Notes:**
+- One update of `project.c3proj` through the writer, backed up once per call; a change saved in the editor during the call is merged
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named; names that Windows cannot store as one plain file are refused. A name that is not registered is refused
+- Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
+
+### `set_main_script`
+
+Mark one registered script as the main script: it gets `script-info` purpose `"main"`, and every other script that had `"main"` gets `"none"`. Other purposes are left alone.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Registered script file name |
+| `subfolder` | string | No | Script subfolder. When omitted, the script of that name at the root of the script folder is chosen, else the only subfolder that has one; a name registered in several subfolders is refused |
+
+**Notes:**
+- One update of `project.c3proj` through the writer, backed up once per call; a change saved in the editor during the call is merged. The script's registration is checked again inside the update
+- The result has `action: "updated"` and lists the purpose changes in `warnings`, or `action: "unchanged"` when the script already was the main script and nothing else had `"main"`; nothing is written then
+- Refused, before any change, when the current main script is the runtime bridge (`c3-runtime-bridge.js`): the bridge loads as the main script, and moving `main` away would stop it loading. Call [`remove_runtime_bridge`](#remove_runtime_bridge) first
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named. Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
+
+### `register_project_file`
+
+Copy a file into the directory its Project File family uses and register it in `rootFileFolders` with `file-info` metadata.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | No | Destination file name (default: the source basename) |
+| `sourcePath` | string | No | Path to the source file to copy, up to 100 MB. Required unless the file is registered already. Aliases: `filePath`, `source` |
+| `folder` | `"general"` \| `"sound"` \| `"music"` \| `"video"` \| `"font"` | No | Project File family (default: `"general"`). Alias: `category`; two aliases that disagree are refused |
+| `type` | string | No | MIME type recorded for a new entry (inferred from the extension when omitted). Alias: `mimeType` |
+| `purpose` | string | No | `file-info` purpose, up to 100 characters. A new entry gets `"none"` when omitted; an existing entry keeps its purpose |
+| `subfolder` | string | No | Slash-separated subfolder inside the family directory |
+
+| Family | Directory |
+|--------|-----------|
+| `general` | `files/` |
+| `sound` | `sounds/` |
+| `music` | `music/` |
+| `video` | `videos/` |
+| `font` | `fonts/` |
+
+Observed on Construct 3 r506-2, Free edition, guest: a project with a script, a general file, a sound, a music, a video and a font file registered by these tools opened, listed each under its family, and its save kept the files in `scripts/`, `files/`, `sounds/`, `music/`, `videos/` and `fonts/`. An earlier record for Construct 3 r495 shows `files/` and `sounds/` (tier not recorded).
+
+The same save gave the entries the tools had registered new SIDs (the SIDs of the entries already in the project were kept), and wrote `application/octet-stream` as the type of the music and font files, where the tool had recorded `audio/webm` and `font/ttf` (r506-2, Free edition, guest). Other releases and tiers were not checked.
+
+**Notes:**
+- One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), made first. The file is copied after its registration, and a failed copy puts the registration back; the error says what was put back, what could not be, and a file left on disk. The SID is taken for a new entry only
+- A file at the destination is refused, checked again after the registration, and a third time by the writer under the file lock right before it writes (the registration is then put back). A file another program creates in the moment between that last check and the write is replaced and kept as `<file>.bak`
+- A destination reached through a symbolic link or Windows junction that leaves the project folder is refused. It is checked before the registration and again just before the write; a link swapped in after the second check is not covered
+- A name whose `<name>.tmp` is a registered or existing file is refused (the server writes through `<name>.tmp`)
+- The server copies any file its process can read; a source over 100 MB, or one that is not a file, is refused
+- A file that is registered already needs no source and returns `action: "already_registered"` (with `repaired` when an older registration was repaired). A source given then is not copied, and the result says so in `warnings`; a registered file that is not on disk is reported in `warnings` as well
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named, also when a case variant is saved during the call; names and subfolder parts that Windows cannot store as one plain file are refused (see [`register_script_file`](#register_script_file))
+- Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
+
+### `deregister_project_file`
+
+Remove a Project File registration and delete its file from the family directory.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Project File name |
+| `folder` | `"general"` \| `"sound"` \| `"music"` \| `"video"` \| `"font"` | No | Project File family (default: `"general"`). Alias: `category` |
+| `subfolder` | string | No | Slash-separated subfolder inside the family directory |
+
+**Notes:**
+- One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), then the file is deleted. The file is backed up to `<file>.bak` first; the latest deleted version is kept, and a later delete of the same path replaces that copy. The result has `fileRemoved` (false when there was no file to delete) and, when a file was deleted, `backup` (the project-relative path of the copy)
+- Only the file that was registered when the call selected it is deleted: a registration that changed meanwhile (registered again, or saved in the editor with a new SID) is refused before anything is changed
+- A file reached through a symbolic link or Windows junction that leaves the project folder is not deleted; this is checked before the registration is removed (the call is then refused and nothing is changed) and again just before the delete (a link swapped in after the second check is not covered). The same two checks apply to `<name>.bak`
+- A name whose `<name>.bak` is a registered file is refused, before anything is changed (the server backs up to `<name>.bak`). An unregistered `<name>.bak` is replaced by the backup of the deleted file
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named; names and subfolder parts that Windows cannot store as one plain file are refused
+- Refusals made before anything is changed end with "Nothing was changed."; an unexpected error in the update of `project.c3proj` puts back what the call wrote and says so
+- After the registration is removed, three outcomes leave the registration removed and return an error that says so: a link or junction found just before the delete (the file is left in place), a file changed since the call selected it (left in place, and named, to check and remove by hand), and a failed delete (the error gives the code and calls the file orphaned, to remove by hand). Nothing is put back in these cases
+
+### `create_data_file`
+
+Create a Construct 3 data file under `files/` and register it as a `general` Project File with `file-info` metadata.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | File name including its extension, for example `"levels.json"` |
+| `kind` | `"array"` \| `"dictionary"` \| `"json"` \| `"text"` | Yes | Body format |
+| `content` | string | No | up to 5,000,000 characters. `dictionary` and `json`: a JSON document. `text`: the literal body. `array`: an optional JSON `[width][height][depth]` data array |
+| `arraySize` | number[3] | No | `array` only: `[width, height, depth]`, each a whole number from 0 to 10,000 (default: `[1, 1, 1]`); other kinds refuse it |
+| `type` | string | No | MIME type recorded for the entry (inferred from `kind` when omitted: `application/json` for `array`, `dictionary` and `json`, `text/plain` for `text`) |
+| `purpose` | string | No | `file-info` purpose, up to 100 characters (default: `"none"`) |
+| `subfolder` | string | No | Slash-separated subfolder inside `files/` |
+
+**Notes:**
+- `array` writes `{"c2array":true,"size":[w,h,d],"data":[[[...]]]}` and `dictionary` writes `{"c2dictionary":true,"data":{}}`, the bodies the Array and Dictionary plugins load. An array holds up to 1,000,000 cells (a depth of 0 counts as 1); `content` must match `arraySize`. `json` is checked to parse and written as given (`{}` without `content`); `text` is written as given (empty without `content`)
+- One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), made first. The file is written after its registration, and a failed write puts the registration back; the error says what was put back, what could not be, and a file left on disk. The SID is taken for a new entry only
+- A name that is registered already is refused. A name another writer registers during the call is refused inside the update, and no file is written
+- A file at the path is refused, checked again after the registration, and a third time by the writer under the file lock right before it writes (the registration is then put back). A file another program creates in the moment between that last check and the write is replaced and kept as `<file>.bak`
+- A path reached through a symbolic link or Windows junction that leaves the project folder is refused, before the registration and again just before the write (a link swapped in after the second check is not covered). A name whose `<name>.tmp` is a registered or existing file is refused (the server writes through `<name>.tmp`)
+- The result has `action: "created"` and `kind`
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named; names and subfolder parts that Windows cannot store as one plain file are refused. Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
+
 ### `add_animation_to_sprite`
 
 Add a new animation to a Sprite object.
@@ -3256,8 +3381,8 @@ Mutation tools return this structure on success:
 interface WriteResult {
   success: boolean;
   entity: string;        // name of the entity
-  category: string;      // "object" | "family" | "eventsheet" | "layout" | "timeline" | "tilemapbrush" | "project" | "addon"
-  action: string;        // "created" | "updated" | "deleted" | "renamed" (also "unchanged" for an `update_tilemap_brush` that changes nothing, "delete_blocked", "update_blocked", "move_blocked", "rename_blocked", "would_delete", "would_rename", "would_update", "already_registered")
+  category: string;      // "object" | "family" | "eventsheet" | "layout" | "timeline" | "tilemapbrush" | "project" | "addon" | "script-file" | "project-file"
+  action: string;        // "created" | "updated" | "deleted" | "renamed" | "registered" | "deregistered" (also "unchanged" for an `update_tilemap_brush` or a `set_main_script` that changes nothing, "delete_blocked", "update_blocked", "move_blocked", "rename_blocked", "would_delete", "would_rename", "would_update", "already_registered")
   generatedSid?: number;
   generatedUid?: number;
   warnings?: string[];   // e.g., "Auto-registered plugin..."

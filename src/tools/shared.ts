@@ -49,6 +49,36 @@ export function validateSubfolder(subfolder: string): void {
   }
 }
 
+/** Characters Windows cannot store in a file name, and control characters (":" would name an NTFS alternate data stream). */
+const UNSAFE_FILE_NAME_CHARACTERS = /[<>:"|?*\u0000-\u001f]/;
+
+/** Names Windows reserves for devices, with or without an extension. */
+const RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9\xb9\xb2\xb3]|lpt[1-9\xb9\xb2\xb3])(\..*)?$/i;
+
+/** The longest file name accepted: the writer stages `<name>.tmp` and backs up `<name>.bak`, and those must fit in 255 as well. */
+const MAX_FILE_NAME_LENGTH = 255 - '.tmp'.length;
+
+/**
+ * Validate a file item name, or one part of a subfolder path (`label`):
+ * one path segment that Windows, macOS and Linux all store as one plain file.
+ * The length is counted in UTF-16 units; a file system that limits 255 bytes
+ * of UTF-8 can still refuse a long non-ASCII name.
+ */
+export function validateFileName(name: string, label = 'File name'): void {
+  if (name.length === 0) throw new Error(`${label} cannot be empty`);
+  if (name.length > MAX_FILE_NAME_LENGTH) {
+    throw new Error(`${label} too long (max ${MAX_FILE_NAME_LENGTH} characters, so that the .tmp and .bak names fit in 255)`);
+  }
+  if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+    throw new Error(`${label} must be a single path segment`);
+  }
+  if (UNSAFE_FILE_NAME_CHARACTERS.test(name)) {
+    throw new Error(`${label} must not contain < > : " | ? * or control characters (Windows cannot store them in a file name)`);
+  }
+  if (/[. ]$/.test(name)) throw new Error(`${label} must not end with a dot or a space (Windows drops them)`);
+  if (RESERVED_DEVICE_NAME.test(name)) throw new Error(`${label} "${name}" is reserved for a device on Windows`);
+}
+
 /**
  * Added as `editorNote` to every response that reports a completed change to
  * the project on disk. The Construct 3 editor keeps an open project in memory,

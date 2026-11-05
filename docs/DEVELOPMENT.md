@@ -78,6 +78,8 @@ construct3-mcp/
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
 │   │   ├── flowchart-model.ts      # Flowchart file shape and the in-memory changes of the flowchart tools
 │   │   ├── flowchart-files.ts      # Reading, writing, creating and deleting flowchart files and their project.c3proj entry
+│   │   ├── file-registration.ts    # rootFileFolders entries of scripts and Project Files
+│   │   ├── data-file-body.ts       # Data file bodies and Project File MIME types
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
 │   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
@@ -169,6 +171,7 @@ construct3-mcp/
 │   │   ├── tilemap-data-tools.ts   # Tilemap tile data tools (3)
 │   │   ├── tilemap-brush-tools.ts  # Tilemap brush tools (4)
 │   │   ├── tilemap-support.ts      # Refusals, name checks and path-free messages the tilemap tools share
+│   │   ├── file-tools.ts           # Script and Project File tools (6)
 │   │   ├── project-tools.ts        # Project metadata and addon tools (4)
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   ├── flowchart-tools.ts      # Flowchart tools (13)
@@ -237,7 +240,7 @@ server.tool(
 
 ### Adding a New Mutation Tool
 
-1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `bulk-instance-tools.ts`, `animation-tools.ts`, `timeline-tools.ts`, `flowchart-tools.ts`, `tilemap-data-tools.ts`, `tilemap-brush-tools.ts` or `project-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
+1. Add the tool to the domain module it belongs to (`object-tools.ts`, `event-tools.ts`, `layout-tools.ts`, `bulk-instance-tools.ts`, `animation-tools.ts`, `timeline-tools.ts`, `flowchart-tools.ts`, `tilemap-data-tools.ts`, `tilemap-brush-tools.ts`, `project-tools.ts` or `file-tools.ts`), inside its `register*Tools(deps)` function. A new domain gets its own module, registered in `src/tools/mutations.ts`.
 2. Follow the safety pattern:
    - Validate inputs (use `validateName()`, `validateSubfolder()`)
    - For new object type or family names, check `findObjectClassNameClash()` (names clash ignoring case)
