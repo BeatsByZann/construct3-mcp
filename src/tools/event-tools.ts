@@ -151,9 +151,8 @@ import {
   type UnscannedFileReport,
 } from '../construct3/analyzers/unscanned-uses.js';
 import { nameTerm } from '../construct3/raw-text-search.js';
-import { writeEntityOrRollBack } from './call-rollback.js';
+import { rollBackFailedCall, writeEntityOrRollBack } from './call-rollback.js';
 import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-keys.js';
-import { rollBackFailedCall } from './call-rollback.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
 import {
@@ -347,34 +346,6 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   // ─── add_event_to_sheet ───────────────────────────────────
 
-  // The arguments add_event_to_sheet takes; the object schema built from them is strict, so any other top-level argument is refused
-  const addEventToSheetShape = {
-    sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
-    eventType: z.enum(['group', 'function', 'variable', 'include', 'comment', 'script']).describe('Type of event to add'),
-    title: z.string().max(500).optional().describe('For groups: the group title'),
-    functionName: z.string().max(200).optional().describe('For functions: function name. Refused like in the editor: a name that matches, ignoring case, another function in the project or a System expression; with a return type also whitespace, punctuation such as - . : or a leading underscore (the name is used in expressions). Without a return type the editor accepts any name that is not empty'),
-    functionParams: z.array(z.object({
-      name: z.string().describe('Parameter name'),
-      type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
-    })).optional().describe('For functions: parameter definitions. Names are refused like in the editor: a name that matches, ignoring case, a global variable of the project, another parameter of the function or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
-    functionReturnType: z.enum(['none', 'number', 'string', 'any']).optional()
-      .describe('For functions: the editor\'s "Return type" (default "none"); a function with a return type sets its value with the Functions "Set return value" action'),
-    functionIsAsync: z.boolean().optional().describe('For functions: the editor\'s "Asynchronous" option, so a call can be waited for with "Wait for previous actions to complete" (default false)'),
-    functionCopyPicked: z.boolean().optional().describe('For functions: the editor\'s "Copy picked" option, which passes the instances picked where the function is called into the function (default false)'),
-    variableName: z.string().max(200).optional().describe('For variables: name of the new variable (global at the top level, local elsewhere). Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in its scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
-    variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
-    initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
-    variableComment: z.string().max(2000).optional().describe('For variables: the declaration comment (default empty)'),
-    variableIsStatic: z.boolean().optional().describe('For variables: "Static", which keeps a local variable\'s value between runs of its event (default false)'),
-    variableIsConstant: z.boolean().optional().describe('For variables: "Constant" (default false)'),
-    includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
-    commentText: z.string().max(2000).optional().describe('For comments: comment text'),
-    commentTextColor: commentColorSchema.optional().describe('For comments: the text colour, written as "text-color": [red, green, blue, alpha], each 0-1, as the editor saves it'),
-    commentBackgroundColor: commentColorSchema.optional().describe('For comments: the background colour, written as "background-color": [red, green, blue, alpha], each 0-1'),
-    script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional().describe('For script events: JavaScript as one string (split into lines) or an array of lines, written as the editor saves it'),
-    ...locatorShape,
-  };
-
   // Registered with a strict object schema, so unknown top-level arguments are
   // refused (server.tool() with a raw shape would drop them; see Strict Input in
   // event-helpers.ts) (#ISSUE).
@@ -382,7 +353,32 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
     'add_event_to_sheet',
     {
       description: 'Add an event (group, function, variable, include, comment or script) to an event sheet: at the top level, in a group (groupPath), among the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"); a place that no editor-saved project on record or checked editor case shows for that kind of event is refused, and includes go only at the top level. A function block is refused under or below a block that has a trigger condition and under or below a function block or a custom action block. A variable at the top level is a global variable, anywhere else a local one. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile. Unknown top-level arguments are refused, never dropped; keys inside a functionParams entry other than name and type are still dropped.',
-      inputSchema: z.object(addEventToSheetShape, {
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
+        eventType: z.enum(['group', 'function', 'variable', 'include', 'comment', 'script']).describe('Type of event to add'),
+        title: z.string().max(500).optional().describe('For groups: the group title'),
+        functionName: z.string().max(200).optional().describe('For functions: function name. Refused like in the editor: a name that matches, ignoring case, another function in the project or a System expression; with a return type also whitespace, punctuation such as - . : or a leading underscore (the name is used in expressions). Without a return type the editor accepts any name that is not empty'),
+        functionParams: z.array(z.object({
+          name: z.string().describe('Parameter name'),
+          type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+        })).optional().describe('For functions: parameter definitions. Names are refused like in the editor: a name that matches, ignoring case, a global variable of the project, another parameter of the function or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+        functionReturnType: z.enum(['none', 'number', 'string', 'any']).optional()
+          .describe('For functions: the editor\'s "Return type" (default "none"); a function with a return type sets its value with the Functions "Set return value" action'),
+        functionIsAsync: z.boolean().optional().describe('For functions: the editor\'s "Asynchronous" option, so a call can be waited for with "Wait for previous actions to complete" (default false)'),
+        functionCopyPicked: z.boolean().optional().describe('For functions: the editor\'s "Copy picked" option, which passes the instances picked where the function is called into the function (default false)'),
+        variableName: z.string().max(200).optional().describe('For variables: name of the new variable (global at the top level, local elsewhere). Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in its scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+        variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
+        initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
+        variableComment: z.string().max(2000).optional().describe('For variables: the declaration comment (default empty)'),
+        variableIsStatic: z.boolean().optional().describe('For variables: "Static", which keeps a local variable\'s value between runs of its event (default false)'),
+        variableIsConstant: z.boolean().optional().describe('For variables: "Constant" (default false)'),
+        includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
+        commentText: z.string().max(2000).optional().describe('For comments: comment text'),
+        commentTextColor: commentColorSchema.optional().describe('For comments: the text colour, written as "text-color": [red, green, blue, alpha], each 0-1, as the editor saves it'),
+        commentBackgroundColor: commentColorSchema.optional().describe('For comments: the background colour, written as "background-color": [red, green, blue, alpha], each 0-1'),
+        script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional().describe('For script events: JavaScript as one string (split into lines) or an array of lines, written as the editor saves it'),
+        ...locatorShape,
+      }, {
         errorMap: unknownKeysErrorMap('the arguments of add_event_to_sheet', 'add_event_to_sheet takes sheetName, eventType, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position, title (group), functionName, functionParams, functionReturnType, functionIsAsync, functionCopyPicked (function), variableName, variableType, initialValue, variableComment, variableIsStatic, variableIsConstant (variable), includeSheet (include), commentText, commentTextColor, commentBackgroundColor (comment) and script (script). Block events are added with add_event_block.'),
       }).strict(),
     },
@@ -2379,7 +2375,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
 
         // Custom action calls: checked before anything changes, so a refusal leaves the block as it was
-        const customAdds = (args.addActions ?? []).filter(a => isCustomActionCall(a as Record<string, unknown>));
+        const customAdds = [...(args.addActions ?? []), ...(args.insertActions ?? []).map(i => i.action)]
+          .filter(a => isCustomActionCall(a as Record<string, unknown>));
         const storedActions = Array.isArray(event.actions) ? event.actions as Record<string, unknown>[] : [];
         const customUpdates = (args.updateActions ?? []).filter(u => storedActions[u.index] !== undefined && isCustomActionCall(storedActions[u.index]));
         for (const upd of customUpdates) {
@@ -2499,6 +2496,11 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
         // From here the sheet changes in memory: a failure before the write puts the events back
         restoreSheet = () => { sheet.events = beforeEvents; };
+        /** A refusal after the toggles or updates changed the sheet in memory: puts the events back, then refuses. */
+        const refuseAfterChanges = (message: string) => {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(message));
+        };
 
         // ── Apply block-level toggles (in the editor's key order: disabled right after sid) ──
         if (args.disabled !== undefined) {
@@ -2524,7 +2526,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (args.updateConditions) {
           for (const upd of args.updateConditions) {
             if (upd.index < 0 || upd.index >= conditions.length) {
-              return toolError(`Condition index ${upd.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
+              return refuseAfterChanges(`Condition index ${upd.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
             }
             const cond = conditions[upd.index];
             touched.push({ ace: cond, kind: 'condition' });
@@ -2553,22 +2555,22 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (args.updateActions) {
           for (const upd of args.updateActions) {
             if (upd.index < 0 || upd.index >= actions.length) {
-              return toolError(`Action index ${upd.index} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
+              return refuseAfterChanges(`Action index ${upd.index} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
             }
             const act = actions[upd.index];
             const commentEdit = upd.text !== undefined || upd['text-color'] !== undefined || upd['background-color'] !== undefined;
             if (commentEdit) {
               if (act.type !== 'comment') {
-                return toolError(`Action ${upd.index} is not a comment row: text, "text-color" and "background-color" apply to comment rows only.`);
+                return refuseAfterChanges(`Action ${upd.index} is not a comment row: text, "text-color" and "background-color" apply to comment rows only.`);
               }
               editCommentRowInPlace(act, upd);
             }
             if (upd.parameters) {
               const rowProblem = parameterlessRowError(act, upd.index);
-              if (rowProblem) return toolError(rowProblem);
+              if (rowProblem) return refuseAfterChanges(rowProblem);
             }
             if (upd.disabled !== undefined && act.type === 'comment') {
-              return toolError(`Action ${upd.index} is a comment row, which cannot be disabled (editor-saved comment rows are { type, text } with optional "text-color" and "background-color"; none carries "disabled").`);
+              return refuseAfterChanges(`Action ${upd.index} is a comment row, which cannot be disabled (editor-saved comment rows are { type, text } with optional "text-color" and "background-color"; none carries "disabled").`);
             }
             if (upd.parameters) {
               if (isCustomActionCall(act)) {
@@ -2590,7 +2592,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
                 act.callFunction = resolveCallName(name, signature, label, warnings);
               } else {
                 if (Array.isArray(upd.parameters)) {
-                  return toolError(`Action ${upd.index} is not a function call: pass its parameters as key-value pairs, not an array.`);
+                  return refuseAfterChanges(`Action ${upd.index} is not a function call: pass its parameters as key-value pairs, not an array.`);
                 }
                 touched.push({ ace: act, kind: 'action' });
                 act.parameters = { ...(act.parameters as Record<string, unknown> || {}), ...upd.parameters };
@@ -2629,9 +2631,6 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (args.removeConditionIndices && args.removeConditionIndices.length > 0) {
           const sorted = [...new Set(args.removeConditionIndices)].sort((a, b) => b - a);
           for (const idx of sorted) {
-            if (idx < 0 || idx >= conditions.length) {
-              return toolError(`Condition index ${idx} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
-            }
             conditions.splice(idx, 1);
             removedConditions = true;
           }
@@ -2641,9 +2640,6 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (args.removeActionIndices && args.removeActionIndices.length > 0) {
           const sorted = [...new Set(args.removeActionIndices)].sort((a, b) => b - a);
           for (const idx of sorted) {
-            if (idx < 0 || idx >= actions.length) {
-              return toolError(`Action index ${idx} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
-            }
             actions.splice(idx, 1);
           }
         }
@@ -2658,7 +2654,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           conditions.splice(insert.index, 0, buildCondition(insert.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>);
         }
         if ((args.insertActions ?? []).length > 0) {
-          const insertCtx = { warnings, functions };
+          const insertCtx = { warnings, functions, customActions: customContext };
           for (const insert of [...(args.insertActions ?? [])].sort((x, y) => y.index - x.index)) {
             actions.splice(insert.index, 0, await buildAction(reader, idGen, insert.action, insertCtx, where) as unknown as Record<string, unknown>);
           }

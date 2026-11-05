@@ -486,7 +486,7 @@ describe('update_event_block and custom actions', () => {
     const text = errorText(await server.callTool('update_event_block', {
       sheetName: 'Sheet1', sid: 600, updateActions: [{ index: 9, parameters: { amount: '1' } }],
     }));
-    expect(text).toBe('Action index 9 is out of range (block has 1 action(s), indices 0-0).');
+    expect(text).toBe('Action index 9 is out of range (block has 1 action(s), indices 0-0). Nothing was changed.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
