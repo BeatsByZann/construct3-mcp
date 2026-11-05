@@ -98,13 +98,18 @@ describe('add_event_block and update_event_block take the keys added to them sin
   });
 
   it('update_event_block inserts an action at an index with insertActions, and names insertActions among its arguments', async () => {
+    // The block starts with set-position; two more actions make a list of three, so an insert at index 1 lands between the first and the rest
+    const setVisible = { id: 'set-visible', objectClass: 'Sprite', parameters: { visibility: 'visible' } };
+    const setAngle = { id: 'set-angle', objectClass: 'Sprite', parameters: { angle: '90' } };
+    const setWidth = { id: 'set-width', objectClass: 'Sprite', parameters: { width: '10' } };
+    const added = await server.callTool('update_event_block', { sheetName: 'MainSheet', sid: 400000000000003, addActions: [setVisible, setAngle] });
+    expect(added.isError, added.content[0].text).toBeUndefined();
     const result = await server.callTool('update_event_block', {
-      sheetName: 'MainSheet', sid: 400000000000003, insertActions: [{ index: 1, action: setPosition }],
+      sheetName: 'MainSheet', sid: 400000000000003, insertActions: [{ index: 1, action: setWidth }],
     });
     expect(result.isError, result.content[0].text).toBeUndefined();
     const block = (await sheetEvents())[0] as { actions: Array<Record<string, unknown>> };
-    expect(block.actions).toHaveLength(2);
-    expect(block.actions[1].id).toBe('set-position');
+    expect(block.actions.map(a => a.id)).toEqual(['set-position', 'set-width', 'set-visible', 'set-angle']);
     await expect(server.callTool('update_event_block', { sheetName: 'MainSheet', sid: 400000000000003, notAnArgument: true }))
       .rejects.toThrow(/update_event_block takes [^"\\]*\binsertActions\b/);
   });
