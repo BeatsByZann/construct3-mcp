@@ -627,17 +627,6 @@ export function ambiguousSidMessage(
 }
 
 /**
- * A refusal's text, ending with "Nothing was changed." exactly once: for the
- * refusals of the event tools that place, move or edit events, which all
- * come before the tool's first write.
- */
-export function nothingChanged(message: string): string {
-  const text = message.trimEnd();
-  if (text.endsWith('Nothing was changed.')) return text;
-  return `${/[.?!]$/.test(text) ? text : `${text}.`} Nothing was changed.`;
-}
-
-/**
  * Resolve the one event a SID-addressed tool acts on. A SID that matches no
  * event, or several events without an eventPath to pick one, is an error, as
  * is an eventPath that does not point at an event with this SID. Nothing is

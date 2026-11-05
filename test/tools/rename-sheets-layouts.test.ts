@@ -455,7 +455,7 @@ describe('rename_event_sheet: what else it finds and how it fails', () => {
     const file = path('eventSheets', 'Other.json');
     const fsError = Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES', path: file });
     vi.spyOn(reader, 'readAllEventSheets').mockRejectedValueOnce(fsError);
-    const data = await refusal('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' }, 'The rename stopped before anything was written: EACCES on eventSheets/Other.json.');
+    const data = await refusal('rename_event_sheet', { name: 'Common', newName: 'Shared Logic' }, 'The change was stopped before anything was written: EACCES on eventSheets/Other.json.');
     expect(data.text).not.toContain(tmpDir);
     expect(await snapshot()).toEqual(before);
   });
@@ -797,7 +797,7 @@ describe('rename_event_sheet and rename_layout: arguments and refusals', () => {
   it('starts a refusal for an invalid new name with the message of the name check, not with the message of a failed scan', async () => {
     const data = await call('rename_event_sheet', { name: 'Common', newName: 'Bad/Name' });
     expect(data.text).toMatch(/^Name must start with a letter or underscore/);
-    expect(data.text).not.toContain('The rename stopped before anything was written');
+    expect(data.text).not.toContain('The change was stopped before anything was written');
   });
 
   it('refuses a sheet whose own file is missing, and a scan that fails before any write, saying nothing was changed', async () => {
@@ -808,7 +808,7 @@ describe('rename_event_sheet and rename_layout: arguments and refusals', () => {
     const before = await snapshot();
     vi.spyOn(reader, 'readAllLayouts').mockRejectedValueOnce(new Error('disk gone'));
     const failed = await call('rename_event_sheet', { name: 'Common', newName: 'X' });
-    expect(failed.text).toBe('The rename stopped before anything was written: disk gone. Nothing was changed.');
+    expect(failed.text).toBe('The change was stopped before anything was written: disk gone. Nothing was changed.');
     expect(await snapshot()).toEqual(before);
   });
 

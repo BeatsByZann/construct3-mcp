@@ -3,33 +3,11 @@ import { mkdtemp, rm, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
-import {
-  refusal,
-  unregisteredName,
-  stoppedBeforeWrite,
-  syncedTools,
-} from '../../src/tools/tilemap-support.js';
+import { unregisteredName, syncedTools } from '../../src/tools/tilemap-support.js';
 import type { MutationToolDeps } from '../../src/tools/shared.js';
 import { currentToolCall } from '../../src/construct3/disk-state.js';
 import { decodeTileData, cellsToRows } from '../../src/construct3/tilemap-data.js';
 import { makeTilemapProject, PAINTED_DATA, PAINTED_ROWS, PAINTED_UID, BARE_UID } from '../helpers/tilemap-project.js';
-
-const text = (result: { content: Array<{ text: string }> }) => result.content[0].text;
-
-describe('refusal', () => {
-  it('ends once with Nothing was changed.', () => {
-    expect(text(refusal('Layout is missing.'))).toBe('Layout is missing. Nothing was changed.');
-    expect(text(refusal('Layout is missing. Nothing was changed.'))).toBe('Layout is missing. Nothing was changed.');
-    expect(text(refusal('Is the layout there?'))).toBe('Is the layout there? Nothing was changed.');
-    expect(text(refusal('Layout is missing'))).toBe('Layout is missing. Nothing was changed.');
-    expect(refusal('x').isError).toBe(true);
-  });
-
-  it('a message that is only the ending stays that ending', () => {
-    expect(text(refusal('Nothing was changed.'))).toBe('Nothing was changed.');
-    expect(text(refusal(''))).toBe('Nothing was changed.');
-  });
-});
 
 describe('unregisteredName', () => {
   it('accepts the registered spelling, names the registered spelling for another case, and suggests otherwise', () => {
@@ -39,14 +17,6 @@ describe('unregisteredName', () => {
     expect(caseMessage).toContain('letter case');
     expect(unregisteredName('Layout', 'Nope', ['Layout 1'], ['Layout 1'], 'list_layouts')).toContain('Did you mean: Layout 1?');
     expect(unregisteredName('Layout', 'Nope', ['Layout 1'], [], 'list_layouts')).toContain('Use list_layouts');
-  });
-});
-
-describe('stoppedBeforeWrite', () => {
-  it('refuses without a path, with one full stop before the ending', () => {
-    const message = text(stoppedBeforeWrite(new Error('Cannot read C:\\p\\a.json: EACCES.'), 'C:\\p'));
-    expect(message).toBe('The change was stopped before anything was written: Cannot read a.json: EACCES. Nothing was changed.');
-    expect(message).not.toContain('..');
   });
 });
 

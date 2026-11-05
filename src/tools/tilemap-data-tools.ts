@@ -19,8 +19,9 @@ import type { Instance, Layout, WriteResult } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
 import { forEachLayoutInstance, findInstanceByUid } from '../construct3/layers.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
-import { refusal, stoppedBeforeWrite, unregisteredName, syncedTools } from './tilemap-support.js';
-import { errorReason, withoutAbsolutePaths } from '../construct3/error-text.js';
+import { unregisteredName, syncedTools } from './tilemap-support.js';
+import { refuse, stoppedBeforeWrite } from './refusals.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
 import {
   decodeTileData,
   encodeTileData,
@@ -277,7 +278,7 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
         });
       } catch (error) {
         console.error('[get_tilemap_data] failed:', error);
-        return toolError(`Error reading tilemap data: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error reading tilemap data: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -310,26 +311,26 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
       let height: number;
       try {
         if (!args.tiles?.length && !args.fill) {
-          return refusal('No cells provided. Specify tiles, fill, or both.');
+          return refuse('No cells provided. Specify tiles, fill, or both.');
         }
         if (args.fill && args.fill.width * args.fill.height > MAX_WRITE_CELLS) {
-          return refusal(`The fill covers ${args.fill.width * args.fill.height} cells; the limit is ${MAX_WRITE_CELLS}.`);
+          return refuse(`The fill covers ${args.fill.width * args.fill.height} cells; the limit is ${MAX_WRITE_CELLS}.`);
         }
         const resolved = await resolveTilemap(args.layoutName, args.uid);
-        if ('error' in resolved) return refusal(resolved.error);
+        if ('error' in resolved) return refuse(resolved.error);
         target = resolved;
         const current = currentCells(target);
-        if ('error' in current) return refusal(current.error);
+        if ('error' in current) return refuse(current.error);
         ({ cells, width, height } = current);
         if (width === 0 || height === 0) {
-          return refusal(`Instance ${args.uid} has no cells (size ${width}x${height}); use set_tilemap_data to give it a grid.`);
+          return refuse(`Instance ${args.uid} has no cells (size ${width}x${height}); use set_tilemap_data to give it a grid.`);
         }
 
         const placed: TileValue[] = [];
         if (args.fill) {
           const f = args.fill;
           if (f.x + f.width > width || f.y + f.height > height) {
-            return refusal(`The fill ${f.x},${f.y} ${f.width}x${f.height} extends past the ${width}x${height} tilemap.`);
+            return refuse(`The fill ${f.x},${f.y} ${f.width}x${f.height} extends past the ${width}x${height} tilemap.`);
           }
           const value = normalizeTileValue(f.value as TileValue);
           for (let x = f.x; x < f.x + f.width; x++) {
@@ -339,19 +340,19 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
         }
         for (const [i, t] of (args.tiles ?? []).entries()) {
           if (t.x >= width || t.y >= height) {
-            return refusal(`tiles[${i}]: cell ${t.x},${t.y} is outside the ${width}x${height} tilemap.`);
+            return refuse(`tiles[${i}]: cell ${t.x},${t.y} is outside the ${width}x${height} tilemap.`);
           }
           const value = normalizeTileValue(t.value as TileValue);
           cells[t.x * height + t.y] = value;
           placed.push(value);
         }
         const highest = maxTileIndex(cells);
-        if (highest > MAX_TILE_INDEX) return refusal(`Tile index ${highest} is too large (at most ${MAX_TILE_INDEX}).`);
+        if (highest > MAX_TILE_INDEX) return refuse(`Tile index ${highest} is too large (at most ${MAX_TILE_INDEX}).`);
         tileRangeWarning(target, placed);
         if (!current.hadData) target.warnings.push(`The instance had no tile data; a ${width}x${height} grid sized from the instance was created.`);
       } catch (error) {
         console.error('[set_tilemap_tiles] failed before the write:', error);
-        return stoppedBeforeWrite(error, reader.getProjectDir());
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
 
       let backupPath: string;
@@ -359,7 +360,7 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
         backupPath = await store(target, args.layoutName, cells, width, height, false);
       } catch (error) {
         console.error('[set_tilemap_tiles] write failed:', error);
-        return toolError(`Error setting tilemap tiles: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error setting tilemap tiles: ${errorMessage(error, reader.getProjectDir())}`);
       }
       return written(args, backupPath, target);
     }
@@ -386,25 +387,25 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
       try {
         height = args.rows.length;
         width = args.rows[0].length;
-        if (width === 0) return refusal('rows[0] is empty; a tilemap needs at least one column.');
+        if (width === 0) return refuse('rows[0] is empty; a tilemap needs at least one column.');
         if (width * height > MAX_WRITE_CELLS) {
-          return refusal(`The grid holds ${width * height} cells; the limit is ${MAX_WRITE_CELLS}.`);
+          return refuse(`The grid holds ${width * height} cells; the limit is ${MAX_WRITE_CELLS}.`);
         }
         for (let y = 0; y < height; y++) {
           if (args.rows[y].length !== width) {
-            return refusal(`rows[${y}] has ${args.rows[y].length} cell(s); every row needs ${width}.`);
+            return refuse(`rows[${y}] has ${args.rows[y].length} cell(s); every row needs ${width}.`);
           }
           for (let x = 0; x < width; x++) {
             const problem = validateTileValue(args.rows[y][x], `rows[${y}][${x}]`);
-            if (problem) return refusal(problem);
+            if (problem) return refuse(problem);
           }
         }
         cells = rowsToCells(args.rows as TileValue[][]).map(normalizeTileValue);
         const highest = maxTileIndex(cells);
-        if (highest > MAX_TILE_INDEX) return refusal(`Tile index ${highest} is too large (at most ${MAX_TILE_INDEX}).`);
+        if (highest > MAX_TILE_INDEX) return refuse(`Tile index ${highest} is too large (at most ${MAX_TILE_INDEX}).`);
 
         const resolved = await resolveTilemap(args.layoutName, args.uid);
-        if ('error' in resolved) return refusal(resolved.error);
+        if ('error' in resolved) return refuse(resolved.error);
         target = resolved;
 
         tileRangeWarning(target, cells);
@@ -418,7 +419,7 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
         }
       } catch (error) {
         console.error('[set_tilemap_data] failed before the write:', error);
-        return stoppedBeforeWrite(error, reader.getProjectDir());
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
 
       let backupPath: string;
@@ -426,7 +427,7 @@ export function registerTilemapDataTools({ server: mcpServer, reader, writer }: 
         backupPath = await store(target, args.layoutName, cells, width, height, resize);
       } catch (error) {
         console.error('[set_tilemap_data] write failed:', error);
-        return toolError(`Error setting tilemap data: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error setting tilemap data: ${errorMessage(error, reader.getProjectDir())}`);
       }
       return written(args, backupPath, target);
     }

@@ -55,7 +55,7 @@ import {
 import { nameTerm } from '../construct3/raw-text-search.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { errorReason } from '../construct3/error-text.js';
-import { nothingChanged } from './event-helpers.js';
+import { refuse } from './refusals.js';
 import { unregisteredNameMessage } from './registered-names.js';
 import { withProjectSync } from './project-sync.js';
 
@@ -582,7 +582,6 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
       dryRun: z.boolean().optional().default(false).describe('Report what would be swapped and skipped, and write nothing'),
     },
     async (args) => {
-      const refuse = (message: string) => toolError(nothingChanged(message));
       try {
         const { fromObject: from, toObject: to } = args;
         const names = [...await reader.listObjectTypes(), ...await reader.listFamilies()];
@@ -697,7 +696,6 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
       maxReported: z.number().int().min(0).max(1000).optional().default(100).describe('Maximum individual changes listed in the result (counts are always complete)'),
     },
     async (args) => {
-      const refuse = (message: string) => toolError(nothingChanged(message));
       try {
         let pattern: RegExp;
         try {

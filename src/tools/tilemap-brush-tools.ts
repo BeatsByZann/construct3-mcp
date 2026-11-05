@@ -43,8 +43,9 @@ import { resolveProjectPath } from '../construct3/path-utils.js';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult } from '../construct3/types.js';
 import { toolResult, toolError, validateName } from './shared.js';
-import { refusal, stoppedBeforeWrite, unregisteredName, syncedTools } from './tilemap-support.js';
-import { errorReason, withoutAbsolutePaths } from '../construct3/error-text.js';
+import { unregisteredName, syncedTools } from './tilemap-support.js';
+import { refuse, stoppedBeforeWrite } from './refusals.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
 
 /** Largest brush file read, in bytes: the limit the project reader applies to its files. */
 const MAX_BRUSH_FILE_BYTES = 10 * 1024 * 1024;
@@ -457,7 +458,7 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
         });
       } catch (error) {
         console.error('[list_tilemap_brushes] failed:', error);
-        return toolError(`Error listing tilemap brushes: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error listing tilemap brushes: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -475,20 +476,20 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
       let opened: OpenedBrushFile;
       let brushes: TilemapBrush[];
       try {
-        try { validateName(args.name); } catch (e) { return refusal(e instanceof Error ? e.message : String(e)); }
+        try { validateName(args.name); } catch (e) { return refuse(e instanceof Error ? e.message : String(e)); }
         const problem = validateBrushData(args.type, args.data);
-        if (problem) return refusal(problem);
+        if (problem) return refuse(problem);
         const found = await openBrushFile(args.objectName, false);
-        if ('error' in found) return refusal(found.error);
+        if ('error' in found) return refuse(found.error);
         opened = found;
         const clash = findNameClash(args.name, opened.read.brushes.map(b => b.name));
         if (clash !== undefined) {
-          return refusal(`"${args.objectName}" already has a brush named "${clash}"${clash === args.name ? '. Use update_tilemap_brush to change it' : ' (brush names that differ only in letter case count as the same here)'}.`);
+          return refuse(`"${args.objectName}" already has a brush named "${clash}"${clash === args.name ? '. Use update_tilemap_brush to change it' : ' (brush names that differ only in letter case count as the same here)'}.`);
         }
         brushes = [...opened.read.brushes, { name: args.name, type: args.type, data: args.data } as TilemapBrush];
       } catch (error) {
         console.error('[add_tilemap_brush] failed before the write:', error);
-        return stoppedBeforeWrite(error, reader.getProjectDir());
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
 
       const written = await writeBrushFile(writer, reader.getProjectDir(), opened.location, opened.read, brushes);
@@ -522,30 +523,30 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
       let unchanged: boolean;
       try {
         if (args.newName === undefined && args.type === undefined && args.data === undefined) {
-          return refusal('No updates provided. Specify at least one of: newName, type, data.');
+          return refuse('No updates provided. Specify at least one of: newName, type, data.');
         }
         if (args.type !== undefined && args.data === undefined) {
-          return refusal('Changing a brush\'s type requires new data: the grid size differs per type.');
+          return refuse('Changing a brush\'s type requires new data: the grid size differs per type.');
         }
         if (args.newName !== undefined) {
-          try { validateName(args.newName); } catch (e) { return refusal(e instanceof Error ? e.message : String(e)); }
+          try { validateName(args.newName); } catch (e) { return refuse(e instanceof Error ? e.message : String(e)); }
         }
         const found = await openBrushFile(args.objectName, false);
-        if ('error' in found) return refusal(found.error);
+        if ('error' in found) return refuse(found.error);
         opened = found;
-        if (opened.read.state === null) return refusal(`"${args.objectName}" has no brush file (${opened.location.label}).`);
+        if (opened.read.state === null) return refuse(`"${args.objectName}" has no brush file (${opened.location.label}).`);
         brushes = opened.read.brushes;
         const target = findBrush(brushes, args.objectName, args.name);
-        if ('error' in target) return refusal(target.error);
+        if ('error' in target) return refuse(target.error);
         brush = brushes[target.index];
         if (args.newName !== undefined) {
           const clash = findNameClash(args.newName, brushes.filter((_, i) => i !== target.index).map(b => b.name));
-          if (clash !== undefined) return refusal(`"${args.objectName}" already has a brush named "${clash}".`);
+          if (clash !== undefined) return refuse(`"${args.objectName}" already has a brush named "${clash}".`);
         }
         const type = args.type ?? brush.type;
         if (args.data !== undefined) {
           const problem = validateBrushData(type, args.data);
-          if (problem) return refusal(problem);
+          if (problem) return refuse(problem);
         }
         const original = structuredClone(brushes);
         if (args.newName !== undefined) brush.name = args.newName;
@@ -554,7 +555,7 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
         unchanged = JSON.stringify(brushes) === JSON.stringify(original);
       } catch (error) {
         console.error('[update_tilemap_brush] failed before the write:', error);
-        return stoppedBeforeWrite(error, reader.getProjectDir());
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
 
       const entity = `${args.objectName}/${brush.name}`;
@@ -594,15 +595,15 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
       let brushes: TilemapBrush[];
       try {
         const found = await openBrushFile(args.objectName, false);
-        if ('error' in found) return refusal(found.error);
+        if ('error' in found) return refuse(found.error);
         opened = found;
-        if (opened.read.state === null) return refusal(`"${args.objectName}" has no brush file (${opened.location.label}).`);
+        if (opened.read.state === null) return refuse(`"${args.objectName}" has no brush file (${opened.location.label}).`);
         const target = findBrush(opened.read.brushes, args.objectName, args.name);
-        if ('error' in target) return refusal(target.error);
+        if ('error' in target) return refuse(target.error);
         brushes = opened.read.brushes.filter((_, i) => i !== target.index);
       } catch (error) {
         console.error('[delete_tilemap_brush] failed before the write:', error);
-        return stoppedBeforeWrite(error, reader.getProjectDir());
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
 
       const written = await writeBrushFile(writer, reader.getProjectDir(), opened.location, opened.read, brushes);

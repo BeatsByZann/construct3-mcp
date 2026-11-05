@@ -394,7 +394,7 @@ describe('rename_family', () => {
     // A scan that throws before any write
     const beforeScan = await snapshot();
     vi.spyOn(reader, 'readAllEventSheets').mockRejectedValueOnce(new Error('scan failed.'));
-    await refusal('rename_family', { name: 'Fam', newName: 'Gang' }, 'The rename stopped before anything was written: scan failed.');
+    await refusal('rename_family', { name: 'Fam', newName: 'Gang' }, 'The change was stopped before anything was written: scan failed.');
     expect(await snapshot()).toEqual(beforeScan);
   });
 

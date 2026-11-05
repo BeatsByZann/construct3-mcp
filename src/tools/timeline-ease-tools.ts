@@ -33,9 +33,8 @@ import { ensureTransitionsFolder, transitionsFolder } from '../construct3/timeli
 import { easeParameterName, easeParameterValue, forEachEaseParameter, EASE_PARAMETER_KEY } from '../construct3/ease-params.js';
 import type { TimelineToolkit } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
-import { withoutAbsolutePaths } from '../construct3/error-text.js';
+import { errorMessage } from '../construct3/error-text.js';
 import {
-  refuse,
   invalidName,
   readFailure,
   caseHint,
@@ -45,6 +44,7 @@ import {
   rollBackToolCall,
   type ChangedFile,
 } from './timeline-writes.js';
+import { refuse } from './refusals.js';
 
 const handleSchema = z.object({
   x: z.number().min(-10).max(10),
@@ -95,7 +95,7 @@ export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineT
 
   /** The tool error for an unexpected failure; a writer refusal (a stale project.c3proj) is passed on as it says. */
   function failure(doing: string, error: unknown) {
-    const text = withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir());
+    const text = errorMessage(error, reader.getProjectDir());
     return toolError(error instanceof StaleFileError ? text : `Error ${doing}: ${text}`);
   }
 
@@ -229,7 +229,7 @@ export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineT
         return toolResult({ eases, count: eases.length, ...(unreadable.length > 0 ? { unreadableTimelines: unreadable } : {}) });
       } catch (error) {
         console.error('[list_eases] failed:', error);
-        return toolError(`Error listing eases: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error listing eases: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );

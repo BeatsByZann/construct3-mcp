@@ -40,7 +40,7 @@ import {
   allTreeNames, describeFolder, ensureTreeFolder, fileNameProblem, findTreeFolder, folderSegmentsProblem,
   isTree, itemName, locateInTree, type TreeFolder,
 } from '../construct3/project-tree.js';
-import { nothingChanged } from './event-helpers.js';
+import { refuse } from './refusals.js';
 import { withProjectSync } from './project-sync.js';
 import {
   assertUnchangedSinceRead, createFileForCall, moveViewStateFiles, newSideWrites, reasonOf, readForRename,
@@ -173,8 +173,6 @@ function isTilemapFile(bytes: Buffer): boolean {
     return false;
   }
 }
-
-const refuse = (message: string) => toolError(nothingChanged(message));
 
 /** Register move_project_item. */
 export function registerStructureTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {

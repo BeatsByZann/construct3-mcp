@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { errorReason, withoutAbsolutePaths } from '../../src/construct3/error-text.js';
+import { errorMessage, errorReason, withoutAbsolutePaths } from '../../src/construct3/error-text.js';
 
 const PROJECT = 'C:\\Games\\My Game';
 
@@ -34,6 +34,12 @@ describe('errorReason', () => {
   it('names an fs error by its code and the file in the project', () => {
     const error = Object.assign(new Error(`EPERM: operation not permitted, open 'C:\\Games\\My Game\\a.json'`), { code: 'EPERM', path: 'C:\\Games\\My Game\\a.json' });
     expect(errorReason(error, { projectDir: PROJECT, relative: p => p.replace(`${PROJECT}\\`, '').replace(/\\/g, '/') })).toBe('EPERM on a.json');
+  });
+  it('keeps a relative path of an fs error as it is and shows an absolute one outside the project as a placeholder', () => {
+    const relative = Object.assign(new Error('EACCES'), { code: 'EACCES', path: 'layouts/A.json' });
+    expect(errorReason(relative, { projectDir: PROJECT })).toBe('EACCES on layouts/A.json');
+    const outside = Object.assign(new Error('EACCES'), { code: 'EACCES', path: 'D:\\Other\\a.json' });
+    expect(errorReason(outside, { projectDir: PROJECT })).toBe('EACCES on <a path outside the project>');
   });
   it('strips the path from an error that has a code and no path', () => {
     const error = Object.assign(new Error(`Failed to read layout "X": ENOENT: no such file, open 'C:\\Users\\First Last\\x.json'.`), { code: 'ENOENT' });
@@ -104,5 +110,13 @@ describe('withoutAbsolutePaths, where a path ends', () => {
 
   it('ends an unquoted POSIX path at a bracket', () => {
     expect(withoutAbsolutePaths('(see /home/u/a.json)', PROJECT)).toBe('(see <a path outside the project>)');
+  });
+});
+
+describe('errorMessage', () => {
+  it('is the message of an error or the text of any other value, with its final full stop and without absolute paths', () => {
+    expect(errorMessage(new Error(`Cannot read ${PROJECT}\\a.json.`), PROJECT)).toBe('Cannot read a.json.');
+    expect(errorMessage('plain text.', PROJECT)).toBe('plain text.');
+    expect(errorMessage(new Error('Cannot read D:\\x\\a.json'))).toBe('Cannot read <a path outside the project>');
   });
 });

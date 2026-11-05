@@ -13,7 +13,7 @@ import { toolResult, toolError } from './shared.js';
 import { withProjectSync } from './project-sync.js';
 import { errorReason } from '../construct3/error-text.js';
 import { unregisteredNameMessage } from './registered-names.js';
-import { nothingChanged } from './event-helpers.js';
+import { refuse } from './refusals.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { classifyReadError } from '../construct3/project-reader.js';
 import { unscannedFilesOf, describeReadFailure, type UnscannedFile } from '../construct3/analyzers/unscanned-uses.js';
@@ -163,7 +163,6 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
       sourceTemplateName: z.string().max(200).optional().describe('Name of the template to follow; required for mode "replica"'),
     },
     async (args) => {
-      const refuse = (message: string) => toolError(nothingChanged(message));
       try {
         const { layoutName, uid, mode } = args;
         if (mode === 'template' && !args.templateName) return refuse('mode "template" requires templateName.');
@@ -262,7 +261,6 @@ export function registerTemplateTools({ server: mcpServer, reader, writer }: Mut
       templateName: z.string().min(1).max(200).nullable().describe('Template to create new instances from, or null to clear it'),
     },
     async (args) => {
-      const refuse = (message: string) => toolError(nothingChanged(message));
       try {
         const missing = unregisteredNameMessage('Object', args.objectName, await reader.listObjectTypes(),
           () => reader.findNearestName(args.objectName, 'objects'), 'list_objects');

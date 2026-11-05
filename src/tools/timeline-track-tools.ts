@@ -35,8 +35,9 @@ import {
   easeWarnings,
   type AnyTrack,
 } from '../construct3/timeline-model.js';
-import { refuse, invalidName } from './timeline-writes.js';
-import { withoutAbsolutePaths } from '../construct3/error-text.js';
+import { invalidName } from './timeline-writes.js';
+import { refuse } from './refusals.js';
+import { errorMessage } from '../construct3/error-text.js';
 import { trackSelectorShape, type ErrorResult, type TimelineToolkit } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
 
@@ -133,7 +134,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
         return toolResult({ timeline: args.timelineName, tracks, count: tracks.length });
       } catch (error) {
         console.error('[list_timeline_tracks] failed:', error);
-        return toolError(`Error listing timeline tracks: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error listing timeline tracks: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -184,7 +185,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
         return toolResult(kit.writeResult(args.timelineName, 'value-track-added', saved.backupPath, warnings));
       } catch (error) {
         console.error('[add_value_track] failed:', error);
-        return toolError(`Error adding value track: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error adding value track: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -245,7 +246,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
         return toolResult({ ...kit.writeResult(args.timelineName, 'audio-track-added', saved.backupPath, file.warnings), trackName: name });
       } catch (error) {
         console.error('[add_audio_track] failed:', error);
-        return toolError(`Error adding audio track: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error adding audio track: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -283,7 +284,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
         return toolResult(kit.writeResult(args.timelineName, 'folder-added', saved.backupPath, warnings));
       } catch (error) {
         console.error('[add_timeline_folder] failed:', error);
-        return toolError(`Error adding timeline folder: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error adding timeline folder: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -322,7 +323,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
         return toolResult(kit.writeResult(args.timelineName, 'folder-renamed', saved.backupPath));
       } catch (error) {
         console.error('[rename_timeline_folder] failed:', error);
-        return toolError(`Error renaming timeline folder: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error renaming timeline folder: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -393,7 +394,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
         return toolResult(kit.writeResult(args.timelineName, 'folder-deleted', saved.backupPath, warnings));
       } catch (error) {
         console.error('[delete_timeline_folder] failed:', error);
-        return toolError(`Error deleting timeline folder: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error deleting timeline folder: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -446,7 +447,7 @@ export function registerTimelineTrackTools(deps: MutationToolDeps, kit: Timeline
         return toolResult(kit.writeResult(args.timelineName, 'track-moved', saved.backupPath));
       } catch (error) {
         console.error('[move_timeline_track] failed:', error);
-        return toolError(`Error moving timeline track: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error moving timeline track: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );

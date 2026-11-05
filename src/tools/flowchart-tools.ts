@@ -17,6 +17,7 @@ import type { MutationToolDeps } from './shared.js';
 import { validateName, validateSubfolder, toolResult, toolError, folderCaseClashError } from './shared.js';
 import { withProjectSync } from './project-sync.js';
 import { unknownKeysErrorMap } from './event-helpers.js';
+import { refuse, stoppedBeforeWrite } from './refusals.js';
 import { StaleFileError } from '../construct3/disk-state.js';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { findFolderPathClash, findNameClash } from '../construct3/names.js';
@@ -59,15 +60,10 @@ type ProjectReader = MutationToolDeps['reader'];
 
 // ─── Answers ───────────────────────────────────────────────
 
-/** A refusal of a tool that writes: given before the first change, so it says nothing was changed. */
-function refuse(message: string) {
-  return toolError(`${/[.?!]$/.test(message) ? message : `${message}.`} Nothing was changed.`);
-}
-
 /** The answer to an error thrown before the tool's first write. */
-function stoppedBeforeWrite(error: unknown) {
+function stoppedAnswer(error: unknown, reader: ProjectReader) {
   if (error instanceof StaleFileError) return toolError(error.message);
-  return toolError(`The change was stopped before anything was written: ${describeError(error)}. Nothing was changed.`);
+  return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
 }
 
 /** The folders of a flowchart registered under exactly this name, or the sentence that says why it is not found. */
@@ -347,7 +343,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[create_flowchart] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -376,7 +372,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[delete_flowchart] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -448,7 +444,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         }, { outputSids: outputs.map(o => o.sid) });
       } catch (error) {
         console.error('[add_flowchart_node] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -524,7 +520,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[update_flowchart_node] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -563,7 +559,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[delete_flowchart_node] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -606,7 +602,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[add_flowchart_output] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -646,7 +642,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[update_flowchart_output] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -683,7 +679,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[delete_flowchart_output] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -730,7 +726,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[reorder_flowchart_outputs] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -784,7 +780,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         });
       } catch (error) {
         console.error('[connect_flowchart_nodes] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );
@@ -819,7 +815,7 @@ export function registerFlowchartTools({ server: mcpServer, reader, writer, idGe
         }, { formerTargetNodeSid: formerTarget });
       } catch (error) {
         console.error('[disconnect_flowchart_nodes] failed:', error);
-        return stoppedBeforeWrite(error);
+        return stoppedAnswer(error, reader);
       }
     }
   );

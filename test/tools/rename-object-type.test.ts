@@ -610,7 +610,7 @@ describe('rename_object_type', () => {
 
     // A scan that throws before any write
     vi.spyOn(reader, 'readAllLayouts').mockRejectedValueOnce(new Error('scan failed.'));
-    await refusal('rename_object_type', { name: 'Alpha', newName: 'Gamma' }, 'The rename stopped before anything was written: scan failed.');
+    await refusal('rename_object_type', { name: 'Alpha', newName: 'Gamma' }, 'The change was stopped before anything was written: scan failed.');
     expect(await snapshot()).toEqual(before);
   });
 
@@ -618,7 +618,7 @@ describe('rename_object_type', () => {
     const before = await snapshot();
     const file = path('eventSheets', 'MainSheet.json');
     vi.spyOn(reader, 'readAllEventSheets').mockRejectedValueOnce(Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES', path: file }));
-    await refusal('rename_object_type', { name: 'Alpha', newName: 'Gamma' }, 'The rename stopped before anything was written: EACCES on eventSheets/MainSheet.json.');
+    await refusal('rename_object_type', { name: 'Alpha', newName: 'Gamma' }, 'The change was stopped before anything was written: EACCES on eventSheets/MainSheet.json.');
     expect(await snapshot()).toEqual(before);
   });
 

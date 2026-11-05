@@ -8,14 +8,8 @@ import type { z, ZodRawShape } from 'zod';
 import { toolError, type MutationToolDeps } from './shared.js';
 import { findNameClash } from '../construct3/names.js';
 import { runInToolCall } from '../construct3/disk-state.js';
-import { errorReason, withoutAbsolutePaths } from '../construct3/error-text.js';
-
-/** A write tool's refusal: its message, ending once with "Nothing was changed.". */
-export function refusal(message: string) {
-  const core = message.replace(/\s*Nothing was changed\.\s*$/, '').trimEnd();
-  if (core === '') return toolError('Nothing was changed.');
-  return toolError(`${core}${/[.!?]$/.test(core) ? '' : '.'} Nothing was changed.`);
-}
+import { errorMessage } from '../construct3/error-text.js';
+import { stoppedBeforeWrite } from './refusals.js';
 
 /**
  * The message for a `given` name that is not registered exactly, or
@@ -33,16 +27,11 @@ export function unregisteredName(
   return `${kind} "${given}" not found.${hint}`;
 }
 
-/** The refusal for an error thrown by a check before anything was written. */
-export function stoppedBeforeWrite(error: unknown, projectDir: string) {
-  return refusal(`The change was stopped before anything was written: ${errorReason(error, { projectDir })}.`);
-}
-
 /**
  * `server.tool` for the tilemap modules, with what `withProjectSync` does
  * (the handler runs as one tool call scope, after the reader has checked
  * project.c3proj) but with the failure of that check worded by the module's
- * own policy: `writeTool` returns `stoppedBeforeWrite` (no project folder in
+ * own policy: `writeTool` returns the stopped-before-write refusal (no project folder in
  * the text, "Nothing was changed."), `readTool` returns a plain tool error
  * without the project folder. `withProjectSync` returns the reader's message
  * as it is, which can hold the project folder and has no such ending. The
@@ -68,7 +57,7 @@ export function syncedTools(server: MutationToolDeps['server'], reader: Mutation
       })) as never);
   const projectDir = () => reader.getProjectDir();
   return {
-    readTool: register(error => toolError(`Error reading the project: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), projectDir())}`)),
-    writeTool: register(error => stoppedBeforeWrite(error, projectDir())),
+    readTool: register(error => toolError(`Error reading the project: ${errorMessage(error, projectDir())}`)),
+    writeTool: register(error => toolError(stoppedBeforeWrite(error, projectDir()))),
   };
 }

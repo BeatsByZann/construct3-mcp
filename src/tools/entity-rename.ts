@@ -73,7 +73,8 @@ import {
   type ReadForRename,
   type ViewStateMove,
 } from './rename-files.js';
-import { nothingChanged, unknownKeysErrorMap } from './event-helpers.js';
+import { unknownKeysErrorMap } from './event-helpers.js';
+import { refuse, stoppedBeforeWrite } from './refusals.js';
 import { withProjectSync } from './project-sync.js';
 
 type Category = 'eventSheets' | 'layouts';
@@ -124,8 +125,6 @@ interface RenamePlan {
   result: Record<string, unknown>;
   warnings: string[];
 }
-
-const refuse = (message: string) => toolError(nothingChanged(message));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -509,7 +508,7 @@ export function registerEntityRenameTools({ server: mcpServer, reader, writer }:
       planned = await planRename(reader, writer, category, args);
     } catch (error) {
       console.error(`[${tool}] failed:`, error);
-      return refuse(`The rename stopped before anything was written: ${reasonOf(error, file => writer.projectRelative(file))}.`);
+      return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
     }
     if ('content' in planned) return planned;
     try {

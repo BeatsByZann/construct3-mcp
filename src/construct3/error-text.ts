@@ -95,8 +95,9 @@ function comparable(path: string): string {
   return path.replace(/\\/g, '/').replace(/(?<!^)\/{2,}/g, '/').replace(/^[A-Za-z]:/, drive => drive.toLowerCase());
 }
 
-/** What an absolute `path` is shown as: its project-relative form when it is the project folder or inside it, else a placeholder. */
+/** What `path` is shown as: a relative path as it is; an absolute one in its project-relative form when it is the project folder or inside it, else a placeholder. */
 function shownPath(path: string, projectDir: string | undefined): string {
+  if (!/^(?:[A-Za-z]:[\\/]|[\\/])/.test(path)) return path;
   if (projectDir === undefined || projectDir === '') return OUTSIDE_PATH;
   const folder = comparable(projectDir).replace(/\/+$/, '');
   const full = comparable(path);
@@ -123,6 +124,14 @@ export function withoutAbsolutePaths(text: string, projectDir?: string): string 
     cursor = end;
   }
   return result + text.slice(cursor);
+}
+
+/**
+ * An error's message (any other thrown value as text) with its final full
+ * stop kept and every absolute path replaced as withoutAbsolutePaths does.
+ */
+export function errorMessage(error: unknown, projectDir?: string): string {
+  return withoutAbsolutePaths(error instanceof Error ? error.message : String(error), projectDir);
 }
 
 /**

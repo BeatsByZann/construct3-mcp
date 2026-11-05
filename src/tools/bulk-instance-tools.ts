@@ -27,6 +27,7 @@ import {
 } from './layout-tools.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { withProjectSync } from './project-sync.js';
+import { stoppedBeforeWrite } from './refusals.js';
 
 type Reader = MutationToolDeps['reader'];
 
@@ -50,12 +51,6 @@ export function bulkItemRefusal(index: number, message: string): string {
   return `Item ${index}: ${core}${/[.!?]$/.test(core) ? '' : '.'} Nothing was changed.`;
 }
 
-/** The refusal when a step outside the items throws before anything was written. */
-export function stoppedBeforeWrite(error: unknown): string {
-  const reason = messageOf(error).replace(/\.\s*Nothing was written$/, '');
-  return `The change was stopped before anything was written: ${reason}. Nothing was changed.`;
-}
-
 /**
  * The layout a bulk call writes, by its registered name: a name in another
  * letter case is refused (a case-blind file system would read the file,
@@ -67,7 +62,7 @@ export async function readRegisteredLayout(reader: Reader, layoutName: string): 
   try {
     registered = await reader.listLayouts();
   } catch (error) {
-    return { refusal: stoppedBeforeWrite(error) };
+    return { refusal: stoppedBeforeWrite(error, reader.getProjectDir()) };
   }
   if (!registered.includes(layoutName)) {
     const sameIgnoringCase = registered.find(n => n.toLowerCase() === layoutName.toLowerCase());
@@ -150,7 +145,7 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
     try {
       await writer.checkEntityWrite('layouts', layoutName, layout, writer.getSubfolderForEntity('layouts', layoutName));
     } catch (error) {
-      return toolError(stoppedBeforeWrite(error));
+      return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
     }
     if (dryRun) {
       return toolResult({ ...base, action: 'dry-run', dryRun: true, message: `Nothing was written.${dryRunNote ? ` ${dryRunNote}` : ''}` });
@@ -210,7 +205,7 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
       } catch (error) {
         // The write's failures are answered in finishBulk: what reaches here was thrown before anything was written
         console.error('[add_instances_to_layout] failed:', error);
-        return toolError(stoppedBeforeWrite(error));
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
     }
   );
@@ -244,7 +239,7 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
           applied.done.map(u => ({ index: u.index, uid: u.uid })), itemWarnings(applied.done), applied.done.flatMap(u => u.unscanned));
       } catch (error) {
         console.error('[update_instances] failed:', error);
-        return toolError(stoppedBeforeWrite(error));
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
     }
   );
@@ -283,7 +278,7 @@ export function registerBulkInstanceTools({ server: mcpServer, reader, writer, i
           applied.done.map(r => ({ index: r.index, uid: r.uid, objectType: r.objectType })), warnings, []);
       } catch (error) {
         console.error('[delete_instances_from_layout] failed:', error);
-        return toolError(stoppedBeforeWrite(error));
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
     }
   );

@@ -23,6 +23,7 @@ import { unscannedFilesOf } from '../construct3/analyzers/unscanned-uses.js';
 import { resolveLayer } from './layout-tools.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { withProjectSync } from './project-sync.js';
+import { stoppedBeforeWrite } from './refusals.js';
 
 /** `message` as a refusal, ending with "Nothing was changed." */
 function refusal(message: string): ReturnType<typeof toolError> {
@@ -249,12 +250,6 @@ function bulkItemRefusal(index: number, message: string): string {
   return `Item ${index}: ${core}${/[.!?]$/.test(core) ? '' : '.'} Nothing was changed.`;
 }
 
-/** The refusal when a step outside the items throws before anything was written. */
-function stoppedBeforeWrite(error: unknown): string {
-  const reason = messageOf(error).replace(/\.\s*Nothing was written$/, '');
-  return `The change was stopped before anything was written: ${reason}. Nothing was changed.`;
-}
-
 /**
  * The layout a bulk call writes, by its registered name: a name in another
  * letter case is refused (a case-blind file system would read the file,
@@ -266,7 +261,7 @@ async function readRegisteredLayout(reader: Reader, layoutName: string): Promise
   try {
     registered = await reader.listLayouts();
   } catch (error) {
-    return { refusal: stoppedBeforeWrite(error) };
+    return { refusal: stoppedBeforeWrite(error, reader.getProjectDir()) };
   }
   if (!registered.includes(layoutName)) {
     const sameIgnoringCase = registered.find(n => n.toLowerCase() === layoutName.toLowerCase());
@@ -561,7 +556,7 @@ export function registerLayerOrderTools({ server: mcpServer, reader, writer }: M
       } catch (error) {
         // The write's failures are answered above: what reaches here was thrown before anything was written
         console.error('[move_instances] failed:', error);
-        return toolError(stoppedBeforeWrite(error));
+        return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
       }
     }
   );

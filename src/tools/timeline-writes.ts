@@ -18,12 +18,6 @@ import { resolveJsonTextStyle, serializeJson } from '../construct3/json-format.j
 
 type Writer = MutationToolDeps['writer'];
 
-/** A refusal: the message ends once with "Nothing was changed.". */
-export function refuse(message: string) {
-  const core = message.replace(/\s*Nothing was changed\.\s*$/, '').trimEnd();
-  return toolError(`${core}${/[.!?]$/.test(core) ? '' : '.'} Nothing was changed.`);
-}
-
 /** The message `check` throws, or undefined when it does not throw. */
 function refusalOf(check: () => void): string | undefined {
   try {

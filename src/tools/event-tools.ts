@@ -34,7 +34,6 @@ import {
   conditionSchema,
   actionSchema,
   childEventSchema,
-  nothingChanged,
   resolveGroupPath,
   describeGroupPathProblem,
   isInFunctionBlock,
@@ -87,6 +86,7 @@ import {
   buildCommentEvent,
   reassignSids,
 } from './event-helpers.js';
+import { nothingChanged, stoppedBeforeWrite } from './refusals.js';
 import {
   isElseCondition,
   createElseCondition,
@@ -543,7 +543,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         console.error('[add_event_to_sheet] failed:', error);
         if (undoPlacement) {
           undoPlacement();
-          if (!writeStarted) return toolError(stoppedBeforeWriteMessage(error));
+          if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
         return toolError(`Error adding event: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -676,7 +676,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         console.error('[add_event_block] failed:', error);
         if (undoPlacement) {
           undoPlacement();
-          if (!writeStarted) return toolError(stoppedBeforeWriteMessage(error));
+          if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
         return toolError(`Error adding event block: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -822,7 +822,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           undoInsert();
           // Nothing reached the disk: the sheet in memory is as it was
           if (!writeStarted) {
-            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
           }
         }
         return toolError(`Error adding custom action: ${error instanceof Error ? error.message : String(error)}`);
@@ -1209,7 +1209,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (restoreAll) {
           restoreAll();
           // Nothing reached the disk: every sheet in memory is as it was
-          if (!writeStarted) return toolError(nothingChanged(`The change was stopped before anything was written: ${message}`));
+          if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
         return toolError(`Error updating function: ${message}`);
       }
@@ -2255,7 +2255,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (restoreSheet) {
           restoreSheet();
           if (!writeStarted) {
-            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
           }
         }
         return toolError(`Error moving items: ${error instanceof Error ? error.message : String(error)}`);
@@ -2756,7 +2756,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (restoreSheet) {
           restoreSheet();
           if (!writeStarted) {
-            return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
           }
         }
         return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
@@ -2932,7 +2932,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         console.error('[move_event_block] failed:', error);
         if (undoPlacement) {
           undoPlacement();
-          if (!writeStarted) return toolError(stoppedBeforeWriteMessage(error));
+          if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
         return toolError(`Error moving event: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -3250,8 +3250,6 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         const renaming = args.newName !== undefined && args.newName !== oldName;
         const parents = findEnclosingEvents(sheet.events, findResult.event as C3Event) ?? [];
         const isGlobal = parents.length === 0;
-        const stoppedBeforeWrite = (error: unknown) => toolError(nothingChanged(
-          `The change was stopped before anything was written: ${(error instanceof Error ? error.message : String(error)).replace(/\.$/, '')}.`));
 
         // Every check before any change: the name, the sheets that see the variable, its uses
         let read: RenameSheets | undefined;
@@ -3260,7 +3258,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           try {
             read = await readRenameSheets(reader, args.sheetName, sheet);
           } catch (error) {
-            return stoppedBeforeWrite(error);
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
           }
           // Check the new name against the variable's scope, as the editor does;
           // changing the case of this variable's own name is fine
@@ -3271,7 +3269,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           try {
             plan = await planVariableRename(reader, read, args.sheetName, findResult.event, isGlobal, args.newName!);
           } catch (error) {
-            return stoppedBeforeWrite(error);
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
           }
           const reasons = [
             ...(blocksWithoutForce(plan.unscanned)
@@ -3461,7 +3459,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         } catch (error) {
           sheet.events = beforeEvents;
-          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
 
         const path = found.match.path;
@@ -3532,7 +3530,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           editCommentRowInPlace(found.event, { text: args.text, 'text-color': args.textColor, 'background-color': args.backgroundColor }, 'eventType');
         } catch (error) {
           sheet.events = beforeEvents;
-          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
         if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
           return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', eventPath }, { projectWritten: false });
@@ -3624,7 +3622,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           }
         } catch (error) {
           sheet.events = beforeEvents;
-          return toolError(nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`));
+          return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
         if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
           return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', eventPath }, { projectWritten: false });
@@ -3877,16 +3875,6 @@ function copiedSidsWarning(
     `update_event_block, update_event_block_action, update_event_variable and delete_event_from_sheet refuse ${one ? 'this SID' : 'these SIDs'} ` +
     `in "${sheetName}" unless eventPath names one of the events.`
   );
-}
-
-/**
- * The refusal for an error thrown after a tool placed an event in the sheet's
- * events in memory and before it wrote the file (for example a scan that
- * exceeds its depth limit): the tool has put the events back, so nothing was
- * changed.
- */
-function stoppedBeforeWriteMessage(error: unknown): string {
-  return nothingChanged(`The change was stopped before anything was written: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 /** True when `target` (compared by identity) is among the sub-events of `event`, at any depth. */

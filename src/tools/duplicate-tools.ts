@@ -38,7 +38,7 @@ import {
 } from '../construct3/entity-copies.js';
 import type { EventSheet, Instance, Layout, ObjectType } from '../construct3/types.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
-import { nothingChanged } from './event-helpers.js';
+import { refuse } from './refusals.js';
 import { withProjectSync } from './project-sync.js';
 import { unregisteredNameMessage } from './registered-names.js';
 import {
@@ -51,8 +51,6 @@ type Reader = MutationToolDeps['reader'];
 type Writer = MutationToolDeps['writer'];
 type Json = Record<string, unknown>;
 type CopyCategory = RenamedCategory | 'timelines';
-
-const refuse = (message: string) => toolError(nothingChanged(message));
 
 /** Whether project.c3proj on disk registers `name` nowhere in the `category` tree (a copy's registration is not there, or was put back). */
 async function copyNotRegistered(reader: Reader, category: CopyCategory, name: string): Promise<boolean> {

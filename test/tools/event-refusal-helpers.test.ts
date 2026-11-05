@@ -6,7 +6,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { nothingChanged, resolveEventBySid } from '../../src/tools/event-helpers.js';
+import { resolveEventBySid } from '../../src/tools/event-helpers.js';
+import { nothingChanged } from '../../src/tools/refusals.js';
 
 const twice = (): Record<string, unknown>[] => [
   { eventType: 'block', conditions: [], actions: [], sid: 7 },

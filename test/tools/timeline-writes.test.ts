@@ -17,7 +17,6 @@ import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { runInToolCall, StaleFileError } from '../../src/construct3/disk-state.js';
 import { errorReason } from '../../src/construct3/error-text.js';
 import {
-  refuse,
   invalidName,
   invalidSubfolder,
   readFailure,
@@ -65,17 +64,6 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   await rm(dir, { recursive: true, force: true });
-});
-
-describe('refuse', () => {
-  it('ends the message once with "Nothing was changed."', () => {
-    for (const text of ['No timeline.', 'No timeline. Nothing was changed.']) {
-      const result = refuse(text);
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toBe('No timeline. Nothing was changed.');
-    }
-    expect(refuse('No timeline').content[0].text).toBe('No timeline. Nothing was changed.');
-  });
 });
 
 describe('invalidName and invalidSubfolder', () => {

@@ -49,8 +49,9 @@ import {
   type AnyTrack,
 } from '../construct3/timeline-model.js';
 import { keyframeMode, refreshModeValues, folderModeError } from '../construct3/timeline-result-modes.js';
-import { refuse, invalidName, readFailure, caseHint } from './timeline-writes.js';
-import { withoutAbsolutePaths } from '../construct3/error-text.js';
+import { invalidName, readFailure, caseHint } from './timeline-writes.js';
+import { refuse } from './refusals.js';
+import { errorMessage } from '../construct3/error-text.js';
 import { trackSelectorShape, type ErrorResult, type TimelineToolkit } from './timeline-kit.js';
 import { withProjectSync } from './project-sync.js';
 
@@ -417,7 +418,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         ));
       } catch (error) {
         console.error('[add_timeline_track] failed:', error);
-        return toolError(`Error adding timeline track: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error adding timeline track: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -447,7 +448,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         return toolResult(kit.writeResult(args.timelineName, 'track-removed', saved.backupPath));
       } catch (error) {
         console.error('[remove_timeline_track] failed:', error);
-        return toolError(`Error removing timeline track: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error removing timeline track: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -503,7 +504,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         ));
       } catch (error) {
         console.error('[add_property_track] failed:', error);
-        return toolError(`Error adding property track: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error adding property track: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -543,7 +544,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         return toolResult(kit.writeResult(args.timelineName, 'property-track-removed', saved.backupPath));
       } catch (error) {
         console.error('[remove_property_track] failed:', error);
-        return toolError(`Error removing property track: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error removing property track: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -759,7 +760,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         ));
       } catch (error) {
         console.error('[set_keyframe] failed:', error);
-        return toolError(`Error setting keyframe: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error setting keyframe: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -832,7 +833,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         return toolResult(kit.writeResult(args.timelineName, action, saved.backupPath));
       } catch (error) {
         console.error('[delete_keyframe] failed:', error);
-        return toolError(`Error deleting keyframe: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error deleting keyframe: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -937,7 +938,7 @@ export function registerTimelineInstanceTools(deps: MutationToolDeps, kit: Timel
         return toolResult(kit.writeResult(args.timelineName, 'track-updated', saved.backupPath, warnings));
       } catch (error) {
         console.error('[update_track] failed:', error);
-        return toolError(`Error updating track: ${withoutAbsolutePaths(error instanceof Error ? error.message : String(error), reader.getProjectDir())}`);
+        return toolError(`Error updating track: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
