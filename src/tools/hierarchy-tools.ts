@@ -22,11 +22,7 @@ import {
 import { findInstanceByUid, forEachLayoutInstance } from '../construct3/layers.js';
 import { writeEntityOrRollBack } from './call-rollback.js';
 import { withProjectSync } from './project-sync.js';
-
-/** `message` as a refusal, ending with "Nothing was changed." */
-function refusal(message: string): ReturnType<typeof toolError> {
-  return toolError(`${message}${message.endsWith('.') ? '' : '.'} Nothing was changed.`);
-}
+import { refuse } from './refusals.js';
 
 /** Register set_instance_parent and remove_instance_children. */
 export function registerHierarchyTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
@@ -81,7 +77,7 @@ export function registerHierarchyTools({ server: mcpServer, reader, writer }: Mu
     },
     async (args) => {
       try {
-        if (args.parentUid === null && args.flags !== undefined) return refusal('flags belong to a link: give a parentUid with them');
+        if (args.parentUid === null && args.flags !== undefined) return refuse('flags belong to a link: give a parentUid with them');
         let layout: Layout;
         try {
           layout = await reader.readLayout(args.layoutName);
@@ -92,7 +88,7 @@ export function registerHierarchyTools({ server: mcpServer, reader, writer }: Mu
 
         if (args.parentUid === null) {
           const unlinked = unlinkInstance(layout, args.childUid);
-          if ('error' in unlinked) return refusal(unlinked.error);
+          if ('error' in unlinked) return refuse(unlinked.error);
           if (unlinked.previousParent === undefined && unlinked.staleEntries === undefined) {
             return toolResult({ ...common, action: 'unchanged', message: `UID ${args.childUid} has no hierarchy parent.` }, { projectWritten: false });
           }
@@ -115,7 +111,7 @@ export function registerHierarchyTools({ server: mcpServer, reader, writer }: Mu
         const needsRecord = [args.childUid, parentUid].some(uid => !sceneGraphOf(findInstanceByUid(layout, uid)?.instance));
         const preview = needsRecord ? await previewForNewRecords() : undefined;
         const link = linkInstances(layout, args.childUid, parentUid, given, preview);
-        if ('error' in link) return refusal(link.error);
+        if ('error' in link) return refuse(link.error);
         if (!link.changed) return toolResult({ ...common, flags: link.flags, action: 'unchanged' }, { projectWritten: false });
 
         const warnings = [
@@ -158,7 +154,7 @@ export function registerHierarchyTools({ server: mcpServer, reader, writer }: Mu
           return notFoundError('Layout', args.layoutName, reader.findNearestName(args.layoutName, 'layouts'), 'list_layouts');
         }
         const result = unlinkChildren(layout, args.parentUid);
-        if ('error' in result) return refusal(result.error);
+        if ('error' in result) return refuse(result.error);
         const common = { success: true, entity: args.layoutName, category: 'layout', parentUid: args.parentUid, detached: result.detached };
         if (result.detached.length + result.unlisted.length + result.missing.length + result.otherParent.length === 0) {
           return toolResult({ ...common, action: 'unchanged', message: `UID ${args.parentUid} has no hierarchy children.` }, { projectWritten: false });

@@ -62,8 +62,9 @@ export async function warmAceCatalog(reader: Construct3ProjectReader): Promise<v
  * place of the cached copy, so a declaration added in the same call counts).
  * An object type or family file that could not be read (all families, when
  * they cannot be read at all) is named in one warning: the ACEs that depend
- * on it are skipped, the others are still checked. Reads the project once, and the event sheets only when a changed ACE has an
- * expression-typed parameter. Never throws: a failure of the check itself
+ * on it are skipped, the others are still checked. Reads the project once,
+ * and the event sheets only when a changed ACE has an expression-typed
+ * parameter. Never throws: a failure of the check itself
  * becomes one warning with a fixed text, the detail on stderr.
  */
 export async function checkEventChange(

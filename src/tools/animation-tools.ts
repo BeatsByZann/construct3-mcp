@@ -280,7 +280,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         }
 
         if (obj['plugin-id'] !== 'Sprite') {
-          return toolError(`Object "${args.objectName}" is not a Sprite. Only Sprite objects have animations.`);
+          return notASprite(args.objectName);
         }
 
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
@@ -462,7 +462,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         }
 
         if (obj['plugin-id'] !== 'Sprite') {
-          return toolError(`Object "${args.objectName}" is not a Sprite. Only Sprite objects have animations.`);
+          return notASprite(args.objectName);
         }
 
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
@@ -648,7 +648,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         }
 
         if (obj['plugin-id'] !== 'Sprite') {
-          return toolError(`Object "${args.objectName}" is not a Sprite.`);
+          return notASprite(args.objectName);
         }
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
           return toolError(`Object "${args.objectName}" has no animations structure.`);
@@ -750,7 +750,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         }
 
         if (obj['plugin-id'] !== 'Sprite') {
-          return toolError(`Object "${args.objectName}" is not a Sprite.`);
+          return notASprite(args.objectName);
         }
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
           return toolError(`Object "${args.objectName}" has no animations structure.`);
@@ -1054,7 +1054,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         }
 
         if (obj['plugin-id'] !== 'Sprite') {
-          return toolError(`Object "${args.objectName}" is not a Sprite.`);
+          return notASprite(args.objectName);
         }
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
           return toolError(`Object "${args.objectName}" has no animations structure.`);
@@ -1117,7 +1117,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
         }
 
         if (obj['plugin-id'] !== 'Sprite') {
-          return toolError(`Object "${args.objectName}" is not a Sprite.`);
+          return notASprite(args.objectName);
         }
         if (!obj.animations || !Array.isArray(obj.animations.items)) {
           return toolError(`Object "${args.objectName}" has no animations structure.`);
@@ -1331,6 +1331,11 @@ function animationNameFileError(animationName: string, existing = false): string
     + (existing ? 'Rename the animation first (rename_animation). Nothing was changed.' : 'Choose another name.');
 }
 
+/** The refusal of an animation or frame tool given an object that is not a Sprite; nothing was written. */
+function notASprite(objectName: string): ReturnType<typeof toolError> {
+  return toolError(`Object "${objectName}" is not a Sprite. Only Sprite objects have animations. Nothing was changed.`);
+}
+
 /**
  * The Sprite object `objectName` and its animations container, or the
  * refusal to return from the tool (the object is not found, is not a Sprite,
@@ -1350,7 +1355,7 @@ async function loadSprite(
     return { refusal: notFoundError('Object', objectName, reader.findNearestName(objectName, 'objects'), 'list_objects') };
   }
   if (object['plugin-id'] !== 'Sprite') {
-    return { refusal: toolError(`Object "${objectName}" is not a Sprite. Only Sprite objects have animations. Nothing was changed.`) };
+    return { refusal: notASprite(objectName) };
   }
   const animations = object.animations;
   if (!animations || !Array.isArray(animations.items) || (folderList && !Array.isArray(animations.subfolders))) {
@@ -1998,8 +2003,10 @@ async function rollBackAnimationRename(
         const { restored, reason } = await writer.restoreFailedWrite(error);
         if (restored) done.push(`${failedFile} was restored from its backup`);
         else problems.push(`${failedFile} was left as it is, since ${failedWriteLeftReason(reason)} (${failedFile}.bak holds the previous JSON)`);
-      } catch {
-        problems.push(`restoring ${failedFile} from its backup failed (${failedFile}.bak holds the previous JSON)`);
+      } catch (restoreError) {
+        // The reason as every animation tool words it (restoreFailureText): the fs code and the project-relative path
+        const reason = fileErrorText(restoreError, path => writer.projectRelative(path)).replace(/\.$/, '');
+        problems.push(`restoring ${failedFile} from its backup failed: ${reason} (${failedFile}.bak holds the previous JSON)`);
       }
     }
   }

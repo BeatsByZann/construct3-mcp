@@ -191,8 +191,9 @@ export async function readProjectData(
   try {
     families = await reader.readAllFamilies();
     familyReadFailures = reader.getReadFailures('families');
-  } catch {
-    // No families: each registered one is listed as not read
+  } catch (error) {
+    // No families: each registered one is listed as not read, and the cause goes to the log
+    console.error('[ace-catalog] the family files could not be read:', error);
   }
   const familyFailures = unscannedFilesOf('families', await reader.listFamilies(), families, familyReadFailures);
   let sheets: ProjectData['sheets'] = new Map();

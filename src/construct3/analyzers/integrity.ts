@@ -1953,8 +1953,9 @@ function classifyEntityFiles(
  * .bak files, and the files an interrupted write leaves
  * (.c3mcp-<16 hex digits>.tmp|link|old), in the entity folders (recursively,
  * including timelines/), directly in images/ (the frame tools keep frame
- * images there as .bak) and next to project.c3proj. The project root is not scanned recursively, so
- * files/, scripts/, subfolders of images/ and the like stay out of it.
+ * images there as .bak) and next to project.c3proj. The project root is not
+ * scanned recursively, so files/, scripts/, subfolders of images/ and the
+ * like stay out of it.
  */
 async function checkBackupFiles(
   reader: Construct3ProjectReader,
@@ -2136,9 +2137,9 @@ async function checkFrameImages(
  * whether the editor or anything else uses such a file is not verified.
  * Registered object types whose file could not be parsed count as object
  * types; .bak files and the files an interrupted write leaves are listed as
- * backup-file instead, and files named after
- * an existing object type (e.g. frames past an animation's last frame, see
- * frame-image) are not reported here. Skipped without an images/ folder.
+ * backup-file instead, and files named after an existing object type (e.g.
+ * frames past an animation's last frame, see frame-image) are not reported
+ * here. Skipped without an images/ folder.
  */
 async function checkOrphanedImages(
   reader: Construct3ProjectReader,

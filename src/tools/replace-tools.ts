@@ -21,8 +21,9 @@
  * failed write puts the earlier sheets back. Before the first write every
  * changed sheet passes the editor load-time gate (a new error refuses the
  * call, nothing written), and the conditions and actions the call changed are
- * checked against the catalogue of the project's release (warnings). Sheets that could not be parsed
- * are never changed; they are listed, with what a text search of them found.
+ * checked against the catalogue of the project's release (warnings). Sheets
+ * that could not be parsed are never changed; they are listed, with what a
+ * text search of them found.
  *
  * replace_in_expressions finds and replaces text in the parameter values of
  * conditions and actions (the expressions shown in event sheets), with the
@@ -666,7 +667,8 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
           } catch (error) {
             return refuse(`Cannot read event sheet "${name}" (${describeReadFailure(classifyReadError(error))}).`);
           }
-          const before = snapshotEvents(sheet.events);
+          // The load-time check of a real run compares with this copy; a dry run changes nothing and needs none
+          const before = args.dryRun ? [] : snapshotEvents(sheet.events);
           const file = reader.getEntityRelativePath('eventSheets', name);
           const scan = replaceInSheet(file, sheet, ctx, !args.dryRun, warnings);
           swapped.push(...scan.swapped);
@@ -779,7 +781,7 @@ export function registerReplaceTools({ server: mcpServer, reader, writer }: Muta
           } catch (error) {
             return refuse(`Cannot read event sheet "${name}" (${describeReadFailure(classifyReadError(error))}).`);
           }
-          const sheetIndex = sheets.push({ name, data, before: snapshotEvents(data.events) }) - 1;
+          const sheetIndex = sheets.push({ name, data, before: args.dryRun ? [] : snapshotEvents(data.events) }) - 1;
           const found: ParameterSlot[] = [];
           const sids = new Map<string, number>();
           walkEventStrings(data, {

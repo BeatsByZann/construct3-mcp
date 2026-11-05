@@ -674,8 +674,8 @@ describe('rename_animation', () => {
 
     const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('disk full. The rename was rolled back only in part: restoring layouts/Level.json from its backup failed '
-      + '(layouts/Level.json.bak holds the previous JSON); renaming its frame image files back failed (EBUSY); '
+    expect(result.content[0].text).toContain('disk full. The rename was rolled back only in part: restoring layouts/Level.json from its backup failed: '
+      + 'EPERM (layouts/Level.json.bak holds the previous JSON); renaming its frame image files back failed (EBUSY); '
       + 'rename them back by hand: "images/hero-run-000.png" → "images/hero-walk-000.png". Check the project');
   });
 
@@ -788,6 +788,19 @@ describe('add_frame_to_animation', () => {
     expect(result.content[0].text).not.toContain('/mock/backup');
     // Nothing is renamed back: the one rename is the forward one
     expect(renameCalls).toBe(1);
+  });
+
+  it('rename_animation names the reason when restoring the object file from its backup fails', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
+    writer.writeEntityFile = async () => {
+      throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
+    };
+    writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
+
+    const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Animation 1', newName: 'Walk' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('restoring objectTypes/Hero.json from its backup failed: EPERM (objectTypes/Hero.json.bak holds the previous JSON)');
+    expect(result.content[0].text).not.toContain('/mock/backup');
   });
 
   it.each([

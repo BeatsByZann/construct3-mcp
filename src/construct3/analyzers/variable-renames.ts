@@ -31,9 +31,9 @@
  * the project does not declare) and for any other type, the server has no
  * parameter type: such a parameter whose names include the variable is
  * listed as a use the rename does not update (a System group name too), and
- * is never changed; so is a value under a name key of a plugin
- * or behavior ACE that names the variable (an addon's ACE may keep an
- * expression there). So is a call argument with a backtick outside its
+ * is never changed; so is a value under a name key of a plugin or behavior
+ * ACE that names the variable (an addon's ACE may keep an expression
+ * there). So is a call argument with a backtick outside its
  * string literals (text the expression tokenizer does not read as code),
  * every call argument naming a variable whose name starts with a digit
  * (the tokenizer reads that as a number), and every call argument use when

@@ -604,6 +604,12 @@ describe('a frame tool on an object that is not a Sprite', () => {
   it.each([
     ['reverse_frames', {}],
     ['duplicate_frame', { frameIndex: 0 }],
+    ['delete_animation', {}],
+    ['rename_animation', { newName: 'Other' }],
+    ['add_frame_to_animation', {}],
+    ['delete_frame_from_animation', { frameIndex: 0 }],
+    ['update_frame', { frameIndex: 0, duration: 2 }],
+    ['replace_sprite_image', { frameIndex: 0, pngBase64: 'iVBORw0KGgo=' }],
   ])('%s refuses it and changes nothing', async (tool, args) => {
     await setupFrames([{ label: 'A' }, { label: 'B' }]);
     const obj = JSON.parse(await readFile(objectPath(), 'utf8'));

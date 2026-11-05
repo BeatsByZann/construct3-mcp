@@ -320,11 +320,14 @@ describe('update_event_block before its snapshot', () => {
 describe('the change check when the families cannot be read', () => {
   it('checks the object types\' ACEs and names the families it could not read, instead of failing the whole check', async () => {
     const { reader } = await open();
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(reader, 'listFamilies').mockResolvedValue(['Movers']);
-    vi.spyOn(reader, 'readAllFamilies').mockRejectedValue(new Error('families folder unreadable'));
+    const cause = new Error('families folder unreadable');
+    vi.spyOn(reader, 'readAllFamilies').mockRejectedValue(cause);
     const after = [{ eventType: 'block', conditions: [], actions: [flyAway(950)], sid: 951 }];
     const warnings = await checkEventChange(reader, SHEET, [], after);
+    // The cause of the skipped families is findable in the log
+    expect(logged.mock.calls.some(args => args.includes(cause))).toBe(true);
     expect(warnings).not.toContain(FIXED_FAILURE);
     expect(warnings.filter(w => unknownAction('Sprite').test(w))).toHaveLength(1);
     expect(warnings).toContain('Conditions and actions that depend on these files were not checked, because they could not be read: families/Movers.');
