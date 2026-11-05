@@ -32,6 +32,8 @@ import { rollBackFailedCall } from './call-rollback.js';
 
 type RenameWriter = Pick<Construct3ProjectWriter,
   'replaceFile' | 'deleteFile' | 'restoreForCall' | 'renameImageFiles' | 'restoreFailedWrite' | 'undoToolCall' | 'projectRelative' | 'projectDir'>;
+/** What the writes of text a call built need besides RenameWriter: the check of the text against the size limit. */
+type TextWriter = RenameWriter & Pick<Construct3ProjectWriter, 'assertWritableSize'>;
 type RenameReader = Pick<Construct3ProjectReader, 'getProjectDir' | 'readObjectType' | 'readEventSheet' | 'readLayout' | 'readFamily'>;
 
 /** The entity categories a rename moves a file of. */
@@ -231,6 +233,15 @@ async function recordFailedSideWrite(
 }
 
 /**
+ * Refuse, before anything is backed up or written, text a call built whose
+ * UTF-8 bytes (line endings included) are over the file size limit. Bytes
+ * (a Buffer) are a file copied as it is, and need no check.
+ */
+function assertTextWritable(writer: TextWriter, path: string, content: string | Buffer): void {
+  if (typeof content === 'string') writer.assertWritableSize(content, writer.projectRelative(path));
+}
+
+/**
  * Replace `read.path` with `content` through the writer, refused
  * (StaleFileError) when the file is no longer in the state it was read in
  * (checked by the writer under the file's lock), and record its bytes from
@@ -238,8 +249,9 @@ async function recordFailedSideWrite(
  * the file (recordFailedSideWrite).
  */
 export async function replaceForRename(
-  writer: RenameWriter, side: RenameSideWrites, read: ReadForRename, content: string | Buffer,
+  writer: TextWriter, side: RenameSideWrites, read: ReadForRename, content: string | Buffer,
 ): Promise<void> {
+  assertTextWritable(writer, read.path, content);
   try {
     await writer.replaceFile(read.path, content, { expected: read.state });
   } catch (error) {
@@ -257,8 +269,9 @@ export async function replaceForRename(
  * rollback never touches a file this call did not make.
  */
 export async function createFileForCall(
-  writer: RenameWriter, side: RenameSideWrites, path: string, content: string | Buffer,
+  writer: TextWriter, side: RenameSideWrites, path: string, content: string | Buffer,
 ): Promise<void> {
+  assertTextWritable(writer, path, content);
   try {
     await writer.replaceFile(path, content, { expected: null });
   } catch (error) {
@@ -276,7 +289,7 @@ export async function createFileForCall(
  * writer throws after it changed a file (recordFailedSideWrite).
  */
 export async function moveFileForRename(
-  writer: RenameWriter, side: RenameSideWrites, from: ReadForRename, to: string, content?: string | Buffer,
+  writer: TextWriter, side: RenameSideWrites, from: ReadForRename, to: string, content?: string | Buffer,
 ): Promise<void> {
   const label = writer.projectRelative(from.path);
   if (from.bytes === null) throw new Error(`${label} does not exist, so it cannot be moved.`);
@@ -312,7 +325,7 @@ export interface ViewStateMove {
  * Returns the moves made and the warnings.
  */
 export async function moveViewStateFiles(
-  writer: RenameWriter, projectDir: string, moves: readonly ViewStateMove[],
+  writer: TextWriter, projectDir: string, moves: readonly ViewStateMove[],
 ): Promise<{ moved: Array<{ from: string; to: string }>; warnings: string[] }> {
   const moved: Array<{ from: string; to: string }> = [];
   const warnings: string[] = [];
@@ -324,7 +337,12 @@ export async function moveViewStateFiles(
     try {
       const from = await readForRename(fromPath);
       if (from.bytes === null) continue;
-      const content = move.rewrite ? Buffer.from(move.rewrite(from.bytes.toString('utf-8')), 'utf-8') : from.bytes;
+      let content = from.bytes;
+      if (move.rewrite) {
+        const rewritten = move.rewrite(from.bytes.toString('utf-8'));
+        writer.assertWritableSize(rewritten, toLabel);
+        content = Buffer.from(rewritten, 'utf-8');
+      }
       if (fromLabel === toLabel) {
         if (content.equals(from.bytes)) continue;
         await replaceForRename(writer, newSideWrites(), from, content);

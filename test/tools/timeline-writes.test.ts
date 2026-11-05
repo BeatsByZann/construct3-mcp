@@ -137,6 +137,23 @@ describe('writeJsonFile', () => {
     expect(await runInToolCall(() => writeJsonFile(writer, fresh, { a: 3 }, projectPath()))).toBe(fresh + '.bak');
     expect(await readFile(fresh + '.bak', 'utf-8')).toBe(freshText);
   });
+
+  it('refuses a file whose text, in the style it is written in, is over the size limit, before anything is written', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    try {
+      const existing = timeline('Existing');
+      await writeFile(existing, '{\n\t"a": 1\n}\n');
+      const created = timeline('Created');
+      const big = { padding: 'x'.repeat(1024 * 1024) };
+      await expect(runInToolCall(() => writeJsonFile(writer, existing, big, projectPath()))).rejects.toThrow(/is too large .* over the 1MB limit.*Nothing was written\./);
+      await expect(runInToolCall(() => writeJsonFile(writer, created, big, projectPath(), null))).rejects.toThrow(/is too large/);
+      expect(await readFile(existing, 'utf-8')).toBe('{\n\t"a": 1\n}\n');
+      expect(existsSync(existing + '.bak')).toBe(false);
+      expect(existsSync(created)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('writeJsonFile into a project without a timelines folder', () => {

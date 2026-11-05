@@ -95,7 +95,9 @@ export async function writeJsonFile(
   writer: Writer, filePath: string, data: unknown, projectPath: string, expected?: FileState,
 ): Promise<string | undefined> {
   const target = await existingSpelling(filePath);
-  return writer.replaceFile(target, await jsonFileText(target, data, projectPath), expected === undefined ? {} : { expected });
+  const text = await jsonFileText(target, data, projectPath);
+  writer.assertWritableSize(text, writer.projectRelative(target));
+  return writer.replaceFile(target, text, expected === undefined ? {} : { expected });
 }
 
 /** A file a call changed through replaceFile or deleteFile, and the text it held before (null: the call created it). */

@@ -90,6 +90,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   hooks.beforeFind = undefined;
   await rm(dir, { recursive: true, force: true });
 });
@@ -148,6 +149,60 @@ describe('replaceForRename', () => {
       expect(side.files).toEqual([]);
       expect(side.unresolved).toEqual([]);
     });
+  });
+});
+
+describe('the size limit on text a call built', () => {
+  const MB = 1024 * 1024;
+  /** Text over the stubbed 1MB limit once written. */
+  const oversize = () => 'x'.repeat(MB + 1);
+
+  beforeEach(() => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+  });
+
+  it('refuses replaceForRename text over the limit before the file is backed up or written', async () => {
+    await writeFile(at('side.txt'), 'one');
+    await runInToolCall(async () => {
+      const side = newSideWrites();
+      const read = await readForRename(at('side.txt'));
+      await expect(replaceForRename(writer, side, read, oversize())).rejects.toThrow(/Generated JSON for "side.txt" is too large .* over the 1MB limit.*Nothing was written\./);
+      expect(await text(at('side.txt'))).toBe('one');
+      expect(existsSync(at('side.txt.bak'))).toBe(false);
+      expect(side.files).toEqual([]);
+      expect(side.unresolved).toEqual([]);
+    });
+  });
+
+  it('refuses createFileForCall text over the limit and creates no file', async () => {
+    await runInToolCall(async () => {
+      const side = newSideWrites();
+      await expect(createFileForCall(writer, side, at('new', 'big.json'), oversize())).rejects.toThrow(/Generated JSON for "new\/big.json" is too large .* over the 1MB limit.*Nothing was written\./);
+      expect(existsSync(at('new'))).toBe(false);
+      expect(side.files).toEqual([]);
+    });
+  });
+
+  it('writes bytes it copies whatever their size, since a copy is not text the call built', async () => {
+    await runInToolCall(async () => {
+      const side = newSideWrites();
+      await createFileForCall(writer, side, at('copy.json'), Buffer.from(oversize()));
+      expect((await stat(at('copy.json'))).size).toBe(MB + 1);
+      expect(side.files).toEqual([{ path: at('copy.json'), before: null }]);
+    });
+  });
+
+  it('leaves a view-state file as it is, with a warning, when its rewritten text is over the limit', async () => {
+    const from = ['layouts', 'Layout 1.uistate.json'];
+    const to = ['layouts', 'Stage.uistate.json'];
+    await writeFile(at(...from), '{"scroll":1}');
+    const result = await runInToolCall(() => moveViewStateFiles(writer, dir, [{ from, to, rewrite: () => oversize() }]));
+    expect(result.moved).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('layouts/Layout 1.uistate.json could not be moved to layouts/Stage.uistate.json');
+    expect(result.warnings[0]).toContain('is too large');
+    expect(await text(at(...from))).toBe('{"scroll":1}');
+    expect(existsSync(at(...to))).toBe(false);
   });
 });
 
