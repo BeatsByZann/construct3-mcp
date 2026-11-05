@@ -628,14 +628,14 @@ Get-ChildItem -Recurse -Filter *.bak   # PowerShell; add "| Remove-Item" to dele
 
 `revert_last_change` undoes the most recent tool call that changed files, from the `.bak` backups its writes left, without git. `list_changes` shows what the recent calls changed and which backup each write left. Ask for the revert right after the call you want to take back:
 
-- **Only the most recent call that changed a file can be undone.** Each file keeps one `.bak`, and the next call that writes the file replaces it. For example, after `replace_sprite_image` and then `rename_animation` on the same object, the replace cannot be undone: both write `objectTypes/<name>.json`, and the refusal says so.
+- **Only the most recent call that changed a file can be undone.** Each file keeps one `.bak`, and the next call that writes the file replaces it; images are the exception, since each call takes the first free `<file>.N.bak` name and image backups accumulate. For example, after `replace_sprite_image` and then `rename_animation` on the same object, the replace cannot be undone: both write `objectTypes/<name>.json`, and the refusal says so.
 - **It refuses and restores nothing** when a file it would put back changed since the call, for example after you saved it in the Construct 3 editor, or when a later call replaced a backup it needs. Then decide which version you want to keep. To restore by hand, use git (see [Undoing a session](#undoing-a-session)) or the `.bak` files.
 - **A revert that stops part way** (for example, a file another program has locked) keeps what it already undid. Fix the cause and run `revert_last_change` again: it resumes where it stopped.
 - The journal is kept in memory. After the server restarts it is empty, but the `.bak` files stay. Folders a call created stay after a revert.
 
 ### Undoing a session
 
-Use git, not the `.bak` files:
+To take back only the most recent tool call, see [Undo the last change](#undo-the-last-change). To undo a whole session, use git, not the `.bak` files:
 
 ```bash
 git restore .      # undo changes to files that were already committed

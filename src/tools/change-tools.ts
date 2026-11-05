@@ -49,7 +49,9 @@ export function registerChangeTools({ server: mcpServer, reader, writer }: Mutat
     'revert_last_change',
     'Undo the most recent tool call that changed files, from the .bak backups its writes left: written files are restored, created files '
       + 'removed, deleted files restored, moved files moved back. Only the most recent call that changed a file can be reverted: each file keeps '
-      + 'one backup, so a call whose files a later call backed up again cannot. Refused, restoring nothing, when any of the files or their '
+      + 'one backup, which the next call that writes it replaces, so a call whose files a later call backed up again cannot be. Images are the '
+      + 'exception: each call takes the first free .N.bak name, so a later call does not replace an earlier call\'s image backup and image '
+      + 'backups accumulate. Refused, restoring nothing, when any of the files or their '
       + 'backups changed since the call (saved in the Construct 3 editor, for example). A revert that stops part way is finished by the next call.',
     {},
     async () => {

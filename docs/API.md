@@ -3119,8 +3119,9 @@ The change journal records, for each open project, the tool calls that changed a
 
 - records every tool call that changed a project file, including one that ended in an error (its error text carries no `Changed N file(s)` line), a write whose read-back failed, and an undo that could not put a file back;
 - records nothing for a call that put everything back itself;
-- backs each file up once per call, and keeps one backup per file: the next call that writes the file replaces it;
+- backs each file up once per call, and keeps one backup per file: the next call that writes the file replaces it. Images are the exception: each call takes the first free `<file>.N.bak` name, so image backups accumulate (no bound) and a later call does not replace an earlier one;
 - does not journal files outside the project;
+- ends the changed-files line of a result (`Changed N file(s): ...`) after the first 12 files with `, and N more`; `list_changes` lists them all;
 - is kept in memory per open project: the last 50 calls, in the order they ended, with `at` the start time. A server restart starts it empty; the `.bak` files stay.
 
 Neither tool is journaled itself: their results carry no changed-files line and they are not listed.
@@ -3165,7 +3166,7 @@ A failure to read the journal is an error response: `Error listing changes: <rea
 
 Undo the most recent recorded call that is not fully reverted, from the `.bak` backups its writes left. The changes are undone last first: a written file is restored from its backup, a created file is removed, a deleted file is restored from its backup and a moved file is moved back. Folders a call created stay.
 
-Only the most recent call that changed a file can be reverted, because each file keeps one backup and the next call that writes the file replaces it. For example, `replace_sprite_image` and then `rename_animation` on the same object: both write `objectTypes/<name>.json`. `revert_last_change` undoes the rename, but the replace can no longer be reverted, because the rename's backup of the object file replaced the one the replace left, and the refusal says so.
+Only the most recent call that changed a file can be reverted, because each file keeps one backup and the next call that writes the file replaces it (images are the exception: each call takes the first free `<file>.N.bak` name, so image backups accumulate and a later call does not replace an earlier one). For example, `replace_sprite_image` and then `rename_animation` on the same object: both write `objectTypes/<name>.json`. `revert_last_change` undoes the rename, but the replace can no longer be reverted, because the rename's backup of the object file replaced the one the replace left, and the refusal says so.
 
 Behavior:
 

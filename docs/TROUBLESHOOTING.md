@@ -122,11 +122,11 @@ A change that keeps a file's size, modification time and file id (possible on fi
 
 **Cause**: The last change cannot be reverted because a file it changed, or its backup, changed on disk after the call: saved in the Construct 3 editor, restored with git, written by another program, or written by a tool call the journal does not record. Putting the backups back would not return the project to its state before the call, so the revert refused and restored nothing.
 
-**Solution**: Check what changed, for example with `git diff`, and decide which version to keep. To undo the call anyway, restore the files by hand: from git, or from their `.bak` files if those hold the state you want (the error names them).
+**Solution**: Check what changed, for example with `git diff`, and decide which version to keep. To undo the call anyway, restore the files by hand: from git, or from their `.bak` files if those hold the state you want (the error names the changed files).
 
 ### `revert_last_change`: "... its backup(s) ... no longer hold the state from before that call"
 
-**Cause**: Only the most recent call that changed a file can be reverted, because each file keeps one `.bak` and the next call that writes the file replaces it. For example, `replace_sprite_image` and then `rename_animation` on the same object both write `objectTypes/<name>.json`, so the rename's backup replaced the one the replace left, and the replace cannot be reverted. A `.bak` edited by hand is refused the same way. Nothing was restored.
+**Cause**: Only the most recent call that changed a file can be reverted, because each file keeps one `.bak` and the next call that writes the file replaces it (images are the exception: each call takes the first free `<file>.N.bak` name, so image backups accumulate and a later call does not replace an earlier one). For example, `replace_sprite_image` and then `rename_animation` on the same object both write `objectTypes/<name>.json`, so the rename's backup replaced the one the replace left, and the replace cannot be reverted. A `.bak` edited by hand is refused the same way. Nothing was restored.
 
 **Solution**: Run `revert_last_change` for the most recent call first; `list_changes` shows the order. To undo an older call, use git if the project was committed before it (see [Undoing a session](#undoing-a-session)), or restore the files by hand after checking that their contents are what you want.
 
