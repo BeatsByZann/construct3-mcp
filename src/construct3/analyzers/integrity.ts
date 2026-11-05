@@ -145,6 +145,7 @@ export async function validateProjectIntegrity(
   checkContainerMembers(project, registeredObjects, errors, warnings, info);
   await checkLegacyBehaviorKeys(reader, eventSheets, objects, families, errors, warnings);
   await checkLegacyEventShapes(eventSheets, warnings);
+  checkLegacyEventKeys(eventSheets, warnings);
 
   // Editor load-time rules (errors, or warnings where only partly verified)
   const aceOrigin = createAceOriginResolver({
@@ -215,11 +216,11 @@ export async function validateProjectIntegrity(
   // duplicate-object-name, family-plugin-mismatch, file-name-case-mismatch,
   // duplicate-layer-name, missing-behavior-entry, missing-behavior-or-variable,
   // frame-image, hierarchy-link, orphaned-image, duplicate-function-name,
-  // container-member + the ace- codes, the expression- codes of the
-  // parameters and ace-definitions-unavailable; these count whether or not a
-  // catalogue was found, since they ran and reported why they found nothing
-  // to check
-  const checksRun = 33;
+  // container-member, event-legacy-key + the ace- codes, the expression- codes
+  // of the parameters and ace-definitions-unavailable; these count whether or
+  // not a catalogue was found, since they ran and reported why they found
+  // nothing to check
+  const checksRun = 34;
 
   return {
     valid: errors.length === 0 && unscannedFiles.length === 0,
@@ -1456,6 +1457,71 @@ function checkBrokenEventSheetReferences(
       });
     }
   }
+}
+
+// ─── Check: legacy or misspelt event keys ───────────────────
+
+/**
+ * Keys Construct r495 never writes on a condition or action, with what it
+ * writes instead. "behavior-type" is reported by legacy-behavior-key.
+ */
+const LEGACY_EVENT_KEYS: Record<string, string> = {
+  'object-class': 'objectClass',
+  'is-inverted': 'isInverted',
+};
+/**
+ * Keys Construct r495 never writes on a block. Block-level "isElse" and
+ * condition-level "isOr" are reported by legacy-event-shape.
+ */
+const LEGACY_BLOCK_KEYS: Record<string, string> = {
+  isOr: 'isOrBlock',
+};
+
+/**
+ * Warn about keys a hand edit or an older tool wrote in a shape the editor
+ * does not read: kebab-case `object-class` / `is-inverted` on a condition or
+ * action, and `isOr` on a block. The legacy `behavior-type` key, block-level
+ * `isElse` and condition-level `isOr` are reported by legacy-behavior-key and
+ * legacy-event-shape, with the tools that convert them.
+ */
+function checkLegacyEventKeys(eventSheets: Map<string, EventSheet>, warnings: IntegrityIssue[]): void {
+  /** Report the keys on a list of events and, below the depth limit, on their sub-events. */
+  const walk = (events: unknown, sheet: string, depth: number) => {
+    if (!Array.isArray(events) || depth > 50) return;
+    for (const event of events as Array<Record<string, unknown>>) {
+      if (!event || typeof event !== 'object') continue;
+      const where = `eventSheets/${sheet}` + (typeof event.sid === 'number' ? ` (event SID ${event.sid})` : '');
+      for (const [legacy, correct] of Object.entries(LEGACY_BLOCK_KEYS)) {
+        if (legacy in event) {
+          warnings.push({
+            check: 'event-legacy-key',
+            entity: where,
+            message: `Event uses "${legacy}", which Construct does not read; it stores this as ${correct}.`,
+            suggestion: `No tool converts this key, and update_event_block with isOrBlock: true adds "${correct}" but leaves "${legacy}" in place. Rename "${legacy}" to "${correct}" in the sheet file with the project closed in Construct.`,
+          });
+        }
+      }
+      for (const listKey of ['conditions', 'actions'] as const) {
+        const aces = event[listKey];
+        if (!Array.isArray(aces)) continue;
+        for (const ace of aces as Array<Record<string, unknown>>) {
+          if (!ace || typeof ace !== 'object') continue;
+          for (const [legacy, correct] of Object.entries(LEGACY_EVENT_KEYS)) {
+            if (legacy in ace) {
+              warnings.push({
+                check: 'event-legacy-key',
+                entity: where,
+                message: `A ${listKey.slice(0, -1)} uses "${legacy}", which Construct does not read; the key is "${correct}". Construct reports such an ACE as a missing action or condition id on load.`,
+                suggestion: `No tool converts this key. Rename "${legacy}" to "${correct}" in the sheet file with the project closed in Construct.`,
+              });
+            }
+          }
+        }
+      }
+      walk(event.children, sheet, depth + 1);
+    }
+  };
+  for (const [name, sheet] of eventSheets) walk(sheet.events, name, 0);
 }
 
 // ─── Check 8: Broken Includes ────────────────────────────────

@@ -8,6 +8,9 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { MockReader } from '../mocks/mock-reader.js';
 import { MockServer } from '../mocks/mock-server.js';
+import { MockWriter } from '../mocks/mock-writer.js';
+import { MockIdGenerator } from '../mocks/mock-id-generator.js';
+import { registerEventTools } from '../../src/tools/event-tools.js';
 import { registerAnalysisTools } from '../../src/tools/analysis.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { validateProjectIntegrity } from '../../src/construct3/analyzers/integrity.js';
@@ -63,7 +66,7 @@ describe('validateProjectIntegrity', () => {
     expect(result.valid).toBe(true);
     expect(result.complete).toBe(true);
     expect(result.summary.errors).toBe(0);
-    expect(result.summary.checksRun).toBe(33);
+    expect(result.summary.checksRun).toBe(34);
     expect(result.summary.entitiesScanned).toBeGreaterThan(0);
   });
 
@@ -89,6 +92,57 @@ describe('validateProjectIntegrity', () => {
     expect(result.valid).toBe(false);
     const err = result.errors.find(e => e.check === 'file-existence' && e.entity.includes('GhostSheet'));
     expect(err).toBeDefined();
+  });
+
+  it('warns about keys Construct does not read on blocks, conditions and actions', async () => {
+    const reader = createReader({
+      objects: new Map([
+        ['Sprite', { name: 'Sprite', 'plugin-id': 'Sprite', sid: 100 }],
+      ]),
+      eventSheets: new Map([
+        ['MainSheet', {
+          name: 'MainSheet',
+          sid: 200,
+          events: [{
+            eventType: 'block',
+            sid: 201,
+            isElse: true,
+            conditions: [{ id: 'every-tick', objectClass: 'System', sid: 202, isOr: true }],
+            actions: [{ id: 'flash', objectClass: 'Sprite', 'behavior-type': 'Flash', sid: 203, parameters: {} }],
+            children: [{
+              eventType: 'block',
+              sid: 204,
+              isOr: true,
+              conditions: [{ id: 'every-tick', 'object-class': 'System', sid: 205 }],
+              actions: [],
+            }],
+          }],
+        }],
+      ]),
+      layouts: new Map([
+        ['Layout 1', { name: 'Layout 1', sid: 300, eventSheet: 'MainSheet', layers: [{ name: 'Main', sid: 301, instances: [] }] }],
+      ]),
+      usedAddons: [
+        { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
+      ],
+    });
+    const result = await validateProjectIntegrity(reader);
+    const legacy = result.warnings.filter(w => w.check === 'event-legacy-key');
+    // Block-level "isElse", condition-level "isOr" and "behavior-type" are reported
+    // once, by legacy-event-shape and legacy-behavior-key, not again here.
+    expect(legacy.map(w => w.message)).toEqual([
+      expect.stringContaining('"isOr"'),
+      expect.stringContaining('"object-class"'),
+    ]);
+    expect(legacy[0].entity).toBe('eventSheets/MainSheet (event SID 204)');
+    expect(legacy[0].message).toContain('isOrBlock');
+    expect(legacy[1].message).toContain('"objectClass"');
+    expect(legacy[1].entity).toBe('eventSheets/MainSheet (event SID 204)');
+    const shapes = result.warnings.filter(w => w.check === 'legacy-event-shape');
+    expect(shapes.map(w => w.message).join(' ')).toContain('"isElse"');
+    expect(shapes.map(w => w.message).join(' ')).toContain('"isOr"');
+    const behaviorKeys = [...result.errors, ...result.warnings].filter(i => i.check === 'legacy-behavior-key');
+    expect(behaviorKeys.map(i => i.message).join(' ')).toContain('"behavior-type"');
   });
 
   it('reports oversized layouts as UNSCANNED warnings, not missing-file errors', async () => {
@@ -1986,5 +2040,133 @@ describe('validateProjectIntegrity on real fixtures', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('event-legacy-key suggestions', () => {
+  const objects = () => new Map([['Sprite', { name: 'Sprite', 'plugin-id': 'Sprite', sid: 100 }]]);
+  const layouts = () => new Map([
+    ['Layout 1', { name: 'Layout 1', sid: 300, eventSheet: 'MainSheet', layers: [{ name: 'Main', sid: 301, instances: [] }] }],
+  ]);
+  const usedAddons = () => [{ type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false }];
+
+  /** One block per reported key: object-class and is-inverted on a condition and an action, and isOr on a block. */
+  function legacySheet() {
+    return {
+      name: 'MainSheet',
+      sid: 200,
+      events: [
+        {
+          eventType: 'block', sid: 201,
+          conditions: [{ id: 'every-tick', 'object-class': 'System', sid: 202 }],
+          actions: [{ id: 'set-position', 'object-class': 'Sprite', sid: 203, parameters: { x: '1', y: '2' } }],
+        },
+        {
+          eventType: 'block', sid: 210,
+          conditions: [{ id: 'is-on-screen', objectClass: 'Sprite', 'is-inverted': true, sid: 211 }],
+          actions: [{ id: 'destroy', objectClass: 'Sprite', 'is-inverted': true, sid: 212 }],
+        },
+        {
+          eventType: 'block', sid: 220, isOr: true,
+          conditions: [
+            { id: 'is-on-screen', objectClass: 'Sprite', sid: 221 },
+            { id: 'is-visible', objectClass: 'Sprite', sid: 222 },
+          ],
+          actions: [],
+        },
+      ],
+    };
+  }
+
+  function projectWith(sheet: unknown) {
+    return createReader({
+      objects: objects(),
+      eventSheets: new Map([['MainSheet', sheet as any]]),
+      layouts: layouts(),
+      usedAddons: usedAddons(),
+    });
+  }
+
+  async function legacyWarnings(sheet: unknown) {
+    resetProjectIndex();
+    const result = await validateProjectIntegrity(projectWith(sheet));
+    return result.warnings.filter(w => w.check === 'event-legacy-key');
+  }
+
+  beforeEach(() => {
+    resetProjectIndex();
+  });
+
+  it('gives each reported key its own suggestion, naming no tool that would not convert it', async () => {
+    const legacy = await legacyWarnings(legacySheet());
+    expect(legacy.map(w => [w.entity, w.suggestion])).toEqual([
+      [
+        'eventSheets/MainSheet (event SID 201)',
+        'No tool converts this key. Rename "object-class" to "objectClass" in the sheet file with the project closed in Construct.',
+      ],
+      [
+        'eventSheets/MainSheet (event SID 201)',
+        'No tool converts this key. Rename "object-class" to "objectClass" in the sheet file with the project closed in Construct.',
+      ],
+      [
+        'eventSheets/MainSheet (event SID 210)',
+        'No tool converts this key. Rename "is-inverted" to "isInverted" in the sheet file with the project closed in Construct.',
+      ],
+      [
+        'eventSheets/MainSheet (event SID 210)',
+        'No tool converts this key. Rename "is-inverted" to "isInverted" in the sheet file with the project closed in Construct.',
+      ],
+      [
+        'eventSheets/MainSheet (event SID 220)',
+        'No tool converts this key, and update_event_block with isOrBlock: true adds "isOrBlock" but leaves "isOr" in place. Rename "isOr" to "isOrBlock" in the sheet file with the project closed in Construct.',
+      ],
+    ]);
+    // The condition and action keys name no tool at all
+    for (const w of legacy.slice(0, 4)) expect(w.suggestion).not.toMatch(/[a-z]+_[a-z_]+/);
+  });
+
+  describe('the tools the suggestions do not name leave the findings in place', () => {
+    /** Run a tool on the fixture, then validate the sheet it wrote (or the untouched sheet when it wrote nothing). */
+    async function afterTool(tool: string, args: Record<string, unknown>) {
+      const server = new MockServer();
+      const reader = projectWith(legacySheet());
+      const writer = new MockWriter();
+      registerEventTools({ server, reader, writer, idGen: new MockIdGenerator() } as any);
+      const result = await server.callTool(tool, args);
+      const written = writer.callsFor('writeEntityFile');
+      const sheet = written.length > 0 ? written[written.length - 1].args[2] : legacySheet();
+      return { result, sheet: JSON.parse(JSON.stringify(sheet)) };
+    }
+
+    const keysOf = (findings: Array<{ message: string }>) =>
+      findings.map(w => /"(object-class|is-inverted|isOr)"/.exec(w.message)?.[1]).sort();
+    const expectedKeys = ['is-inverted', 'is-inverted', 'isOr', 'object-class', 'object-class'];
+
+    it('reports the fixture as five findings before any tool runs', async () => {
+      expect(keysOf(await legacyWarnings(legacySheet()))).toEqual(expectedKeys);
+    });
+
+    it.each([
+      ['fix_legacy_event_shapes', { dryRun: false }],
+      ['fix_legacy_behavior_keys', { dryRun: false }],
+    ])('%s', async (tool, args) => {
+      const { result, sheet } = await afterTool(tool, args);
+      expect(result.isError).not.toBe(true);
+      expect(keysOf(await legacyWarnings(sheet))).toEqual(expectedKeys);
+    });
+
+    it('update_event_block, editing each block (including isOrBlock: true on the isOr block)', async () => {
+      let sheet: unknown = legacySheet();
+      for (const [sid, extra] of [[201, {}], [210, {}], [220, { isOrBlock: true }]] as const) {
+        const server = new MockServer();
+        const writer = new MockWriter();
+        registerEventTools({ server, reader: projectWith(sheet), writer, idGen: new MockIdGenerator() } as any);
+        const result = await server.callTool('update_event_block', { sheetName: 'MainSheet', sid, disabled: true, ...extra });
+        expect(JSON.parse(result.content[0].text).success).toBe(true);
+        sheet = JSON.parse(JSON.stringify(writer.callsFor('writeEntityFile')[0].args[2]));
+      }
+      expect((sheet as any).events[2].isOrBlock).toBe(true);
+      expect(keysOf(await legacyWarnings(sheet))).toEqual(expectedKeys);
+    });
   });
 });
