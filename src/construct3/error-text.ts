@@ -25,7 +25,11 @@ const PATH_START = /(?<![A-Za-z0-9/])[A-Za-z]:[\\/]|(?<!\w)\\\\|(?<![\w.:\\/~-])
 /** The rest of a drive-letter or UNC path: segments joined by "\" or "/", each free of the characters no file name holds. */
 const PATH_SEGMENTS = /[^:'"<>|*?\\/\r\n]*(?:[\\/][^:'"<>|*?\\/\r\n]*)*/y;
 
-/** Where the last segment of an unquoted drive-letter or UNC path ends: before " -> ", ", " or "; ", at a full stop followed by a space or the end, or at the space after a file extension. */
+/**
+ * Where the last segment of an unquoted drive-letter or UNC path ends: before " -> ", ", " or "; ", at a full stop
+ * followed by a space or the end, or at the space after a file extension. (A path also ends before a ")" that
+ * closes a bracket opened before it; see closingBracket.)
+ */
 const LAST_SEGMENT_END = / -> |, |; |\.(?: |$)|(?<=\.[A-Za-z0-9]+) /;
 
 /** A drive letter at the end of a segment, when the next path starts there: the segment ends before it. */
@@ -33,6 +37,24 @@ const NEXT_DRIVE_LETTER = / [A-Za-z]$/;
 
 /** The rest of an unquoted POSIX path: up to the first whitespace, quote or ")". */
 const POSIX_RUN = /[^\s'")]*/y;
+
+/**
+ * The index of the first ")" in a path run that closes a bracket opened before the path,
+ * that is, a ")" whose segment holds no "(" before it ("Games (old)" keeps its ")"), or undefined.
+ */
+function closingBracket(run: string): number | undefined {
+  let opened = false;
+  for (let i = 0; i < run.length; i++) {
+    const char = run[i];
+    if (char === '\\' || char === '/') opened = false;
+    else if (char === '(') opened = true;
+    else if (char === ')') {
+      if (!opened) return i;
+      opened = false;
+    }
+  }
+  return undefined;
+}
 
 /**
  * The end of the path that starts at `start`, or undefined when the text there is not a path.
@@ -48,9 +70,11 @@ function pathEnd(text: string, start: number, prefix: string, folder: string): n
   if (prefix !== '/') {
     PATH_SEGMENTS.lastIndex = bodyStart;
     const runEnd = PATH_SEGMENTS.exec(text)?.[0].length ?? 0;
-    const run = text.slice(bodyStart, bodyStart + runEnd);
+    const fullRun = text.slice(bodyStart, bodyStart + runEnd);
+    const closing = closingBracket(fullRun);
+    const run = closing === undefined ? fullRun : fullRun.slice(0, closing);
     const lastSegment = run.slice(Math.max(run.lastIndexOf('\\'), run.lastIndexOf('/')) + 1);
-    const nextIsDrive = /^:[\\/]/.test(text.slice(bodyStart + run.length, bodyStart + run.length + 2));
+    const nextIsDrive = closing === undefined && /^:[\\/]/.test(text.slice(bodyStart + run.length, bodyStart + run.length + 2));
     const ends = [LAST_SEGMENT_END.exec(lastSegment)?.index, nextIsDrive ? NEXT_DRIVE_LETTER.exec(lastSegment)?.index : undefined];
     const cut = Math.min(lastSegment.length, ...ends.filter((end): end is number => end !== undefined));
     const end = bodyStart + run.length - lastSegment.length + cut;

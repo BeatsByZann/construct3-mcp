@@ -22,6 +22,9 @@ describe('withoutAbsolutePaths', () => {
     ['a URL is not a path', 'could not be reached (https://example.com/a b)', 'could not be reached (https://example.com/a b)'],
     ['a sibling folder that starts with the project name', `C:\\Games\\My Game 2\\x.json`, '<a path outside the project>'],
     ['no path', 'Name "A" is taken.', 'Name "A" is taken.'],
+    ['outside, in parentheses, text after', 'Cannot open (C:\\a\\b.json) failed. Next', 'Cannot open (<a path outside the project>) failed. Next'],
+    ['outside, in parentheses at the end', 'could not be read (D:\\Other Folder\\a.json)', 'could not be read (<a path outside the project>)'],
+    ['a parenthesis pair inside a folder name stays in the path', 'open C:\\Games (old)\\a.json failed', 'open <a path outside the project> failed'],
   ])('%s', (_title, input, expected) => {
     expect(withoutAbsolutePaths(input, PROJECT)).toBe(expected);
   });
