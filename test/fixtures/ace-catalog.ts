@@ -59,6 +59,7 @@ export const TEST_CATALOG: AceCatalog = {
         ],
       },
       actions: {
+        'go-to-layout-by-name': [{ id: 'layout', type: 'string' }],
         'set-eventvar-value': [
           { id: 'variable', type: 'eventvar' },
           { id: 'value', type: 'any' },

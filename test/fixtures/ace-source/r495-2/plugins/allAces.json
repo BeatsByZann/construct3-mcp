@@ -11,7 +11,14 @@
       "conditions": [
         { "id": "on-start-of-layout", "params": [] }
       ],
-      "actions": []
+      "actions": [
+        {
+          "id": "go-to-layout-by-name",
+          "params": [
+            { "id": "layout", "type": "string" }
+          ]
+        }
+      ]
     },
     "values": {
       "conditions": [

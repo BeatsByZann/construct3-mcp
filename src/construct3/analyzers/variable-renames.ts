@@ -15,8 +15,9 @@
  * - the arguments of function and custom action calls are expressions;
  * - the parameters of System conditions and actions that hold a name
  *   (NAME_PARAMETER_KEYS) are never a use, except the "layout" of the two
- *   by-name layout actions, which may hold an expression and is listed
- *   when it names the variable.
+ *   by-name layout actions: it holds a string expression, so with a
+ *   catalogue it is rewritten like any expression parameter, and without
+ *   one it is listed when it names the variable.
  * Any other string parameter may be an expression, a combo choice or a name
  * of another kind (a group, a timeline). The ACE catalogue of the project's
  * release, when the caller has one (parameterTypeResolver), gives the type of
@@ -24,12 +25,13 @@
  * or any parameter holds an expression and is rewritten like a call
  * argument; an eventvar, eventvarbool or eventvarany parameter holds the
  * variable's name itself; a combo, groupname, timeline or object parameter
- * holds a name, is never a use and is never changed. Without a catalogue, for
+ * holds a name, is never a use and is never changed (a System group name
+ * typed groupname is neither rewritten nor listed). Without a catalogue, for
  * an ACE it does not define (an addon with no definitions loaded, an object
  * the project does not declare) and for any other type, the server has no
- * parameter type: such a parameter
- * whose names include the variable is listed as a use the rename does not
- * update, and is never changed; so is a value under a name key of a plugin
+ * parameter type: such a parameter whose names include the variable is
+ * listed as a use the rename does not update (a System group name too), and
+ * is never changed; so is a value under a name key of a plugin
  * or behavior ACE that names the variable (an addon's ACE may keep an
  * expression there). So is a call argument with a backtick outside its
  * string literals (text the expression tokenizer does not read as code),

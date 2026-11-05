@@ -57,7 +57,8 @@ describe('buildCatalog', () => {
     expect(catalogCounts(TEST_CATALOG)).toEqual({
       plugins: 4,
       behaviors: 1,
-      aces: 15,
+      // 16: the System action go-to-layout-by-name, a string layout parameter some rename tests need
+      aces: 16,
       expressions: 15,
       commonAces: 4,
       commonExpressions: 5,

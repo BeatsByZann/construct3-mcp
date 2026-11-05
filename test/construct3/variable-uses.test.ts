@@ -233,7 +233,7 @@ const byAceId: ParameterTypeResolver = ace => (ace.id === 't'
     num: 'number', str: 'string', anyv: 'any',
     ev: 'eventvar', evb: 'eventvarbool', eva: 'eventvarany',
     combo: 'combo', grp: 'groupname', tl: 'timeline', obj: 'object',
-    other: 'layer', layout: 'string',
+    other: 'layer',
   })
   : undefined);
 
@@ -390,6 +390,31 @@ describe('parameterTypeResolver', () => {
     expect(resolve({ id: 'set-x', callFunction: 'F', objectClass: 'Sprite' }, 'action')).toBeUndefined();
     expect(resolve({ id: 'set-x', customAction: 'Go', objectClass: 'Sprite' }, 'action')).toBeUndefined();
     expect(resolve({ id: 'set-x', objectClass: 'Sprite', 'behavior-type': 'Platform' }, 'action')).toBeUndefined();
+  });
+
+  it('gives nothing for an ACE of an addon whose definitions are not loaded, so its parameters stay unclassified', () => {
+    const withAddon = parameterTypeResolver(TEST_CATALOG, {
+      pluginOf: objectClass => (objectClass === 'Gadget' ? 'AcmeGadget' : undefined),
+      behaviorOf: () => undefined,
+    }, undefined);
+    expect(withAddon({ id: 'spin', objectClass: 'Gadget' }, 'action')).toBeUndefined();
+    const global = v('Score', 1);
+    const sheets = new Map<string, unknown>([['Main', [global, block([{ id: 'spin', objectClass: 'Gadget', parameters: { speed: 'Score' } }])]]]);
+    const found = findVariableUses(sheets, global, 'Points', withAddon);
+    expect(found.uses).toEqual([]);
+    expect(found.notUpdated.map(u => `${String(u.parameter)} ${u.reason}`)).toEqual(['speed parameter-type-unknown']);
+  });
+
+  it('rewrites the layout of a by-name layout action with the catalogue, which types it as a string', () => {
+    const global = v('Score', 1);
+    const sheets = new Map<string, unknown>([['Main', [global, block([
+      { id: 'go-to-layout-by-name', objectClass: 'System', parameters: { layout: '"Level" & Score' } },
+    ])]]]);
+    const found = findVariableUses(sheets, global, 'Points', resolve);
+    expect(found.notUpdated).toEqual([]);
+    expect(found.uses.map(u => `${u.kind} ${String(u.parameter)}`)).toEqual(['variable-expression layout']);
+    for (const use of found.uses) use.apply('Points');
+    expect((sheets.get('Main') as unknown as Ev[])[1].actions[0].parameters).toEqual({ layout: '"Level" & Points' });
   });
 });
 
