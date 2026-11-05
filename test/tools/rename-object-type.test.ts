@@ -1071,15 +1071,10 @@ describe('rename_object_type and tilemap brushes', () => {
   it('refuses without force when a folder below tilemapBrushes/ cannot be read and the object type\'s own folder holds no brush file, and renames with force', async () => {
     await mkdir(path('tilemapBrushes', 'Locked'), { recursive: true });
     await rename(oldBrush(), path('tilemapBrushes', 'Locked', 'Alpha.brush.json'));
+    const file = await readJson<ObjectFile>(path('objectTypes', 'Alpha.json'));
+    file['plugin-id'] = 'Tilemap';
+    await writeJson(path('objectTypes', 'Alpha.json'), file);
     const before = await snapshot();
-    const withLockedFolder = async (args: Args) => {
-      unreadableFolder.name = 'Locked';
-      try {
-        return await rename_('Alpha', 'Gamma', args);
-      } finally {
-        unreadableFolder.name = undefined;
-      }
-    };
     const blocked = await withLockedFolder({});
     expect(blocked.success).toBe(false);
     expect(blocked.action).toBe('rename_blocked');
@@ -1091,6 +1086,37 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(forced.success).toBe(true);
     expect(warningsOf(forced)).toContain('Renamed with force=true: The search below tilemapBrushes/ for a brush file named after "Alpha" was not complete');
     expect(await readFile(path('tilemapBrushes', 'Locked', 'Alpha.brush.json'), 'utf8')).toBe('{"brushes":["alpha"]}');
+  });
+
+  const withLockedFolder = async (args: Args) => {
+    unreadableFolder.name = 'Locked';
+    try {
+      return await rename_('Alpha', 'Gamma', args);
+    } finally {
+      unreadableFolder.name = undefined;
+    }
+  };
+
+  it('renames an object type that is not a Tilemap without force while a folder below tilemapBrushes/ cannot be read, and warns nothing about brush files', async () => {
+    await mkdir(path('tilemapBrushes', 'Locked'), { recursive: true });
+    await rm(oldBrush());
+    const data = await withLockedFolder({});
+    expect(data.success).toBe(true);
+    expect(data.action).not.toBe('rename_blocked');
+    expect(warningsOf(data)).not.toContain('brush');
+  });
+
+  it('finishes a stopped rename of a Tilemap whose brush file was moved already, without force, while a folder below tilemapBrushes/ cannot be read', async () => {
+    await mkdir(path('tilemapBrushes', 'Locked'), { recursive: true });
+    const file = await readJson<ObjectFile>(path('objectTypes', 'Alpha.json'));
+    file['plugin-id'] = 'Tilemap';
+    await writeJson(path('objectTypes', 'Alpha.json'), file);
+    expect((await rename_('Alpha', 'Gamma')).success).toBe(true);
+    await stopAfterProjectUpdate();
+    const data = await withLockedFolder({});
+    expect(data.success).toBe(true);
+    expect(data.stoppedRun).toBe(true);
+    expect(warningsOf(data)).toContain('brush file already moved by the earlier run');
   });
 
   it('warns that the brush search stopped at its depth limit, and moves the brush file of the object type\'s own folder', async () => {

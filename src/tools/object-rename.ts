@@ -527,8 +527,9 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     brushFoundAt = brushPlan.foundAt;
     if (brushPlan.incomplete) {
       // As the brush tools decide: with the file in its own folder, a missed one elsewhere is not used; without it, the one missed may be its file
+      // Only a Tilemap has a brush file by design, and a brush file already at the new name is nothing left to find
       if (brush !== undefined && brushFoundAt === undefined) brushSearchIncomplete = true;
-      else brushUnsearched = `The search below tilemapBrushes/ for a brush file named after "${oldName}" was not complete (${BRUSH_SEARCH_LIMITS_TEXT}), `
+      else if (ownData['plugin-id'] === 'Tilemap' && brushMoved === undefined) brushUnsearched = `The search below tilemapBrushes/ for a brush file named after "${oldName}" was not complete (${BRUSH_SEARCH_LIMITS_TEXT}), `
         + 'and the folder of the object type holds none, so its brush file may be among the files not searched and would NOT be renamed.';
     }
     brushMissing = brush === undefined && brushMoved === undefined && ownData['plugin-id'] === 'Tilemap';
@@ -840,8 +841,8 @@ export function registerObjectRenameTools({ server: mcpServer, reader, writer }:
         + 'script files (runtime.objects.Name), other timeline values, flowchart nodes, variable values and other names in expressions that may name it are '
         + 'listed in possibleReferences, never changed. A failure midway puts back what the call wrote, except a file another write changed since, '
         + 'which is named; running the same call again finishes a rename that stopped. Event sheets, layouts and families that could not be parsed '
-        + 'refuse without force when they possibly name it, and so do any timeline that could not be read and a search for its brush file below '
-        + 'tilemapBrushes/ that was not complete while its own folder holds none (rename_blocked). Runs one at a time with the '
+        + 'refuse without force when they possibly name it, and so do any timeline that could not be read and a Tilemap whose search for its brush file below '
+        + 'tilemapBrushes/ was not complete while its own folder holds none (rename_blocked). Runs one at a time with the '
         + 'animation tools. Use dryRun first.',
       inputSchema: renameSchema('objectTypes'),
     },
