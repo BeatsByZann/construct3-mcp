@@ -10,14 +10,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, readFile, writeFile, mkdir, readdir, stat, unlink } from 'fs/promises';
 import type { Dirent } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, relative, sep } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { describeFileSizeLimit } from '../../src/construct3/file-size-limit.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { MockServer } from '../mocks/mock-server.js';
-import { registerTilemapBrushTools, brushFilesElsewhere, brushFileRelativePath } from '../../src/tools/tilemap-brush-tools.js';
+import { registerTilemapBrushTools, findBrushFiles, brushFileRelativePath, type BrushSearchLimits } from '../../src/tools/tilemap-brush-tools.js';
 import type { MutationToolDeps } from '../../src/tools/shared.js';
 import { makeTilemapProject, TILES_BRUSH_PATH, WALLS_BRUSH_PATH } from '../helpers/tilemap-project.js';
 
@@ -391,16 +391,17 @@ describe('where the brush file is', () => {
   it('reports a search that stopped at its entry limit or could not read a folder as incomplete', async () => {
     await rm(at('tilemapBrushes'), { recursive: true });
     for (const name of ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt', 'Walls.brush.json']) await put(`tilemapBrushes/${name}`, '[]');
-    const own = { path: at(WALLS_BRUSH_PATH), label: WALLS_BRUSH_PATH };
     const sorted = async (dir: string): Promise<Dirent[]> => {
       const entries = await readdir(dir, { withFileTypes: true });
       return entries.sort((x, y) => (x.name.toLowerCase() < y.name.toLowerCase() ? -1 : 1));
     };
+    const search = async (limits?: BrushSearchLimits) => {
+      const { found, complete } = await findBrushFiles(tmpDir, ['Walls'], limits);
+      return { found: (found.get('Walls') ?? []).map(file => relative(tmpDir, file).split(sep).join('/')), complete };
+    };
     // (d) the entry limit: the matching file is the sixth entry
-    expect(await brushFilesElsewhere(tmpDir, 'Walls', own, { maxEntries: 3, maxDepth: 8, readDir: sorted }))
-      .toEqual({ found: [], complete: false });
-    expect(await brushFilesElsewhere(tmpDir, 'Walls', own, { maxEntries: 100, maxDepth: 8, readDir: sorted }))
-      .toEqual({ found: ['tilemapBrushes/Walls.brush.json'], complete: true });
+    expect(await search({ maxEntries: 3, maxDepth: 8, readDir: sorted })).toEqual({ found: [], complete: false });
+    expect(await search({ maxEntries: 100, maxDepth: 8, readDir: sorted })).toEqual({ found: ['tilemapBrushes/Walls.brush.json'], complete: true });
 
     // (e) a folder that cannot be read
     await put('tilemapBrushes/sub/q.txt', 'q');
@@ -408,10 +409,21 @@ describe('where the brush file is', () => {
       if (dir.endsWith('sub')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
       return readdir(dir, { withFileTypes: true });
     };
-    const unreadable = await brushFilesElsewhere(tmpDir, 'Walls', own, { maxEntries: 100, maxDepth: 8, readDir: refuse });
-    expect(unreadable.complete).toBe(false);
+    expect((await search({ maxEntries: 100, maxDepth: 8, readDir: refuse })).complete).toBe(false);
     await rm(at('tilemapBrushes'), { recursive: true });
-    expect(await brushFilesElsewhere(tmpDir, 'Walls', own)).toEqual({ found: [], complete: true });
+    expect(await search()).toEqual({ found: [], complete: true });
+  });
+
+  it('finds the brush files of several names in one search, each in every folder, sorted', async () => {
+    await put('tilemapBrushes/objectTypes/Old/walls.brush.json', '[]');
+    await put('tilemapBrushes/objectTypes/Ramparts.brush.json', '[]');
+    await put('tilemapBrushes/objectTypes/WallsBeta.brush.json', '[]');
+    const { found, complete } = await findBrushFiles(tmpDir, ['Walls', 'Ramparts', 'Gate']);
+    const labels = (name: string) => (found.get(name) ?? []).map(file => relative(tmpDir, file).split(sep).join('/'));
+    expect(complete).toBe(true);
+    expect(labels('Walls')).toEqual(['tilemapBrushes/objectTypes/Old/walls.brush.json']);
+    expect(labels('Ramparts')).toEqual(['tilemapBrushes/objectTypes/Ramparts.brush.json']);
+    expect(labels('Gate')).toEqual([]);
   });
 });
 

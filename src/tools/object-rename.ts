@@ -37,7 +37,7 @@
  */
 
 import { z } from 'zod';
-import { readdir, readFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { dirname, join, relative, sep } from 'path';
 import type { MutationToolDeps } from './shared.js';
 import type { EventSheet, Layout } from '../construct3/types.js';
@@ -88,6 +88,7 @@ import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { StaleFileError, fileKey, noteFileWritten, statFileState } from '../construct3/disk-state.js';
 import { readRegisteredTimelines, type RegisteredTimeline } from './timeline-tools.js';
 import { jsonFileText } from './timeline-writes.js';
+import { BRUSH_SEARCH_LIMITS_TEXT, findBrushFiles } from './tilemap-brush-tools.js';
 import {
   assertUnchangedSinceRead,
   entityFileSegments,
@@ -336,35 +337,8 @@ interface BrushPlan {
   refusal?: string;
   /** Project-relative path of the brush file when it is not in the object type's own folder */
   foundAt?: string;
-  /** More brush files than the search reads: the search may have missed some */
-  capped?: boolean;
-}
-
-/** Brush files named `<name>.brush.json` (ignoring case) anywhere below tilemapBrushes/: absolute paths, and whether the search stopped at its limit. */
-async function findBrushFiles(projectDir: string, names: readonly string[]): Promise<{ found: Map<string, string[]>; capped: boolean }> {
-  const keys = new Map(names.map(name => [nameKey(`${name}.brush.json`), name] as const));
-  const found = new Map<string, string[]>(names.map(name => [name, []]));
-  let seen = 0;
-  let capped = false;
-  const walk = async (dir: string, depth: number): Promise<void> => {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (++seen > 20_000 || depth > 8) {
-        capped = true;
-        return;
-      }
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) await walk(full, depth + 1);
-      else if (keys.has(nameKey(entry.name))) found.get(keys.get(nameKey(entry.name)) as string)?.push(full);
-    }
-  };
-  await walk(resolveProjectPath(projectDir, 'tilemapBrushes'), 0);
-  return { found, capped };
+  /** The search below tilemapBrushes/ stopped at a limit or could not read a folder (findBrushFiles): a brush file may have been missed */
+  incomplete: boolean;
 }
 
 /**
@@ -375,25 +349,27 @@ async function findBrushFiles(projectDir: string, names: readonly string[]): Pro
  * name still there. A brush file under the old name in another folder moves
  * within that folder (foundAt says so); several of them, a file under the new
  * name that no stopped run left, and a new name that holds other content are
- * refusals.
+ * refusals. The search is the brush tools' own (findBrushFiles); `incomplete`
+ * says it stopped at a limit or could not read a folder.
  */
 async function planBrush(reader: Reader, subfolder: string | undefined, oldName: string, newName: string, finishing: boolean): Promise<BrushPlan> {
   const projectDir = reader.getProjectDir();
   const relativeLabel = (full: string) => relative(projectDir, full).split(sep).join('/');
   const ownDir = resolveProjectPath(projectDir, 'tilemapBrushes', 'objectTypes', ...(subfolder ? subfolder.split('/') : []));
-  const { found, capped } = await findBrushFiles(projectDir, [oldName, newName]);
+  const { found, complete } = await findBrushFiles(projectDir, [oldName, newName]);
+  const incomplete = !complete;
   const olds = found.get(oldName) ?? [];
   const news = found.get(newName) ?? [];
   const inOwnDir = olds.find(file => dirname(file) === ownDir);
   if (inOwnDir === undefined && olds.length > 1) {
-    return { refusal: `More than one brush file is named after "${oldName}": ${listSome(olds.map(relativeLabel))}. Check which one belongs to it, or rename the object type in the Construct 3 editor.`, capped };
+    return { refusal: `More than one brush file is named after "${oldName}": ${listSome(olds.map(relativeLabel))}. Check which one belongs to it, or rename the object type in the Construct 3 editor.`, incomplete };
   }
   const source = inOwnDir ?? olds[0];
   if (source === undefined) {
-    if (news.length === 0) return { capped };
-    if (finishing) return { alreadyMoved: relativeLabel(news[0]), capped };
+    if (news.length === 0) return { incomplete };
+    if (finishing) return { alreadyMoved: relativeLabel(news[0]), incomplete };
     return { refusal: `A brush file named after the new name already exists (${listSome(news.map(relativeLabel))}), and no brush file of "${oldName}" is there to take its place. `
-      + 'It would belong to the renamed object type. Move or delete it, or choose another name.', capped };
+      + 'It would belong to the renamed object type. Move or delete it, or choose another name.', incomplete };
   }
   const read = await readForRename(source);
   const toPath = join(dirname(source), `${newName}.brush.json`);
@@ -405,11 +381,11 @@ async function planBrush(reader: Reader, subfolder: string | undefined, oldName:
   if (toRead?.bytes) {
     // Both names: a run that stopped after writing the new name, when it holds exactly the old bytes
     if (taken !== toPath || !read.bytes?.equals(toRead.bytes)) {
-      return { refusal: `The brush file of "${oldName}" would be renamed to ${label}, which already exists with other content.`, capped };
+      return { refusal: `The brush file of "${oldName}" would be renamed to ${label}, which already exists with other content.`, incomplete };
     }
-    return { brush: { read, to: toPath, from, label, state: 'finish-delete' }, ...foundAt, capped };
+    return { brush: { read, to: toPath, from, label, state: 'finish-delete' }, ...foundAt, incomplete };
   }
-  return { brush: { read, to: toPath, from, label, state: 'move' }, ...foundAt, capped };
+  return { brush: { read, to: toPath, from, label, state: 'move' }, ...foundAt, incomplete };
 }
 
 /**
@@ -505,7 +481,10 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   let brush: BrushMove | undefined;
   let brushMoved: string | undefined;
   let brushFoundAt: string | undefined;
-  let brushSearchCapped = false;
+  /** A brush search that was not complete although the brush file was found in the object type's own folder */
+  let brushSearchIncomplete = false;
+  /** Why a brush file of the object type may have been missed, when none was found in its own folder: refuses without force */
+  let brushUnsearched: string | undefined;
   let brushMissing = false;
   let singleGlobal = false;
   if (category === 'objectTypes') {
@@ -546,7 +525,12 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
     brush = brushPlan.brush;
     brushMoved = brushPlan.alreadyMoved;
     brushFoundAt = brushPlan.foundAt;
-    brushSearchCapped = brushPlan.capped === true;
+    if (brushPlan.incomplete) {
+      // As the brush tools decide: with the file in its own folder, a missed one elsewhere is not used; without it, the one missed may be its file
+      if (brush !== undefined && brushFoundAt === undefined) brushSearchIncomplete = true;
+      else brushUnsearched = `The search below tilemapBrushes/ for a brush file named after "${oldName}" was not complete (${BRUSH_SEARCH_LIMITS_TEXT}), `
+        + 'and the folder of the object type holds none, so its brush file may be among the files not searched and would NOT be renamed.';
+    }
     brushMissing = brush === undefined && brushMoved === undefined && ownData['plugin-id'] === 'Tilemap';
   }
   const unscanned = await checkUnscannedFiles(reader, skipped, [
@@ -578,13 +562,13 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   ];
   const possibleReferences = possibleList.length > 0 ? { possibleReferences: possibleList } : {};
 
-  if ((blocksWithoutForce(unscanned) || timelinesUnread) && !args.force) {
+  if ((blocksWithoutForce(unscanned) || timelinesUnread || brushUnsearched) && !args.force) {
     return toolResult({
       success: false,
       entity: oldName,
       category: kind.category,
       action: 'rename_blocked',
-      message: `${[unscannedRefusal(unscanned), timelinesUnread].filter(Boolean).join(' ')} References there would NOT be updated. `
+      message: `${[unscannedRefusal(unscanned), timelinesUnread, brushUnsearched].filter(Boolean).join(' ')} References there would NOT be updated. `
         + 'Use force=true to rename anyway (references in these files will NOT be updated). Nothing was changed.',
       references,
       ...possibleReferences,
@@ -622,8 +606,9 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   if (brushMissing) {
     warnings.push(`"${oldName}" is a Tilemap, and no brush file named after it was found below tilemapBrushes/, so none ${args.dryRun ? 'would be' : 'was'} renamed.`);
   }
-  if (brushSearchCapped) {
-    warnings.push('The search below tilemapBrushes/ stopped at its limit of entries, so a brush file of this object type may have been missed.');
+  if (brushSearchIncomplete) {
+    warnings.push(`The search below tilemapBrushes/ for other brush files named after "${oldName}" was not complete (${BRUSH_SEARCH_LIMITS_TEXT}); `
+      + `the one in the folder of the object type ${args.dryRun ? 'would be' : 'was'} moved, and another one may have been missed.`);
   }
   if (brushMoved !== undefined) {
     warnings.push(`The tilemap brush file was moved to ${brushMoved} already (brush file already moved by the earlier run).`);
@@ -650,6 +635,7 @@ async function planRename(reader: Reader, writer: Writer, category: Category, ar
   }
   warnings.push(...unscannedWarnings(unscanned, args.dryRun ? 'Would rename' : 'Renamed'));
   if (timelinesUnread) warnings.push(`${args.dryRun ? 'Would rename' : 'Renamed'} with force=true: ${timelinesUnread} They were NOT updated.`);
+  if (brushUnsearched) warnings.push(`${args.dryRun ? 'Would rename' : 'Renamed'} with force=true: ${brushUnsearched}`);
 
   const common = {
     entity: oldName,
@@ -854,7 +840,8 @@ export function registerObjectRenameTools({ server: mcpServer, reader, writer }:
         + 'script files (runtime.objects.Name), other timeline values, flowchart nodes, variable values and other names in expressions that may name it are '
         + 'listed in possibleReferences, never changed. A failure midway puts back what the call wrote, except a file another write changed since, '
         + 'which is named; running the same call again finishes a rename that stopped. Event sheets, layouts and families that could not be parsed '
-        + 'refuse without force when they possibly name it, and so does any timeline that could not be read (rename_blocked). Runs one at a time with the '
+        + 'refuse without force when they possibly name it, and so do any timeline that could not be read and a search for its brush file below '
+        + 'tilemapBrushes/ that was not complete while its own folder holds none (rename_blocked). Runs one at a time with the '
         + 'animation tools. Use dryRun first.',
       inputSchema: renameSchema('objectTypes'),
     },

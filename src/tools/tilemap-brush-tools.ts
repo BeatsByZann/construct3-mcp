@@ -217,46 +217,62 @@ async function locateBrushFile(projectDir: string, objectName: string, subfolder
   return { path, label: relative(projectDir, path).split(sep).join('/') };
 }
 
-/** Labels of the other brush files found, and whether the search saw everything below tilemapBrushes/. */
-export interface ElsewhereSearch { found: string[]; complete: boolean }
+/** The brush files found for each name searched, and whether the search saw everything below tilemapBrushes/. */
+export interface BrushFileSearch {
+  /** Absolute paths of the files named `<name>.brush.json` (ignoring case), sorted, for each name searched */
+  found: Map<string, string[]>;
+  complete: boolean;
+}
+
+/** How far a brush file search goes, and how it reads a folder (for tests). */
+export interface BrushSearchLimits { maxEntries: number; maxDepth: number; readDir?: (dir: string) => Promise<Dirent[]> }
+
+/** What a brush file search does not look past, for messages. */
+export const BRUSH_SEARCH_LIMITS_TEXT = `it stops at ${BRUSH_SEARCH_MAX_ENTRIES} entries and ${BRUSH_SEARCH_MAX_DEPTH} folder levels, or a folder could not be read`;
 
 /**
- * Labels of files named `<objectName>.brush.json` (ignoring case) below
- * tilemapBrushes/ other than `own`, within the search limits. `complete` is
- * false when the search stopped at the depth or entry limit or could not
- * read a folder: files beyond that point were not looked at, so an empty
- * `found` then proves nothing. A missing tilemapBrushes/ folder is complete
- * (there is nothing to find). `limits` is for tests.
+ * The files named `<name>.brush.json` (ignoring case) for each of `names`
+ * anywhere below tilemapBrushes/, within the search limits: at most
+ * `maxEntries` entries read and `maxDepth` folder levels below
+ * tilemapBrushes/. `complete` is false when the search stopped at either
+ * limit or could not read a folder: files beyond that point were not looked
+ * at, so an empty list then proves nothing. A missing tilemapBrushes/
+ * folder is complete (there is nothing to find). The brush tools and
+ * rename_object_type both search with it. `limits` is for tests.
  */
-export async function brushFilesElsewhere(
-  projectDir: string, objectName: string, own: BrushLocation,
-  limits: { maxEntries: number; maxDepth: number; readDir?: (dir: string) => Promise<Dirent[]> } = { maxEntries: BRUSH_SEARCH_MAX_ENTRIES, maxDepth: BRUSH_SEARCH_MAX_DEPTH },
-): Promise<ElsewhereSearch> {
+export async function findBrushFiles(
+  projectDir: string, names: readonly string[],
+  limits: BrushSearchLimits = { maxEntries: BRUSH_SEARCH_MAX_ENTRIES, maxDepth: BRUSH_SEARCH_MAX_DEPTH },
+): Promise<BrushFileSearch> {
   const readDir = limits.readDir ?? ((dir: string) => readdir(dir, { withFileTypes: true }));
-  const key = nameKey(`${objectName}.brush.json`);
-  const found: string[] = [];
+  const keys = new Map(names.map(name => [nameKey(`${name}.brush.json`), name] as const));
+  const found = new Map<string, string[]>(names.map(name => [name, []]));
   let entries = 0;
   let complete = true;
   async function walk(dir: string, depth: number, root: boolean): Promise<void> {
-    let names: Dirent[];
+    let listed: Dirent[];
     try {
-      names = await readDir(dir);
+      listed = await readDir(dir);
     } catch (error) {
       const missing = error && typeof error === 'object' && 'code' in error && (error as { code: unknown }).code === 'ENOENT';
       if (!(root && missing)) complete = false;
       return;
     }
-    for (const entry of names) {
+    for (const entry of listed) {
       if (++entries > limits.maxEntries) { complete = false; return; }
       const path = resolveProjectPath(dir, entry.name);
       if (entry.isDirectory()) {
         if (depth + 1 > limits.maxDepth) { complete = false; continue; }
         await walk(path, depth + 1, false);
-      } else if (nameKey(entry.name) === key && fileKey(path) !== fileKey(own.path)) found.push(relative(projectDir, path).split(sep).join('/'));
+      } else {
+        const name = keys.get(nameKey(entry.name));
+        if (name !== undefined) found.get(name)?.push(path);
+      }
     }
   }
   await walk(resolveProjectPath(projectDir, 'tilemapBrushes'), 0, true);
-  return { found: found.sort(), complete };
+  for (const paths of found.values()) paths.sort();
+  return { found, complete };
 }
 
 /** Why a file could not be read, without its path. */
@@ -407,11 +423,15 @@ export function registerTilemapBrushTools({ server: mcpServer, reader, writer }:
       return { error: `Cannot read object type "${objectName}": ${errorReason(error, { projectDir })}.` };
     }
     const location = await locateBrushFile(projectDir, objectName, writer.getSubfolderForEntity('objectTypes', objectName));
-    const elsewhere = await brushFilesElsewhere(projectDir, objectName, location);
+    const search = await findBrushFiles(projectDir, [objectName]);
+    const elsewhere = {
+      found: (search.found.get(objectName) ?? []).filter(path => fileKey(path) !== fileKey(location.path)).map(path => relative(projectDir, path).split(sep).join('/')),
+      complete: search.complete,
+    };
     const read = await readBrushFile(location);
     const ownExists = read.state !== null;
     const noOwnFile = `No brush file is in "${objectName}"'s own folder (${location.label})`;
-    const limits = `it stops at ${BRUSH_SEARCH_MAX_ENTRIES} entries and ${BRUSH_SEARCH_MAX_DEPTH} folder levels, or a folder could not be read`;
+    const limits = BRUSH_SEARCH_LIMITS_TEXT;
     if (elsewhere.found.length > 0) {
       const others = elsewhere.found.join(', ');
       if (ownExists) warnings.push(`Another brush file is named after "${objectName}": ${others}; it is not used.`);

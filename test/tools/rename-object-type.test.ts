@@ -12,6 +12,20 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+/** The name of a folder that readdir refuses (EACCES) while set, as a folder without read permission does. */
+const unreadableFolder = vi.hoisted(() => ({ name: undefined as string | undefined }));
+vi.mock('fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  const readdir = (async (dir: Parameters<typeof actual.readdir>[0], options?: unknown) => {
+    const name = unreadableFolder.name;
+    if (name !== undefined && String(dir).split(/[\\/]/).pop() === name) {
+      throw Object.assign(new Error(`EACCES: permission denied, scandir '${String(dir)}'`), { code: 'EACCES', path: String(dir) });
+    }
+    return actual.readdir(dir, options as never);
+  }) as typeof actual.readdir;
+  return { ...actual, readdir };
+});
 import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -23,6 +37,8 @@ import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js'
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { registerObjectRenameTools, planObjectImageRenames } from '../../src/tools/object-rename.js';
 import { registerAnimationTools } from '../../src/tools/animation-tools.js';
+import { registerTilemapBrushTools } from '../../src/tools/tilemap-brush-tools.js';
+import { makeTilemapProject } from '../helpers/tilemap-project.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
@@ -231,6 +247,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  unreadableFolder.name = undefined;
   await rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -1051,13 +1068,39 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(await readFile(path(...brushDir, 'Alpha2.brush.json'), 'utf8')).toBe('{"two":true}');
   });
 
-  it('warns that the brush search stopped at its depth limit', async () => {
+  it('refuses without force when a folder below tilemapBrushes/ cannot be read and the object type\'s own folder holds no brush file, and renames with force', async () => {
+    await mkdir(path('tilemapBrushes', 'Locked'), { recursive: true });
+    await rename(oldBrush(), path('tilemapBrushes', 'Locked', 'Alpha.brush.json'));
+    const before = await snapshot();
+    const withLockedFolder = async (args: Args) => {
+      unreadableFolder.name = 'Locked';
+      try {
+        return await rename_('Alpha', 'Gamma', args);
+      } finally {
+        unreadableFolder.name = undefined;
+      }
+    };
+    const blocked = await withLockedFolder({});
+    expect(blocked.success).toBe(false);
+    expect(blocked.action).toBe('rename_blocked');
+    expect(blocked.message).toContain('The search below tilemapBrushes/ for a brush file named after "Alpha" was not complete');
+    expect(blocked.message).toContain('a folder could not be read');
+    expect(blocked.message).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(before);
+    const forced = await withLockedFolder({ force: true });
+    expect(forced.success).toBe(true);
+    expect(warningsOf(forced)).toContain('Renamed with force=true: The search below tilemapBrushes/ for a brush file named after "Alpha" was not complete');
+    expect(await readFile(path('tilemapBrushes', 'Locked', 'Alpha.brush.json'), 'utf8')).toBe('{"brushes":["alpha"]}');
+  });
+
+  it('warns that the brush search stopped at its depth limit, and moves the brush file of the object type\'s own folder', async () => {
     const deep = path(...brushDir, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j');
     await mkdir(deep, { recursive: true });
     await writeFile(join(deep, 'Far.brush.json'), '{}');
     const data = await rename_('Alpha', 'Gamma');
     expect(data.success).toBe(true);
-    expect(warningsOf(data)).toContain('The search below tilemapBrushes/ stopped at its limit');
+    expect(data.brushMoved).toEqual({ from: 'tilemapBrushes/objectTypes/Alpha.brush.json', to: 'tilemapBrushes/objectTypes/Gamma.brush.json' });
+    expect(warningsOf(data)).toContain('The search below tilemapBrushes/ for other brush files named after "Alpha" was not complete');
   });
 
   it('names the old brush file when its delete fails and the file then holds other bytes, finishing a stopped run', async () => {
@@ -1147,5 +1190,40 @@ describe('rename_object_type and tilemap brushes', () => {
     expect(data.stoppedRun).toBe(true);
     expect(warningsOf(data)).toContain('brush file already moved by the earlier run');
     expect(existsSync(newBrush())).toBe(true);
+  });
+});
+
+describe('rename_object_type with the tilemap brush tools', () => {
+  const AUTO16 = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, null]];
+
+  /** The tilemap project (Tilemap "Walls" in the project-bar folder "Scenery") in place of the one the outer setup made. */
+  beforeEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    tmpDir = await mkdtemp(join(tmpdir(), 'c3-rename-object-brush-'));
+    await makeTilemapProject(tmpDir);
+    reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
+    await reader.loadProject();
+    const idGen = new IdGenerator();
+    writer = new Construct3ProjectWriter(reader, idGen);
+    server = new MockServer();
+    registerObjectRenameTools({ server, reader, writer, idGen } as never);
+    registerTilemapBrushTools({ server, reader, writer, idGen } as never);
+    resetProjectIndex();
+  });
+
+  it('moves the brush file add_tilemap_brush wrote for a Tilemap in a project-bar folder, and list_tilemap_brushes lists it under the new name in the same folder', async () => {
+    const added = await call('add_tilemap_brush', { objectName: 'Walls', name: 'Edge', type: 'auto16', data: AUTO16 });
+    expect(added.isError, added.text).toBeUndefined();
+    expect(existsSync(path('tilemapBrushes', 'objectTypes', 'Scenery', 'Walls.brush.json'))).toBe(true);
+    const data = await rename_('Walls', 'Ramparts');
+    expect(data.success, data.text).toBe(true);
+    expect(data.brushMoved).toEqual({ from: 'tilemapBrushes/objectTypes/Scenery/Walls.brush.json', to: 'tilemapBrushes/objectTypes/Scenery/Ramparts.brush.json' });
+    const listed = await call('list_tilemap_brushes', { objectName: 'Ramparts' });
+    expect(listed.isError, listed.text).toBeUndefined();
+    expect(listed.file).toBe('tilemapBrushes/objectTypes/Scenery/Ramparts.brush.json');
+    expect(listed.fileExists).toBe(true);
+    expect(listed.brushes).toEqual([{ index: 0, name: 'Edge', type: 'auto16', size: '4x4' }]);
+    expect(listed.warnings).toBeUndefined();
+    expect(existsSync(path('tilemapBrushes', 'objectTypes', 'Scenery', 'Walls.brush.json'))).toBe(false);
   });
 });
