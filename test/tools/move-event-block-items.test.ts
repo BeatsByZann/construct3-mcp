@@ -23,6 +23,7 @@ import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js'
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { REFERENCE_CHECK_MAX_EVENTS, REBOUND_USE_CONSEQUENCE } from '../../src/construct3/analyzers/delete-references.js';
 import type { MutationToolDeps } from '../../src/tools/shared.js';
+import { withoutAceLookupWarnings } from './ace-warning-filter.js';
 
 type Ev = Record<string, unknown>;
 type Result = { content: Array<{ text: string }>; isError?: boolean };
@@ -478,7 +479,8 @@ describe('move_event_block_items', () => {
     it('does not say a block lost its conditions when the conditions were copied or only reordered', async () => {
       const { server } = setup();
       const copied = parse(await call(server, { sourceBlockSid: 200, targetBlockSid: 100, itemType: 'conditions', indices: [1], targetIndex: 0, copy: true }));
-      expect(copied.warnings).toBeUndefined();
+      // The copy's condition is checked against the catalogue, which does not define "is-visible"
+      expect(withoutAceLookupWarnings(copied.warnings)).toEqual([]);
       const reordered = parse(await call(server, { sourceBlockSid: 100, targetBlockSid: 100, itemType: 'conditions', indices: [1], targetIndex: 0 }));
       expect(reordered.warnings).toBeUndefined();
     });

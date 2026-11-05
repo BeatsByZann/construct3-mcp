@@ -1787,6 +1787,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         if (args.sourceSheet === args.targetSheet) {
           return toolError('sourceSheet and targetSheet must be different sheets.');
         }
+        // A copy gets new SIDs, so the catalogue checks it: obtained first, so a fetch does not run between the reads and the writes
+        if (!args.deleteSource) await warmAceCatalog(reader);
         // Its checks compare both sheets with the other sheets by registered
         // name, and a target that is the source in another case would be
         // written twice, the second time without the moved events
@@ -2039,6 +2041,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           if (sharedSids) warnings.push(sharedSids);
         } else {
           for (const copy of copiedEvents) reassignedSids += await reassignSids(reader, idGen, copy);
+          // The copies' conditions and actions, under their new SIDs; a move keeps its SIDs and is not checked
+          warnings.push(...await checkEventChange(reader, args.targetSheet, targetBefore, targetSheetData.events));
         }
 
         // Write target sheet first, then source (if modified)
@@ -2103,6 +2107,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
       let restoreSheet: (() => void) | undefined;
       let writeStarted = false;
       try {
+        // Copies get new SIDs, so the catalogue checks them: obtained first, so a fetch does not run between the read and the write
+        if (args.copy) await warmAceCatalog(reader);
         const unregistered = await unregisteredSheetError(reader, args.sheetName);
         if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         let sheet: EventSheet;
@@ -2242,6 +2248,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           warnings.push(`Moved with force=true: ${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`);
         }
         if (!lost.complete) warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
+        // A moved item keeps its SID and content, so only copies are checked against the catalogue
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         writeStarted = true;
         const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
@@ -2351,7 +2359,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
 
         // The catalogue first: a fetch must not run between the read and the write
-        if (args.updateActions?.length || args.updateConditions?.length || args.addActions?.length || args.addConditions?.length) {
+        if (args.updateActions?.length || args.updateConditions?.length || args.addActions?.length || args.addConditions?.length
+          || args.insertActions?.length || args.insertConditions?.length || args.replaceConditions?.length) {
           await warmAceCatalog(reader);
         }
         // Read the event sheet
@@ -2757,12 +2766,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         return toolResult({ ...result, eventPath: path });
       } catch (error) {
         console.error('[update_event_block] failed:', error);
-        if (restoreSheet) {
-          restoreSheet();
-          if (!writeStarted) {
-            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
-          }
-        }
+        restoreSheet?.();
+        // Before the write nothing reached the disk, also when the error came before the snapshot
+        if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

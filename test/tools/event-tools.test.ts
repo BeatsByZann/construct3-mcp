@@ -3203,9 +3203,11 @@ describe('move_events_between_sheets load-time gate', () => {
     });
     const data = parseResult(result);
     expect(data.success).toBe(true);
-    expect(data.warnings).toHaveLength(1);
-    expect(data.warnings[0]).toContain('eventSheets/SheetB');
-    expect(data.warnings[0]).toContain('must be the first condition');
+    // The copy's conditions are checked against the catalogue too, which does not define them
+    const warnings = withoutAceLookupWarnings(data.warnings);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('eventSheets/SheetB');
+    expect(warnings[0]).toContain('must be the first condition');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(1);
   });
 

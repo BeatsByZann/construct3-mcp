@@ -173,7 +173,9 @@ function declared(raw: Record<string, unknown>): Declared {
  * Read the objects, families and (unless `sheets` is false) event sheets of a
  * project. Each bulk read is followed at once by its failures, because a
  * reload by a concurrent call clears them; a file that could not be parsed is
- * listed as `<category>/<name>`.
+ * listed as `<category>/<name>`. When the families cannot be read at all,
+ * the result holds none and lists every registered family as unreadable, as
+ * the custom action and load-time checks fall back to the object types alone.
  */
 export async function readProjectData(
   reader: Pick<Construct3ProjectReader,
@@ -184,8 +186,14 @@ export async function readProjectData(
   const objects = await reader.readAllObjectTypes();
   const objectReadFailures = reader.getReadFailures('objectTypes');
   const objectFailures = unscannedFilesOf('objectTypes', await reader.listObjectTypes(), objects, objectReadFailures);
-  const families = await reader.readAllFamilies();
-  const familyReadFailures = reader.getReadFailures('families');
+  let families: ProjectData['families'] = new Map();
+  let familyReadFailures: ReturnType<typeof reader.getReadFailures> = new Map();
+  try {
+    families = await reader.readAllFamilies();
+    familyReadFailures = reader.getReadFailures('families');
+  } catch {
+    // No families: each registered one is listed as not read
+  }
   const familyFailures = unscannedFilesOf('families', await reader.listFamilies(), families, familyReadFailures);
   let sheets: ProjectData['sheets'] = new Map();
   let sheetFailures: Array<{ file: string }> = [];

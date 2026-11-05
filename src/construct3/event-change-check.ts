@@ -60,7 +60,9 @@ export async function warmAceCatalog(reader: Construct3ProjectReader): Promise<v
  * definitions, then the expressions in the changed ACEs' parameters, against
  * the project with `sheetName` as the tool is about to write it (`after` in
  * place of the cached copy, so a declaration added in the same call counts).
- * Reads the project once, and the event sheets only when a changed ACE has an
+ * An object type or family file that could not be read (all families, when
+ * they cannot be read at all) is named in one warning: the ACEs that depend
+ * on it are skipped, the others are still checked. Reads the project once, and the event sheets only when a changed ACE has an
  * expression-typed parameter. Never throws: a failure of the check itself
  * becomes one warning with a fixed text, the detail on stderr.
  */
@@ -85,6 +87,9 @@ export async function checkEventChange(
     const base = await readProjectData(reader, { sheets: false });
     const aceContext = buildAceContext(base);
     warnings.push(...checkEventAces(after, aceContext, addons, catalog, changed).map(p => describeEventAceProblem(p, catalog.release, saved)));
+    if (!aceContext.complete) {
+      warnings.push(`Conditions and actions that depend on these files were not checked, because they could not be read: ${aceContext.unreadable.join(', ')}.`);
+    }
     if (!hasExpressionParameters(after, aceContext, addons, catalog, changed)) return warnings;
     const data = withSheetEvents(await readProjectData(reader), sheetName, after);
     const expressionContext = buildExpressionContext(data, aceContext);
