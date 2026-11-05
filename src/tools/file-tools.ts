@@ -31,7 +31,11 @@ import {
 type Writer = MutationToolDeps['writer'];
 type Reader = MutationToolDeps['reader'];
 
-/** The largest source file register_project_file copies: the writer holds a file's content in memory while it writes it. */
+/**
+ * The largest source file register_project_file copies: the writer holds a file's content in memory while it writes it.
+ * It is separate from the C3MCP_MAX_FILE_MB limit on JSON entity reads and writes: the files copied are media and
+ * scripts, not parsed JSON.
+ */
 export const MAX_PROJECT_FILE_BYTES = 100 * 1024 * 1024;
 
 /** A refusal made before anything was changed: the message, then "Nothing was changed.". */

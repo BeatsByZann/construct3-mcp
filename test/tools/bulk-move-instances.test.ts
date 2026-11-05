@@ -102,6 +102,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -287,6 +288,24 @@ describe('move_instances', () => {
     expect(data.isError).toBe(true);
     expect(data.text!.startsWith('Error writing layout "Layout 1": ')).toBe(true);
     expect(data.text).toContain('The call was rolled back: layouts/Layout 1.json is as before the call.');
+    expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
+  });
+
+  it('refuses a write over the size limit, leaving the layout file as it was', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const layout = await readLayout();
+    layout.layers[0].instances = Array.from({ length: 4500 }, (_, i) => sprite(i + 1));
+    // Saved compact: under the limit on disk, over it once the writer tab-indents it
+    await resetLayout(JSON.stringify(layout));
+    const before = await layoutBytes();
+    expect(before.length).toBeLessThan(1024 * 1024);
+    expect(JSON.stringify(layout, null, '\t').length).toBeGreaterThan(1024 * 1024);
+
+    const data = await move([{ uid: 1, position: 'last' }]);
+    expect(data.isError).toBe(true);
+    expect(data.text).toContain('Error writing layout "Layout 1": Generated JSON for "Layout 1" is too large (');
+    expect(data.text).toContain('over the 1MB limit');
     expect(Buffer.compare(await layoutBytes(), before)).toBe(0);
   });
 

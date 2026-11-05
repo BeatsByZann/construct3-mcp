@@ -14,6 +14,7 @@ import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
+import { describeFileSizeLimit } from '../../src/construct3/file-size-limit.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerTilemapBrushTools, brushFilesElsewhere, brushFileRelativePath } from '../../src/tools/tilemap-brush-tools.js';
@@ -106,6 +107,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -477,6 +479,22 @@ describe('the brush file text and what is read', () => {
     const list = await call('list_tilemap_brushes', { objectName: 'Tiles' });
     expect(list.text).toContain('too large');
     expect(list.text).not.toContain(ENDING);
+  });
+
+  it('refuses a brush file over the size limit the server is set to, naming that limit', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    const size = 1024 * 1024 + 1;
+    await writeFile(at(TILES_BRUSH_PATH), '[]' + ' '.repeat(size - 2));
+    const replace = vi.spyOn(writer, 'replaceFile');
+    for (const [tool, args] of WRITE_TOOLS) {
+      const result = await call(tool, args('Tiles'));
+      expect(result.isError, tool).toBe(true);
+      expect(result.text, tool).toContain(`the file is too large (${size} bytes, over the ${describeFileSizeLimit()})`);
+      expect(result.text.endsWith(ENDING), tool).toBe(true);
+    }
+    expect(replace).not.toHaveBeenCalled();
+    const list = await call('list_tilemap_brushes', { objectName: 'Tiles' });
+    expect(list.text).toContain(`over the ${describeFileSizeLimit()})`);
   });
 });
 

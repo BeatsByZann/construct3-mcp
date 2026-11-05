@@ -38,6 +38,7 @@ import { dirname, relative, sep } from 'path';
 import { findFileIgnoringCase } from '../construct3/atomic-write.js';
 import { currentToolCall, fileKey, sameFileState, statFileState, StaleFileError, type FileState } from '../construct3/disk-state.js';
 import { applyJsonTextStyle, jsonTextStyleOf, parseJsonText, stripBom } from '../construct3/json-format.js';
+import { describeFileSizeLimit, describeSize, fileSizeLimit } from '../construct3/file-size-limit.js';
 import { findNameClash, nameKey } from '../construct3/names.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
 import type { MutationToolDeps } from './shared.js';
@@ -47,8 +48,6 @@ import { unregisteredName, syncedTools } from './tilemap-support.js';
 import { refuse, stoppedBeforeWrite } from './refusals.js';
 import { errorMessage, errorReason } from '../construct3/error-text.js';
 
-/** Largest brush file read, in bytes: the limit the project reader applies to its files. */
-const MAX_BRUSH_FILE_BYTES = 10 * 1024 * 1024;
 /** Limits of the search below tilemapBrushes/ for a brush file in another folder (those of the rename tools' search). */
 const BRUSH_SEARCH_MAX_ENTRIES = 20_000;
 const BRUSH_SEARCH_MAX_DEPTH = 8;
@@ -272,9 +271,9 @@ async function readBrushFile(location: BrushLocation): Promise<BrushRead> {
   const state = await statFileState(location.path);
   if (state === null) return { brushes: [], text: undefined, state };
   try {
-    if ((await stat(location.path)).size > MAX_BRUSH_FILE_BYTES) {
-      throw new Error(`the file is too large (over ${MAX_BRUSH_FILE_BYTES / 1024 / 1024}MB)`);
-    }
+    const limit = fileSizeLimit();
+    const { size } = await stat(location.path);
+    if (size > limit.bytes) throw new Error(`the file is too large (${describeSize(size, limit)}, over the ${describeFileSizeLimit(limit)})`);
     const text = await readFile(location.path, 'utf-8');
     const parsed = parseJsonText(text);
     if (!Array.isArray(parsed)) throw new Error(`the file is not a JSON array (found ${parsed === null ? 'null' : typeof parsed})`);
