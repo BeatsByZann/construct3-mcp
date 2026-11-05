@@ -11,7 +11,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { MockServer } from '../mocks/mock-server.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
-import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
+import { Construct3ProjectWriter, EntityWriteError } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { fileKey } from '../../src/construct3/disk-state.js';
 import { journalEntries } from '../../src/construct3/change-journal.js';
@@ -153,6 +153,27 @@ describe('list_changes', () => {
       ['create', 'layouts/Temp.json'], ['write', 'project.c3proj'],
     ]));
     expect(parse(await ok('list_changes', { limit: 1 })).calls).toHaveLength(1);
+  });
+
+  it('does not list a call whose failed entity write restoreFailedWrite put back', async () => {
+    await ok('create_layout', { name: 'Temp' });
+    const before = await layoutText();
+    const internals = writer as unknown as { verifyWrittenFile: () => Promise<void> };
+    vi.spyOn(internals, 'verifyWrittenFile').mockRejectedValueOnce(new Error('Post-write verification failed for "Layout 1"'));
+    const synced = withProjectSync(server as never, reader) as unknown as MockServer;
+    synced.tool('write_check_fails_restored', 'test only', {}, async () => {
+      try {
+        await writeLayer('HUD');
+      } catch (error) {
+        if (!(error instanceof EntityWriteError)) throw error;
+        return toolError(`restored: ${(await writer.restoreFailedWrite(error)).restored}`);
+      }
+      return toolError('expected a failed check');
+    });
+    const failed = await server.callTool('write_check_fails_restored', {});
+    expect(failed.content[0].text).toBe('restored: true');
+    expect(await layoutText()).toBe(before);
+    expect(parse(await ok('list_changes')).calls.map((c: { tool: string }) => c.tool)).toEqual(['create_layout']);
   });
 
   it('takes a limit from 1 to 50', async () => {
