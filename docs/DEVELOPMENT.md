@@ -84,6 +84,8 @@ construct3-mcp/
 │   │   ├── data-file-body.ts       # Data file bodies and Project File MIME types
 │   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
 │   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
+│   │   ├── error-text.ts           # Error text without absolute paths: project-relative paths, other paths replaced
+│   │   ├── instance-templates.ts   # A layout instance's template block and an object type's default template
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
 │   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
 │   │   ├── c3p-archive.ts          # A .c3p project's working folder: unpack, refresh, write back, conflict
@@ -146,6 +148,8 @@ construct3-mcp/
 │   │   ├── structure-tools.ts      # Project Bar move tool (1)
 │   │   ├── duplicate-tools.ts      # Duplicate tools (5)
 │   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── refusals.ts             # The refusal vocabulary: "Nothing was changed." once, no absolute path
+│   │   ├── registered-names.ts     # Names matched with their letter case as registered
 │   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
 │   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), file creation for a call (createFileForCall), their rollback, script file search
 │   │   ├── side-files.ts           # Rollback of a Project Bar move or copy: created files are removed only once project.c3proj is back
