@@ -73,6 +73,7 @@ construct3-mcp/
 │   │   ├── file-size-limit.ts      # The size limit: C3MCP_MAX_FILE_MB, 10MB by default, whole megabytes up to 128
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
 │   │   ├── entity-name-references.ts # Where an event sheet or a layout is named (rename_event_sheet, rename_layout)
+│   │   ├── project-shape.ts        # The save shape of project.c3proj
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison

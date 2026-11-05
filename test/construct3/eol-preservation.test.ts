@@ -16,6 +16,8 @@ import { join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
+import { applyJsonTextStyle, jsonTextStyleOf, stripBom } from '../../src/construct3/json-format.js';
+import { shapeByHand, type ProjectJson } from '../helpers/project-shape.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerProjectTools } from '../../src/tools/project-tools.js';
 import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
@@ -220,7 +222,7 @@ describe('Construct3ProjectWriter — text style preservation', () => {
     ['LF, as Construct 3 saves it', { eol: '\n' as Eol }],
     ['CRLF (git autocrlf checkout)', { eol: '\r\n' as Eol }],
     ['CRLF + trailing newline + BOM', { eol: '\r\n' as Eol, trailing: '\r\n', bom: true }],
-  ])('rewriting unchanged data reproduces the editor-verified fixture byte for byte (%s)', async (_label, style) => {
+  ])('rewriting unchanged data writes project.c3proj in the saved shape and reproduces every other fixture file byte for byte (%s)', async (_label, style) => {
     dir = await createProject(LOADABLE_DIR, style);
     const before = new Map<string, string>();
     for (const f of await listJsonFiles(dir)) before.set(f, await readFile(f, 'utf-8'));
@@ -231,7 +233,11 @@ describe('Construct3ProjectWriter — text style preservation', () => {
     await writer.updateProjectProperties({ description: reader.getProject().properties.description });
 
     for (const [file, text] of before) {
-      expect(await readFile(file, 'utf-8'), file).toBe(text);
+      // The fixture is older than the baseline release: a write to project.c3proj brings it to the saved shape
+      const expected = file.endsWith('project.c3proj')
+        ? applyJsonTextStyle(JSON.stringify(shapeByHand(JSON.parse(stripBom(text)) as ProjectJson), null, '\t'), jsonTextStyleOf(text))
+        : text;
+      expect(await readFile(file, 'utf-8'), file).toBe(expected);
     }
   });
 });
