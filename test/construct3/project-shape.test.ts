@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { stripBom } from '../../src/construct3/json-format.js';
-import { SHAPE_BASELINE_RELEASE, upgradeProjectShape } from '../../src/construct3/project-shape.js';
+import { SHAPE_BASELINE_RELEASE, projectShapeChanges, rollbackClosing, upgradeProjectShape } from '../../src/construct3/project-shape.js';
 import { shapeByHand, type ProjectJson } from '../helpers/project-shape.js';
 
 const FIXTURES = join(__dirname, '..', 'fixtures');
@@ -234,5 +234,38 @@ describe('upgradeProjectShape', () => {
     };
     expect(upgradeProjectShape(noAnchor)).toEqual([]);
     expect(JSON.stringify(noAnchor.properties)).toBe('{"a":1,"uidAllocationMode":"increment","b":2}');
+  });
+});
+
+describe('projectShapeChanges', () => {
+  const fixtureText = () => readFileSync(join(FIXTURES, 'c3-loadable-minimal', 'project.c3proj'), 'utf8');
+
+  it('lists each change the shape would make to a file an older release saved, without changing the text', () => {
+    const text = fixtureText();
+    expect(projectShapeChanges(text)).toEqual([
+      'scripts: script "c3-runtime-bridge.js" file-info renamed to script-info',
+      'models3d folder added',
+      'properties.uidAllocationMode moved after preloadSounds',
+      'properties.scriptsType moved to the end',
+    ]);
+    expect(fixtureText()).toBe(text);
+  });
+
+  it('lists nothing for a file that already has the shape, and reads a leading BOM', () => {
+    const shaped = loadFixture('c3-loadable-minimal');
+    upgradeProjectShape(shaped);
+    expect(projectShapeChanges(`﻿${JSON.stringify(shaped, null, '\t')}`)).toEqual([]);
+  });
+});
+
+describe('rollbackClosing', () => {
+  it('says nothing was changed when the shape changed nothing', () => {
+    expect(rollbackClosing([])).toBe('Nothing was changed.');
+  });
+
+  it('names the shape changes that stay and that nothing else was changed', () => {
+    expect(rollbackClosing(['models3d folder added', 'properties.scriptsType moved to the end'])).toBe(
+      "project.c3proj keeps the editor's save shape (models3d folder added; properties.scriptsType moved to the end); nothing else was changed.",
+    );
   });
 });

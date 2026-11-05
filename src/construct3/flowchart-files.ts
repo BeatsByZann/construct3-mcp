@@ -26,6 +26,7 @@ import { StaleFileError, currentToolCall, fileKey, sameFileState, statFileState,
 import { existingSpelling } from './atomic-write.js';
 import { parseJsonText, resolveJsonTextStyle, serializeJson } from './json-format.js';
 import { resolveProjectPath } from './path-utils.js';
+import { projectShapeChanges, rollbackClosing } from './project-shape.js';
 import type { ProjectFolderNode } from './timeline-folders.js';
 import type { Flowchart } from './flowchart-model.js';
 
@@ -330,6 +331,19 @@ async function registeredOnDisk(reader: Reader, name: string, folders: readonly 
   }
 }
 
+/**
+ * The save-shape changes an update of project.c3proj as it is now would
+ * make (projectShapeChanges); a rollback by a second update keeps them.
+ * Empty when the file cannot be read, as the update would then fail too.
+ */
+async function shapeChangesNow(reader: Reader): Promise<string[]> {
+  try {
+    return projectShapeChanges(await readFile(reader.getProjectPath(), 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+
 /** What an update that undoes this call's registration did: whether it wrote, or why it failed. */
 interface UpdateAttempt {
   wrote: boolean;
@@ -397,6 +411,8 @@ interface CreatedFile {
   folders: readonly string[];
   /** What the last round of the registration update added; undefined when no round got as far as registering. */
   registration: Registration | undefined;
+  /** The save-shape changes of project.c3proj as it was before the registration update. */
+  shapeChanges: string[];
 }
 
 /**
@@ -409,7 +425,7 @@ interface CreatedFile {
  * unregistered file, never a registered name without its file.
  */
 async function failedCreateMessage(reader: Reader, writer: Writer, error: unknown, created: CreatedFile): Promise<string> {
-  const { filePath, label, name, folders, registration } = created;
+  const { filePath, label, name, folders, registration, shapeChanges } = created;
   const withdraw = registration === undefined
     ? undefined
     : await attemptUpdate(writer, project => withdrawFlowchart(project, name, folders, registration));
@@ -427,7 +443,8 @@ async function failedCreateMessage(reader: Reader, writer: Writer, error: unknow
       : `${label}, which this call created, could not be removed and is still there.`,
   ];
   if (withdraw?.wrote) sentences.push(`The registration of "${name}" was removed from project.c3proj again.`);
-  return `${describeError(error)}.${lead} ${sentences.join(' ')} ${closing(removed)}`;
+  const end = removed && withdraw?.wrote ? rollbackClosing(shapeChanges) : closing(removed);
+  return `${describeError(error)}.${lead} ${sentences.join(' ')} ${end}`;
 }
 
 /**
@@ -501,6 +518,7 @@ export async function createFlowchartFile(
     return { ok: false, message: withLeftFolder(message, await leftFolder(writer, filePath, madeFolder)) };
   }
   const made: { registration: Registration | undefined } = { registration: undefined };
+  const shapeChanges = await shapeChangesNow(reader);
   try {
     await writer.updateProject(project => {
       // Each round starts from the file as it is now, so what an earlier round added is forgotten
@@ -511,7 +529,7 @@ export async function createFlowchartFile(
       return made.registration !== undefined;
     });
   } catch (error) {
-    const message = await failedCreateMessage(reader, writer, error, { filePath, label, name, folders, registration: made.registration });
+    const message = await failedCreateMessage(reader, writer, error, { filePath, label, name, folders, registration: made.registration, shapeChanges });
     return { ok: false, message: withLeftFolder(message, await leftFolder(writer, filePath, madeFolder)) };
   }
   return { ok: true };
@@ -528,6 +546,8 @@ interface DeleteTarget {
   existed: boolean;
   /** The index the last round of the delete's update took the name from in its folder, for the put-back. */
   index: number | undefined;
+  /** The save-shape changes of project.c3proj as it was before the delete's update. */
+  shapeChanges: string[];
 }
 
 /**
@@ -549,7 +569,9 @@ async function failedUnregisterMessage(reader: Reader, writer: Writer, error: un
     registered = await registeredOnDisk(reader, name, folders);
   }
   if (registered === true) {
-    return `${cause}.${put.wrote ? ` The registration of "${name}" was put back in project.c3proj.` : ''} Nothing was changed.`;
+    return put.wrote
+      ? `${cause}. The registration of "${name}" was put back in project.c3proj. ${rollbackClosing(target.shapeChanges)}`
+      : `${cause}. Nothing was changed.`;
   }
   const why = put.error !== undefined ? ` (${describeError(put.error)})` : '';
   const state = registered === false ? `project.c3proj no longer registers "${name}"` : 'project.c3proj could not be read to check that it still registers it';
@@ -608,7 +630,9 @@ async function failedFileDeleteMessage(reader: Reader, writer: Writer, error: un
   }
   const put = await attemptUpdate(writer, project => registerFlowchart(project, name, folders, target.index) !== undefined);
   if ((await registeredOnDisk(reader, name, folders)) === true) {
-    return `${cause}.${restored}${put.wrote ? ` The registration of "${name}" was put back in project.c3proj.` : ''} Nothing was changed.`;
+    return put.wrote
+      ? `${cause}.${restored} The registration of "${name}" was put back in project.c3proj. ${rollbackClosing(target.shapeChanges)}`
+      : `${cause}.${restored} Nothing was changed.`;
   }
   const why = put.error !== undefined ? ` (${describeError(put.error)})` : '';
   return `${cause}.${restored} The registration of "${name}" could not be put back in project.c3proj${why}, so ${label} is there without a registration. ${CHECK_THE_PROJECT}`;
@@ -661,7 +685,7 @@ export async function deleteFlowchartFiles(
   const fileSeen = await statFileState(filePath);
   const stateSeen = await statFileState(statePath);
   await writer.assertProjectFileCurrent();
-  const target: DeleteTarget = { name, folders, filePath, label, existed: fileSeen !== null, index: undefined };
+  const target: DeleteTarget = { name, folders, filePath, label, existed: fileSeen !== null, index: undefined, shapeChanges: await shapeChangesNow(reader) };
   const round = { removed: false };
   try {
     await writer.updateProject(project => {

@@ -9,6 +9,7 @@ import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { StaleFileError, statFileState } from '../../src/construct3/disk-state.js';
+import { upgradeProjectShape } from '../../src/construct3/project-shape.js';
 import {
   editorSave,
   editorSaveSync,
@@ -40,6 +41,16 @@ afterEach(async () => {
 type ProjectUpdate = Parameters<FlowchartProject['writer']['updateProject']>[0];
 
 const projectFile = (): string => join(project.dir, 'project.c3proj');
+
+/** How a failure message ends when a rollback updated the fixture's project.c3proj, which is not in the save shape, again. */
+const MINIMAL_SHAPE_CLOSING = "project.c3proj keeps the editor's save shape (models3d folder added; properties.uidAllocationMode moved after preloadSounds; properties.scriptsType moved to the end); nothing else was changed.";
+
+/** A parsed project.c3proj in the save shape, as an update through the writer leaves it. */
+function shapedProject(parsed: Record<string, unknown>): Record<string, unknown> {
+  const copy = structuredClone(parsed);
+  upgradeProjectShape(copy);
+  return copy;
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -259,7 +270,7 @@ describe('create_flowchart', () => {
     vi.spyOn(project.writer, 'updateProject').mockImplementationOnce(mergesThenFails);
     const { text, isError } = await call('create_flowchart', { name: 'Graph' });
     expect(isError).toBe(true);
-    expect(text).toBe('the check failed. flowcharts/Graph.json, which this call created, was removed again. The registration of "Graph" was removed from project.c3proj again. Nothing was changed.');
+    expect(text).toBe(`the check failed. flowcharts/Graph.json, which this call created, was removed again. The registration of "Graph" was removed from project.c3proj again. ${MINIMAL_SHAPE_CLOSING}`);
     const after = JSON.parse(await readFile(projectFile(), 'utf-8'));
     expect(after.editorNote).toBe(LATER_NOTE);
     expect(after.flowcharts).toBeUndefined();
@@ -385,9 +396,9 @@ describe('create_flowchart', () => {
       throw new Error('the check failed');
     });
     const { text } = await call('create_flowchart', { name: 'Graph' });
-    expect(text).toBe('the check failed. flowcharts/Graph.json, which this call created, was removed again. The registration of "Graph" was removed from project.c3proj again. Nothing was changed.');
+    expect(text).toBe(`the check failed. flowcharts/Graph.json, which this call created, was removed again. The registration of "Graph" was removed from project.c3proj again. ${MINIMAL_SHAPE_CLOSING}`);
     expect(withoutProject(await snapshotFiles(project.dir, { backups: false }))).toEqual(withoutProject(before));
-    expect(JSON.parse(await readFile(projectFile(), 'utf-8'))).toEqual(beforeProject);
+    expect(JSON.parse(await readFile(projectFile(), 'utf-8'))).toEqual(shapedProject(beforeProject));
     expect(await registeredFlowcharts(project.dir)).toBeUndefined();
   });
 
@@ -416,6 +427,40 @@ describe('delete_flowchart', () => {
   async function createGraph(): Promise<void> {
     expect(parseResult((await call('create_flowchart', { name: 'Graph' })).result).success).toBe(true);
   }
+
+  /** Register Graph with its file in a project.c3proj written by hand, not in the save shape; returns that file parsed. */
+  async function createGraphUnshaped(): Promise<Record<string, unknown>> {
+    const unshaped = JSON.parse(await readFile(projectFile(), 'utf-8'));
+    await createGraph();
+    unshaped.flowcharts = { items: ['Graph'], subfolders: [] };
+    await writeFile(projectFile(), JSON.stringify(unshaped, null, '\t'));
+    await project.reader.loadProject();
+    return unshaped;
+  }
+
+  it('says the save shape stays when it put the registration back after removing it wrote and failed', async () => {
+    const before = await createGraphUnshaped();
+    const original = project.writer.updateProject.bind(project.writer);
+    vi.spyOn(project.writer, 'updateProject').mockImplementationOnce(async change => {
+      await original(change);
+      throw new Error('the check failed');
+    });
+    const { text, isError } = await call('delete_flowchart', { name: 'Graph' });
+    expect(isError).toBe(true);
+    expect(text).toBe(`the check failed. The registration of "Graph" was put back in project.c3proj. ${MINIMAL_SHAPE_CLOSING}`);
+    expect(JSON.parse(await readFile(projectFile(), 'utf-8'))).toEqual(shapedProject(before));
+    expect(await exists(flowchartFile(project.dir, 'Graph'))).toBe(true);
+  });
+
+  it('says the save shape stays when it put the registration back after the file could not be deleted', async () => {
+    const before = await createGraphUnshaped();
+    vi.spyOn(project.writer, 'deleteFile').mockRejectedValue(new Error('disk full'));
+    const { text, isError } = await call('delete_flowchart', { name: 'Graph' });
+    expect(isError).toBe(true);
+    expect(text).toBe(`disk full. The registration of "Graph" was put back in project.c3proj. ${MINIMAL_SHAPE_CLOSING}`);
+    expect(JSON.parse(await readFile(projectFile(), 'utf-8'))).toEqual(shapedProject(before));
+    expect(await exists(flowchartFile(project.dir, 'Graph'))).toBe(true);
+  });
 
   it('says nothing was changed when the registration cannot be removed', async () => {
     await createGraph();
@@ -616,7 +661,7 @@ describe('delete_flowchart', () => {
     await setFlowchartContainer(project, { items: ['Ghost'], subfolders: [] });
     vi.spyOn(project.writer, 'deleteFile').mockRejectedValue(new Error('disk full'));
     const { text } = await call('delete_flowchart', { name: 'Ghost' });
-    expect(text).toBe('disk full. The registration of "Ghost" was put back in project.c3proj. Nothing was changed.');
+    expect(text).toBe(`disk full. The registration of "Ghost" was put back in project.c3proj. ${MINIMAL_SHAPE_CLOSING}`);
     expect(await registeredFlowcharts(project.dir)).toEqual({ items: ['Ghost'], subfolders: [] });
   });
 

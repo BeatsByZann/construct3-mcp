@@ -24,6 +24,8 @@
 /** `savedWithRelease` of Construct r495.2, the recorded editor baseline. */
 export const SHAPE_BASELINE_RELEASE = 49502;
 
+import { parseJsonText } from './json-format.js';
+
 type Json = Record<string, unknown>;
 
 const isObject = (value: unknown): value is Json =>
@@ -114,4 +116,24 @@ export function upgradeProjectShape(project: Json): string[] {
   }
 
   return changes;
+}
+
+/**
+ * The changes `upgradeProjectShape` would make to the project.c3proj
+ * `text`, worked out on a parsed copy; empty when the file already has the
+ * save shape.
+ */
+export function projectShapeChanges(text: string): string[] {
+  return upgradeProjectShape(parseJsonText(text) as Json);
+}
+
+/**
+ * The closing sentence of a message for a call that was undone by updating
+ * project.c3proj again: that update gives the file the save shape, so the
+ * shape changes stay even though everything else was put back.
+ */
+export function rollbackClosing(changes: string[]): string {
+  return changes.length === 0
+    ? 'Nothing was changed.'
+    : `project.c3proj keeps the editor's save shape (${changes.join('; ')}); nothing else was changed.`;
 }
