@@ -894,6 +894,17 @@ export function findGroupByPath(
 export type PlacedEventKind = 'block' | 'comment' | 'script' | 'variable' | 'group' | 'function-block' | 'custom-ace-block' | 'include';
 
 /**
+ * After an event was taken out of `owner`'s sub-events: drop the `children` key
+ * when the list is now empty, so an event left without sub-events is written
+ * without the key, as the editor writes it. A group keeps its list, and the top
+ * level (`owner` undefined) has none.
+ */
+export function dropEmptiedChildren(owner: Record<string, unknown> | undefined): void {
+  if (owner === undefined || owner.eventType === 'group') return;
+  if (Array.isArray(owner.children) && owner.children.length === 0) delete owner.children;
+}
+
+/**
  * Insert `event` into a resolved destination. An owner that had no
  * sub-events gets the new list. The sibling's index is read now, so a
  * caller that took an event out of the same list first still lands beside it.

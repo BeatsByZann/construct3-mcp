@@ -86,6 +86,7 @@ import {
   commentColorSchema,
   buildCommentEvent,
   reassignSids,
+  dropEmptiedChildren,
 } from './event-helpers.js';
 import { nothingChanged, stoppedBeforeWrite } from './refusals.js';
 import {
@@ -1516,6 +1517,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // taken out of the sheet for the check and put back for a dry run or
         // a refusal.
         const beforeEvents = snapshotEvents(sheet.events);
+        const owner = (findEnclosingEvents(sheet.events, event as unknown as C3Event) ?? []).at(-1) as Record<string, unknown> | undefined;
         parentArray.splice(index, 1);
         let loadCheck: Awaited<ReturnType<typeof checkLoadRulesBeforeWrite>>;
         try {
@@ -1554,6 +1556,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
 
         // The event is already out of the sheet (load-time check above)
+        dropEmptiedChildren(owner);
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
         resetProjectIndex(reader);
@@ -2849,10 +2852,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         found.match.parentArray.splice(found.match.index, 1);
         insertIntoContainer(container, args.position, moving);
         // An event left without sub-events is written without the key, as the editor and the builders do (templates.ts:535)
-        if (sourceOwner !== undefined && sourceOwner.eventType !== 'group'
-          && Array.isArray(sourceOwner.children) && sourceOwner.children.length === 0) {
-          delete sourceOwner.children;
-        }
+        dropEmptiedChildren(sourceOwner);
         if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
           return toolResult({
             success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged',
@@ -3608,6 +3608,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         try {
           if (args.remove) {
             found.list.splice(args.index, 1);
+            dropEmptiedChildren(found.owner);
             const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
             if (loadCheck.errors.length > 0) {
               sheet.events = beforeEvents;
@@ -3816,6 +3817,8 @@ interface IndexedEvent {
   list: Record<string, unknown>[];
   /** Where it stands, for messages: "the top level", 'group "G"' or "the sub-events of SID 12" */
   where: string;
+  /** The group or event whose sub-events `list` is; undefined at the top level. */
+  owner: Record<string, unknown> | undefined;
 }
 
 /**
@@ -3841,7 +3844,7 @@ function indexedEvent(
     const what = typeof event.eventType === 'string' ? `is a "${event.eventType}", not a ${noun}` : `has no eventType, so it is not a ${noun}`;
     return { error: `The event at index ${args.index} of ${where} ${what}; indexes count every event of the container.` };
   }
-  return { event, list, where };
+  return { event, list, where, owner };
 }
 
 /** SIDs listed in the copied-SIDs warning; the rest are counted. */
