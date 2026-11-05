@@ -122,7 +122,9 @@ function checkAceParameters(
 
   for (const [name, value] of entries) {
     if (typeof value !== 'string') continue;
-    const key = `${keyBase}|${name}|${value}`;
+    // Keyed by location (event, ACE, parameter), not by text: rewriting a parameter
+    // that was already broken is not a new problem.
+    const key = `${keyBase}|${name}`;
 
     // Rule 2: no real project stores "" in any parameter (0 of 108k string
     // values across 755 sheets, incl. Scirra's example projects); an empty

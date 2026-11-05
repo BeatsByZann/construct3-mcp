@@ -511,6 +511,42 @@ describe('newLoadRuleIssues', () => {
     expect(introduced[0].severity).toBe('error');
   });
 
+  describe('a parameter issue is keyed by its location, not its text', () => {
+    const setText = (sid: number, text: string) => block(1, [cond('every-tick', 2)], [act('set-text', sid, { text })]);
+
+    it('does not count a broken parameter rewritten to another broken text of the same rule', () => {
+      const before = check([setText(12, '"a')]);
+      expect(before).toHaveLength(1);
+      expect(newLoadRuleIssues(before, check([setText(12, '"b & "c & "d')]))).toEqual([]);
+    });
+
+    it('counts a clean parameter turned broken', () => {
+      const introduced = newLoadRuleIssues(check([setText(12, '"a"')]), check([setText(12, '"a')]));
+      expect(introduced).toHaveLength(1);
+      expect(introduced[0].rule).toBe('expression-syntax');
+    });
+
+    it('counts a different rule at the same spot', () => {
+      const introduced = newLoadRuleIssues(check([setText(12, '"a')]), check([setText(12, '')]));
+      expect(introduced).toHaveLength(1);
+      expect(introduced[0].rule).toBe('empty-expression');
+    });
+
+    it('counts the same rule at another item', () => {
+      const before = check([setText(12, '"a')]);
+      const after = check([block(1, [cond('every-tick', 2)], [act('set-text', 12, { text: '"a' }), act('set-text', 13, { text: '"a' })])]);
+      expect(newLoadRuleIssues(before, after)).toHaveLength(1);
+    });
+
+    it('counts a second identical issue: two before, three after is one new', () => {
+      const twoActions = (n: number) =>
+        [block(1, [cond('every-tick', 2)], Array.from({ length: n }, () => ({ id: 'set-text', objectClass: 'Text', parameters: { text: '"a' } })))];
+      const before = check(twoActions(2));
+      expect(before).toHaveLength(2);
+      expect(newLoadRuleIssues(before, check(twoActions(3)))).toHaveLength(1);
+    });
+  });
+
   it('keeps issues on SID-less events and ACEs stable when indices shift', () => {
     const sidless = { eventType: 'block', conditions: [cond('every-tick', 2)], actions: [{ id: 'set-text', objectClass: 'Text', parameters: { text: '' } }] };
     const before = check([sidless]);

@@ -227,11 +227,6 @@ const LOAD_ERROR_CASES: LoadErrorCase[] = [
     others: { Other: [] },
     args: { sourceSheet: SHEET, targetSheet: 'Other', sids: [920] },
   },
-  {
-    tool: 'replace_object_in_events', prepare: createHero,
-    main: [{ eventType: 'block', conditions: [], actions: [{ id: 'set-position', objectClass: 'System', sid: 931, parameters: { x: 'Sprite.X & "', y: '1' } }], sid: 930 }],
-    args: { fromObject: 'Sprite', toObject: 'Hero' },
-  },
   { tool: 'replace_in_expressions', args: { find: '100', replace: '"' } },
 ];
 
@@ -252,16 +247,49 @@ describe('a new load-time error is refused, and nothing is written', () => {
   }
 });
 
+/** A block whose set-position action holds an expression with an unterminated string (sid 931), broken before any call. */
+const brokenExpressionBlock = (x: string): Json => ({
+  eventType: 'block', conditions: [], actions: [{ id: 'set-position', objectClass: 'System', sid: 931, parameters: { x, y: '1' } }], sid: 930,
+});
+
+describe('a rewrite of an expression that was already broken is not refused', () => {
+  const cases: Array<{ tool: string; x: string; rewritten: string; prepare?: (server: MockServer) => Promise<void>; args: Json }> = [
+    { tool: 'replace_object_in_events', x: 'Sprite.X & "', rewritten: 'Hero.X & "', prepare: createHero, args: { fromObject: 'Sprite', toObject: 'Hero' } },
+    { tool: 'replace_in_expressions', x: 'Speed & "', rewritten: 'Pace & "', args: { find: 'Speed', replace: 'Pace' } },
+  ];
+  for (const c of cases) {
+    it(`${c.tool} rewrites it and writes the sheet`, async () => {
+      const { dir, writer, server } = await open({ main: [brokenExpressionBlock(c.x)] });
+      await c.prepare?.(server);
+      const before = await sheetText(dir);
+      const writes = vi.spyOn(writer, 'writeEntityFile');
+      const result = await call(server, c.tool, c.args);
+      expect(result.isError, result.text).toBe(false);
+      expect(result.data.success).toBe(true);
+      expect(writes).toHaveBeenCalled();
+      const after = await sheetText(dir);
+      expect(after).not.toEqual(before);
+      expect(after).toContain(JSON.stringify(c.rewritten).slice(1, -1));
+    });
+  }
+});
+
 describe('the catalogue is obtained before the first sheet read', () => {
   for (const c of UNKNOWN_ACE_CASES) {
     it(`${c.tool} has the catalogue before it reads a sheet`, async () => {
       const provider = new RecordingProvider({ cacheDir: await tempDir(), sourceDir: SOURCE });
       const { reader, server } = await open({ main: c.main, others: c.others, provider });
       await c.prepare?.(server);
+      // The replace tools read every sheet at once first, and that read does not go through readEventSheet
       const read = reader.readEventSheet.bind(reader);
       vi.spyOn(reader, 'readEventSheet').mockImplementation(async (name: string) => {
         provider.log.push('read');
         return read(name);
+      });
+      const readAll = reader.readAllEventSheets.bind(reader);
+      vi.spyOn(reader, 'readAllEventSheets').mockImplementation(async () => {
+        provider.log.push('read');
+        return readAll();
       });
       const result = await call(server, c.tool, c.args);
       expect(result.isError, result.text).toBe(false);

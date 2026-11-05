@@ -2249,7 +2249,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         }
         if (!lost.complete) warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
         // A moved item keeps its SID and content, so only copies are checked against the catalogue
-        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
+        if (args.copy) warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         writeStarted = true;
         const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
