@@ -951,9 +951,10 @@ export class Construct3ProjectWriter {
    * in the file's line endings, with its BOM), when its UTF-8 bytes are over
    * the size limit, before anything is backed up or written: CRLF line
    * endings and multibyte characters make it larger than the JSON that
-   * validateJsonData checked.
+   * validateJsonData checked. Tools that create a file through
+   * createFileForCall run it on the text they pass.
    */
-  private assertWritableSize(text: string, entityName: string): void {
+  assertWritableSize(text: string, entityName: string): void {
     const limit = fileSizeLimit();
     const bytes = Buffer.byteLength(text, 'utf-8');
     if (bytes > limit.bytes) {

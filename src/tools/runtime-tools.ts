@@ -23,6 +23,8 @@ import { writeZip } from '../runtime/zip-writer.js';
 import { collectProjectFiles } from '../runtime/project-files.js';
 import { jsonTextStyleOf, parseJsonText, serializeJson } from '../construct3/json-format.js';
 import { resolveProjectPath } from '../construct3/path-utils.js';
+import { entryPurpose } from '../construct3/file-registration.js';
+import type { FileItem } from '../construct3/types.js';
 import { withProjectSync } from './project-sync.js';
 import type { C3pArchive } from '../construct3/c3p-archive.js';
 
@@ -213,16 +215,11 @@ interface ScriptFolder {
 /** The comment that marks the import line inject_runtime_bridge adds, so removal takes out exactly that line. */
 const BRIDGE_IMPORT_MARKER = '// construct3-mcp runtime bridge (remove_runtime_bridge removes this line)';
 
-function scriptPurpose(item: Record<string, unknown>): unknown {
-  const info = (item['script-info'] ?? item['file-info']) as { purpose?: unknown } | undefined;
-  return info?.purpose;
-}
-
 /** The project's main script other than the bridge: its path under scripts/ ("main.js", "game/main.ts"). */
 function findMainScript(folder: ScriptFolder | undefined, prefix = '', depth = 0): string | undefined {
   if (!folder || depth > 32) return undefined;
   for (const item of Array.isArray(folder.items) ? folder.items : []) {
-    if (item?.name !== BRIDGE_FILENAME && typeof item?.name === 'string' && scriptPurpose(item) === 'main') return prefix + item.name;
+    if (item?.name !== BRIDGE_FILENAME && typeof item?.name === 'string' && entryPurpose(item as unknown as FileItem) === 'main') return prefix + item.name;
   }
   for (const sub of Array.isArray(folder.subfolders) ? folder.subfolders : []) {
     if (typeof sub?.name !== 'string') continue;

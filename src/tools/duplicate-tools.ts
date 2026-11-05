@@ -81,13 +81,19 @@ async function createEntityCopy(
   await createJsonCopyFile(writer, reader, side, path, name, data);
 }
 
-/** Create the JSON file of a copy at `path` as a file of the call: checked by the writer, in the project's text style. */
+/**
+ * Create the JSON file of a copy at `path` as a file of the call: checked by
+ * the writer, in the project's text style. The size limit is checked on the
+ * text as written (line endings and BOM included), before the file is created.
+ */
 async function createJsonCopyFile(
   writer: Writer, reader: Reader, side: RenameSideWrites, path: string, name: string, data: unknown,
 ): Promise<void> {
   const json = writer.validateJsonData(data, name);
   const style = await resolveJsonTextStyle(path, reader.getProjectPath(), dirname(path));
-  await createFileForCall(writer, side, path, applyJsonTextStyle(json, style));
+  const text = applyJsonTextStyle(json, style);
+  writer.assertWritableSize(text, name);
+  await createFileForCall(writer, side, path, text);
 }
 
 /**

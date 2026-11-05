@@ -511,6 +511,28 @@ describe('duplicate_layout', () => {
     expect(treeFiles((await project()).layouts, 'layouts').some(file => file.endsWith('/Level 1 Copy.json'))).toBe(false);
   });
 
+  it('refuses a copy that is under the size limit as tab-indented text but over it in the line endings of the project, before anything is written', async () => {
+    vi.stubEnv('C3MCP_MAX_FILE_MB', '1');
+    await writeFile(path('project.c3proj'), (await text('project.c3proj')).replace(/\r?\n/g, '\r\n'));
+    await reader.reloadProject();
+    const source = await readJson<LayoutJson>('layouts', 'Level 1.json');
+    const [, enemy] = source.layers[0].instances;
+    source.layers[0].instances = Array.from({ length: 2000 }, (_, i) => ({ ...structuredClone(enemy), uid: 1000 + i, sid: 631000000000000 + i }));
+    // Padded so the tab-indented text with LF line ends is 1000 characters under the limit
+    source.padding = '';
+    source.padding = 'x'.repeat(MB - 1000 - JSON.stringify(source, null, '\t').length);
+    await writeFile(path('layouts', 'Level 1.json'), JSON.stringify(source));
+    const indented = JSON.stringify(source, null, '\t');
+    expect((await stat(path('layouts', 'Level 1.json'))).size).toBeLessThan(MB);
+    expect(indented.length).toBeLessThan(MB);
+    expect(indented.replace(/\n/g, '\r\n').length).toBeGreaterThan(MB);
+
+    await refusal('duplicate_layout', { layoutName: 'Level 1', newName: 'Level 1 Copy' },
+      'Generated JSON for "Level 1 Copy" is too large (', 'over the 1MB limit');
+    expect(existsSync(path('layouts', 'Level 1 Copy.json'))).toBe(false);
+    expect(treeFiles((await project()).layouts, 'layouts').some(file => file.endsWith('/Level 1 Copy.json'))).toBe(false);
+  });
+
   it('writes the copy with the line endings of the project', async () => {
     const crlf = (await text('project.c3proj')).replace(/\r?\n/g, '\r\n');
     await writeFile(path('project.c3proj'), crlf);
