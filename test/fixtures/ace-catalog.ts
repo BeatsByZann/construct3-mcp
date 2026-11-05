@@ -35,6 +35,12 @@ export const TEST_CATALOG: AceCatalog = {
           { id: 'animation', type: 'string' },
           { id: 'from', type: 'combo', items: ['current-frame', 'beginning'] },
         ],
+        'join-named-group': [{ id: 'group', type: 'groupname' }],
+        'start-named-timeline': [{ id: 'timeline', type: 'timeline' }],
+        'follow-object': [{ id: 'target', type: 'object' }],
+        'track-variable': [{ id: 'variable', type: 'eventvar' }],
+        'flip-variable': [{ id: 'variable', type: 'eventvarbool' }],
+        'watch-variable': [{ id: 'variable', type: 'eventvarany' }],
       },
       expressions: {
         animationname: { name: 'AnimationName', params: [], returns: 'string' },

@@ -18,6 +18,7 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { registerEventTools } from '../../src/tools/event-tools.js';
+import { AceCatalogProvider, setAceCatalogProvider } from '../../src/construct3/ace-catalog-provider.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 
@@ -562,6 +563,140 @@ describe('update_event_variable reads each sheet once per call', () => {
     const result = await update({ sid: 1, newName: 'Points' });
     expect(result.success).toBe(true);
     expect([...reads].sort()).toEqual(['MainSheet', 'Other']);
+  });
+});
+
+// ─── Parameter types from the ACE catalogue ───
+
+/** The sheet of the catalogue tests: global Score (SID 1) and one Sprite action per parameter type group. */
+function typedEvents(): Json[] {
+  const sprite = (id: string, parameters: Json): Json => ({ id, objectClass: 'Sprite', sid: sid(), parameters });
+  return [
+    variable('Score', 1),
+    block([], [
+      sprite('set-x', { x: 'Score * 2 + 1' }),
+      sprite('set-animation', { animation: '"S=" & score', from: 'beginning' }),
+      setVar('Other', 'Score + 1'),
+      sprite('track-variable', { variable: 'score' }),
+      sprite('flip-variable', { variable: 'Score' }),
+      sprite('watch-variable', { variable: 'SCORE' }),
+    ]),
+    block([], [
+      sprite('join-named-group', { group: 'Score' }),
+      sprite('start-named-timeline', { timeline: 'Score' }),
+      sprite('follow-object', { target: 'Score' }),
+      sprite('set-animation', { animation: '"a"', from: 'Score' }),
+    ]),
+    block([], [
+      { id: 'set-x', objectClass: 'Ghost', sid: sid(), parameters: { x: 'Score' } },
+      { id: 'unlisted-action', objectClass: 'Sprite', sid: sid(), parameters: { x: 'Score' } },
+    ]),
+    variable('Other', 2),
+  ];
+}
+
+/** Write the catalogue tests' sheet, start the server on it, and give the reader `provider` when one is given. */
+async function startTyped(provider?: AceCatalogProvider): Promise<void> {
+  await writeSheet('MainSheet', typedEvents());
+  await start();
+  if (provider) setAceCatalogProvider(reader, provider);
+}
+
+/** The parameters of the actions of the `index`th block of MainSheet on disk. */
+const parametersAt = async (index: number): Promise<Record<string, unknown>[]> =>
+  eventsOf(await readSheet('MainSheet')).filter(e => e.eventType === 'block')[index].actions.map(a => a.parameters);
+
+describe('update_event_variable and the parameter types of the ACE catalogue', () => {
+  it('rewrites the number, string and any parameters of ACEs the catalogue defines, leaving text inside strings', async () => {
+    await startTyped();
+    const forced = await update({ sid: 1, newName: 'Points', force: true });
+    expect(forced.success).toBe(true);
+    const first = await parametersAt(0);
+    expect(first[0]).toEqual({ x: 'Points * 2 + 1' });
+    expect(first[1]).toEqual({ animation: '"S=" & Points', from: 'beginning' });
+    expect(first[2]).toEqual({ variable: 'Other', value: 'Points + 1' });
+    expect(forced.uses!.filter(u => u.sheet === 'MainSheet' && u.kind === 'variable-expression').map(u => u.parameter)).toEqual(['x', 'animation', 'value']);
+  });
+
+  it('points the eventvar, eventvarbool and eventvarany parameters of ACEs the catalogue defines at the new name', async () => {
+    await startTyped();
+    const forced = await update({ sid: 1, newName: 'Points', force: true });
+    expect(forced.success).toBe(true);
+    const first = await parametersAt(0);
+    expect(first.slice(3)).toEqual([{ variable: 'Points' }, { variable: 'Points' }, { variable: 'Points' }]);
+    expect(forced.uses!.filter(u => u.sheet === 'MainSheet' && u.kind === 'event-variable').map(u => u.parameter)).toEqual(['variable', 'variable', 'variable']);
+  });
+
+  it('lists the combo, groupname, timeline and object parameters that name the variable and never writes them', async () => {
+    await startTyped();
+    const refused = await update({ sid: 1, newName: 'Points' });
+    expect(refused.action).toBe('rename_blocked');
+    const names = refused.usesNotUpdated!.filter(u => u.reason === 'name-parameter').map(u => String(u.parameter)).sort();
+    expect(names).toEqual(['from', 'group', 'target', 'timeline']);
+    const before = await parametersAt(1);
+    const forced = await update({ sid: 1, newName: 'Points', force: true });
+    expect(forced.success).toBe(true);
+    expect(await parametersAt(1)).toEqual(before);
+    expect(before[3]).toEqual({ animation: '"a"', from: 'Score' });
+  });
+
+  it('keeps a parameter of an ACE the catalogue does not define, or of an object the project does not declare, listed and unchanged', async () => {
+    await startTyped();
+    const refused = await update({ sid: 1, newName: 'Points' });
+    const unknown = refused.usesNotUpdated!.filter(u => u.reason === 'parameter-type-unknown');
+    expect(unknown.map(u => `${u.path}|${u.parameter}`)).toEqual(['block > action:0|x', 'block > action:1|x']);
+    const before = await parametersAt(2);
+    await update({ sid: 1, newName: 'Points', force: true });
+    expect(await parametersAt(2)).toEqual(before);
+  });
+
+  it('obtains the catalogue before the first sheet read of a rename, and not at all for an update that renames nothing', async () => {
+    const cache = await mkdtemp(join(tmpdir(), 'c3-catalog-order-'));
+    try {
+      const provider = new AceCatalogProvider({ cacheDir: cache, sourceDir: join(__dirname, '..', 'fixtures', 'ace-source') });
+      await startTyped(provider);
+      const order: string[] = [];
+      const catalogFor = provider.catalogFor.bind(provider);
+      vi.spyOn(provider, 'catalogFor').mockImplementation(async release => {
+        order.push('catalogue');
+        return catalogFor(release);
+      });
+      const readSheet = reader.readEventSheet.bind(reader);
+      vi.spyOn(reader, 'readEventSheet').mockImplementation(async name => {
+        order.push('sheet');
+        return readSheet(name);
+      });
+      expect((await update({ sid: 1, newType: 'string' })).success).toBe(true);
+      expect(order).not.toContain('catalogue');
+      order.length = 0;
+      expect((await update({ sid: 1, newName: 'Points', force: true })).success).toBe(true);
+      expect(order[0]).toBe('catalogue');
+      expect(order).toContain('sheet');
+    } finally {
+      await rm(cache, { recursive: true, force: true });
+    }
+  });
+
+  it('lists the parameters it cannot classify and writes none of them when the catalogue is not available', async () => {
+    const empty = await mkdtemp(join(tmpdir(), 'c3-no-catalog-'));
+    const cache = await mkdtemp(join(tmpdir(), 'c3-no-catalog-cache-'));
+    try {
+      await startTyped(new AceCatalogProvider({ cacheDir: cache, sourceDir: empty }));
+      const refused = await update({ sid: 1, newName: 'Points' });
+      expect(refused.action).toBe('rename_blocked');
+      expect(refused.usesNotUpdated!.every(u => u.reason === 'parameter-type-unknown')).toBe(true);
+      expect(refused.usesNotUpdated!.map(u => String(u.parameter)).sort()).toEqual(
+        ['animation', 'from', 'group', 'target', 'timeline', 'value', 'variable', 'variable', 'variable', 'x', 'x', 'x'].sort(),
+      );
+      const before = await parametersAt(0);
+      const forced = await update({ sid: 1, newName: 'Points', force: true });
+      expect(forced.success).toBe(true);
+      expect(await parametersAt(0)).toEqual(before);
+      expect(forced.uses!.filter(u => u.sheet === 'MainSheet')).toEqual([]);
+    } finally {
+      await rm(empty, { recursive: true, force: true });
+      await rm(cache, { recursive: true, force: true });
+    }
   });
 });
 

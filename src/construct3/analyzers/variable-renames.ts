@@ -18,8 +18,16 @@
  *   by-name layout actions, which may hold an expression and is listed
  *   when it names the variable.
  * Any other string parameter may be an expression, a combo choice or a name
- * of another kind (a group, a timeline): the server has no parameter types
- * for plugin, behavior or System conditions and actions. Such a parameter
+ * of another kind (a group, a timeline). The ACE catalogue of the project's
+ * release, when the caller has one (parameterTypeResolver), gives the type of
+ * each parameter of the conditions and actions it defines: a number, string
+ * or any parameter holds an expression and is rewritten like a call
+ * argument; an eventvar, eventvarbool or eventvarany parameter holds the
+ * variable's name itself; a combo, groupname, timeline or object parameter
+ * holds a name, is never a use and is never changed. Without a catalogue, for
+ * an ACE it does not define (an addon with no definitions loaded, an object
+ * the project does not declare) and for any other type, the server has no
+ * parameter type: such a parameter
  * whose names include the variable is listed as a use the rename does not
  * update, and is never changed; so is a value under a name key of a plugin
  * or behavior ACE that names the variable (an addon's ACE may keep an
@@ -58,6 +66,12 @@ import { checkUnscannedFiles, describeReadFailure, type UnscannedFile, type Unsc
 import { classifyReadError, type Construct3ProjectReader } from '../project-reader.js';
 import { nameTerm } from '../raw-text-search.js';
 import type { EventSheet } from '../types.js';
+import { aceOwner, buildAceContext, readProjectData, type AceContext } from '../ace-catalog.js';
+import { aceCatalogProviderFor } from '../ace-catalog-provider.js';
+import type { AceCatalog, AddonLookup } from '../ace-types.js';
+import { addonDefinitionsOf } from '../addon-definitions.js';
+import { paramTypes } from '../expression-check.js';
+import { hasOnlyLegacyBehaviorKey } from './legacy-behavior-keys.js';
 
 // ─── Parameters ──────────────────────────────────────────────
 
@@ -74,10 +88,73 @@ const SYSTEM_EXPRESSION_NAME_KEYS: ReadonlySet<string> = new Set([
 /**
  * What a string parameter of a condition or action holds, as far as the
  * server can tell: the name of an event variable, an expression (a call
- * argument), a name that is never a variable use, or something it cannot
- * tell.
+ * argument, or a parameter the catalogue types as number, string or any), a
+ * name that is never a variable use, or something it cannot tell.
  */
-export type ParameterSlotKind = 'variable-name' | 'call-argument' | 'name' | 'unclassified';
+export type ParameterSlotKind = 'variable-name' | 'call-argument' | 'expression' | 'name' | 'unclassified';
+
+/** The catalogue type of one parameter of a condition or action, by the parameter's key; undefined when it has none. */
+export type ParameterTypeLookup = (parameter: string | number) => string | undefined;
+
+/** The parameter types of one condition or action of an event, or undefined when the catalogue does not define it. */
+export type ParameterTypeResolver = (ace: EventRecord, kind: 'condition' | 'action') => ParameterTypeLookup | undefined;
+
+/** Catalogue parameter types that hold an expression. */
+const EXPRESSION_TYPES: ReadonlySet<string> = new Set(['number', 'string', 'any']);
+
+/** Catalogue parameter types that hold the name of an event variable. */
+const VARIABLE_NAME_TYPES: ReadonlySet<string> = new Set(['eventvar', 'eventvarbool', 'eventvarany']);
+
+/** Catalogue parameter types that hold a name of another kind: a combo choice, a group, a timeline, an object. */
+const NAME_TYPES: ReadonlySet<string> = new Set(['combo', 'groupname', 'timeline', 'object']);
+
+/** What a parameter of the catalogue type `type` holds; 'unclassified' for any other type or none. */
+function kindOfCatalogType(type: string | undefined): ParameterSlotKind {
+  if (type === undefined) return 'unclassified';
+  if (EXPRESSION_TYPES.has(type)) return 'expression';
+  if (VARIABLE_NAME_TYPES.has(type)) return 'variable-name';
+  if (NAME_TYPES.has(type)) return 'name';
+  return 'unclassified';
+}
+
+/**
+ * The parameter types of the conditions and actions of a project, from the
+ * catalogue and the addon registry given. The lookup of an ACE is undefined
+ * when its owner cannot be resolved, when the catalogue and the registry do
+ * not define it, for a function or custom action call, and for an ACE that
+ * names its behavior only under the legacy key.
+ */
+export function parameterTypeResolver(catalog: AceCatalog, context: AceContext, addons: AddonLookup | undefined): ParameterTypeResolver {
+  return (ace, kind) => {
+    if (typeof ace.id !== 'string' || typeof ace.objectClass !== 'string') return undefined;
+    if (typeof ace.callFunction === 'string' || typeof ace.customAction === 'string') return undefined;
+    if (hasOnlyLegacyBehaviorKey(ace)) return undefined;
+    const owner = aceOwner(ace, context);
+    if (!owner) return undefined;
+    const params = paramTypes(kind === 'condition' ? 'conditions' : 'actions', ace.id, owner, addons, catalog);
+    if (!params) return undefined;
+    const types = new Map(params.map(p => [p.id, p.type] as const));
+    return parameter => (typeof parameter === 'string' ? types.get(parameter) : undefined);
+  };
+}
+
+/**
+ * The parameter types of the project `reader` holds, from the catalogue of
+ * the release it was saved with and the addon definitions loaded. Undefined
+ * when the catalogue is not available (the caller then classifies as it does
+ * offline) or the project's objects cannot be read; never throws.
+ */
+export async function parameterTypesFor(reader: Construct3ProjectReader): Promise<ParameterTypeResolver | undefined> {
+  try {
+    const release = (reader.getProject() as { savedWithRelease?: unknown }).savedWithRelease;
+    const lookup = await aceCatalogProviderFor(reader).catalogFor(release);
+    if (!lookup.ok) return undefined;
+    const context = buildAceContext(await readProjectData(reader, { sheets: false }));
+    return parameterTypeResolver(lookup.catalog, context, addonDefinitionsOf(reader));
+  } catch {
+    return undefined;
+  }
+}
 
 /** One string parameter of a condition or action. */
 export interface ParameterSlot {
@@ -92,9 +169,11 @@ export interface ParameterSlot {
 /**
  * The string parameters of one condition or action, classified (see the
  * module comment): the parameters variableNamesUsedBy reads, plus the name
- * parameters it skips.
+ * parameters it skips. `typeOf`, when given, gives the catalogue type of
+ * a parameter of this ACE; it decides the kind of each parameter that is not
+ * a call argument, the variable of a System variable ACE or a System name key.
  */
-export function parameterSlots(ace: EventRecord, kind: 'condition' | 'action'): ParameterSlot[] {
+export function parameterSlots(ace: EventRecord, kind: 'condition' | 'action', typeOf?: ParameterTypeLookup): ParameterSlot[] {
   const slots: ParameterSlot[] = [];
   const params = ace.parameters;
   const variableAce = ace.objectClass === 'System' && typeof ace.id === 'string'
@@ -106,14 +185,14 @@ export function parameterSlots(ace: EventRecord, kind: 'condition' | 'action'): 
   if (Array.isArray(params)) {
     params.forEach((value, i) => {
       if (typeof value !== 'string') return;
-      slots.push({ parameter: i, value, kind: call ? 'call-argument' : 'unclassified', set: text => { params[i] = text; } });
+      slots.push({ parameter: i, value, kind: call ? 'call-argument' : kindOfCatalogType(typeOf?.(i)), set: text => { params[i] = text; } });
     });
   } else if (isRecord(params)) {
     const system = ace.objectClass === 'System';
     for (const [key, value] of Object.entries(params)) {
       if (typeof value !== 'string' || (variableAce && key === 'variable')) continue;
       const expressionKey = system && SYSTEM_EXPRESSION_NAME_KEYS.has(`${kind}:${String(ace.id)}:${key}`);
-      const slotKind: ParameterSlotKind = NAME_PARAMETER_KEYS.has(key) && !expressionKey ? 'name' : 'unclassified';
+      const slotKind: ParameterSlotKind = NAME_PARAMETER_KEYS.has(key) && !expressionKey ? 'name' : kindOfCatalogType(typeOf?.(key));
       slots.push({ parameter: key, value, kind: slotKind, set: text => { params[key] = text; } });
     }
   }
@@ -198,6 +277,7 @@ function slotUse(
         ? { use: { ...where, parameter: slot.parameter, value: slot.value, apply: newName => slot.set(newName) } }
         : {};
     case 'call-argument':
+    case 'expression':
       if (numberLike && mentioned) return left('number-like-name');
       if (hasBacktickOutsideStrings(slot.value) && mentioned) return left('template-text');
       if (!findExpressionIdentifiers(slot.value).includes(key)) return {};
@@ -215,9 +295,15 @@ function slotUse(
  * reference checks (declarationOf), split into those a rename can point at
  * `newName` and those it leaves (see the module comment); and the uses of
  * `newName` the rename would capture. Changes nothing: each use's `apply`
- * makes its change.
+ * makes its change. `types`, when given, gives the parameter types of each
+ * condition and action (parameterSlots).
  */
-export function findVariableUses(sheets: ReadonlyMap<string, unknown>, variable: object, newName: string): VariableUseReport {
+export function findVariableUses(
+  sheets: ReadonlyMap<string, unknown>,
+  variable: object,
+  newName: string,
+  types?: ParameterTypeResolver,
+): VariableUseReport {
   const report: VariableUseReport = { uses: [], notUpdated: [], captured: [], complete: true };
   if (!isRecord(variable) || typeof variable.name !== 'string') return report;
   const key = variable.name.toLowerCase();
@@ -228,7 +314,7 @@ export function findVariableUses(sheets: ReadonlyMap<string, unknown>, variable:
   const isGlobal = [...sheets.values()].some(events => Array.isArray(events) && events.includes(variable));
   const mentionsNew = mentionsAny([newKey]);
   const stopped = walkAces(sheets, new Set(), site => {
-    const slots = parameterSlots(site.ace, site.kind);
+    const slots = parameterSlots(site.ace, site.kind, types?.(site.ace, site.kind));
     // Name slots too: a plugin's name parameter that names the variable is listed
     if (slots.some(s => s.value.toLowerCase().includes(key)) && declarationOf(key, site, globals) === variable) {
       for (const slot of slots) {
@@ -428,7 +514,8 @@ export interface VariableRenamePlan {
  * a local: its own sheet), those it leaves, the script lines that read it,
  * and the sheets that could not be read whose text names the new name or,
  * for a global, the old one (a declaration of the new name there is a
- * clash the name check cannot see). Changes nothing.
+ * clash the name check cannot see). `types` gives the parameter types of the
+ * conditions and actions (findVariableUses). Changes nothing.
  */
 export async function planVariableRename(
   reader: Pick<Construct3ProjectReader, 'searchEntityTextRaw'>,
@@ -437,12 +524,13 @@ export async function planVariableRename(
   variable: object,
   isGlobal: boolean,
   newName: string,
+  types?: ParameterTypeResolver,
 ): Promise<VariableRenamePlan> {
   const oldName = String((variable as { name?: unknown }).name);
   const events = new Map<string, unknown>(isGlobal
     ? [...read.sheets].map(([name, s]) => [name, s.events] as const)
     : [[sheetName, read.sheets.get(sheetName)?.events]]);
-  const found = findVariableUses(events, variable, newName);
+  const found = findVariableUses(events, variable, newName, types);
   const scripts = variableScriptReads(events, variable, isGlobal);
   // A sheet that could not be read may use a renamed global, and may declare a
   // global of the new name (which a local's new name would clash with too);

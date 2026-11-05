@@ -130,6 +130,7 @@ import {
 import {
   describeUsesNotUpdated,
   notUpdatedEntry,
+  parameterTypesFor,
   planVariableRename,
   readRenameSheets,
   renameWarnings,
@@ -3216,7 +3217,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
 
   server.tool(
     'update_event_variable',
-    'Update an existing event variable declaration (rename, change type, change initial value, static and constant flags). A rename points uses of the variable at the new name where the server can tell what the parameter holds: the "variable" parameter of System variable conditions and actions and the arguments of function and custom action calls, in every event sheet that sees the variable (a global variable: every sheet; a local one: the events beside it and below them); uses of the same name that find another variable (a local of that name in another group or one that hides a global, a function parameter) are left as they are. Any other parameter that names the variable (expressions of plugin, behavior and System actions, combo choices, group names), script lines that read it, event sheets that could not be parsed, or a search cut short at its limit, refuse the rename without force; with force those uses keep the old name. A failure midway puts back what was written. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Use dryRun first to see the uses.',
+    'Update an existing event variable declaration (rename, change type, change initial value, static and constant flags). A rename points uses of the variable at the new name where the server can tell what the parameter holds: the "variable" parameter of System variable conditions and actions, the arguments of function and custom action calls, and, when the ACE catalogue of the project\'s release is available, the parameters the catalogue types as number, string or any (expressions) and as eventvar, eventvarbool or eventvarany (the variable\'s name), in every event sheet that sees the variable (a global variable: every sheet; a local one: the events beside it and below them); uses of the same name that find another variable (a local of that name in another group or one that hides a global, a function parameter) are left as they are. Any other parameter that names the variable (a combo, group, timeline or object parameter, a parameter of another type, or any parameter of an ACE the catalogue does not define or when no catalogue is available), script lines that read it, event sheets that could not be parsed, or a search cut short at its limit, refuse the rename without force; with force those uses keep the old name. A failure midway puts back what was written. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Use dryRun first to see the uses.',
     {
       sheetName: z.string().max(200).describe('Event sheet containing the variable, as registered (letter case included)'),
       sid: z.number().int().describe('SID of the variable event to update'),
@@ -3239,6 +3240,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
         // Its name check compares the sheet with the other sheets by registered name
         const unregistered = await unregisteredSheetError(reader, args.sheetName);
         if (unregistered) return unregistered;
+
+        // A rename reads the parameter types of the ACE catalogue; a first fetch is not spent between the sheet's read and its write
+        if (args.newName !== undefined) await warmAceCatalog(reader);
 
         let sheet: EventSheet;
         try {
@@ -3281,7 +3285,7 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           const nameError = eventVariableNameError(nameSheets, args.sheetName, parents, args.newName!, findResult.event as C3Event);
           if (nameError) return toolError(nameError);
           try {
-            plan = await planVariableRename(reader, read, args.sheetName, findResult.event, isGlobal, args.newName!);
+            plan = await planVariableRename(reader, read, args.sheetName, findResult.event, isGlobal, args.newName!, await parameterTypesFor(reader));
           } catch (error) {
             return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
           }

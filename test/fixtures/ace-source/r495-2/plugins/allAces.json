@@ -144,6 +144,17 @@
           ]
         }
       ]
+    },
+    "references": {
+      "conditions": [],
+      "actions": [
+        { "id": "join-named-group", "params": [{ "id": "group", "type": "groupname" }] },
+        { "id": "start-named-timeline", "params": [{ "id": "timeline", "type": "timeline" }] },
+        { "id": "follow-object", "params": [{ "id": "target", "type": "object" }] },
+        { "id": "track-variable", "params": [{ "id": "variable", "type": "eventvar" }] },
+        { "id": "flip-variable", "params": [{ "id": "variable", "type": "eventvarbool" }] },
+        { "id": "watch-variable", "params": [{ "id": "variable", "type": "eventvarany" }] }
+      ]
     }
   },
   "Audio": {

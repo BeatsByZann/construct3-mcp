@@ -1,7 +1,15 @@
 /** The uses of one event variable on synthetic event sheets: which find it, what a rename may change, and script lines. */
 
 import { describe, it, expect } from 'vitest';
-import { findVariableUses, parameterSlots, variableScriptReads } from '../../src/construct3/analyzers/variable-renames.js';
+import {
+  findVariableUses,
+  parameterSlots,
+  parameterTypeResolver,
+  variableScriptReads,
+  type ParameterTypeResolver,
+} from '../../src/construct3/analyzers/variable-renames.js';
+import type { AceContext } from '../../src/construct3/ace-catalog.js';
+import { TEST_CATALOG } from '../fixtures/ace-catalog.js';
 import { variableNamesUsedBy } from '../../src/construct3/analyzers/delete-references.js';
 import { findExpressionIdentifiers } from '../../src/construct3/event-shapes.js';
 
@@ -212,6 +220,176 @@ describe('findVariableUses', () => {
     const found = findVariableUses(new Map([['Deep', [global, ...events]]]), global, 'Points');
     expect(found.complete).toBe(false);
     expect(found.limit).toBe('depth');
+  });
+});
+
+/** The parameter types of a plugin ACE by key, as a catalogue would give them. */
+const typed = (types: Record<string, string>) => (key: string | number): string | undefined =>
+  typeof key === 'string' && Object.hasOwn(types, key) ? types[key] : undefined;
+
+/** Types for the synthetic ACE `t`, whose parameters are named after the catalogue type each holds. */
+const byAceId: ParameterTypeResolver = ace => (ace.id === 't'
+  ? typed({
+    num: 'number', str: 'string', anyv: 'any',
+    ev: 'eventvar', evb: 'eventvarbool', eva: 'eventvarany',
+    combo: 'combo', grp: 'groupname', tl: 'timeline', obj: 'object',
+    other: 'layer', layout: 'string',
+  })
+  : undefined);
+
+describe('parameterSlots with parameter types', () => {
+  const kinds = (ace: Record<string, unknown>, types?: (key: string | number) => string | undefined) =>
+    parameterSlots(ace, 'action', types).map(s => `${String(s.parameter)}:${s.kind}`);
+  const every = Object.fromEntries(
+    ['num', 'str', 'anyv', 'ev', 'evb', 'eva', 'combo', 'grp', 'tl', 'obj', 'other'].map(k => [k, 'Score']),
+  );
+  const allTypes = typed({
+    num: 'number', str: 'string', anyv: 'any',
+    ev: 'eventvar', evb: 'eventvarbool', eva: 'eventvarany',
+    combo: 'combo', grp: 'groupname', tl: 'timeline', obj: 'object', other: 'layer',
+  });
+
+  it('classifies a number, string or any parameter as an expression', () => {
+    expect(kinds({ id: 't', objectClass: 'Sprite', parameters: every }, allTypes).filter(k => k.endsWith(':expression')))
+      .toEqual(['num:expression', 'str:expression', 'anyv:expression']);
+  });
+
+  it('classifies an eventvar, eventvarbool or eventvarany parameter as a variable name', () => {
+    expect(kinds({ id: 't', objectClass: 'Sprite', parameters: every }, allTypes).filter(k => k.endsWith(':variable-name')))
+      .toEqual(['ev:variable-name', 'evb:variable-name', 'eva:variable-name']);
+  });
+
+  it('classifies a combo, groupname, timeline or object parameter as a name', () => {
+    expect(kinds({ id: 't', objectClass: 'Sprite', parameters: every }, allTypes).filter(k => k.endsWith(':name')))
+      .toEqual(['combo:name', 'grp:name', 'tl:name', 'obj:name']);
+  });
+
+  it('leaves a parameter of any other type, or of no known type, unclassified', () => {
+    expect(kinds({ id: 't', objectClass: 'Sprite', parameters: every }, allTypes).filter(k => k.endsWith(':unclassified')))
+      .toEqual(['other:unclassified']);
+    expect(kinds({ id: 't', objectClass: 'Sprite', parameters: { num: 'Score', missing: 'Score' } }, typed({ other: 'number' })))
+      .toEqual(['num:unclassified', 'missing:unclassified']);
+  });
+
+  it('classifies as before without types', () => {
+    expect(kinds({ id: 't', objectClass: 'Sprite', parameters: { num: 'Score', combo: 'Score' } }))
+      .toEqual(['num:unclassified', 'combo:unclassified']);
+  });
+
+  it('keeps the variable parameter of a System variable ACE, call arguments and name keys as they are', () => {
+    const types = typed({ variable: 'number', value: 'any', object: 'number', layout: 'number' });
+    expect(kinds(setVar('Score'), types)).toEqual(['variable:variable-name', 'value:expression']);
+    expect(kinds(callF('Score'), () => 'combo')).toEqual(['0:call-argument']);
+    expect(kinds({ id: 'x', objectClass: 'Sprite', parameters: { object: 'Score' } }, types)).toEqual(['object:name']);
+    expect(kinds({ id: 'go-to-layout', objectClass: 'System', parameters: { layout: 'Score' } }, types)).toEqual(['layout:name']);
+  });
+});
+
+describe('findVariableUses with parameter types', () => {
+  const sheetsOf = (...actions: unknown[]) => {
+    const global = v('Score', 1);
+    return { global, sheets: new Map<string, unknown>([['Main', [global, block(actions)]]]) };
+  };
+  const t = (parameters: Record<string, unknown>) => ({ id: 't', objectClass: 'Sprite', parameters });
+  const parametersOf = (sheets: Map<string, unknown>) => ((sheets.get('Main') as unknown as Ev[])[1].actions[0]).parameters;
+
+  it.each(['num', 'str', 'anyv'])('points a %s parameter at the new name through the expression tokenizer', key => {
+    const { sheets, global } = sheetsOf(t({ [key]: '"S=" & Score * score & "Score"' }));
+    const found = findVariableUses(sheets, global, 'Points', byAceId);
+    expect(found.notUpdated).toEqual([]);
+    expect(found.uses.map(u => `${u.kind} ${String(u.parameter)}`)).toEqual([`variable-expression ${key}`]);
+    for (const use of found.uses) use.apply('Points');
+    expect(parametersOf(sheets)).toEqual({ [key]: '"S=" & Points * Points & "Score"' });
+  });
+
+  it('lists an expression parameter with a backtick or a number-like name, as a call argument is', () => {
+    const digit = v('2x', 7);
+    const sheets = new Map<string, unknown>([['Main', [digit, block([t({ num: '2x + 1' })])]]]);
+    expect(findVariableUses(sheets, digit, 'Two', byAceId).notUpdated.map(u => u.reason)).toEqual(['number-like-name']);
+    const { sheets: tick, global: tickGlobal } = sheetsOf(t({ str: '`T=${Score}`' }));
+    expect(findVariableUses(tick, tickGlobal, 'Points', byAceId).notUpdated.map(u => u.reason)).toEqual(['template-text']);
+    const { sheets: plain, global: plainGlobal } = sheetsOf(t({ num: 'Score' }));
+    expect(findVariableUses(plain, plainGlobal, '2x', byAceId).notUpdated.map(u => u.reason)).toEqual(['number-like-new-name']);
+  });
+
+  it.each(['ev', 'evb', 'eva'])('points an %s parameter that holds the variable name at the new name', key => {
+    const { sheets, global } = sheetsOf(t({ [key]: 'score' }));
+    const found = findVariableUses(sheets, global, 'Points', byAceId);
+    expect(found.notUpdated).toEqual([]);
+    expect(found.uses.map(u => `${u.kind} ${String(u.parameter)}`)).toEqual([`event-variable ${key}`]);
+    for (const use of found.uses) use.apply('Points');
+    expect(parametersOf(sheets)).toEqual({ [key]: 'Points' });
+  });
+
+  it('leaves a variable-name parameter that holds another name alone', () => {
+    const { sheets, global } = sheetsOf(t({ ev: 'Scoreboard' }));
+    const found = findVariableUses(sheets, global, 'Points', byAceId);
+    expect(found.uses).toEqual([]);
+    expect(found.notUpdated).toEqual([]);
+  });
+
+  it.each(['combo', 'grp', 'tl', 'obj'])('lists a %s parameter that names the variable and never writes it', key => {
+    const { sheets, global } = sheetsOf(t({ [key]: 'Score' }));
+    const found = findVariableUses(sheets, global, 'Points', byAceId);
+    expect(found.uses).toEqual([]);
+    expect(found.notUpdated.map(u => `${String(u.parameter)} ${u.reason}`)).toEqual([`${key} name-parameter`]);
+    for (const use of found.uses) use.apply('Points');
+    expect(parametersOf(sheets)).toEqual({ [key]: 'Score' });
+  });
+
+  it('lists a parameter of another catalogue type as of a type the server does not know', () => {
+    const { sheets, global } = sheetsOf(t({ other: 'Score' }));
+    const found = findVariableUses(sheets, global, 'Points', byAceId);
+    expect(found.uses).toEqual([]);
+    expect(found.notUpdated.map(u => `${String(u.parameter)} ${u.reason}`)).toEqual(['other parameter-type-unknown']);
+  });
+
+  it('lists an ACE the resolver knows nothing about as of a type the server does not know', () => {
+    const { sheets, global } = sheetsOf({ id: 'unlisted', objectClass: 'Sprite', parameters: { num: 'Score' } });
+    const found = findVariableUses(sheets, global, 'Points', byAceId);
+    expect(found.uses).toEqual([]);
+    expect(found.notUpdated.map(u => u.reason)).toEqual(['parameter-type-unknown']);
+  });
+
+  it('lists every typed parameter as unknown without a resolver', () => {
+    const { sheets, global } = sheetsOf(t({ num: 'Score', ev: 'Score', combo: 'Score' }));
+    const found = findVariableUses(sheets, global, 'Points');
+    expect(found.uses).toEqual([]);
+    expect(found.notUpdated.map(u => `${String(u.parameter)} ${u.reason}`)).toEqual([
+      'num parameter-type-unknown', 'ev parameter-type-unknown', 'combo parameter-type-unknown',
+    ]);
+  });
+});
+
+describe('parameterTypeResolver', () => {
+  const context: AceContext = {
+    pluginOf: objectClass => (objectClass === 'System' ? 'system' : objectClass === 'Sprite' ? 'Sprite' : undefined),
+    behaviorOf: (objectClass, name) => (objectClass === 'Sprite' && name === 'Platform' ? 'Platform' : undefined),
+  };
+  const resolve = parameterTypeResolver(TEST_CATALOG, context, undefined);
+
+  it('gives the catalogue types of a plugin ACE, a common ACE, a System ACE and a behavior ACE', () => {
+    expect(resolve({ id: 'set-animation', objectClass: 'Sprite' }, 'action')?.('animation')).toBe('string');
+    expect(resolve({ id: 'set-animation', objectClass: 'Sprite' }, 'action')?.('from')).toBe('combo');
+    expect(resolve({ id: 'set-x', objectClass: 'Sprite' }, 'action')?.('x')).toBe('number');
+    expect(resolve({ id: 'compare-two-values', objectClass: 'System' }, 'condition')?.('second-value')).toBe('any');
+    expect(resolve({ id: 'simulate-control', objectClass: 'Sprite', behaviorType: 'Platform' }, 'action')?.('control')).toBe('combo');
+  });
+
+  it('gives no type for a key the ACE does not define, a number position or a prototype member', () => {
+    const lookup = resolve({ id: 'set-x', objectClass: 'Sprite' }, 'action');
+    expect(lookup?.('y')).toBeUndefined();
+    expect(lookup?.(0)).toBeUndefined();
+    expect(lookup?.('constructor')).toBeUndefined();
+  });
+
+  it('gives nothing for a condition asked as an action, an unknown ACE, an unresolved owner, a call or a legacy behavior key', () => {
+    expect(resolve({ id: 'compare-two-values', objectClass: 'System' }, 'action')).toBeUndefined();
+    expect(resolve({ id: 'fly-away', objectClass: 'Sprite' }, 'action')).toBeUndefined();
+    expect(resolve({ id: 'set-x', objectClass: 'Ghost' }, 'action')).toBeUndefined();
+    expect(resolve({ id: 'set-x', callFunction: 'F', objectClass: 'Sprite' }, 'action')).toBeUndefined();
+    expect(resolve({ id: 'set-x', customAction: 'Go', objectClass: 'Sprite' }, 'action')).toBeUndefined();
+    expect(resolve({ id: 'set-x', objectClass: 'Sprite', 'behavior-type': 'Platform' }, 'action')).toBeUndefined();
   });
 });
 

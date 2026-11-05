@@ -651,7 +651,7 @@ export interface EventExpressionProblem extends ExpressionProblem {
 }
 
 /** The parameter list of an ACE of an owner: the catalogue's, else the registry's, with the common ACEs on plugin objects. */
-function paramTypes(kind: 'conditions' | 'actions', id: string, owner: AceOwner, addons: AddonLookup | undefined, catalog: AceCatalog): AceParam[] | undefined {
+export function paramTypes(kind: 'conditions' | 'actions', id: string, owner: AceOwner, addons: AddonLookup | undefined, catalog: AceCatalog): AceParam[] | undefined {
   const set = own(owner.kind === 'plugin' ? catalog.plugins : catalog.behaviors, owner.id)
     ?? addons?.get(owner.kind, owner.id)?.aces;
   if (!set) return undefined;
