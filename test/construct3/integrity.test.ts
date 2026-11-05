@@ -66,8 +66,133 @@ describe('validateProjectIntegrity', () => {
     expect(result.valid).toBe(true);
     expect(result.complete).toBe(true);
     expect(result.summary.errors).toBe(0);
-    expect(result.summary.checksRun).toBe(34);
+    expect(result.summary.checksRun).toBe(36);
     expect(result.summary.entitiesScanned).toBeGreaterThan(0);
+  });
+
+  // ─── Timeline property track types and template blocks ──────
+
+  describe('timeline property track types', () => {
+    function propertyTrack(source: unknown): Record<string, unknown> {
+      return { property: 'offsetX', source, enabled: true, interpolationMode: 'default', resultMode: 'relative', ease: 'noease', pathMode: 'line', propertyKeyframes: [] };
+    }
+
+    function timelineText(tracks: unknown[], extra: Record<string, unknown> = {}): string {
+      return JSON.stringify({ name: 'Intro', tracks, ...extra });
+    }
+
+    function readerWithTimelines(files: Array<{ path: string; text: string }>) {
+      const base = validProject();
+      return createReader({
+        objects: base.objects,
+        eventSheets: base.eventSheets,
+        layouts: base.layouts,
+        usedAddons: base.addons,
+        dataFiles: files.map(file => ({ folder: 'timelines' as const, ...file })),
+      });
+    }
+
+    const instanceTrack = (propertyTracks: unknown[], extra: Record<string, unknown> = {}) =>
+      ({ type: 'instance-track', worldInstance: 0, objectType: 'Sprite', propertyTracks, ...extra });
+
+    it('reports a property track with no source type', async () => {
+      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack({ uid: 0 })])]) }]);
+      const result = await validateProjectIntegrity(reader);
+      const found = result.errors.filter(e => e.check === 'timeline-property-track-type');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Intro');
+      expect(found[0].message).toContain('"offsetX"');
+      expect(found[0].message).toContain('r506-2');
+      expect(found[0].suggestion).toBeDefined();
+      expect(result.valid).toBe(false);
+    });
+
+    it('reports a property track with no source at all', async () => {
+      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack(undefined)])]) }]);
+      const result = await validateProjectIntegrity(reader);
+      expect(result.errors.filter(e => e.check === 'timeline-property-track-type')).toHaveLength(1);
+    });
+
+    it('reports a property track whose source type the timeline model does not know', async () => {
+      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack({ type: 'banana', uid: 0 })])]) }]);
+      const result = await validateProjectIntegrity(reader);
+      const found = result.errors.filter(e => e.check === 'timeline-property-track-type');
+      expect(found).toHaveLength(1);
+      expect(found[0].message).toContain('"banana"');
+    });
+
+    it('finds the property tracks of a track in a folder and of a property track folder', async () => {
+      const folderTrack = instanceTrack([], {
+        propertyTracksRoot: { name: 'Property Track Folder', items: [], subfolders: [{ name: 'Sub', items: [propertyTrack({ uid: 0 })], subfolders: [] }] },
+      });
+      const text = timelineText([], { tracksRoot: { name: 'Track Folder', items: [], subfolders: [{ name: 'Group', items: [folderTrack], subfolders: [] }] } });
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(result.errors.filter(e => e.check === 'timeline-property-track-type')).toHaveLength(1);
+    });
+
+    it('accepts every property track source type the timeline model knows', async () => {
+      const tracks = [
+        instanceTrack(['world-instance', 'instance-variable', 'plugin'].map(type => propertyTrack({ type, uid: 0 }))),
+        { type: 'value-track', name: 'Speed', propertyTracks: [propertyTrack({ type: 'value', uid: 'value' })] },
+        { type: 'audio-track', name: 'Music', propertyTracks: [propertyTrack({ type: 'audio', uid: 'audio' })] },
+      ];
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text: timelineText(tracks) }]));
+      expect(result.errors.filter(e => e.check === 'timeline-property-track-type')).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('does not report a timeline that cannot be parsed a second time', async () => {
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Broken.json', text: '{ not json' }]));
+      expect(result.errors.filter(e => e.check === 'timeline-property-track-type')).toEqual([]);
+    });
+  });
+
+  describe('template blocks on non-world instances', () => {
+    function layoutWith(nonWorld: unknown[], worldInstance: Record<string, unknown> = {}) {
+      return {
+        name: 'Layout 1',
+        sid: 300,
+        eventSheet: 'MainSheet',
+        layers: [{ name: 'Main', sid: 301, instances: [{ type: 'Sprite', uid: 0, sid: 302, properties: {}, ...worldInstance }] }],
+        'nonworld-instances': nonWorld,
+      };
+    }
+
+    function readerWith(layout: Record<string, unknown>) {
+      const base = validProject();
+      return createReader({
+        objects: new Map([...base.objects, ['Array', { name: 'Array', 'plugin-id': 'Array', sid: 101 }]]),
+        eventSheets: base.eventSheets,
+        layouts: new Map([['Layout 1', layout]]),
+        usedAddons: [...base.addons, { type: 'plugin', id: 'Array', name: 'Array', author: 'Scirra', bundled: false }],
+      });
+    }
+
+    const block = (mode: 'template' | 'replica') => ({
+      mode,
+      templateName: mode === 'template' ? 'Default' : '',
+      sourceTemplateName: mode === 'replica' ? 'Default' : '',
+      isReplica: mode === 'replica',
+    });
+
+    it.each(['template', 'replica'] as const)('reports a %s block on a non-world instance', async mode => {
+      const layout = layoutWith([{ type: 'Array', uid: 5, sid: 303, properties: {}, template: block(mode) }]);
+      const result = await validateProjectIntegrity(readerWith(layout));
+      const found = result.errors.filter(e => e.check === 'template-on-non-world-instance');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('layouts/Layout 1');
+      expect(found[0].message).toContain('UID 5');
+      expect(found[0].message).toContain('r506-2');
+      expect(found[0].suggestion).toBeDefined();
+      expect(result.valid).toBe(false);
+    });
+
+    it('accepts a template block on a world instance and a non-world instance with no block', async () => {
+      const layout = layoutWith([{ type: 'Array', uid: 5, sid: 303, properties: {} }], { template: block('template') });
+      const result = await validateProjectIntegrity(readerWith(layout));
+      expect(result.errors.filter(e => e.check === 'template-on-non-world-instance')).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
   });
 
   // ─── Check 1: file-existence ─────────────────────────────

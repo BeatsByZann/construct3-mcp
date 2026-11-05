@@ -171,6 +171,15 @@ export function findTrackByName(data: Timeline, name: string): TrackLocation | u
   });
 }
 
+/**
+ * The `source.type` values a property track carries: `world-instance`,
+ * `instance-variable` and `plugin` on an instance track, `value` on a value
+ * track and `audio` on an audio track.
+ */
+export const PROPERTY_TRACK_SOURCE_TYPES: ReadonlySet<string> = new Set([
+  'world-instance', 'instance-variable', 'plugin', 'value', 'audio',
+]);
+
 /** Where a property track lives inside its track. */
 export interface PropertyTrackLocation {
   propertyTrack: TimelinePropertyTrack;

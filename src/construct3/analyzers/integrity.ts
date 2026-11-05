@@ -13,9 +13,11 @@ import {
   type EntityCategory,
   type ReadFailure,
 } from '../project-reader.js';
-import type { C3Event, Construct3Project, Layout, ObjectType, EventSheet } from '../types.js';
+import type { C3Event, Construct3Project, Layout, ObjectType, EventSheet, Timeline } from '../types.js';
 import { getProjectIndex, OBJECT_SID_PROPERTIES, type MemberReference, type MemberReferenceForm } from './index-builder.js';
 import { isNamelessFolder, transitionsFolderIndex } from '../timeline-folders.js';
+import { listPropertyTracks, listTracks, PROPERTY_TRACK_SOURCE_TYPES } from '../timeline-model.js';
+import { readTemplate } from '../instance-templates.js';
 import { forEachLayoutInstance, layerEntries, layerPath, layerPathLabel, repeatedLayerNames, type LayerEntry } from '../layers.js';
 import { findOrphanedObjects } from './object-deps.js';
 import { scanLegacyBehaviorKeys, hasOnlyLegacyBehaviorName, describeLegacyHit } from './legacy-behavior-keys.js';
@@ -160,6 +162,8 @@ export async function validateProjectIntegrity(
   }
   addLoadRuleIssues(checkObjectClassNames(project), errors, warnings);
   addLoadRuleIssues(checkFamilyPlugins(families, objects as Map<string, Record<string, unknown>>), errors, warnings);
+  await checkTimelinePropertyTrackTypes(reader, errors);
+  checkTemplatesOnNonWorldInstances(layouts, errors);
 
   // Duplicate SIDs: errors for object type/family SIDs, warnings otherwise
   checkDuplicateSids(objects, eventSheets, layouts, families, errors, warnings);
@@ -219,8 +223,9 @@ export async function validateProjectIntegrity(
   // container-member, event-legacy-key + the ace- codes, the expression- codes
   // of the parameters and ace-definitions-unavailable; these count whether or
   // not a catalogue was found, since they ran and reported why they found
-  // nothing to check
-  const checksRun = 34;
+  // nothing to check + timeline-property-track-type and
+  // template-on-non-world-instance
+  const checksRun = 36;
 
   return {
     valid: errors.length === 0 && unscannedFiles.length === 0,
@@ -269,6 +274,67 @@ function addLoadRuleIssues(
       suggestion: issue.suggestion,
     };
     (issue.severity === 'error' ? errors : warnings).push(entry);
+  }
+}
+
+/**
+ * Property tracks whose `source.type` is missing or not one the timeline
+ * model knows. Construct 3 r506-2 refused to open such a project ("property
+ * track type undefined is not valid"). A timeline file that cannot be read or
+ * parsed is skipped: the file-level checks report it.
+ */
+async function checkTimelinePropertyTrackTypes(
+  reader: Construct3ProjectReader,
+  errors: IntegrityIssue[]
+): Promise<void> {
+  for (const relative of await reader.listDataFiles('timelines')) {
+    let timeline: unknown;
+    try {
+      timeline = JSON.parse(await reader.readDataFileText('timelines', relative));
+    } catch {
+      continue;
+    }
+    if (!timeline || typeof timeline !== 'object' || Array.isArray(timeline)) continue;
+    for (const { track } of listTracks(timeline as Timeline)) {
+      for (const { propertyTrack } of listPropertyTracks(track)) {
+        const type: unknown = propertyTrack.source?.type;
+        if (typeof type === 'string' && PROPERTY_TRACK_SOURCE_TYPES.has(type)) continue;
+        const shown = typeof type === 'string' ? `"${type}"` : 'no type';
+        errors.push({
+          check: 'timeline-property-track-type',
+          entity: `timelines/${relative.replace(/\.json$/, '')}`,
+          message: `Property track "${propertyTrack.property}" has ${typeof type === 'string' ? 'the source type ' : ''}${shown}`
+            + `, which is not one of ${[...PROPERTY_TRACK_SOURCE_TYPES].join(', ')}. `
+            + 'Construct 3 r506-2 refused to open a project with such a property track ("property track type undefined is not valid").',
+          suggestion: 'Set the property track\'s source type to one of those values, or remove the property track with remove_property_track.',
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Instances that carry a template or replica block but are not on a layer.
+ * Construct 3 r506-2 (Free edition) refused to open such a project ("Failed
+ * to open project").
+ */
+function checkTemplatesOnNonWorldInstances(
+  layouts: Map<string, Layout>,
+  errors: IntegrityIssue[]
+): void {
+  for (const [layoutName, layout] of layouts) {
+    forEachLayoutInstance(layout, (instance, entry) => {
+      if (entry !== undefined) return;
+      const mode = readTemplate(instance)?.mode;
+      if (mode !== 'template' && mode !== 'replica') return;
+      errors.push({
+        check: 'template-on-non-world-instance',
+        entity: `layouts/${layoutName}`,
+        message: `Instance UID ${instance.uid} (${instance.type}) is a non-world instance with a ${mode} block. `
+          + 'Construct 3 r506-2 (Free edition) refused to open a project with a template or replica block on a non-world instance ("Failed to open project").',
+        suggestion: 'Remove the template block with set_instance_template (mode "none"), or delete the instance.',
+      });
+    });
   }
 }
 
