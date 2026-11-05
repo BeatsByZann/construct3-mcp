@@ -1275,12 +1275,7 @@ export function registerAnimationTools({ server: mcpServer, reader, writer, idGe
           const outcome = await recoverObjectImage(writer, reader, error, {
             objectName: args.objectName, before, after, imagePath: filePath, imageBackup,
           });
-          if ('message' in outcome) {
-            let cause = fileErrorText(error, relative).replace(/\.$/, '');
-            // A stale refusal tells to run the tool again; after anything but a full rollback the recovery sentences say what to check first
-            if (!outcome.complete) cause = cause.replace(/ Run the tool again: it reads the files? as (?:it is|they are) now$/, '');
-            throw new Error(`${cause}. ${outcome.message}`);
-          }
+          if ('message' in outcome) throw new Error(recoveryErrorMessage(writer, error, outcome));
           backupPath = (error as EntityWriteError).backupPath;
           warnings.push('Another write changed the object file right after this one (a tool call running in parallel?). The file still has '
             + 'the new image record, so the new image stays, but the other write may have been made on older content: re-read the object to check it.');
@@ -1465,9 +1460,62 @@ async function rollBackObjectWrite(writer: MutationToolDeps['writer'], error: un
     return restored
       ? `The change was rolled back: ${label} was restored from its backup (its .bak stays).`
       : `${label} was left as it is, since ${failedWriteLeftReason(reason)}; ${label}.bak holds the previous JSON.`;
-  } catch {
-    return `Restoring ${label} from its backup failed; ${label}.bak holds the previous JSON.`;
+  } catch (restoreError) {
+    return restoreFailureText(writer, label, restoreError);
   }
+}
+
+/**
+ * The sentence for an object file `label` (project-relative) whose restore
+ * from its backup threw `restoreError`: it names the reason (an fs error by
+ * its code and project-relative path) and says the .bak holds the previous
+ * JSON. Used by every animation tool that puts an object file back.
+ */
+function restoreFailureText(writer: MutationToolDeps['writer'], label: string, restoreError: unknown): string {
+  const reason = fileErrorText(restoreError, path => writer.projectRelative(path)).replace(/\.$/, '');
+  return `Restoring ${label} from its backup failed: ${reason}; ${label}.bak holds the previous JSON.`;
+}
+
+/**
+ * Put the object file `objectFile` (project-relative) back from its backup
+ * after the write `error` failed, unless another write replaced it during
+ * that one (then nothing is restored and nothing is said). `restoredFile`
+ * says it was restored; otherwise `notRestoredNote` is the sentence, with
+ * its trailing space, that says why it was not (left as it is, or the
+ * restore threw), and is empty when no restore was tried.
+ */
+async function restoreObjectFile(
+  writer: MutationToolDeps['writer'],
+  error: unknown,
+  objectFile: string,
+): Promise<{ restoredFile: boolean; notRestoredNote: string }> {
+  if (!(error instanceof EntityWriteError) || error.changedByOtherWrite) return { restoredFile: false, notRestoredNote: '' };
+  try {
+    const { restored, label, reason } = await writer.restoreFailedWrite(error);
+    if (restored) return { restoredFile: true, notRestoredNote: '' };
+    return { restoredFile: false, notRestoredNote: `The object file was not restored: ${label} (${failedWriteLeftReason(reason)}; it was left as it is). ` };
+  } catch (restoreError) {
+    return { restoredFile: false, notRestoredNote: `${restoreFailureText(writer, objectFile, restoreError)} ` };
+  }
+}
+
+/**
+ * The message of the error a tool throws when its object write failed and
+ * `outcome` is what recovering from it found: the cause of `error` (an fs
+ * error by its code and project-relative path), then the recovery's
+ * sentences. A stale refusal tells to run the tool again; after anything but
+ * a full rollback the recovery sentences say what to check first, so that
+ * advice is left out.
+ */
+function recoveryErrorMessage(
+  writer: MutationToolDeps['writer'],
+  error: unknown,
+  outcome: { message: string; complete: boolean },
+): string {
+  // A refusal of the writer ends with a full stop already
+  let cause = fileErrorText(error, path => writer.projectRelative(path)).replace(/\.$/, '');
+  if (!outcome.complete) cause = cause.replace(/ Run the tool again: it reads the files? as (?:it is|they are) now$/, '');
+  return `${cause}. ${outcome.message}`;
 }
 
 /** The first `max` items, quoted, and how many more there are. */
@@ -1736,21 +1784,10 @@ async function recoverFrameChange(
   const objectFile = error instanceof EntityWriteError
     ? relative(error.backupPath.replace(/\.bak$/, ''))
     : reader.getEntityRelativePath('objectTypes', change.objectName);
-  let restoredFile = false;
-  let notRestored: string | undefined;
-  if (error instanceof EntityWriteError && !otherWrite) {
-    try {
-      const { restored, label, reason } = await writer.restoreFailedWrite(error);
-      if (restored) restoredFile = true;
-      else notRestored = `${label} (${failedWriteLeftReason(reason)}; it was left as it is)`;
-    } catch (e) {
-      notRestored = `restoring ${objectFile} from its backup failed (${fileErrorText(e, relative).replace(/\.$/, '')})`;
-    }
-  }
+  const { restoredFile, notRestoredNote } = await restoreObjectFile(writer, error, objectFile);
   const state = await frameStateAfterFailure(reader, change.objectName, change.animationName, change.before, change.after);
   if (state === 'after' && otherWrite) return { kept: true };
   const noun = change.imageNoun ?? 'placeholder image';
-  const notRestoredNote = notRestored !== undefined ? `The object file was not restored: ${notRestored}. ` : '';
 
   if (state !== 'before') {
     // The object file is not the one the images had their old names for: they stay, and the error says where they are
@@ -1831,13 +1868,7 @@ async function recoverFrameChangeOrThrow(
   change: FrameChange,
 ): Promise<{ backupPath: string; otherWrite: true }> {
   const outcome = await recoverFrameChange(writer, reader, error, change);
-  if ('message' in outcome) {
-    // A refusal of the writer ends with a full stop already
-    let cause = fileErrorText(error, path => writer.projectRelative(path)).replace(/\.$/, '');
-    // A stale refusal tells to run the tool again; after anything but a full rollback the recovery sentences say what to check first
-    if (!outcome.complete) cause = cause.replace(/ Run the tool again: it reads the files? as (?:it is|they are) now$/, '');
-    throw new Error(`${cause}. ${outcome.message}`);
-  }
+  if ('message' in outcome) throw new Error(recoveryErrorMessage(writer, error, outcome));
   return { backupPath: (error as EntityWriteError).backupPath, otherWrite: true };
 }
 
@@ -2103,20 +2134,9 @@ async function recoverObjectImage(
     : reader.getEntityRelativePath('objectTypes', change.objectName);
   const image = relative(change.imagePath);
   const backup = change.imageBackup === undefined ? undefined : relative(change.imageBackup);
-  let restoredFile = false;
-  let notRestored: string | undefined;
-  if (error instanceof EntityWriteError && !otherWrite) {
-    try {
-      const { restored, label, reason } = await writer.restoreFailedWrite(error);
-      if (restored) restoredFile = true;
-      else notRestored = `${label} (${failedWriteLeftReason(reason)}; it was left as it is)`;
-    } catch (e) {
-      notRestored = `restoring ${objectFile} from its backup failed (${fileErrorText(e, relative).replace(/\.$/, '')})`;
-    }
-  }
+  const { restoredFile, notRestoredNote } = await restoreObjectFile(writer, error, objectFile);
   const state = await imageStateAfterFailure(reader, change.objectName, change.before, change.after);
   if (state === 'after' && otherWrite) return { kept: true };
-  const notRestoredNote = notRestored !== undefined ? `The object file was not restored: ${notRestored}. ` : '';
 
   if (state !== 'before') {
     // The object file is not the one the old image belongs to: the new image stays

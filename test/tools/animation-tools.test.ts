@@ -781,8 +781,8 @@ describe('add_frame_to_animation', () => {
     const result = await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
     expect(result.isError).toBe(true);
     // The mock reader hands back the object the tool changed, so after the failed restore it holds this call's frames and the images stay
-    expect(result.content[0].text).toContain('Post-write verification failed for "Hero". The object file was not restored: restoring '
-      + 'objectTypes/Hero.json from its backup failed (EPERM). objectTypes/Hero.json holds this call\'s frames, so the image files keep the names '
+    expect(result.content[0].text).toContain('Post-write verification failed for "Hero". Restoring '
+      + 'objectTypes/Hero.json from its backup failed: EPERM; objectTypes/Hero.json.bak holds the previous JSON. objectTypes/Hero.json holds this call\'s frames, so the image files keep the names '
       + 'this call gave them');
     // The file is named by its project-relative path, never an absolute one
     expect(result.content[0].text).not.toContain('/mock/backup');

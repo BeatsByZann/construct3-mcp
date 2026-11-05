@@ -280,13 +280,25 @@ describe('a failed object write', () => {
         + 'it could not be read; objectTypes/Sprite.json.bak holds the previous JSON.');
   });
 
-  it('says that restoring from the backup failed when restoreFailedWrite throws', async () => {
+  it('says that restoring from the backup failed, and why, when restoreFailedWrite throws', async () => {
     const server = failingObjectVerify(writer => {
       writer.restoreFailedWrite = async () => { throw new Error('EBUSY: resource busy or locked'); };
     });
     expect((await call('create_animation_folder', { folderPath: 'Moves' }, server)).text)
       .toBe('Error creating animation folder: Post-write verification failed for "Sprite". Restoring objectTypes/Sprite.json from its backup '
-        + 'failed; objectTypes/Sprite.json.bak holds the previous JSON.');
+        + 'failed: EBUSY: resource busy or locked; objectTypes/Sprite.json.bak holds the previous JSON.');
+  });
+
+  it('names an fs error that restoring from the backup threw by its code and project-relative path', async () => {
+    const server = failingObjectVerify(writer => {
+      writer.restoreFailedWrite = async () => {
+        throw Object.assign(new Error(`EPERM: operation not permitted, open '${objectPath()}'`), { code: 'EPERM', path: objectPath() });
+      };
+    });
+    const text = (await call('create_animation_folder', { folderPath: 'Moves' }, server)).text;
+    expect(text).toBe('Error creating animation folder: Post-write verification failed for "Sprite". Restoring objectTypes/Sprite.json from its backup '
+      + 'failed: EPERM on objectTypes/Sprite.json; objectTypes/Sprite.json.bak holds the previous JSON.');
+    expect(text).not.toContain(tmpDir);
   });
 
   it('names an fs error by its code and project-relative path', async () => {

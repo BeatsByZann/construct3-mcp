@@ -356,7 +356,7 @@ describe('replace_object_image when a write fails', () => {
     internals.verifyWrittenFile = async () => { throw new Error('Post-write verification failed for "Bg"'); };
     writer.restoreFailedWrite = async () => { throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${objectPath('Bg')}'`), { code: 'EBUSY', path: objectPath('Bg') }); };
     const text = (await replace('Bg', SIZE, register(writer, idGen))).text;
-    expect(text).toContain('The object file was not restored: restoring objectTypes/Bg.json from its backup failed (EBUSY on objectTypes/Bg.json). ');
+    expect(text).toContain('Restoring objectTypes/Bg.json from its backup failed: EBUSY on objectTypes/Bg.json; objectTypes/Bg.json.bak holds the previous JSON. ');
     expect(text).not.toContain(tmpDir);
   });
 
