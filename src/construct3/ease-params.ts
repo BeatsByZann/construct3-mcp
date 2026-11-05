@@ -11,6 +11,7 @@
 import { readFile } from 'fs/promises';
 import { resolveProjectPath } from './path-utils.js';
 import { parseJsonText } from './json-format.js';
+import type { Construct3ProjectReader } from './project-reader.js';
 import { isBuiltinEaseName, type CustomEase } from './timeline-model.js';
 import { TRANSITIONS_DIR, transitionsFolder } from './timeline-folders.js';
 
@@ -70,6 +71,22 @@ export function embedCustomEase(parameters: unknown, eases: Map<string, CustomEa
   if (!ease) return undefined;
   record[EASE_PARAMETER_KEY] = easeParameterValue(ease);
   return ease.name;
+}
+
+/**
+ * Store a bare custom ease name in `parameters.ease` the way Construct saves
+ * it: as an object embedding the ease. Built-in names and names matching no
+ * custom ease are left as they are. Returns the embedded ease name, if any.
+ * `parameters` is changed in place, so pass a copy of any input object.
+ */
+export async function applyCustomEaseParameter(
+  reader: Pick<Construct3ProjectReader, 'getProjectDir' | 'getProject'>,
+  parameters: unknown,
+): Promise<string | undefined> {
+  if (!needsEaseLookup(parameters)) return undefined;
+  const project = reader.getProject() as unknown as { timelines?: { subfolders?: unknown[] } };
+  const eases = await loadCustomEases(reader.getProjectDir(), project.timelines);
+  return embedCustomEase(parameters, eases);
 }
 
 /** Every ACE `parameters` object in a JSON tree that has an `ease` key. */

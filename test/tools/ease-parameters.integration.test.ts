@@ -21,11 +21,26 @@ import { easeParameterValue } from '../../src/construct3/ease-params.js';
 import type { CustomEase } from '../../src/construct3/timeline-model.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
+import { registerEventTools } from '../../src/tools/event-tools.js';
+import { registerEntityRenameTools } from '../../src/tools/entity-rename.js';
+import { registerUsageTools } from '../../src/tools/usage-tools.js';
 import { registerQueryTools } from '../../src/tools/query.js';
 import { registerAnalysisTools } from '../../src/tools/analysis.js';
 import type { MutationToolDeps } from '../../src/tools/shared.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
+const SHAPES = join(__dirname, '..', 'fixtures', 'timeline-kinds', 'shapes-r495.json');
+
+/** The key order and leaf types of a JSON value, arrays reduced to their first element. */
+function shapeOf(value: unknown): unknown {
+  if (Array.isArray(value)) return value.length === 0 ? [] : [shapeOf(value[0])];
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) out[key] = shapeOf(entry);
+    return out;
+  }
+  return typeof value;
+}
 
 /** An event sheet, or one of its blocks or actions, read back from disk: the parts the tests navigate. */
 interface SheetJson {
@@ -49,9 +64,9 @@ const POINTS = [
 ];
 
 /** A Tween action whose ease parameter is `ease`. */
-function tween(ease: unknown, sid: number) {
+function tween(ease: unknown, sid?: number) {
   return {
-    id: 'tween-one-property', objectClass: 'Sprite', behaviorType: 'Tween', sid,
+    id: 'tween-one-property', objectClass: 'Sprite', behaviorType: 'Tween', ...(sid === undefined ? {} : { sid }),
     parameters: { tags: '"Custom"', property: 'offsetX', 'end-value': 'Self.X + 50', time: '1', ease, 'destroy-on-complete': 'no' },
   };
 }
@@ -80,7 +95,11 @@ describe('custom eases in event parameters (real project on disk)', () => {
     const idGen = new IdGenerator();
     const writer = new Construct3ProjectWriter(reader, idGen);
     server = new MockServer();
-    registerTimelineTools({ server, reader, writer, idGen } as unknown as MutationToolDeps);
+    const deps = { server, reader, writer, idGen } as unknown as MutationToolDeps;
+    registerTimelineTools(deps);
+    registerEventTools(deps);
+    registerEntityRenameTools(deps);
+    registerUsageTools(server as unknown as McpServer, reader);
     registerQueryTools(server as unknown as McpServer, reader);
     registerAnalysisTools(server as unknown as McpServer, reader);
   }
@@ -111,6 +130,85 @@ describe('custom eases in event parameters (real project on disk)', () => {
     });
     await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
   }
+
+  /** The shared shape of the ease parameter an event tool wrote, read back from the sheet. */
+  type WrittenBlock = { sid: number; actions: Array<{ parameters: Record<string, unknown> }> };
+
+  /** Add an every-tick block with a Tween action naming `ease` through add_event_block, and read the action back from disk. */
+  async function addTween(ease: string) {
+    const result = await ok('add_event_block', {
+      sheetName: 'MainSheet',
+      conditions: [{ id: 'every-tick', objectClass: 'System' }],
+      actions: [tween(ease)],
+    });
+    const events = (await sheet()).events as unknown as WrittenBlock[];
+    const block = events.find(e => e.sid === result.generatedSid) ?? events[events.length - 1];
+    return { sid: block.sid, action: block.actions[0] };
+  }
+
+  /** The first action of the block with `sid`, read back from disk. */
+  async function actionOf(sid: number) {
+    return ((await sheet()).events as unknown as WrittenBlock[]).find(e => e.sid === sid)!.actions[0];
+  }
+
+  it('embeds a custom ease the way the editor saves it, keeping the parameter order', async () => {
+    const shapes = JSON.parse(await readFile(SHAPES, 'utf-8')) as { easeParameterRoundtrip: unknown };
+    const { action } = await addTween('Bouncy');
+    expect(Object.keys(action.parameters)).toEqual(['tags', 'property', 'end-value', 'time', 'ease', 'destroy-on-complete']);
+    expect(JSON.stringify(shapeOf(action.parameters.ease))).toBe(JSON.stringify(shapes.easeParameterRoundtrip));
+    expect(action.parameters.ease).toEqual({ name: 'Bouncy', json: [{ folders: [], json: await easeFile() }] });
+  });
+
+  it('leaves built-in and unknown ease names as strings', async () => {
+    expect((await addTween('easeinoutsine')).action.parameters.ease).toBe('easeinoutsine');
+    expect((await addTween('NotAnEase')).action.parameters.ease).toBe('NotAnEase');
+  });
+
+  it('embeds a custom ease set through the block and action update tools', async () => {
+    const { sid } = await addTween('easeoutsine');
+    await ok('update_event_block', { sheetName: 'MainSheet', sid, updateActions: [{ index: 0, parameters: { ease: 'Bouncy' } }] });
+    let action = await actionOf(sid);
+    expect((action.parameters.ease as { name: string }).name).toBe('Bouncy');
+    expect(Object.keys(action.parameters)[4]).toBe('ease');
+
+    await ok('update_event_block', { sheetName: 'MainSheet', sid, updateActions: [{ index: 0, parameters: { ease: 'easeinsine' } }] });
+    action = await actionOf(sid);
+    expect(action.parameters.ease).toBe('easeinsine');
+
+    await ok('update_event_block_action', { sheetName: 'MainSheet', blockSid: sid, actionIndex: 0, parameters: tween('Bouncy').parameters });
+    action = await actionOf(sid);
+    expect(action.parameters.ease).toEqual({ name: 'Bouncy', json: [{ folders: [], json: await easeFile() }] });
+  });
+
+  it('embeds a custom ease set in a condition parameter through update_event_block', async () => {
+    const { sid } = await addTween('easeoutsine');
+    await ok('update_event_block', { sheetName: 'MainSheet', sid, updateConditions: [{ index: 0, parameters: { ease: 'Bouncy' } }] });
+    const block = ((await sheet()).events as unknown as Array<{ sid: number; conditions: Array<{ parameters: Record<string, unknown> }> }>)
+      .find(e => e.sid === sid)!;
+    expect(block.conditions[0].parameters.ease).toEqual({ name: 'Bouncy', json: [{ folders: [], json: await easeFile() }] });
+  });
+
+  it('keeps the read and rename tools working on an embedded ease parameter', async () => {
+    await addTween('Bouncy');
+    const hits = await ok('search_project', { query: 'Bouncy' });
+    expect(JSON.stringify(hits)).toContain('MainSheet');
+    for (const [name, args] of [
+      ['get_eventsheet_details', { name: 'MainSheet' }],
+      ['get_eventsheet_flow', { format: 'json' }],
+      ['get_function_map', {}],
+      ['get_object_dependencies', { object: 'Sprite' }],
+      ['find_orphaned_objects', {}],
+      ['analyze_performance', {}],
+      ['validate_project', {}],
+      ['find_behavior_usage', { behaviorId: 'Tween' }],
+      ['rename_layout', { name: 'Layout 1', newName: 'Level', dryRun: true }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      const result = await server.callTool(name, args);
+      expect(result.isError, `${name}: ${result.content[0].text.slice(0, 200)}`).toBeFalsy();
+    }
+    const events = (await sheet()).events;
+    expect(events[events.length - 1].actions[0].parameters.ease.name).toBe('Bouncy');
+  });
 
   it('refreshes embedded copies when the ease changes, and lists the sheets that use it', async () => {
     await embedInSheet(await easeFile() as unknown as CustomEase);

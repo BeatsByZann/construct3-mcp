@@ -39,6 +39,7 @@ import {
   FUNCTIONS_OBJECT_ACTION_IDS,
   type FunctionSignature,
 } from '../construct3/event-shapes.js';
+import { applyCustomEaseParameter } from '../construct3/ease-params.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import { findEnclosingEvents } from '../construct3/event-variable-names.js';
 import type { BehaviorLookupData } from '../construct3/analyzers/behavior-refs.js';
@@ -1928,6 +1929,10 @@ export async function buildAction(
     ctx.functions ??= await loadFunctionSignatures(reader);
     return ctx.functions;
   });
+  if (action.parameters) {
+    action.parameters = { ...action.parameters };
+    await applyCustomEaseParameter(reader, action.parameters);
+  }
   return action;
 }
 

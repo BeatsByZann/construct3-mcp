@@ -174,6 +174,7 @@ import {
   createIncludeEvent,
   createCustomActionEvent,
 } from '../construct3/templates.js';
+import { applyCustomEaseParameter } from '../construct3/ease-params.js';
 import { withProjectSync } from './project-sync.js';
 import { checkEventChange, warmAceCatalog } from '../construct3/event-change-check.js';
 
@@ -1730,6 +1731,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
           warnings = await normalizeLegacyBehaviorKeys(reader, [{ ace: action, kind: 'action' }]);
           await resolveFunctionMapParameter(reader, action, `Action ${args.actionIndex} ("${String(action.id)}")`, warnings,
             () => loadFunctionSignatures(reader));
+          action.parameters = { ...(action.parameters as Record<string, unknown>) };
+          await applyCustomEaseParameter(reader, action.parameters);
         }
 
         // Editor load-time rules (expression syntax, empty expressions)
@@ -2551,7 +2554,9 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
             touched.push({ ace: cond, kind: 'condition' });
             if (upd.parameters) {
               // Parameters go before isInverted, where the editor writes them
-              setConditionParameters(cond, { ...(cond.parameters as Record<string, unknown> || {}), ...upd.parameters });
+              const merged = { ...(cond.parameters as Record<string, unknown> || {}), ...upd.parameters };
+              await applyCustomEaseParameter(reader, merged);
+              setConditionParameters(cond, merged);
             }
             if (upd.isInverted !== undefined) {
               if (upd.isInverted) {
@@ -2619,6 +2624,8 @@ export function registerEventTools({ server: mcpServer, reader, writer, idGen }:
                   functions ??= await loadFunctionSignatures(reader);
                   return functions;
                 });
+                act.parameters = { ...(act.parameters as Record<string, unknown>) };
+                await applyCustomEaseParameter(reader, act.parameters);
               }
             } else if (!isFunctionCall(act) && !isCustomActionCall(act)) {
               touched.push({ ace: act, kind: 'action' });
