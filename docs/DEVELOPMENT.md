@@ -57,6 +57,7 @@ construct3-mcp/
 │   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify), project.c3proj updates, undo of a tool call's writes
 │   │   ├── id-generator.ts         # SID/UID/imageSpriteId generation with collision avoidance
 │   │   ├── disk-state.ts           # File states on disk, tool call scope, stale-write error
+│   │   ├── change-journal.ts       # What each tool call changed, list_changes and revert_last_change
 │   │   ├── templates.ts            # Entity templates and known addon maps
 │   │   ├── custom-actions.ts       # Custom action definitions and the definition a call runs
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
@@ -177,6 +178,7 @@ construct3-mcp/
 │   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
 │   │   ├── flowchart-tools.ts      # Flowchart tools (13)
 │   │   ├── template-tools.ts       # Instance template tools (3)
+│   │   ├── change-tools.ts         # list_changes and revert_last_change (2)
 │   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/                    # MCP prompt handlers
 │       └── workflows.ts            # Workflow prompts (7)

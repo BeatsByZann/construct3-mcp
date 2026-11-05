@@ -9,6 +9,7 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Analysis Tools](#analysis-tools)
 - [Usage Tools](#usage-tools)
 - [Mutation Tools](#mutation-tools)
+- [Change Journal Tools](#change-journal-tools)
 - [Runtime Tools](#runtime-tools)
 - [Prompts](#prompts)
 - [Error Handling](#error-handling)
@@ -549,7 +550,7 @@ Exactly one of `objectName` and `familyName` is required. An unknown owner or an
 
 ## Mutation Tools
 
-Mutation tools that write entity files through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate -> backup -> write -> verify -> invalidate caches. The other project-file writes go through the writer's `replaceFile`, `deleteFile`, `restoreForCall` and `updateProject` methods, under the file's one lock. `replaceFile`, `deleteFile` and `updateProject` back the file up once per call; `restoreForCall` takes no backup, since it puts back what the call wrote. A write goes through a temp file, and `replaceFile`, `restoreForCall` and `updateProject` read it back and compare the bytes; `deleteFile` does no read-back (it records the file as absent). Renaming image files makes no backup; every rename of image files runs under the animation lock, and each one also takes the lock of its target file (never two at once) and checks there that no other file has the name, so a write of that name through the writer that took the lock first is never renamed over. The JSON check (`validateJsonData`) and the re-parse run only for entity files and for `project.c3proj` updates made through `updateProject`. The file tools (`register_project_file`, `deregister_project_file`, `create_data_file`) update the registration in `project.c3proj` first and then write or delete the file. The differences: `register_addon` / `unregister_addon` back up `project.c3proj` once per call and merge a change the editor saved during the call; the timeline and flowchart tools back up their files once per call, and the flowchart tools refuse a flowchart file that changed on disk after the call read it; the runtime tools refuse a write step whose file changed since the tool read it (the delete of the bridge script by [`remove_runtime_bridge`](#remove_runtime_bridge) takes no such check); PNG images are backed up once per call under the first free `.bak` name (image backups therefore accumulate, one more for each call that writes the image, and nothing removes them). Updates of `project.c3proj` through the writer follow a fixed save shape and leave settings such as `zAxisScale` as saved. Mutation tools return a `WriteResult` object on success.
+Mutation tools that write entity files through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate -> backup -> write -> verify -> invalidate caches. The other project-file writes go through the writer's `replaceFile`, `deleteFile`, `restoreForCall` and `updateProject` methods, under the file's one lock. `replaceFile`, `deleteFile` and `updateProject` back the file up once per call; `restoreForCall` takes no backup, since it puts back what the call wrote. A write goes through a temp file, and `replaceFile`, `restoreForCall` and `updateProject` read it back and compare the bytes; `deleteFile` does no read-back (it records the file as absent). Renaming image files makes no backup; every rename of image files runs under the animation lock, and each one also takes the lock of its target file (never two at once) and checks there that no other file has the name, so a write of that name through the writer that took the lock first is never renamed over. The JSON check (`validateJsonData`) and the re-parse run only for entity files and for `project.c3proj` updates made through `updateProject`. The file tools (`register_project_file`, `deregister_project_file`, `create_data_file`) update the registration in `project.c3proj` first and then write or delete the file. The differences: `register_addon` / `unregister_addon` back up `project.c3proj` once per call and merge a change the editor saved during the call; the timeline and flowchart tools back up their files once per call, and the flowchart tools refuse a flowchart file that changed on disk after the call read it; the runtime tools refuse a write step whose file changed since the tool read it (the delete of the bridge script by [`remove_runtime_bridge`](#remove_runtime_bridge) takes no such check); PNG images are backed up once per call under the first free `.bak` name (image backups therefore accumulate, one more for each call that writes the image, and nothing removes them). Updates of `project.c3proj` through the writer follow a fixed save shape and leave settings such as `zAxisScale` as saved. Mutation tools return a `WriteResult` object on success. Every result that is not an error, of a call that changed files, ends with a line naming them (`Changed N file(s): ...`), see [Change Journal Tools](#change-journal-tools).
 
 **Text style.** An overwritten file keeps its line endings (LF or CRLF), exact trailing whitespace and BOM. A new file follows `project.c3proj`, then the first JSON file with line breaks in its target folder, then Construct 3's own style: tab-indented JSON with LF line endings, no trailing newline and no BOM. Only files already in that tab layout get line-level diffs; files indented another way are re-indented in full.
 
@@ -3109,6 +3110,84 @@ Refused, changing nothing: a single-global object type (Keyboard, Mouse, ...); a
 Writes `timelines/<newName>.json`, the source with only `name` changed, and registers it right after the source. The copy's tracks address the same instances by UID, so a warning says that playing both at once makes them compete (not given for a timeline without tracks).
 
 Refused, changing nothing: a timeline in a folder; a custom ease (a transition); a name another timeline or transition has, ignoring case; a file at the target that is not registered, in any letter case; a source file that cannot be read or is not a JSON object.
+
+---
+
+## Change Journal Tools
+
+The change journal records, for each open project, the tool calls that changed a project file and what each one wrote, created, deleted or moved. `list_changes` lists the journal and `revert_last_change` undoes the most recent call in it, from the `.bak` backups. The journal:
+
+- records every tool call that changed a project file, including one that ended in an error (its error text carries no `Changed N file(s)` line), a write whose read-back failed, and an undo that could not put a file back;
+- records nothing for a call that put everything back itself;
+- backs each file up once per call, and keeps one backup per file: the next call that writes the file replaces it;
+- does not journal files outside the project;
+- is kept in memory per open project: the last 50 calls, in the order they ended, with `at` the start time. A server restart starts it empty; the `.bak` files stay.
+
+Neither tool is journaled itself: their results carry no changed-files line and they are not listed.
+
+### `list_changes`
+
+List the recorded calls, newest first. Only calls that changed a file appear.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | integer, 1 to 50 | No | How many calls to list, newest first (default 20) |
+
+The result has `calls`, newest first. Each call has `id`, `tool`, `at` (when the call started, ISO 8601 text), `reverted` (`true` once every change of the call was undone) and `changes`, in the order the call made them. Each change has:
+
+- `kind`: `write`, `create`, `delete` or `move`;
+- `file`: the file (for a move, its new name);
+- `from`, for a move: its old name;
+- `backup`, for a write or delete: the backup as named on disk (images may use `<file>.N.bak`).
+
+Paths are relative to the project. For example (the values are illustrative):
+
+```json
+{
+  "calls": [
+    {
+      "id": 2,
+      "tool": "rename_animation",
+      "at": "2026-10-17T09:14:03.120Z",
+      "reverted": false,
+      "changes": [
+        { "kind": "write", "file": "objectTypes/Hero.json", "backup": "objectTypes/Hero.json.bak" },
+        { "kind": "move", "file": "images/hero-run 1-000.png", "from": "images/hero-walk 1-000.png" }
+      ]
+    }
+  ]
+}
+```
+
+A failure to read the journal is an error response: `Error listing changes: <reason>.`
+
+### `revert_last_change`
+
+Undo the most recent recorded call that is not fully reverted, from the `.bak` backups its writes left. The changes are undone last first: a written file is restored from its backup, a created file is removed, a deleted file is restored from its backup and a moved file is moved back. Folders a call created stay.
+
+Only the most recent call that changed a file can be reverted, because each file keeps one backup and the next call that writes the file replaces it. For example, `replace_sprite_image` and then `rename_animation` on the same object: both write `objectTypes/<name>.json`. `revert_last_change` undoes the rename, but the replace can no longer be reverted, because the rename's backup of the object file replaced the one the replace left, and the refusal says so.
+
+Behavior:
+
+- Reverts run one at a time per project.
+- A revert stops at the first step it cannot undo, keeps the steps it did undo, and the next call resumes there. A call is marked `reverted` only when every step was undone.
+- A revert that restored a file carries `editorNote`, like other writes (see [Mutation Tools](#mutation-tools)).
+- When the revert puts back `project.c3proj`, the project is loaded again afterwards.
+
+The refusals are error responses (`isError: true`). A refusal restores nothing. The three texts are:
+
+> No tool call of this server has changed a file yet, or every such call was already reverted.
+
+> The last change (call `<id>`, `<tool>`) cannot be reverted: its backup(s) `<files>` no longer hold the state from before that call (a later call backed the same file(s) up again, since one backup per file is kept, or the backup was changed by hand). Nothing was restored. Only the most recent call that changed a file can be reverted.
+
+> The last change (call `<id>`, `<tool>`) cannot be reverted: `<files>` changed after that call by something the change journal does not record (Construct, another program, or a tool write outside the journal), so restoring the backups would not return the project to its state before the call. Nothing was restored. Restore the .bak files by hand if that is still what you want.
+
+The result has:
+
+- `success`: `true` when every step was undone;
+- `reverted`: the entry, as `list_changes` shows it;
+- `restored`: the steps this attempt undid, each `{ file, how }`, where `how` is `restored from <backup>`, `removed (the call created it)` or `moved back from <file>`;
+- `notRestored`, only when a step could not be undone: each `{ file, reason }`, where `reason` is an error code (such as `EACCES`) or a short sentence, for example `it, or its backup, changed on disk while the revert ran`. The steps after the failed one are listed with the reason `not attempted: an earlier step could not be undone`.
 
 ---
 

@@ -118,6 +118,24 @@ Since 1.10.0 the server picks up changes made outside it by itself: each tool ca
 
 A change that keeps a file's size, modification time and file id (possible on file systems with coarse timestamps, such as FAT32 or some network drives) is not seen; reconnect the server in that case.
 
+### `revert_last_change`: "... changed after that call by something the change journal does not record"
+
+**Cause**: The last change cannot be reverted because a file it changed, or its backup, changed on disk after the call: saved in the Construct 3 editor, restored with git, written by another program, or written by a tool call the journal does not record. Putting the backups back would not return the project to its state before the call, so the revert refused and restored nothing.
+
+**Solution**: Check what changed, for example with `git diff`, and decide which version to keep. To undo the call anyway, restore the files by hand: from git, or from their `.bak` files if those hold the state you want (the error names them).
+
+### `revert_last_change`: "... its backup(s) ... no longer hold the state from before that call"
+
+**Cause**: Only the most recent call that changed a file can be reverted, because each file keeps one `.bak` and the next call that writes the file replaces it. For example, `replace_sprite_image` and then `rename_animation` on the same object both write `objectTypes/<name>.json`, so the rename's backup replaced the one the replace left, and the replace cannot be reverted. A `.bak` edited by hand is refused the same way. Nothing was restored.
+
+**Solution**: Run `revert_last_change` for the most recent call first; `list_changes` shows the order. To undo an older call, use git if the project was committed before it (see [Undoing a session](#undoing-a-session)), or restore the files by hand after checking that their contents are what you want.
+
+### `notRestored` in a `revert_last_change` result
+
+**Cause**: A step of the revert could not be undone. Its `reason` names the cause: a file or backup changed on disk while the revert ran, a file is in the way at the name a moved file goes back to, or the disk refused a read or write (an error code such as `EACCES`). The steps before it were undone and kept, and the steps after it were not attempted.
+
+**Solution**: Fix the cause that `reason` names (close the program holding the file, or check what changed), then run `revert_last_change` again. It resumes at the step that stopped. The call is marked `reverted` only when every step was undone.
+
 ### "... was changed on disk after this server read it"
 
 **Cause**: The file changed on disk while the tool call was working with it: saved in the Construct 3 editor, restored with git, written by another program, or by another tool call running at the same time on the same file. Every tool refuses this way for an event sheet, layout, object type or family file, and the flowchart tools for a flowchart file; for `project.c3proj` only the timeline, flowchart (`create_flowchart`, `delete_flowchart`), addon and runtime-bridge tools do (the server's other updates of `project.c3proj` keep such a change and go on). The write was refused so that change is not lost; the file was left as it is on disk.

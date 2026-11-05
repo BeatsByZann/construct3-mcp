@@ -624,6 +624,15 @@ find . -name '*.bak' -print            # macOS, Linux, Git Bash; use -delete to 
 Get-ChildItem -Recurse -Filter *.bak   # PowerShell; add "| Remove-Item" to delete them
 ```
 
+### Undo the last change
+
+`revert_last_change` undoes the most recent tool call that changed files, from the `.bak` backups its writes left, without git. `list_changes` shows what the recent calls changed and which backup each write left. Ask for the revert right after the call you want to take back:
+
+- **Only the most recent call that changed a file can be undone.** Each file keeps one `.bak`, and the next call that writes the file replaces it. For example, after `replace_sprite_image` and then `rename_animation` on the same object, the replace cannot be undone: both write `objectTypes/<name>.json`, and the refusal says so.
+- **It refuses and restores nothing** when a file it would put back changed since the call, for example after you saved it in the Construct 3 editor, or when a later call replaced a backup it needs. Then decide which version you want to keep. To restore by hand, use git (see [Undoing a session](#undoing-a-session)) or the `.bak` files.
+- **A revert that stops part way** (for example, a file another program has locked) keeps what it already undid. Fix the cause and run `revert_last_change` again: it resumes where it stopped.
+- The journal is kept in memory. After the server restarts it is empty, but the `.bak` files stay. Folders a call created stay after a revert.
+
 ### Undoing a session
 
 Use git, not the `.bak` files:
@@ -646,7 +655,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 
 **Read-only tools (27)**, safe to auto-approve:
 
-- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `list_timeline_tracks`, `list_eases`, `list_flowcharts`, `list_templates`, `search_objects`
+- Browse: `get_project_summary`, `list_objects`, `list_layouts`, `list_eventsheets`, `list_families`, `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `list_timeline_tracks`, `list_eases`, `list_flowcharts`, `list_templates`, `search_objects`, `list_changes` (what recent calls changed, and their backups)
 - Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`, `get_flowchart_details`
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
@@ -670,6 +679,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Tilemaps: `set_tilemap_tiles`, `set_tilemap_data`, `add_tilemap_brush`, `update_tilemap_brush`, `delete_tilemap_brush`
 - Project and addons: `update_project_metadata`, `register_addon`, `unregister_addon`
 - Scripts and Project Files: `register_script_file`, `deregister_script_file`, `set_main_script`, `register_project_file`, `deregister_project_file`, `create_data_file`
+- Change journal: `revert_last_change` (puts back the files of the most recent call that changed files, from their `.bak` backups; see [Undo the last change](#undo-the-last-change))
 - Runtime: `inject_runtime_bridge`, `remove_runtime_bridge`, `export_for_preview`, `clone_project`, `pack_project`, and `screenshot_game` (writes the image file you name, outside the project; an existing file only with `overwrite: true`)
 
 **Editing a timeline.** The timeline tools edit a timeline piece by piece: an instance track animates one instance of a layout (one property track for each animated property), value and audio tracks hold a named number or a sound over time, track folders group the tracks, and custom eases are curves that timelines and Tween actions can name. Every call backs up the files it changes once, as `.bak` files, and a call that is refused changes nothing. A project that is open in Construct 3 must be closed and reopened there before it is saved, or the editor can overwrite these changes.
