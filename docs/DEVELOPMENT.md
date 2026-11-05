@@ -85,6 +85,7 @@ construct3-mcp/
 │   │   ├── c3p-archive.ts          # A .c3p project's working folder: unpack, refresh, write back, conflict
 │   │   ├── project-source.ts       # The project path: a folder, a .c3proj or a .c3p
 │   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
+│   │   ├── script-files.ts         # The script files a project registers, walked once for the index, the runtime-trap check and the usage queries
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
 │   │   ├── timeline-model.ts       # Track kinds, track folders and custom eases inside timeline files
 │   │   ├── timeline-properties.ts  # What a property track stores for each kind of property
@@ -128,6 +129,7 @@ construct3-mcp/
 │   ├── tools/                      # MCP tool handlers
 │   │   ├── query.ts                # Query tools (9)
 │   │   ├── analysis.ts             # Analysis tools (11)
+│   │   ├── usage-tools.ts          # Usage queries (6)
 │   │   ├── mutations.ts            # Registers the domain tool modules below
 │   │   ├── object-rename.ts        # Object type and family renames with their references (2)
 │   │   ├── replace-tools.ts        # Replace object and find-and-replace tools (2)

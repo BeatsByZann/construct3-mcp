@@ -7,6 +7,7 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 - [Resources](#resources)
 - [Query Tools](#query-tools)
 - [Analysis Tools](#analysis-tools)
+- [Usage Tools](#usage-tools)
 - [Mutation Tools](#mutation-tools)
 - [Runtime Tools](#runtime-tools)
 - [Prompts](#prompts)
@@ -435,6 +436,91 @@ Locations are paths of event types (`function:Name > block > action:3`); `action
   "notes": ["Signal tags are compared case-insensitively.", "..."]
 }
 ```
+
+---
+
+## Usage Tools
+
+Six read-only tools that answer "where is this used" and "what does the project hold". None writes a file, and none returns a `success` key or the editor reload note. Names given as arguments are compared ignoring letter case, and results carry the spelling the project registers.
+
+### How complete an answer is
+
+Every tool except `get_project_properties` returns `complete`. It is `true` only when nothing the tool reads was left out. Otherwise it is `false` and the result says what was left out:
+
+| Field | Meaning |
+|-------|---------|
+| `unscannedFiles` | Registered files of a category the tool reads that could not be parsed. Each is `{ file, reason, textSearch }`, `file` being `category/name` as `validate_project` names it. `textSearch` is `possible-use` (the file's text holds the names the tool looks for), `no-match` (it does not), `unreadable` (the file cannot be read even as text) or `not-searched` (nothing was searched for). With `possible-use` the report may carry `names` (the searched names the file's text holds); with `no-match`, `searchedFor` (what was searched for). |
+| `partlyIndexedSheets` | `eventSheets/<name>` of event sheets the cross-reference index only partly walked (events nested deeper than 50 levels, or more than 100,000 nodes). References past the limit are not in the answer. |
+| `scriptsNotWalked` | `scripts/<folder>/` for script folders of the registry nested deeper than 50 levels; their scripts are not read. |
+| `unreadableScripts` | `scripts/<path>` for registered script files that could not be read. |
+
+Categories each tool reads: `get_instance_counts` layouts and object types; `search_project` event sheets when `scopes` has `events`, layouts when it has `layouts`; `find_behavior_usage`, `find_effect_usage` and `find_instance_variable_references` object types, families, event sheets and layouts. Fields per tool: `get_instance_counts` and `find_effect_usage` return `unscannedFiles`; `find_behavior_usage` returns `unscannedFiles` and `partlyIndexedSheets`; `search_project` returns `unscannedFiles`, `scriptsNotWalked` and `unreadableScripts`; `find_instance_variable_references` returns all four. Scripts are only the files the project registers (`rootFileFolders.script`); a script file that is not registered is not read.
+
+### `get_project_properties`
+
+No parameters. Returns `{ properties, topLevel }`: the `properties` bag of `project.c3proj` and its other top-level values that are not lists or objects (such as the name and the release it was saved with). Reads `project.c3proj` only.
+
+### `get_instance_counts`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | No | Only this object type |
+| `layoutName` | string | No | Only this layout |
+
+Counts the instances each object type has on the layouts, on every layer and sub-layer and among the non-world instances. Returns `{ totalInstances, objects, notPlaced, complete }`. `objects` is `{ name, total, byLayout: [{ layout, instances }] }`, most instances first, then by name. `notPlaced` lists the object types with no instance (with `layoutName` set: no instance on that layout). A layout or object type file that could not be parsed is not counted and is named in `unscannedFiles` (`textSearch` is `not-searched`); `notPlaced` is then replaced by `notPlacedOmitted`, a sentence saying the list would be unreliable. An unknown object or layout is refused, ending "Nothing was returned."
+
+### `search_project`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Text to find, or a regular expression when `regex` is true |
+| `regex` | boolean | No | Treat `query` as a JavaScript regular expression (default false) |
+| `caseSensitive` | boolean | No | Default false |
+| `wholeWord` | boolean | No | Default false. For a literal query a word edge is any character that is not a Unicode letter, digit or underscore, so a word that starts or ends with an accented letter matches as a whole word. For a regular expression the edges are `\b`, which counts only ASCII letters, digits and underscore as word characters |
+| `scopes` | array | No | Any of `events`, `scripts`, `layouts` (default `events` and `scripts`) |
+| `sheets` | string[] | No | Limit the event search to these sheets; an unknown one is refused |
+| `maxResults` | number | No | Hits returned, 1 to 1000 (default 200) |
+
+Searches the strings of event sheets (parameters and expressions, comments, names, titles, script lines), the lines of registered script files, and with `layouts` the instance property, instance variable and tag values. Returns `{ query, totalHits, returned, truncated, hits, complete }` and the incompleteness fields. A hit is `{ where, file, eventSid, path, field, text }`: `file` is the file's path in the project (`eventSheets/<name>.json`, `layouts/<name>.json`, `scripts/<path>`), `eventSid` the nearest enclosing event, `path` the place inside the file (`line N` in a script) and `text` the match with up to 60 characters on each side.
+
+Limits:
+- A literal query is matched directly. A regular expression runs under a time limit of 1 second per file searched.
+- At most 100 matches are counted per string, for either kind of query.
+- The whole search has 10 seconds, literal or regular expression. That covers matching, the walk of the strings and the last file.
+- Past a limit the call is refused and the message says which: "The regular expression took too long to run in <file>" or "The search ran past its time budget". Nothing is returned.
+- The walk of one file's strings stops at 2,000,000 values and the call is refused.
+- A string with more than 100 matches makes `truncated` true and `totalHits` a lower bound, flagged `totalHitsIsLowerBound: true`. `truncated` is also true when `totalHits` is more than `returned`.
+- The text search of files that could not be parsed is outside the budget.
+
+For an unparsable file, `textSearch` is searched only for a literal, whole-word query that starts and ends with a letter, digit or underscore; for any other query it is `not-searched`.
+
+### `find_behavior_usage`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `behaviorName` | string | No | Behavior name as declared |
+| `behaviorId` | string | No | Behavior addon id, matched exactly; matches every declaration of that addon |
+
+At least one is required, else the call is refused ("Specify behaviorName, behaviorId, or both. Nothing was returned."). Returns `declarations` (the object types and families that declare it), `eventReferences` (conditions, actions and expressions that use it through an owner, a member of a declaring family or the family itself, including `Sprite.Platform.Speed` written inside an expression), `eventReferenceCount`, `sheets`, `instanceSettings` (placed instances that hold settings for it), `complete` and the incompleteness fields `unscannedFiles` and `partlyIndexedSheets`. `scriptUsesNotSearched` states that script actions, script events and script files are not searched; use `search_project` for those.
+
+### `find_effect_usage`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `effectName` | string | No | Effect name as listed on the target |
+| `effectId` | string | No | Effect addon id, matched exactly |
+
+At least one is required, else the call is refused the same way. Returns `uses` (object type, family, layout and layer entries), `instanceStates` (instances with a state for it), `eventReferences` (conditions and actions whose `effect` parameter is a quoted name that the object, a declaring family or a family member declares), `unresolvedEventReferences` (an `effect` parameter that is not a quoted name, on such an object), `scriptUsesNotSearched`, `complete` and `unscannedFiles`. A use through a family member that declares an effect of the same name itself is marked `nameAlsoDeclaredBy`: it may refer to either. `notFollowed` appears when the result lists a layout or layer effect and says "Layer and layout effect uses in System actions are not listed." This tool reads every level of the event sheets and does not report `partlyIndexedSheets`.
+
+### `find_instance_variable_references`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | One of | Object type that owns the variable |
+| `familyName` | string | One of | Family that owns the variable |
+| `variableName` | string | Yes | Instance variable name |
+
+Exactly one of `objectName` and `familyName` is required. An unknown owner or an unknown variable is refused with the names that exist; a variable that a family gives an object type is asked with `familyName`. Returns `references` (instance-variable parameters, `Object.variable` expressions and call arguments through the owner, or for a family through the family and its members), `referenceCount`, `sheets`, `storedValues` (values placed instances store), `scriptReads` (script actions, script events and registered script files that read an instance variable of that name; possible uses, since a script's read cannot be tied to one object type), `complete` and the incompleteness fields `unscannedFiles` (searched as text for the variable name and the owner's name together), `partlyIndexedSheets`, `scriptsNotWalked` and `unreadableScripts`. When the owner's own file could not be parsed the variable cannot be confirmed: the tool answers from what the index holds with `variableUnconfirmed: true`.
 
 ---
 

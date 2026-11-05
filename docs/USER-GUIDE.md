@@ -288,6 +288,7 @@ Claude Code asks before it uses an MCP tool. In Claude Code the tools are named 
       "mcp__construct3__get_*",
       "mcp__construct3__find_*",
       "mcp__construct3__search_objects",
+      "mcp__construct3__search_project",
       "mcp__construct3__locate_event",
       "mcp__construct3__validate_project",
       "mcp__construct3__analyze_performance",
@@ -630,6 +631,7 @@ Don't save anything. Go back to your last commit (see above), or ask the AI to r
 - Details: `get_object_details`, `get_layout_details`, `get_eventsheet_details`, `get_timeline_details`, `get_flowchart_details`
 - Understand and find: `get_object_dependencies`, `get_eventsheet_outline`, `locate_event`, `get_eventsheet_flow`, `get_function_map`, `get_group_settings`, `get_asset_usage`
 - Check: `validate_project`, `find_orphaned_objects`, `find_runtime_traps`, `analyze_performance`
+- Usage: `get_project_properties`, `get_instance_counts`, `search_project`, `find_behavior_usage`, `find_effect_usage`, `find_instance_variable_references` (all but `get_project_properties` say whether their answer is complete and what they could not read)
 - Runtime helpers that only return text: `get_bridge_commands`, `generate_bridge_eval_script`
 - Tilemaps: `get_tilemap_data`, `list_tilemap_brushes`
 - Runtime read: `get_canvas_size` (the canvas geometry of a game you connected to with `connect_to_game`; it sends nothing to the game)

@@ -82,8 +82,8 @@ import type {
   ObjectReference,
   Layout,
   FileFolder,
-  FileFolderSubfolder,
 } from '../types.js';
+import { registeredScriptFiles } from '../script-files.js';
 import {
   createByNameTarget,
   functionsObjectName,
@@ -415,19 +415,7 @@ export function scriptMemberAccesses(script: string): Array<{ kind: MemberRefere
 /** The paths, relative to scripts/, of the project script files rootFileFolders.script lists. */
 export function scriptFilePaths(project: unknown): string[] {
   const folder = (project as { rootFileFolders?: { script?: FileFolder } } | undefined)?.rootFileFolders?.script;
-  const paths: string[] = [];
-  if (!folder) return paths;
-  const walk = (f: FileFolder | FileFolderSubfolder, prefix: string, depth: number) => {
-    if (depth > MAX_DEPTH) return;
-    for (const item of Array.isArray(f.items) ? f.items : []) {
-      if (item && typeof item.name === 'string' && item.name !== '') paths.push(prefix + item.name);
-    }
-    for (const sub of Array.isArray(f.subfolders) ? f.subfolders : []) {
-      if (sub && typeof sub.name === 'string') walk(sub, `${prefix}${sub.name}/`, depth + 1);
-    }
-  };
-  walk(folder, '', 0);
-  return paths;
+  return registeredScriptFiles(folder).files.map(f => f.path);
 }
 
 /** The instance variables and behaviors the project script files (rootFileFolders.script) read by name. */
