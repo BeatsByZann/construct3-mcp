@@ -188,7 +188,7 @@ describe('reasonOf', () => {
   });
 });
 
-// Tests added beyond the plan's 13 (progress.md, Task 7 notes): proofs of protections the plan's tests leave unproved
+// Proofs of protections the cases above leave unproved
 
 describe('the journal of a project, kept in memory', () => {
   function recordMany(count: number): object {

@@ -234,6 +234,36 @@ describe('restoreForCall', () => {
     });
     expect(await readFile(file, 'utf-8')).toBe('someone else');
   });
+
+  it('compares with the expected state given instead of the recorded one: refused for another state, put back for the file\'s own', async () => {
+    const file = join(dir, 'scripts', 'main.js');
+    await mkdir(join(dir, 'scripts'), { recursive: true });
+    await writeFile(file, 'someone else');
+    await runInToolCall(async () => {
+      await expect(writer.restoreForCall(file, 'before', { expected: await statFileState(join(dir, 'project.c3proj')) }))
+        .rejects.toThrow('changed on disk after this call wrote it');
+      expect(await readFile(file, 'utf-8')).toBe('someone else');
+
+      await writer.restoreForCall(file, 'before', { expected: await statFileState(file) });
+    });
+    expect(await readFile(file, 'utf-8')).toBe('before');
+  });
+
+  it('prefers the expected state given over the state the call recorded', async () => {
+    const file = join(dir, 'scripts', 'main.js');
+    await mkdir(join(dir, 'scripts'), { recursive: true });
+    await writeFile(file, 'before');
+    await runInToolCall(async () => {
+      await writer.replaceFile(file, 'after');
+      // The recorded state is the file's own; an expected state that is not is still refused
+      await expect(writer.restoreForCall(file, 'before', { expected: await statFileState(join(dir, 'project.c3proj')) }))
+        .rejects.toThrow('changed on disk after this call wrote it');
+      expect(await readFile(file, 'utf-8')).toBe('after');
+      // An expected absence while the file is there is refused too
+      await expect(writer.restoreForCall(file, 'before', { expected: null })).rejects.toThrow('changed on disk after this call wrote it');
+      expect(await readFile(file, 'utf-8')).toBe('after');
+    });
+  });
 });
 
 describe('updateProject', () => {

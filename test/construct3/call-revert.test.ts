@@ -183,7 +183,7 @@ describe('changedSinceCall', () => {
   });
 });
 
-// Tests added beyond the plan's 5 (progress.md, Task 7 notes): the protections the plan's tests leave unproved
+// Protections the cases above leave unproved
 
 describe('revertEntry: the rest of a stopped revert', () => {
   it('does not attempt the steps after the one that could not be undone, and leaves their files alone', async () => {
