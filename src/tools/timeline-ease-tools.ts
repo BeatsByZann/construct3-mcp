@@ -134,7 +134,7 @@ export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineT
       }
     }
     for (const { entry, subfolder } of listFileEntries(reader.getProject(), 'script')) {
-      const parts = [getFileFolderDirectory('script'),...(subfolder ? subfolder.split('/') : []), entry.name];
+      const parts = [getFileFolderDirectory('script'), ...(subfolder ? subfolder.split('/') : []), entry.name];
       try {
         if (pattern.test(await readFile(resolveProjectPath(reader.getProjectDir(), ...parts), 'utf-8'))) hits.push(`script "${parts.join('/')}"`);
       } catch {
