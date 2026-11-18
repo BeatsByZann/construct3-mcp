@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
+import { withoutAceLookupWarnings } from './ace-warning-filter.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -67,7 +68,7 @@ describe('add_event_block comment and script sub-events', () => {
       children: [{ eventType: 'comment', text: 'Explains the next sub-event' }, { conditions: [isVisible], actions: [setVisible] }],
     }));
     expect(data.success).toBe(true);
-    expect(data.warnings).toBeUndefined();
+    expect(withoutAceLookupWarnings(data.warnings)).toEqual([]);
     const [comment, block] = writtenEvents(writer)[0].children;
     expect(comment).toEqual({ eventType: 'comment', text: 'Explains the next sub-event' });
     expect(Object.keys(comment)).toEqual(['eventType', 'text']);
@@ -367,7 +368,7 @@ describe('sub-event helpers', () => {
   });
 });
 
-describe('unknown arguments of add_event_block and update_event_block are refused', () => {
+describe('unknown arguments of add_event_block, update_event_block and add_event_to_sheet are refused', () => {
   const blockEvents = () => [{ eventType: 'block', sid: 20, conditions: [{ ...onStart, sid: 21 }], actions: [{ ...setVisible, sid: 22 }] }];
 
   it('add_event_block refuses an argument it does not take instead of writing an empty or partial block', async () => {
@@ -423,8 +424,9 @@ describe('unknown arguments of add_event_block and update_event_block are refuse
     await client.connect(clientTransport);
     try {
       const { tools } = await client.listTools();
-      for (const name of ['add_event_block', 'update_event_block']) {
+      for (const name of ['add_event_block', 'update_event_block', 'add_event_to_sheet']) {
         const schema = tools.find(t => t.name === name)!.inputSchema as Record<string, any>;
+        expect(schema.type).toBe('object');
         expect(schema.additionalProperties).toBe(false);
         expect(schema.properties.sheetName).toBeDefined();
       }
@@ -436,6 +438,12 @@ describe('unknown arguments of add_event_block and update_event_block are refuse
       const children = await client.callTool({ name: 'update_event_block', arguments: { sheetName: 'Sheet1', sid: 20, disabled: true, children: [{ eventType: 'comment', text: 'x' }] } });
       expect(children.isError).toBe(true);
       expect(text(children)).toContain('Unknown key(s) \\"children\\" in the arguments of update_event_block');
+      const sheetTypo = await client.callTool({ name: 'add_event_to_sheet', arguments: { sheetName: 'Sheet1', eventType: 'variable', variableName: 'Score', varType: 'string' } });
+      expect(sheetTypo.isError).toBe(true);
+      expect(text(sheetTypo)).toContain('Unknown key(s) \\"varType\\" in the arguments of add_event_to_sheet');
+      const sheetSid = await client.callTool({ name: 'add_event_to_sheet', arguments: { sheetName: 'Sheet1', eventType: 'comment', sid: 5 } });
+      expect(sheetSid.isError).toBe(true);
+      expect(text(sheetSid)).toContain('Unknown key(s) \\"sid\\" in the arguments of add_event_to_sheet');
       expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
 
       const ok = await client.callTool({ name: 'add_event_block', arguments: { sheetName: 'Sheet1', sid: 7, conditions: [onStart], children: [{ eventType: 'comment', text: 'Kept' }] } });

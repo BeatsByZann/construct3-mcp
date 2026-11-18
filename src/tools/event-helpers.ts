@@ -16,12 +16,12 @@ import type {
   CommentAction,
   CommentEvent,
   ScriptEvent,
+  CustomActionCall,
   C3Event,
 } from '../construct3/types.js';
 import { createBlockEvent, createCommentEvent } from '../construct3/templates.js';
 import {
   isElseCondition,
-  isActiveElseCondition,
   createElseCondition,
   isFunctionCall,
   collectFunctionSignatures,
@@ -35,11 +35,17 @@ import {
   toScriptLines,
   functionsObjectName,
   DEFAULT_FUNCTIONS_OBJECT_NAME,
+  isElseBlock,
   FUNCTIONS_OBJECT_ACTION_IDS,
   type FunctionSignature,
 } from '../construct3/event-shapes.js';
+import { applyCustomEaseParameter } from '../construct3/ease-params.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
+import { findEnclosingEvents } from '../construct3/event-variable-names.js';
 import type { BehaviorLookupData } from '../construct3/analyzers/behavior-refs.js';
+import { customActionDefinitions, customActionOwnerError, resolveCustomActionCall, type CustomActionDefinition } from '../construct3/custom-actions.js';
+import { familiesContaining } from '../construct3/animation-rename.js';
+import { nameKey } from '../construct3/names.js';
 import {
   BEHAVIOR_TYPE_KEY,
   LEGACY_BEHAVIOR_TYPE_KEY,
@@ -48,10 +54,10 @@ import {
   scanLegacyBehaviorKeysInAces,
 } from '../construct3/analyzers/legacy-behavior-keys.js';
 import { boundedRecord } from './shared.js';
-import { loadCustomEases, embedCustomEase, needsEaseLookup } from '../construct3/ease-params.js';
 import { buildEventOutline, summarizeNode, type OutlineNode } from '../construct3/analyzers/event-outline.js';
 import {
   checkEventLoadRules,
+  previousNonComment,
   collectTriggerObjectClasses,
   createAceOriginResolver,
   formatLoadRuleIssue,
@@ -94,12 +100,15 @@ export const EVENT_INPUT_DESCRIPTIONS = {
 //
 // Event input objects refuse keys they do not know: a stripped key would drop
 // its content without a word (a comment's text, a colour, a mistyped
-// "params"). The one exception is "sid", which inputs copied from
-// get_eventsheet_details or an editor-saved sheet carry: it is ignored, since
-// every written event, condition and action gets a new SID. The arguments of
-// add_event_block and update_event_block are strict as well: those tools are
-// registered with a strict object schema (registerTool), since a raw shape
-// given to server.tool() is wrapped in a stripping object by the MCP SDK.
+// "params"). The one exception is "sid" in the event input objects (conditions,
+// actions and sub-events) and at the top level of add_event_block: inputs
+// copied from get_eventsheet_details or an editor-saved sheet carry it, and it
+// is ignored, since every written event, condition and action gets a new SID.
+// add_event_to_sheet refuses a top-level "sid". The arguments of
+// add_event_block, update_event_block and add_event_to_sheet are strict as
+// well: those tools are registered with a strict object schema (registerTool),
+// since a raw shape given to server.tool() is wrapped in a stripping object by
+// the MCP SDK.
 
 /** Drop an input object's "sid" (see above); anything else is passed on unchanged. */
 function withoutSid(value: unknown): unknown {
@@ -228,61 +237,32 @@ export const scriptActionSchema = z.object({
   errorMap: unknownKeysErrorMap('a script action', 'A script action has type, language, script and disabled.'),
 }).strict();
 
-/**
- * The camelCase spellings textColor/backgroundColor are accepted as aliases of
- * "text-color"/"background-color" (the keys written); both spellings of one
- * colour with different values are refused.
- */
-function refuseConflictingCommentColors(c: CommentColors & { textColor?: number[]; backgroundColor?: number[] }, ctx: z.RefinementCtx): void {
-  for (const [alias, key] of [['textColor', 'text-color'], ['backgroundColor', 'background-color']] as const) {
-    const a = c[alias];
-    const k = c[key];
-    if (a !== undefined && k !== undefined && JSON.stringify(a) !== JSON.stringify(k)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [alias],
-        message: `Conflicting colours: ${alias} and "${key}" name the same colour with different values. Pass only "${key}".`,
-      });
-    }
-  }
-}
-
 /** Comment row among a block's actions */
 export const commentActionSchema = z.object({
   type: z.literal('comment').describe('Comment row among the actions'),
   text: z.string().max(10_000).describe('Comment text'),
   'text-color': commentColorSchema.optional(),
   'background-color': commentColorSchema.optional(),
-  textColor: commentColorSchema.optional().describe('Alias of "text-color"'),
-  backgroundColor: commentColorSchema.optional().describe('Alias of "background-color"'),
 }, {
-  errorMap: unknownKeysErrorMap('a comment row', 'A comment row has type, text, text-color and background-color (or their aliases textColor and backgroundColor).'),
-}).strict().superRefine(refuseConflictingCommentColors);
+  errorMap: unknownKeysErrorMap('a comment row', 'A comment row has type, text, text-color and background-color.'),
+}).strict();
 
-/** Maximum positional arguments on one custom action call. */
-export const MAX_CALL_ARGUMENTS = 100;
-
-/**
- * Custom action call, as the editor saves it:
- * { customAction, objectClass, customActionObjectClass?, sid, disabled?, parameters?: [args] }.
- * customActionObjectClass is written only when a member object type calls a
- * custom action its family defines.
- */
+/** Custom action call, in the editor's shape: { customAction, objectClass, customActionObjectClass?, sid, disabled?, parameters?: [...] } */
 export const customActionCallSchema = z.object({
-  customAction: z.string().min(1).max(500).describe('Custom action name (aceName of its custom-ace-block)'),
-  objectClass: z.string().min(1).max(500).describe('Object type or family the action is called on'),
-  customActionObjectClass: z.string().max(500).optional().describe('Family that defines the custom action, when calling a family custom action on a member object type (Construct 3 writes this key only then)'),
-  parameters: z.array(z.string().max(50_000)).max(MAX_CALL_ARGUMENTS).optional()
-    .describe('Arguments in parameter order, as expression strings (e.g. ["Player.X", "\\"text\\""])'),
-  disabled: z.boolean().optional().describe('Disable this call'),
+  customAction: z.string().min(1).max(500).describe('Name of the custom action (aceName of its custom action block)'),
+  objectClass: z.string().min(1).max(200).describe('Object type or family the action is called on'),
+  customActionObjectClass: z.string().min(1).max(200).optional()
+    .describe('The family whose custom action runs, when a member object type calls its family\'s custom action'),
+  parameters: z.array(z.union([z.string().max(10_000), z.boolean()])).max(100).optional()
+    .describe('Arguments in the order of the custom action\'s parameters, as expressions ("1", "\\"text\\"", "Player.X"), or true or false for a boolean parameter'),
+  disabled: z.boolean().optional().describe('Disable this individual action'),
 }, {
-  errorMap: unknownKeysErrorMap('a custom action call', 'A custom action call has customAction, objectClass, customActionObjectClass, parameters and disabled; a "sid" is ignored.'),
+  errorMap: unknownKeysErrorMap('a custom action call', 'A custom action call has customAction, objectClass, customActionObjectClass, parameters and disabled.'),
 }).strict();
 
 const ACTION_SHAPES =
   'An action is a plugin/behavior/System action { id, objectClass, behaviorType?, parameters?, disabled?, breakpoint? }, ' +
-  'a function call { callFunction, parameters?: [...], disabled? }, a custom action call { customAction, objectClass, customActionObjectClass?, parameters?: [...], disabled? }, ' +
-  'a script action { type: "script", script, language?, disabled? } ' +
+  'a function call { callFunction, parameters?: [...], disabled? }, a custom action call { customAction, objectClass, customActionObjectClass?, parameters?: [...], disabled? }, a script action { type: "script", script, language?, disabled? } ' +
   'or a comment row { type: "comment", text, "text-color"?, "background-color"? } (colours as [red, green, blue, alpha], each 0-1).';
 
 /** Union of standard, function call, custom action call, script and comment actions; a "sid" key is ignored (see Strict Input). */
@@ -428,49 +408,6 @@ export interface FindResult {
   event: Record<string, unknown>;
   parentArray: Record<string, unknown>[];
   index: number;
-  /** The event whose children array holds the match (findEventBySid; undefined at the top level) */
-  parentEvent?: Record<string, unknown>;
-}
-
-/**
- * Find the first event with a SID anywhere in the event tree (breadth-first by
- * container), with its parent array, index and parent event. It does not
- * notice a SID that several events share: tools that act on the event the
- * caller names use resolveEventBySid, which refuses an ambiguous SID.
- * Iterative stack-based traversal (no recursion) with safety guards.
- */
-export function findEventBySid(
-  events: Record<string, unknown>[],
-  targetSid: number,
-): FindResult | null {
-  const stack: Array<{ events: Record<string, unknown>[]; depth: number; parentEvent?: Record<string, unknown> }> = [
-    { events, depth: 0 },
-  ];
-  let nodeCount = 0;
-
-  while (stack.length > 0) {
-    if (++nodeCount > MAX_SEARCH_NODES) {
-      throw new Error(`SID search exceeded ${MAX_SEARCH_NODES} nodes`);
-    }
-    const { events: currentEvents, depth, parentEvent } = stack.pop()!;
-    if (depth > MAX_SEARCH_DEPTH) continue;
-
-    for (let i = 0; i < currentEvents.length; i++) {
-      const event = currentEvents[i];
-      if (event.sid === targetSid) {
-        return { event, parentArray: currentEvents, index: i, parentEvent };
-      }
-      // Recurse into children (groups, blocks, function-blocks)
-      if (Array.isArray(event.children)) {
-        stack.push({
-          events: event.children as Record<string, unknown>[],
-          depth: depth + 1,
-          parentEvent: event,
-        });
-      }
-    }
-  }
-  return null;
 }
 
 /** An event found by SID, with its place in the sheet. */
@@ -694,7 +631,9 @@ export function ambiguousSidMessage(
  * Resolve the one event a SID-addressed tool acts on. A SID that matches no
  * event, or several events without an eventPath to pick one, is an error, as
  * is an eventPath that does not point at an event with this SID. Nothing is
- * changed, so tools can return the error before any write.
+ * changed, so tools can return the error before any write. `argument` is the
+ * name of the tool argument that holds `eventPath` (default `eventPath`); the
+ * messages name it.
  */
 export function resolveEventBySid(
   events: Record<string, unknown>[],
@@ -702,7 +641,6 @@ export function resolveEventBySid(
   options: { sheetName: string; action: string; eventPath?: string; argument?: string },
 ): { match: SidMatch } | { error: string } {
   const { sheetName, eventPath } = options;
-  // The name of the eventPath argument in messages (tools addressing two events name theirs differently)
   const argument = options.argument ?? 'eventPath';
   let wanted: string | undefined;
   if (eventPath !== undefined) {
@@ -869,46 +807,15 @@ export interface GroupPathProblem {
 }
 
 export type GroupPathResolution =
-  | { children: Record<string, unknown>[]; problem?: undefined }
+  | { children: Record<string, unknown>[]; group: Record<string, unknown>; problem?: undefined }
   | { children?: undefined; problem: GroupPathProblem };
 
 function groupTitle(e: Record<string, unknown>): string | undefined {
   return e.eventType === 'group' && typeof e.title === 'string' ? e.title : undefined;
 }
 
-/**
- * Traverse the event tree to find a group by title path (e.g. "Movement > Collision").
- * Segments are split at ">". Each segment first matches a group title at its level
- * exactly as typed (the first such group wins), its whitespace kept except one space
- * on each side of a ">", which belongs to the separator: "UI " and "Parent > UI " both
- * name the title "UI ", and "UI" or "Parent > UI" the title "UI". The editor also saves
- * titles with leading or trailing whitespace, so a segment without such a match falls
- * back to the groups whose trimmed title equals the trimmed segment: exactly one is
- * taken, several make the path ambiguous (so "HUD " next to "HUD" and " HUD" is refused
- * rather than silently taking one).
- * Two-pass: verify the full path resolves before mutating any data.
- */
-export function resolveGroupPath(
-  events: Record<string, unknown>[],
-  groupPath: string,
-): GroupPathResolution {
-  const matched = matchGroupPath(events, groupPath);
-  if ('problem' in matched) return { problem: matched.problem };
-  const { groups } = matched;
-
-  // Full path resolved — ensure all groups have children arrays
-  for (const g of groups) {
-    if (!Array.isArray(g.children)) g.children = [];
-  }
-
-  return { children: groups[groups.length - 1].children as Record<string, unknown>[] };
-}
-
-/**
- * The groups a title path names, outermost first (matched as described at
- * resolveGroupPath), or why it does not resolve. Changes nothing.
- */
-function matchGroupPath(
+/** The groups a group path names, outermost first, or the problem; changes nothing. */
+export function findGroupPath(
   events: Record<string, unknown>[],
   groupPath: string,
 ): { groups: Array<Record<string, unknown>> } | { problem: GroupPathProblem } {
@@ -943,24 +850,37 @@ function matchGroupPath(
     parents.push(groupTitle(group)!);
     current = Array.isArray(group.children) ? group.children as Record<string, unknown>[] : [];
   }
+
   return { groups };
 }
 
 /**
- * Resolve a group path without creating a missing children array (see
- * resolveContainer and commitContainer). Titles match as for resolveGroupPath.
+ * Traverse the event tree to find a group by title path (e.g. "Movement > Collision").
+ * Segments are split at ">". Each segment first matches a group title at its level
+ * exactly as typed (the first such group wins), its whitespace kept except one space
+ * on each side of a ">", which belongs to the separator: "UI " and "Parent > UI " both
+ * name the title "UI ", and "UI" or "Parent > UI" the title "UI". The editor also saves
+ * titles with leading or trailing whitespace, so a segment without such a match falls
+ * back to the groups whose trimmed title equals the trimmed segment: exactly one is
+ * taken, several make the path ambiguous (so "HUD " next to "HUD" and " HUD" is refused
+ * rather than silently taking one).
+ * Two-pass: verify the full path resolves before mutating any data.
+ * On success it also returns the group the path names (`group`).
  */
-export function resolveGroupContainer(
+export function resolveGroupPath(
   events: Record<string, unknown>[],
   groupPath: string,
-): { owner: Record<string, unknown>; children: Record<string, unknown>[] } | { problem: GroupPathProblem } {
-  const matched = matchGroupPath(events, groupPath);
-  if ('problem' in matched) return matched;
-  const owner = matched.groups[matched.groups.length - 1];
-  return {
-    owner,
-    children: Array.isArray(owner.children) ? owner.children as Record<string, unknown>[] : [],
-  };
+): GroupPathResolution {
+  const found = findGroupPath(events, groupPath);
+  if ('problem' in found) return { problem: found.problem };
+  const { groups } = found;
+
+  // Full path resolved — ensure all groups have children arrays
+  for (const g of groups) {
+    if (!Array.isArray(g.children)) g.children = [];
+  }
+
+  return { children: groups[groups.length - 1].children as Record<string, unknown>[], group: groups[groups.length - 1] };
 }
 
 /** The children array of the group a title path names, or null when it does not resolve (see resolveGroupPath). */
@@ -969,6 +889,152 @@ export function findGroupByPath(
   groupPath: string,
 ): Record<string, unknown>[] | null {
   return resolveGroupPath(events, groupPath).children ?? null;
+}
+
+/** The event types the tools that place or move events write. */
+export type PlacedEventKind = 'block' | 'comment' | 'script' | 'variable' | 'group' | 'function-block' | 'custom-ace-block' | 'include';
+
+/**
+ * After an event was taken out of `owner`'s sub-events: drop the `children` key
+ * when the list is now empty, so an event left without sub-events is written
+ * without the key, as editor-saved blocks almost always are (a few carry
+ * `"children": []`; the editor loads both forms). A group keeps its list, since
+ * the editor saves an empty group with one, and the top level (`owner`
+ * undefined) has none.
+ */
+export function dropEmptiedChildren(owner: Record<string, unknown> | undefined): void {
+  if (owner === undefined || owner.eventType === 'group') return;
+  if (Array.isArray(owner.children) && owner.children.length === 0) delete owner.children;
+}
+
+/**
+ * Insert `event` into a resolved destination. An owner that had no
+ * sub-events gets the new list. The sibling's index is read now, so a
+ * caller that took an event out of the same list first still lands beside it.
+ */
+export function insertIntoContainer(container: ResolvedContainer, position: InsertPosition, event: Record<string, unknown>): void {
+  const { owner, targetEvents, siblingEvent } = container;
+  if (siblingEvent !== undefined && (position === 'before' || position === 'after')) {
+    const at = targetEvents.indexOf(siblingEvent);
+    if (at === -1) throw new Error('The event to place the new one beside is no longer in its list; nothing was inserted.');
+    targetEvents.splice(position === 'before' ? at : at + 1, 0, event);
+  } else if (position === 'start') {
+    targetEvents.unshift(event);
+  } else {
+    targetEvents.push(event);
+  }
+  if (owner !== undefined && owner.children !== targetEvents) owner.children = targetEvents;
+}
+
+/**
+ * Where each kind of event may be placed. Each entry is backed by event
+ * shapes the editor saves: the shapes the other event tools already write,
+ * counts in an r495.2 editor-saved project, or a project opened in the
+ * Construct 3 editor (the release is named at the entry). A placement with
+ * none of these is refused (placementError).
+ *
+ * Entries decided by an editor run or a count. Editor runs: Construct 3
+ * r506-2, Free edition, opened a project with the event there, saved it and
+ * reopened it. Counts: an r495.2 editor-saved project.
+ * - function-block in group: opened and kept by Construct 3 r506-2
+ * - function-block in block: opened and kept by r506-2 under a block with no
+ *   trigger; r506-2 refuses to open it under a block with a trigger ("cannot
+ *   add another trigger to event branch"), which this table does not tell apart
+ * - variable in block: opened and kept by r506-2 under a block with and
+ *   without a trigger; 1 in an r495.2 editor-saved project
+ * - variable in function-block: opened and kept by r506-2
+ * - group in block: opened and kept by r506-2 under a block with and without a trigger
+ * - script in root, group and function-block: opened and kept by r506-2
+ * - custom-ace-block in root and group: opened and kept by r506-2
+ * - comment in group: 16 in an r495.2 editor-saved project
+ * Block and comment in a custom action block, and comment in a function
+ * block, have neither a count nor an editor run, so they are not listed.
+ */
+export const PLACEMENT: Readonly<Record<PlacedEventKind, ReadonlySet<ContainerKind>>> = {
+  block: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  comment: new Set<ContainerKind>(['root', 'group', 'block']),
+  script: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  variable: new Set<ContainerKind>(['root', 'group', 'block', 'function-block']),
+  group: new Set<ContainerKind>(['root', 'group', 'block']),
+  'function-block': new Set<ContainerKind>(['root', 'group', 'block']),
+  'custom-ace-block': new Set<ContainerKind>(['root', 'group']),
+  include: new Set<ContainerKind>(['root']),
+};
+
+/** Why a placement is refused, where it is known; the default reason is that it was not verified. */
+const PLACEMENT_REFUSALS: Readonly<Partial<Record<`${PlacedEventKind} in ${ContainerKind}`, string>>> = {
+  'include in group': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in function-block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+  'include in custom-ace-block': 'remove_event_from_sheet and the include path of delete_event_from_sheet find includes at the top level only',
+};
+
+const KIND_LABELS: Readonly<Record<PlacedEventKind, string>> = {
+  block: 'A block', comment: 'A comment', script: 'A script event', variable: 'An event variable', group: 'A group',
+  'function-block': 'A function block', 'custom-ace-block': 'A custom action block', include: 'An include',
+};
+
+const CONTAINER_LABELS: Readonly<Record<ContainerKind, string>> = {
+  root: 'at the top level of a sheet',
+  group: 'in a group',
+  block: 'among the sub-events of a block',
+  'function-block': 'among the sub-events of a function block',
+  'custom-ace-block': 'among the sub-events of a custom action block',
+};
+
+/** Why `kind` may not be placed in `container` (see PLACEMENT), or undefined when it may. */
+export function placementError(kind: PlacedEventKind, container: ResolvedContainer): string | undefined {
+  if (PLACEMENT[kind].has(container.kind)) return undefined;
+  const reason = PLACEMENT_REFUSALS[`${kind} in ${container.kind}`]
+    ?? 'no editor-saved project on record has one there, and it was not checked in the Construct 3 editor';
+  const allowed = [...PLACEMENT[kind]].map(k => CONTAINER_LABELS[k]).join(', ');
+  return `${KIND_LABELS[kind]} is not placed ${CONTAINER_LABELS[container.kind]}: ${reason}. It can go ${allowed}.`;
+}
+
+/**
+ * Why an else block cannot be inserted at the requested position, or
+ * undefined when it can. Construct's editor only offers "else" on an event
+ * block that follows another block in the same container (editor saves have
+ * at most comments between them), so an else with no event block before it,
+ * or after a group, variable, include, function or script, has no editor-made
+ * counterpart and is refused rather than written unverified. Whether the
+ * block before it is triggered is left to the else-placement load rule.
+ * `exclude` is an event being moved, which no longer counts as a neighbour.
+ */
+export function elsePlacementError(
+  container: ResolvedContainer,
+  position: InsertPosition,
+  exclude?: Record<string, unknown>,
+): string | undefined {
+  const events = container.targetEvents.filter(e => e !== exclude);
+  const { siblingEvent } = container;
+  let index: number;
+  if (siblingEvent && (position === 'before' || position === 'after')) {
+    const at = events.indexOf(siblingEvent);
+    index = position === 'after' ? at + 1 : at;
+  } else {
+    index = position === 'end' ? events.length : 0;
+  }
+  // The nearest event before the insertion point that is not a comment
+  let previous: Record<string, unknown> | undefined;
+  for (let i = index - 1; i >= 0; i--) {
+    if (events[i]?.eventType !== 'comment') {
+      previous = events[i];
+      break;
+    }
+  }
+  if (previous === undefined) {
+    return 'An else block needs an event block before it in the same container (only comments may stand between them); it cannot be the first event there.';
+  }
+  if (previous.eventType !== 'block') {
+    return `An else block must follow an event block (only comments may stand between them), but the event before it would be a "${String(previous.eventType)}" event.`;
+  }
+  return undefined;
+}
+
+/** The placement kind of a stored event type, or undefined for a type the placing tools do not handle. */
+export function placedKindOf(eventType: unknown): PlacedEventKind | undefined {
+  return typeof eventType === 'string' && Object.hasOwn(KIND_LABELS, eventType) ? eventType as PlacedEventKind : undefined;
 }
 
 /** Error text for a group path that did not resolve, naming the groups there (titles quoted, so outer whitespace shows). */
@@ -987,6 +1053,190 @@ export function describeGroupPathProblem(problem: GroupPathProblem, groupPath: s
     ? `\nGroups ${where}: ${quoted}`
     : `\nNo groups ${where}${problem.parents.length === 0 ? ' of this event sheet' : ''}.`;
   return `Group path "${groupPath}" not found in "${sheetName}": no group titled "${problem.segment}" ${where}.${hint}`;
+}
+
+// ─── Event Placement ────────────────────────────────────────
+
+/** Where an event stands: the top level of a sheet, or among the sub-events of a group, block, function block or custom action block. */
+export type ContainerKind = 'root' | 'group' | 'block' | 'function-block' | 'custom-ace-block';
+
+/** Where an event goes in its destination. */
+export type InsertPosition = 'start' | 'end' | 'before' | 'after';
+
+/** A destination as the tools take it: at most one of groupPath, parentSid and siblingSid; none means the top level. */
+export interface LocatorInput {
+  groupPath?: string;
+  parentSid?: number;
+  parentEventPath?: string;
+  siblingSid?: number;
+  siblingEventPath?: string;
+  position: InsertPosition;
+}
+
+/** A resolved destination. Resolving changes nothing in the sheet; insertIntoContainer does. */
+export interface ResolvedContainer {
+  /** The list the event goes into; a new empty list for an owner that has no sub-events yet. */
+  targetEvents: Record<string, unknown>[];
+  /** The group or event whose sub-events targetEvents are; undefined at the top level. */
+  owner?: Record<string, unknown>;
+  /** For "before" and "after": the event the new one goes beside. */
+  siblingEvent?: Record<string, unknown>;
+  kind: ContainerKind;
+}
+
+const CONTAINER_KINDS: ReadonlySet<string> = new Set(['group', 'block', 'function-block', 'custom-ace-block']);
+
+/** The kind of container `owner` is (undefined: the top level), or undefined when it cannot hold sub-events. */
+function containerKindOf(owner: Record<string, unknown> | undefined): ContainerKind | undefined {
+  if (owner === undefined) return 'root';
+  return typeof owner.eventType === 'string' && CONTAINER_KINDS.has(owner.eventType) ? owner.eventType as ContainerKind : undefined;
+}
+
+/** The Zod fields of a destination, shared by the tools that place or move events. */
+export const locatorShape = {
+  groupPath: z.string().max(500).optional().describe('Into a group by title path, e.g. "Movement > Collision". Titles match exactly first, then ignoring leading/trailing whitespace when that fits one group'),
+  parentSid: z.number().int().positive().optional().describe('Into the sub-events of this group, block or function block'),
+  parentEventPath: z.string().max(500).optional().describe('Only when parentSid matches several events of the sheet (the call is then refused with the candidates): the path of the one you mean, e.g. "events[3].children[1]"'),
+  siblingSid: z.number().int().positive().optional().describe('Beside this event, in the same list; needs position "before" or "after"'),
+  siblingEventPath: z.string().max(500).optional().describe('Only when siblingSid matches several events of the sheet: the path of the one you mean'),
+  position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('"start" or "end" of the destination (default "end"), or "before" or "after" the siblingSid event'),
+};
+
+/** Why a destination's arguments do not fit together, or undefined. */
+export function validateLocator(locator: LocatorInput): string | undefined {
+  // An empty groupPath counts as not given, as add_event_block has always read it
+  const groupPath = locator.groupPath === '' ? undefined : locator.groupPath;
+  const given = [groupPath, locator.parentSid, locator.siblingSid].filter(v => v !== undefined).length;
+  if (given > 1) return 'Give at most one of groupPath, parentSid and siblingSid.';
+  if (locator.parentEventPath !== undefined && locator.parentSid === undefined) {
+    return 'parentEventPath picks one of several events that share parentSid; pass it together with parentSid.';
+  }
+  if (locator.siblingEventPath !== undefined && locator.siblingSid === undefined) {
+    return 'siblingEventPath picks one of several events that share siblingSid; pass it together with siblingSid.';
+  }
+  const beside = locator.position === 'before' || locator.position === 'after';
+  if (locator.siblingSid !== undefined && !beside) return 'siblingSid needs position "before" or "after".';
+  if (locator.siblingSid === undefined && beside) return `position "${locator.position}" needs siblingSid.`;
+  return undefined;
+}
+
+/**
+ * Resolve a destination in `events` (a sheet's events). A parentSid or
+ * siblingSid that several events share is refused unless its path argument
+ * picks one, as for the SID of the event a tool acts on. Changes nothing:
+ * an owner without a children list gets a new empty list as targetEvents,
+ * which insertIntoContainer attaches.
+ */
+export function resolveContainer(
+  events: Record<string, unknown>[],
+  sheetName: string,
+  locator: LocatorInput,
+): { container: ResolvedContainer } | { error: string } {
+  const problem = validateLocator(locator);
+  if (problem) return { error: problem };
+  if (locator.groupPath !== undefined && locator.groupPath !== '') {
+    const found = findGroupPath(events, locator.groupPath);
+    if ('problem' in found) return { error: describeGroupPathProblem(found.problem, locator.groupPath, sheetName) };
+    const group = found.groups[found.groups.length - 1];
+    return { container: { targetEvents: Array.isArray(group.children) ? group.children as Record<string, unknown>[] : [], owner: group, kind: 'group' } };
+  }
+  if (locator.parentSid !== undefined) {
+    const found = resolveEventBySid(events, locator.parentSid, {
+      sheetName, action: 'place the event in', eventPath: locator.parentEventPath, argument: 'parentEventPath',
+    });
+    if ('error' in found) return { error: found.error };
+    const owner = found.match.event;
+    const kind = containerKindOf(owner);
+    if (kind === undefined) {
+      return { error: `The event with SID ${locator.parentSid} is a "${String(owner.eventType)}", which has no sub-events. A parent must be a group, block or function block.` };
+    }
+    return { container: { targetEvents: Array.isArray(owner.children) ? owner.children as Record<string, unknown>[] : [], owner, kind } };
+  }
+  if (locator.siblingSid !== undefined) {
+    const found = resolveEventBySid(events, locator.siblingSid, {
+      sheetName, action: 'place the event beside', eventPath: locator.siblingEventPath, argument: 'siblingEventPath',
+    });
+    if ('error' in found) return { error: found.error };
+    const enclosing = findEnclosingEvents(events as unknown as C3Event[], found.match.event as unknown as C3Event) ?? [];
+    const owner = enclosing.at(-1) as Record<string, unknown> | undefined;
+    const kind = containerKindOf(owner);
+    if (kind === undefined) {
+      return { error: `The event with SID ${locator.siblingSid} stands among the sub-events of a "${String(owner?.eventType)}", which cannot hold sub-events, so nothing can be placed beside it.` };
+    }
+    return { container: { targetEvents: found.match.parentArray, owner, siblingEvent: found.match.event, kind } };
+  }
+  return { container: { targetEvents: events, kind: 'root' } };
+}
+
+/** The events enclosing an event placed in `container`, outermost first, ending with its owner; empty at the top level. */
+export function containerParents(events: C3Event[], container: ResolvedContainer): C3Event[] {
+  if (container.owner === undefined) return [];
+  const owner = container.owner as unknown as C3Event;
+  return [...(findEnclosingEvents(events, owner) ?? []), owner];
+}
+
+/** True when an event placed in `container` is inside a function block (for the "Set return value" check). */
+export function containerInFunction(events: Record<string, unknown>[], container: ResolvedContainer): boolean {
+  return container.owner !== undefined && isInFunctionBlock(events, container.owner);
+}
+
+/** The path of `target` (compared by identity) in `events`, e.g. "events[2].children[0]", or undefined. */
+export function eventPathOf(events: Record<string, unknown>[], target: Record<string, unknown>): string | undefined {
+  let path: string | undefined;
+  walkEvents(events, node => {
+    if (path === undefined && node.event === target) path = node.path;
+  });
+  return path;
+}
+
+/** The event at an event path such as "events[2].children[0]", or undefined when the path is not one or leads nowhere. */
+export function eventAtEventPath(events: Record<string, unknown>[], path: string): Record<string, unknown> | undefined {
+  const indices = parseEventPath(path);
+  return indices ? eventAtPath(events, indices) : undefined;
+}
+
+/**
+ * For every else block in `events` and below (by SID), the SID of the
+ * event it continues: the nearest sibling before it that is not a comment
+ * (previousNonComment, as the load-time gate looks it up), or undefined
+ * when there is none or it has no SID.
+ */
+export function elsePredecessors(events: readonly unknown[]): Map<number, number | undefined> {
+  const found = new Map<number, number | undefined>();
+  const stack: Array<{ list: readonly unknown[]; depth: number }> = [{ list: events, depth: 0 }];
+  let nodes = 0;
+  while (stack.length > 0) {
+    const { list, depth } = stack.pop()!;
+    if (depth > MAX_SEARCH_DEPTH) throw new Error(`Sub-event scan exceeded depth ${MAX_SEARCH_DEPTH}`);
+    list.forEach((ev, i) => {
+      if (++nodes > MAX_SEARCH_NODES) throw new Error(`Sub-event scan exceeded ${MAX_SEARCH_NODES} nodes`);
+      if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return;
+      const record = ev as Record<string, unknown>;
+      if (isElseBlock(record) && typeof record.sid === 'number') {
+        const previous = previousNonComment(list, i) as Record<string, unknown> | undefined;
+        found.set(record.sid, typeof previous?.sid === 'number' ? previous.sid : undefined);
+      }
+      if (Array.isArray(record.children)) stack.push({ list: record.children, depth: depth + 1 });
+    });
+  }
+  return found;
+}
+
+/**
+ * One warning for each else block, there before and after a change, that
+ * now continues another event: it then runs when that event's conditions
+ * are false. Both arrangements may be valid, so the load-time gate does
+ * not report this.
+ */
+export function elsePredecessorWarnings(before: readonly unknown[], after: readonly unknown[]): string[] {
+  const was = elsePredecessors(before);
+  const named = (sid: number | undefined) => (sid === undefined ? 'an event without a SID' : `the event with SID ${sid}`);
+  const warnings: string[] = [];
+  for (const [sid, now] of elsePredecessors(after)) {
+    if (!was.has(sid) || was.get(sid) === now) continue;
+    warnings.push(`The else block with SID ${sid} now follows ${named(now)} instead of ${named(was.get(sid))}, so it runs when that event's conditions are false.`);
+  }
+  return warnings;
 }
 
 // ─── Behavior Key Resolution ────────────────────────────────
@@ -1360,14 +1610,6 @@ export { loadRuleErrorMessage };
 
 // ─── Object Reference Collection ────────────────────────────
 
-/** The object references of a custom action call: objectClass and customActionObjectClass. */
-function customActionObjectRefs(action: Readonly<Record<string, unknown>>): ObjectRef[] {
-  const refs: ObjectRef[] = [];
-  if (typeof action.objectClass === 'string') refs.push({ objectClass: action.objectClass });
-  if (typeof action.customActionObjectClass === 'string') refs.push({ objectClass: action.customActionObjectClass });
-  return refs;
-}
-
 /** Collect all objectClass references from a block and all its descendants.
  *  Depth-limited to match buildBlockEvent's MAX_NESTING_DEPTH guard.
  *  Throws on conflicting behaviorType / "behavior-type" values. */
@@ -1387,12 +1629,8 @@ export function collectObjectRefs(
   for (const a of actions) {
     // Function calls name no object: the legacy form's id/objectClass are dropped when written
     if (isFunctionCallInput(a)) continue;
-    // Custom action calls name the object they run on and, for a family
-    // action called on a member, the family that defines it
-    if (typeof a.customAction === 'string') {
-      refs.push(...customActionObjectRefs(a));
-      continue;
-    }
+    // Custom action calls are checked by buildAction and the update tools (customActionCallError), which word their refusals alike
+    if (isCustomActionCall(a)) continue;
     if ('objectClass' in a && typeof a.objectClass === 'string') {
       refs.push(toObjectRef(a as Record<string, unknown> & { objectClass: string }, 'action'));
     }
@@ -1454,8 +1692,9 @@ export function resolveOrBlock(
 
 /** Build a condition in the editor's key order: id, objectClass, sid, disabled,
  *  behaviorType, parameters, isInverted. The deprecated `isOr` input is never
- *  written (see resolveOrBlock). */
-export function buildCondition(c: ConditionInput, sid: number): Condition {
+ *  written (see resolveOrBlock). A custom ease named in `parameters.ease` is
+ *  embedded the way the editor saves it, as for an action. */
+export async function buildCondition(reader: Construct3ProjectReader, c: ConditionInput, sid: number): Promise<Condition> {
   const cond: Condition = {
     id: c.id,
     objectClass: c.objectClass,
@@ -1464,41 +1703,11 @@ export function buildCondition(c: ConditionInput, sid: number): Condition {
   if (c.disabled) cond.disabled = true;
   const { behaviorType } = resolveBehaviorType(c);
   if (behaviorType) cond.behaviorType = behaviorType;
-  if (c.parameters) cond.parameters = c.parameters;
-  if (c.isInverted) cond.isInverted = true;
-  return cond;
-}
-
-/**
- * Store a bare custom ease name in `parameters.ease` the way Construct saves
- * it: as an object embedding the ease (see ../construct3/ease-params.ts).
- * Built-in names and names matching no custom ease are left as they are.
- * Returns the embedded ease name, if any.
- */
-export async function applyCustomEaseParameter(
-  reader: Pick<Construct3ProjectReader, 'getProjectDir' | 'getProject'>,
-  parameters: unknown,
-): Promise<string | undefined> {
-  if (!needsEaseLookup(parameters)) return undefined;
-  const project = reader.getProject() as unknown as { timelines?: { subfolders?: unknown[] } };
-  const eases = await loadCustomEases(reader.getProjectDir(), project.timelines);
-  return embedCustomEase(parameters, eases);
-}
-
-/**
- * Build a condition with a new SID (buildCondition), its parameters copied
- * from the input and a custom ease named in them embedded as the editor saves it.
- */
-export async function mintCondition(
-  reader: Construct3ProjectReader,
-  idGen: IdGenerator,
-  c: ConditionInput,
-): Promise<Condition> {
-  const cond = buildCondition(c, await idGen.generateSid(reader));
-  if (cond.parameters) {
-    cond.parameters = { ...cond.parameters };
+  if (c.parameters) {
+    cond.parameters = { ...c.parameters };
     await applyCustomEaseParameter(reader, cond.parameters);
   }
+  if (c.isInverted) cond.isInverted = true;
   return cond;
 }
 
@@ -1541,28 +1750,9 @@ function addCommentColors<T extends Record<string, unknown>>(target: T, input: C
   return target;
 }
 
-/**
- * Build a comment row as the editor saves it: { type, text, "text-color"?, "background-color"? }.
- * The input may name the colours textColor and backgroundColor instead.
- */
-export function buildCommentAction(a: { text: string; textColor?: number[]; backgroundColor?: number[] } & CommentColors): CommentAction {
-  return addCommentColors({ type: 'comment', text: a.text } as CommentAction, {
-    'text-color': a['text-color'] ?? a.textColor,
-    'background-color': a['background-color'] ?? a.backgroundColor,
-  });
-}
-
-/**
- * Build a custom action call as the editor saves it (r495.2 key order):
- * { customAction, objectClass, customActionObjectClass?, sid, disabled?, parameters? }.
- */
-export function buildCustomActionCall(a: z.infer<typeof customActionCallSchema>, sid: number): Action {
-  const act: Record<string, unknown> = { customAction: a.customAction, objectClass: a.objectClass };
-  if (a.customActionObjectClass) act.customActionObjectClass = a.customActionObjectClass;
-  act.sid = sid;
-  if (a.disabled) act.disabled = true;
-  if (a.parameters && a.parameters.length > 0) act.parameters = [...a.parameters];
-  return act as unknown as Action;
+/** Build a comment row as the editor saves it: { type, text, "text-color"?, "background-color"? }. */
+export function buildCommentAction(a: { text: string } & CommentColors): CommentAction {
+  return addCommentColors({ type: 'comment', text: a.text } as CommentAction, a);
 }
 
 /** Build a comment sub-event as the editor saves it: { eventType, text, "text-color"?, "background-color"? }. */
@@ -1582,6 +1772,109 @@ export function buildScriptEvent(s: ScriptChildInput): ScriptEvent {
   };
   if (s.disabled) event.disabled = true;
   return event;
+}
+
+/** True when a stored action or an action input is a custom action call. */
+export function isCustomActionCall(ace: Readonly<Record<string, unknown>>): boolean {
+  return typeof ace.customAction === 'string';
+}
+
+/** Build a custom action call in the editor's key order: customAction, objectClass, customActionObjectClass, sid, disabled, parameters. */
+export function buildCustomActionCall(a: z.infer<typeof customActionCallSchema>, sid: number): CustomActionCall {
+  const call = { customAction: a.customAction, objectClass: a.objectClass } as CustomActionCall;
+  if (a.customActionObjectClass !== undefined) call.customActionObjectClass = a.customActionObjectClass;
+  call.sid = sid;
+  if (a.disabled) call.disabled = true;
+  if (a.parameters && a.parameters.length > 0) call.parameters = [...a.parameters];
+  return call;
+}
+
+/** A custom action call the tools refuse (the message says why); thrown by buildAction before any write. */
+export class CustomActionCallError extends Error {}
+
+/** The custom actions of the project, the families of each object type and the owner names, for building and checking calls. */
+export interface CustomActionContext {
+  definitions: CustomActionDefinition[];
+  familiesOf: (objectClass: string) => readonly string[];
+  objectTypes: readonly string[];
+  families: readonly string[];
+}
+
+/** Load the CustomActionContext from the event sheets and families the reader can parse. */
+export async function loadCustomActionContext(reader: Construct3ProjectReader): Promise<CustomActionContext> {
+  const sheets = new Map<string, unknown>();
+  for (const [name, sheet] of await reader.readAllEventSheets()) sheets.set(name, sheet.events);
+  let families = new Map<string, Record<string, unknown>>();
+  try {
+    families = await reader.readAllFamilies();
+  } catch {
+    // No families: calls resolve on their object type only
+  }
+  return {
+    definitions: customActionDefinitions(sheets),
+    familiesOf: objectClass => familiesContaining(objectClass, families),
+    objectTypes: await reader.listObjectTypes(),
+    families: await reader.listFamilies(),
+  };
+}
+
+/**
+ * Why a custom action call cannot be written, or undefined: its owner is no
+ * object type or family (upstream's object class check admits System and
+ * the Functions object), or customActionObjectClass names a family the
+ * owner is not a member of.
+ */
+export function customActionCallError(
+  call: { objectClass: string; customActionObjectClass?: string },
+  context: CustomActionContext,
+): string | undefined {
+  const ownerError = customActionOwnerError(call.objectClass, context.objectTypes, context.families);
+  if (ownerError) return ownerError;
+  const origin = call.customActionObjectClass;
+  if (origin !== undefined && origin !== call.objectClass && !context.familiesOf(call.objectClass).includes(origin)) {
+    return `A custom action call names customActionObjectClass "${origin}", but "${call.objectClass}" is not a member of that family.`;
+  }
+  return undefined;
+}
+
+/**
+ * The warnings for a custom action call: no definition it runs, a name that
+ * differs from its definition only in letter case, an object that belongs to
+ * several families which define the name, or another number of arguments than
+ * the definition's parameters. One helper for the tools that write calls
+ * (`nameHandling` "written": the call gets the definition's spelling) and
+ * those that change their arguments ("kept": the stored name stays).
+ */
+export function customActionCallWarnings(
+  call: { customAction: string; objectClass: string; customActionObjectClass?: string; parameters?: unknown[] },
+  context: CustomActionContext,
+  label: string,
+  nameHandling: 'written' | 'kept' = 'written',
+): string[] {
+  const definition = resolveCustomActionCall(call, context.definitions, context.familiesOf);
+  if (definition === undefined) {
+    return [`${label}: no custom action of that name is defined on "${call.objectClass}" or its families in the event sheets that could be read. Whether Construct 3 opens a project with such a call was not checked.`];
+  }
+  const warnings: string[] = [];
+  if (definition.name !== call.customAction) {
+    warnings.push(`${label}: the name differs only in letter case from the custom action "${definition.name}" on "${definition.owner}". Construct 3 r506-2 (Free edition) ran such a call and saved it with the definition's spelling, "${definition.name}". ${nameHandling === 'written' ? 'The call is written with that spelling.' : 'The stored name was kept.'}`);
+  }
+  if (call.customActionObjectClass === undefined && definition.owner !== call.objectClass) {
+    const others = context.familiesOf(call.objectClass).filter(family => family !== definition.owner
+      && context.definitions.some(d => d.owner === family && nameKey(d.name) === nameKey(call.customAction)));
+    if (others.length > 0) {
+      // The family taken is the first that defines the name in any letter case; another family with the call's own spelling does not take its place
+      const exactSpelling = definition.name === call.customAction
+        ? []
+        : others.filter(family => context.definitions.some(d => d.owner === family && d.name === call.customAction));
+      warnings.push(`${label}: "${call.objectClass}" belongs to the families "${definition.owner}" and ${others.map(f => `"${f}"`).join(', ')}, which both define a custom action of that name. The call uses the one on "${definition.owner}"; which one Construct 3 runs was not checked in the editor.${exactSpelling.length > 0 ? ` ${exactSpelling.map(f => `"${f}"`).join(', ')} defines the name in the call's exact spelling; the first family is used whatever the spelling.` : ''}`);
+    }
+  }
+  const given = call.parameters?.length ?? 0;
+  if (given !== definition.parameters.length) {
+    warnings.push(`${label}: ${given} argument(s) for ${definition.parameters.length} parameter(s) (${definition.parameters.join(', ') || 'none'}).`);
+  }
+  return warnings;
 }
 
 /** True when an action input or stored action is a function call. */
@@ -1619,14 +1912,15 @@ export async function resolveFunctionMapParameter(
 export interface ActionBuildContext {
   warnings: string[];
   functions?: Map<string, FunctionSignature>;
+  customActions?: CustomActionContext;
 }
 
 /**
  * Build one action from tool input in the editor's shape: plugin/behavior
  * actions, function calls ({ callFunction, sid, parameters: [...] }, also from
  * the legacy { id, objectClass, callFunction, parameters: {...} } input),
- * custom action calls, script actions and comment rows. A custom ease named in
- * a plugin/behavior action's parameters is embedded as the editor saves it.
+ * custom action calls, script actions and comment rows. Throws a
+ * CustomActionCallError for a custom action call that cannot be written.
  */
 export async function buildAction(
   reader: Construct3ProjectReader,
@@ -1637,6 +1931,25 @@ export async function buildAction(
 ): Promise<Action> {
   if ('type' in a && a.type === 'script') return buildScriptAction(a);
   if ('type' in a && a.type === 'comment') return buildCommentAction(a);
+  if (isCustomActionCall(a as Record<string, unknown>)) {
+    const input = a as z.infer<typeof customActionCallSchema>;
+    const label = `${where}, custom action call "${input.customAction}" on "${input.objectClass}"`;
+    ctx.customActions ??= await loadCustomActionContext(reader);
+    const callError = customActionCallError(input, ctx.customActions);
+    if (callError) throw new CustomActionCallError(callError);
+    ctx.warnings.push(...customActionCallWarnings(input, ctx.customActions, label));
+    // The call is written as the editor saves it: with the definition's spelling, and a member's call of its
+    // family's custom action naming that family
+    const definition = resolveCustomActionCall(input, ctx.customActions.definitions, ctx.customActions.familiesOf);
+    const written = definition === undefined ? input : {
+      ...input,
+      customAction: definition.name,
+      ...(definition.owner !== input.objectClass && input.customActionObjectClass === undefined
+        ? { customActionObjectClass: definition.owner }
+        : {}),
+    };
+    return buildCustomActionCall(written, await idGen.generateSid(reader)) as unknown as Action;
+  }
 
   const rec = a as Record<string, unknown>;
   if (isFunctionCallInput(rec)) {
@@ -1655,20 +1968,16 @@ export async function buildAction(
     return createFunctionCallAction(callName, sid, args, rec.disabled === true);
   }
 
-  if (typeof rec.customAction === 'string') {
-    return buildCustomActionCall(a as z.infer<typeof customActionCallSchema>, await idGen.generateSid(reader));
-  }
-
   const sid = await idGen.generateSid(reader);
   const action = buildStandardAction(a as z.infer<typeof standardActionSchema>, sid);
-  if (action.parameters) {
-    action.parameters = { ...action.parameters };
-    await applyCustomEaseParameter(reader, action.parameters);
-  }
   await resolveFunctionMapParameter(reader, action as unknown as Record<string, unknown>, `${where}, "${action.id}"`, ctx.warnings, async () => {
     ctx.functions ??= await loadFunctionSignatures(reader);
     return ctx.functions;
   });
+  if (action.parameters) {
+    action.parameters = { ...action.parameters };
+    await applyCustomEaseParameter(reader, action.parameters);
+  }
   return action;
 }
 
@@ -1693,6 +2002,7 @@ export interface BlockBuildCounter {
   count: number;
   warnings: string[];
   functions?: Map<string, FunctionSignature>;
+  customActions?: CustomActionContext;
 }
 
 /** Count one more event of the tree being built, enforcing the depth and size limits. */
@@ -1768,11 +2078,8 @@ export async function buildBlockEvent(
   const where = locationLabel(depth);
 
   // Else is the System "else" condition at index 0; conditions after it make an else-if.
-  // An else condition given disabled makes an ordinary block, unless isElse: true
-  // asks for an else block, which enables that condition instead of adding another.
   const hasElseCondition = isElseCondition(block.conditions[0]);
-  const enablesElse = block.isElse === true && hasElseCondition && block.conditions[0].disabled === true;
-  const isElse = block.isElse === true || isActiveElseCondition(block.conditions[0]);
+  const isElse = block.isElse === true || hasElseCondition;
   // A block holds one "else" condition, first. In an else block a further one
   // is a duplicate and is dropped; elsewhere it is written, with a warning.
   const conditions = block.conditions.filter((c, i) => {
@@ -1785,11 +2092,6 @@ export async function buildBlockEvent(
     counter.warnings.push(`${where}: the System "else" condition is condition ${i}. Construct 3 saves Else as the first condition of a block; use isElse: true or put it first.`);
     return true;
   });
-
-  if (enablesElse) {
-    conditions[0] = { ...conditions[0], disabled: undefined };
-    counter.warnings.push(`${where}: enabled the disabled System "else" condition given first, since isElse: true makes the block an else block.`);
-  }
 
   const isOrBlock = resolveOrBlock(block.isOrBlock, conditions, where, counter.warnings);
   if (isElse && isOrBlock) {
@@ -1810,7 +2112,8 @@ export async function buildBlockEvent(
     builtConditions.push(createElseCondition(await idGen.generateSid(reader)));
   }
   for (const c of conditions) {
-    builtConditions.push(await mintCondition(reader, idGen, c));
+    const condSid = await idGen.generateSid(reader);
+    builtConditions.push(await buildCondition(reader, c, condSid));
   }
 
   // Build actions (SIDs for all but script and comment rows, which the editor saves without one)
@@ -1833,337 +2136,32 @@ export async function buildBlockEvent(
   });
 }
 
-// ─── Else blocks written by older versions ──────────────────
-
-/** Re-exported for the event tools: the editor's else condition and script lines (see event-shapes.ts). */
-export { isElseCondition, isActiveElseCondition, toScriptLines };
-
 /**
- * True for an else block: a leading System "else" condition that is not
- * disabled, or the block-level isElse key that older versions of this server
- * wrote (which update_event_block converts, see normalizeLegacyBlock). A block
- * that starts with an else condition is decided by that condition alone: with
- * it disabled the block is ordinary, even when the legacy isElse key is also
- * present (update_event_block and fix_legacy_event_shapes drop the key there).
+ * Give every SID in copied event data a new value from the ID generator:
+ * the events, their conditions and actions, and function and custom action
+ * parameters (every "sid" key holding a number, at any depth). Returns how
+ * many were replaced.
  */
-export function isElseOrLegacyElseBlock(event: Readonly<Record<string, unknown>>): boolean {
-  const conditions = event.conditions as unknown[] | undefined;
-  if (Array.isArray(conditions) && isElseCondition(conditions[0])) return isActiveElseCondition(conditions[0]);
-  return event.isElse === true;
-}
-
-/**
- * Rewrite a stored block that older versions of this server wrote with the
- * keys isElse (block) and isOr (condition), which the editor never writes,
- * into the editor's shape: a leading System "else" condition and the block key
- * isOrBlock. The isOr flags map as in resolveOrBlock: every condition after
- * the first carrying isOr makes an OR block, isOr on the first condition alone
- * is dropped, and isOr on only some of the later conditions is ambiguous and
- * throws (fix_legacy_event_shapes reports such blocks for a decision by hand).
- * Returns true when anything changed.
- */
-export async function normalizeLegacyBlock(
-  reader: Construct3ProjectReader,
-  idGen: IdGenerator,
-  event: Record<string, unknown>,
-): Promise<boolean> {
-  let changed = false;
-  const conditions = Array.isArray(event.conditions) ? event.conditions as Record<string, unknown>[] : null;
-  if (conditions && conditions.some(c => typeof c === 'object' && c !== null && 'isOr' in c)) {
-    const flags = conditions.map(c => c.isOr === true);
-    const later = flags.slice(1);
-    if (event.isOrBlock !== true && later.some(Boolean) && !later.every(Boolean)) {
-      throw new Error(
-        'The block carries the per-condition isOr flag that older versions wrote on only some of its conditions. ' +
-        'Construct 3 ORs a whole event, so which conditions were meant to be ORed is ambiguous; nothing was changed. ' +
-        'Decide by hand (update_event_block with isOrBlock) or see fix_legacy_event_shapes.',
-      );
-    }
-    if (later.length > 0 && later.every(Boolean)) event.isOrBlock = true;
-    for (const c of conditions) delete c.isOr;
-    changed = true;
-  }
-  if (event.isElse === true) {
-    delete event.isElse;
-    if (conditions && !isElseCondition(conditions[0])) {
-      conditions.unshift(createElseCondition(await idGen.generateSid(reader)));
-    }
-    changed = true;
-  } else if (event.isElse !== undefined) {
-    delete event.isElse;
-    changed = true;
-  }
-  return changed;
-}
-
-// ─── Fresh SIDs for copies ──────────────────────────────────
-
-/**
- * Give every SID inside copied event data a fresh project-unique value, so a
- * copy never duplicates the original's SIDs. Walks nested events, conditions,
- * actions and function parameters (any object key named "sid").
- */
-export async function reassignSids(
-  reader: Construct3ProjectReader,
-  idGen: IdGenerator,
-  value: unknown,
-): Promise<number> {
+export async function reassignSids(reader: Construct3ProjectReader, idGen: IdGenerator, value: unknown): Promise<number> {
   let count = 0;
   const stack: unknown[] = [value];
+  let nodes = 0;
   while (stack.length > 0) {
+    if (++nodes > MAX_SEARCH_NODES) throw new Error(`SID reassignment exceeded ${MAX_SEARCH_NODES} nodes`);
     const node = stack.pop();
     if (Array.isArray(node)) {
-      for (const item of node) stack.push(item);
-    } else if (node && typeof node === 'object') {
+      stack.push(...node);
+    } else if (typeof node === 'object' && node !== null) {
       const record = node as Record<string, unknown>;
       for (const [key, child] of Object.entries(record)) {
         if (key === 'sid' && typeof child === 'number') {
           record.sid = await idGen.generateSid(reader);
           count++;
-        } else if (child && typeof child === 'object') {
+        } else if (typeof child === 'object' && child !== null) {
           stack.push(child);
         }
       }
     }
   }
   return count;
-}
-
-// ─── Container Resolution (shared by add_* and move_* tools) ─
-
-/** Event types that can hold nested children in a C3 event sheet. */
-export const CONTAINER_EVENT_TYPES = new Set(['group', 'block', 'function-block', 'custom-ace-block']);
-
-export interface LocatorInput {
-  groupPath?: string;
-  parentSid?: number;
-  siblingSid?: number;
-  position: 'start' | 'end' | 'before' | 'after';
-}
-
-/**
- * Validate the locator/position combination shared by add_event_block,
- * add_event_to_sheet and move_event_block. Returns an error message, or null
- * when the combination is usable.
- */
-export function validateLocator(locator: LocatorInput): string | null {
-  const locatorCount = [locator.groupPath, locator.parentSid, locator.siblingSid]
-    .filter(value => value !== undefined).length;
-  if (locatorCount > 1) {
-    return 'Specify at most one of: groupPath, parentSid, siblingSid.';
-  }
-  if (locator.siblingSid === undefined && (locator.position === 'before' || locator.position === 'after')) {
-    return 'position before/after requires siblingSid.';
-  }
-  if (locator.siblingSid !== undefined && locator.position !== 'before' && locator.position !== 'after') {
-    return 'siblingSid requires position before or after.';
-  }
-  if (locator.parentSid !== undefined && (locator.position === 'before' || locator.position === 'after')) {
-    return 'parentSid requires position start or end.';
-  }
-  return null;
-}
-
-export interface ResolvedContainer {
-  /** The array the event will be inserted into. */
-  targetEvents: Record<string, unknown>[];
-  /** The event that owns targetEvents, when the destination is nested. */
-  owner?: Record<string, unknown>;
-  /** The sibling event itself, for before/after insertion (index is read at insert time). */
-  siblingEvent?: Record<string, unknown>;
-}
-
-/**
- * Resolve a locator to an insertion container. Purely read-only: a missing
- * children array is reported as an empty array and only committed to the owner
- * by commitContainer() once the caller has finished validating. A parentSid or
- * siblingSid that several events of the sheet share is refused, like the SID
- * of the event a tool acts on (resolveEventBySid).
- */
-export function resolveContainer(
-  events: Record<string, unknown>[],
-  sheetName: string,
-  locator: LocatorInput,
-): { container: ResolvedContainer } | { error: string } {
-  if (locator.groupPath !== undefined) {
-    const resolved = resolveGroupContainer(events, locator.groupPath);
-    if ('problem' in resolved) {
-      return { error: describeGroupPathProblem(resolved.problem, locator.groupPath, sheetName) };
-    }
-    return { container: { targetEvents: resolved.children, owner: resolved.owner } };
-  }
-
-  if (locator.parentSid !== undefined) {
-    const matches = findEventsBySid(events, locator.parentSid);
-    if (matches.length === 0) {
-      return { error: `Parent event with SID ${locator.parentSid} not found in sheet "${sheetName}".` };
-    }
-    if (matches.length > 1) {
-      return { error: ambiguousLocatorMessage(sheetName, events, locator.parentSid, matches, 'parentSid') };
-    }
-    const parent = matches[0];
-    if (!CONTAINER_EVENT_TYPES.has(parent.event.eventType as string)) {
-      return { error: `Event with SID ${locator.parentSid} is a "${parent.event.eventType}" and cannot contain sub-events.` };
-    }
-    return {
-      container: {
-        targetEvents: Array.isArray(parent.event.children)
-          ? parent.event.children as Record<string, unknown>[]
-          : [],
-        owner: parent.event,
-      },
-    };
-  }
-
-  if (locator.siblingSid !== undefined) {
-    const matches = findEventsBySid(events, locator.siblingSid);
-    if (matches.length === 0) {
-      return { error: `Sibling event with SID ${locator.siblingSid} not found in sheet "${sheetName}".` };
-    }
-    if (matches.length > 1) {
-      return { error: ambiguousLocatorMessage(sheetName, events, locator.siblingSid, matches, 'siblingSid') };
-    }
-    return {
-      container: {
-        targetEvents: matches[0].parentArray,
-        siblingEvent: matches[0].event,
-      },
-    };
-  }
-
-  return { container: { targetEvents: events } };
-}
-
-/** Error for a parentSid/siblingSid that several events share: lists them; no path argument picks one. */
-function ambiguousLocatorMessage(
-  sheetName: string,
-  events: Record<string, unknown>[],
-  sid: number,
-  matches: SidMatch[],
-  argument: 'parentSid' | 'siblingSid',
-): string {
-  return (
-    `${argument} ${sid} matches ${matches.length} events in sheet "${sheetName}"; refusing to guess which one is meant.\n` +
-    `${describeSidMatches(sheetName, events, matches).join('\n')}\n` +
-    'Give all but one of these events a new unique SID, or use groupPath or another locator.'
-  );
-}
-
-/**
- * Attach a deferred children array to its owner. Call only after every
- * validation has passed, so an invalid request leaves the tree untouched.
- */
-export function commitContainer(container: ResolvedContainer): void {
-  const owner = container.owner;
-  if (owner && !Array.isArray(owner.children)) {
-    owner.children = container.targetEvents;
-  }
-}
-
-/**
- * Insert an event into a resolved container at the requested position.
- * The sibling index is read at insert time so callers that removed an event
- * from the same array beforehand still land in the right place.
- */
-export function insertIntoContainer(
-  container: ResolvedContainer,
-  position: 'start' | 'end' | 'before' | 'after',
-  event: Record<string, unknown>,
-): void {
-  const { targetEvents, siblingEvent } = container;
-  if (siblingEvent && (position === 'before' || position === 'after')) {
-    const index = targetEvents.indexOf(siblingEvent);
-    // indexOf can only be -1 if the sibling left the array between resolution
-    // and insertion; fall back to appending rather than splicing at -1.
-    if (index === -1) {
-      targetEvents.push(event);
-    } else {
-      targetEvents.splice(position === 'before' ? index : index + 1, 0, event);
-    }
-    return;
-  }
-  if (position === 'start') {
-    targetEvents.unshift(event);
-  } else {
-    targetEvents.push(event);
-  }
-}
-
-/**
- * Why an else block cannot be inserted at the requested position, or
- * undefined when it can. Construct's editor only offers "else" on an event
- * block that follows another block in the same container (editor saves have
- * at most comments between them), so an else with no event block before it,
- * or after a group, variable, include, function or script, has no editor-made
- * counterpart and is refused rather than written unverified. Whether the
- * block before it is triggered is left to the load-time gate (else-placement
- * warning). `exclude` is an event being moved, which no longer counts as a
- * neighbour.
- */
-export function elsePlacementError(
-  container: ResolvedContainer,
-  position: 'start' | 'end' | 'before' | 'after',
-  exclude?: Record<string, unknown>,
-): string | undefined {
-  const events = container.targetEvents.filter(e => e !== exclude);
-  const { siblingEvent } = container;
-  let index: number;
-  if (siblingEvent && (position === 'before' || position === 'after')) {
-    const at = events.indexOf(siblingEvent);
-    index = position === 'after' ? at + 1 : at;
-  } else {
-    index = position === 'end' ? events.length : 0;
-  }
-  // The nearest event before the insertion point that is not a comment
-  let previous: Record<string, unknown> | undefined;
-  for (let i = index - 1; i >= 0; i--) {
-    if (events[i]?.eventType !== 'comment') {
-      previous = events[i];
-      break;
-    }
-  }
-  if (previous === undefined) {
-    return 'An else block needs an event block before it in the same container (only comments may stand between them); it cannot be the first event there.';
-  }
-  if (previous.eventType !== 'block') {
-    return `An else block must follow an event block (only comments may stand between them), but the event before it would be a "${String(previous.eventType)}" event.`;
-  }
-  return undefined;
-}
-
-// ─── Subtree Identity Helpers ───────────────────────────────
-
-export interface SubtreeIdentity {
-  /** The event itself plus every descendant event, by object identity. */
-  events: Set<Record<string, unknown>>;
-  /** Every children array inside the subtree, by object identity. */
-  childArrays: Set<Record<string, unknown>[]>;
-}
-
-/**
- * Collect object identities for an event and everything below it. Used to
- * refuse a move that would place an event inside its own subtree, which would
- * detach the branch from the sheet.
- */
-export function collectSubtree(event: Record<string, unknown>): SubtreeIdentity {
-  const events = new Set<Record<string, unknown>>([event]);
-  const childArrays = new Set<Record<string, unknown>[]>();
-  const stack: Record<string, unknown>[] = [event];
-  let nodeCount = 0;
-
-  while (stack.length > 0) {
-    if (++nodeCount > MAX_SEARCH_NODES) {
-      throw new Error(`Subtree scan exceeded ${MAX_SEARCH_NODES} nodes`);
-    }
-    const current = stack.pop()!;
-    if (!Array.isArray(current.children)) continue;
-    const children = current.children as Record<string, unknown>[];
-    childArrays.add(children);
-    for (const child of children) {
-      events.add(child);
-      stack.push(child);
-    }
-  }
-
-  return { events, childArrays };
 }

@@ -1,43 +1,40 @@
 # Construct3 MCP Server
 
-> A Model Context Protocol (MCP) server that enables AI assistants (Claude, Cursor, Antigravity, and any MCP-compatible tool) to safely read, analyze, and modify Construct 3 game engine projects.
+> An MCP server that lets Claude, Cursor and other AI assistants read, analyze and safely edit Construct 3 projects — editor-faithful writes with backups and validation. New here? Start with the [User Guide](docs/USER-GUIDE.md).
 
-> **Fork build 1.9.1** (upstream release 1.9.0 plus the fork's work). See [This is a fork](#this-is-a-fork), [What's new in 1.9.0](#whats-new-in-190), the [Roadmap](#roadmap) and the [CHANGELOG](CHANGELOG.md) for details.
+> **v1.10.0** — The server follows the project on disk (no reconnect after an editor save or `git restore`), drives a running game over the Chrome DevTools Protocol with 12 new runtime tools, checks event sheet edits the way the editor does and keeps layers, instance variables and hierarchy links consistent. See [What's new](#whats-new-in-1100) and the [CHANGELOG](CHANGELOG.md).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)](https://www.typescriptlang.org/)
 
----
+## What's new in 1.10.0
 
-## This is a fork
+- **Follows the project on disk** — each tool call checks `project.c3proj` and the files the server has cached and reads again what changed, so there is no reconnect after a save in the Construct 3 editor or `git restore`. A write over an event sheet, layout, object type or family file changed since the call read it is refused, and the call's earlier writes are put back; each file the writer changes is backed up once per tool call (#51).
+- **Drives a running game** — `serve_preview` serves an exported game and launches a browser on it; `connect_to_game`, `call_bridge`, `wait_for_condition`, `subscribe_events`, `simulate_input`, `screenshot_game` and five more tools drive it over the Chrome DevTools Protocol (connecting needs Node.js 22) (#8–#13). `inject_runtime_bridge` now imports the bridge from the main script, so Construct loads it (not yet checked in the real editor).
+- **Event sheet guards** — `delete_event_sheet` refuses while other sheets use its functions or global variables, `move_events_between_sheets` keeps event variables in scope, and `add_event_to_sheet` checks function names as the editor does and returns the SIDs it creates (#58, #38).
+- **Layers, instances and objects** — layer renames update event sheets, instance variables follow the object and its families, hierarchy links go with their instances, family effects are checked, and `delete_object` keeps its images as `.bak`. `validate_project` adds `duplicate-function-name`, `hierarchy-link` and `orphaned-image` (#38).
+- **Large and damaged projects** — the UID/SID scan of files over the size limit (10MB by default) streams them, so a 608MB layout no longer blocks new UIDs elsewhere, and the analysis tools list objects whose own file cannot be parsed in `unanalysedObjects` (#59, #60).
+- **Stricter** — some calls that worked in 1.9.2 are refused now: a sheet name in another letter case, a function name the editor refuses, a copied function block, a move that takes a variable out of its scope, an instance variable that neither the object nor its families declare, and deleting an event sheet, object or family that is still used in ways 1.9.2 did not check. See Changed and Fixed in the [CHANGELOG](CHANGELOG.md).
 
-This branch is a fork of [liauw-media/construct3-mcp](https://github.com/liauw-media/construct3-mcp)
-and has diverged from it: **190 MCP tools instead of upstream's 71**, with 119 added and none
-removed or renamed. It includes upstream's release 1.9.0 in full. It adds whole areas upstream does
-not cover (flowcharts, timeline tracks and keyframes, custom eases, tilemap data and brushes,
-effects, containers, templates, renames with reference rewriting, find and replace, Project Bar
-moves and duplicates, script and project file registration) and replaces the generated-script
-runtime bridge with live Chrome DevTools Protocol control of a running preview.
+## What's new in 1.9.2
 
-It also changes how some upstream tools serialize their output, to match what Construct r495.2
-actually writes. **[FORK.md](FORK.md) is the full list of what was added, what was changed, and
-how this relates to upstream.** Read it before filing an issue, and note which branch you are on:
+- **Safer deletes next to unparsed files** — `delete_object`, `delete_family`, `delete_layout`, `delete_event_sheet`, `delete_event_from_sheet`, `update_object_properties`, `update_family` and `rename_animation` search registered files over the size limit (10MB by default) or with invalid JSON as text and refuse without `force` on a possible use; results list the unchecked files in `unscannedFiles`.
+- **Usage analysis says "possibly used"** — `find_orphaned_objects`, `get_object_dependencies` and `analyze_performance` no longer report objects as unused that such files may use.
 
-| Branch | What it is |
-|---|---|
-| `claude/w84-editor-gap` | The diverged line described in this README, with upstream 1.9.0 merged in. All 190 tools. |
-| `main` | The same commit as `claude/w84-editor-gap`. |
+## What's new in 1.9.1
 
-Everything below this notice describes `claude/w84-editor-gap`.
+- **Frame images stay with their frames** — `add_frame_to_animation` with `index` and `delete_frame_from_animation` move the image files with the frames, keep replaced or deleted images as `.bak`, refuse an index past the end and roll back on failure; `validate_project` reports frames without an image file (`frame-image`).
+- **No duplicate UIDs next to files over the size limit (10MB by default)** — such layouts and object types are scanned as text for their IDs; `validate_project` reports them as `unscanned-file` with `complete: false`, and `valid` is `false` whenever `complete` is.
+- **Function options** — `add_event_to_sheet` takes `functionReturnType`, `functionIsAsync` and `functionCopyPicked`.
+- **Per-project index cache** — tools no longer mix up two projects opened in one process.
+- **[User Guide](docs/USER-GUIDE.md)** — install, connect your AI tool, first session, safe editing workflow, runtime bridge.
 
----
+Full list: [CHANGELOG](CHANGELOG.md).
 
 ## What's new in 1.9.0
 
-Upstream's release 1.9.0, which this fork includes:
-
-- **Editor load-time checks** — `validate_project` checks the rules the Construct 3 editor enforces when it opens a project, and event sheet writes that would add such an error are refused.
+- **Editor load-time checks** — `validate_project` checks a set of rules the Construct 3 editor enforces when it opens a project, and event sheet writes that would add such an error are refused.
 - **Behavior conditions and actions the editor reads** — written with `behaviorType`; `fix_legacy_behavior_keys` repairs sheets from older versions (`behavior-type` is still accepted as a deprecated input alias).
 - **Find events by editor number** — `locate_event` and `get_eventsheet_outline` turn "sheet, event N, action M" into the event's JSON path.
 - **Runtime traps** — `find_runtime_traps`, the `construct3://docs/pitfalls` resource and the `debug_stuck_game` prompt for logic that loads but hangs or fails silently.
@@ -46,36 +43,31 @@ Upstream's release 1.9.0, which this fork includes:
 - **Accurate reports** — `validate_project`, `find_orphaned_objects`, `get_asset_usage` and `analyze_performance` read editor-saved projects correctly (Transitions folder, animation folders, file assets, non-world instances, sub-layers) instead of reporting false problems.
 - **Byte-faithful writes** — line endings, trailing newline, BOM and file-name case are kept; lowercase image file names and per-instance behavior entries match the editor; every write result carries an `editorNote`.
 
-Where the fork and upstream had solved the same problem differently, the merge kept one behavior; the [CHANGELOG](CHANGELOG.md) entry for 1.9.1 lists those decisions.
+Full list: [CHANGELOG](CHANGELOG.md).
 
 ## Quick Start
 
+**New to this server? Read the [User Guide](docs/USER-GUIDE.md).** It covers requirements, setup for each AI tool, a first session, the safe editing workflow (close the project in Construct 3 while the AI edits it) and runtime testing.
+
+The server is not published on npm. Clone it and build it once (Node.js 18 or newer):
+
 ```bash
-# Install dependencies
-npm install
-
-# Build the server
-npm run build
-
-# Test with your project (a folder project, or a single-file .c3p)
-node dist/index.js /path/to/your/project.c3proj
+git clone https://github.com/liauw-media/construct3-mcp.git
+cd construct3-mcp
+npm ci    # installs dependencies and builds dist/ (prepare script)
 ```
 
-**Add to your MCP config** (Claude Code, Cursor, Antigravity — [see Usage](#usage) for config file locations):
-```json
-{
-  "mcpServers": {
-    "construct3": {
-      "command": "node",
-      "args": ["/absolute/path/to/construct3-mcp/dist/index.js"]
-    }
-  }
-}
+Connect it to Claude Code with absolute paths to `dist/index.js` and to your project folder (the folder that contains `project.c3proj`, or a single-file `.c3p` project):
+
+```bash
+claude mcp add construct3 --scope user -- node /absolute/path/to/construct3-mcp/dist/index.js "/absolute/path/to/My Game"
+claude mcp list    # construct3: ... - ✔ Connected
 ```
+
+Claude Desktop, Cursor, VS Code and others use a JSON config instead, see [Usage](#usage).
 
 ## Table of Contents
 
-- [This is a fork](#this-is-a-fork)
 - [Why This Exists](#why-this-exists)
 - [Features](#features)
 - [Installation](#installation)
@@ -99,7 +91,7 @@ node dist/index.js /path/to/your/project.c3proj
 - Provides structured access to project data via resources and query tools
 - Enables deep analysis (dependency graphs, orphan detection, performance audits)
 - Safely creates, updates, and deletes project entities with automatic backup, ID generation, and validation
-- Includes access to official Construct 3 documentation
+- Links to the official Construct 3 manual and includes a curated list of Construct 3 pitfalls
 
 ## Features
 
@@ -114,7 +106,7 @@ node dist/index.js /path/to/your/project.c3proj
 | `construct3://eventsheets/{name}` | Specific event sheet details |
 | `construct3://layouts/{name}` | Specific layout details |
 | `construct3://docs/index` | Index of documentation categories and popular topics |
-| `construct3://docs/manual/{topic}` | Official Construct 3 documentation |
+| `construct3://docs/manual/{topic}` | Link to the construct.net manual page for a topic (the page text is not fetched) |
 | `construct3://docs/pitfalls` | Curated Construct 3 pitfalls (signals, scripts, picking, expressions), each tagged with its source |
 
 ### Query Tools (Read-Only)
@@ -126,23 +118,17 @@ node dist/index.js /path/to/your/project.c3proj
 | `list_layouts` | List all layouts |
 | `list_families` | List all object families |
 | `list_timelines` | List all timelines (root and subfolders); transitions are listed separately |
+| `list_flowcharts` | List all flowcharts (root and subfolders) |
 | `list_addons` | List addons in `usedAddons`, optionally filtered by type |
 | `get_object_details` | Get detailed info about a specific object |
 | `get_eventsheet_details` | Get detailed info about an event sheet |
 | `get_layout_details` | Get detailed info about a layout |
 | `get_timeline_details` | Get a timeline's full JSON (tracks and settings) |
+| `list_timeline_tracks` | List the tracks of a timeline with their kind, folder and keyframe times |
+| `list_eases` | List the project's custom eases, the timelines and event sheets that use them |
+| `get_flowchart_details` | Get a flowchart's full JSON (nodes, outputs and connections) |
 | `search_objects` | Search objects by name pattern |
 | `get_project_summary` | Get comprehensive project summary |
-
-### Project Session Tools
-
-| Tool | Description |
-|------|-------------|
-| `get_open_project` | Report the project the server serves: name, `.c3proj` path, and for a `.c3p` the archive and its working folder |
-| `open_project` | Switch to another project folder, `.c3proj` or `.c3p` while the server runs; see [Single-file (.c3p) projects](#single-file-c3p-projects) |
-| `reload_project` | Re-read the project after Construct or another program saved it, and report which files had changed on disk |
-| `list_changes` | What recent tool calls wrote, created, deleted or moved, with the `.bak` backup each write left |
-| `revert_last_change` | Undo the most recent tool call that changed files, from those backups |
 
 ### Analysis Tools
 
@@ -150,22 +136,21 @@ node dist/index.js /path/to/your/project.c3proj
 |------|-------------|
 | `get_eventsheet_flow` | Event sheet include hierarchy and layout bindings (Mermaid or JSON) |
 | `get_function_map` | Function definitions and call sites across event sheets (Call function actions, `Functions.Name(...)` expression calls, function map registrations) |
-| `get_object_dependencies` | Where objects are used (event sheets, layouts including sub-layers, families) |
-| `find_orphaned_objects` | Find objects not used by any event (including object parameters, expressions and script actions) or layout (including sub-layers, non-world instances and object properties of other instances) |
+| `get_object_dependencies` | Where objects are used (event sheets, layouts including sub-layers, families); objects that files it could not parse possibly use are marked (`possiblyReferencedIn`, `unscannedFiles`), and objects whose own object type file it could not parse are marked `unanalysed` (listed in `unanalysedObjects` when no use was found) |
+| `find_orphaned_objects` | Find objects not used by any event (including object parameters, expressions, script actions and *Create object (by name)* with a literal name) or layout (including sub-layers, non-world instances and object properties of other instances); objects that files it could not parse possibly use are listed as `possiblyUsed` instead, and objects whose own file it could not parse as `unanalysedObjects` |
 | `get_asset_usage` | Track sound, image, font, video and project file usage (used, unused or not analysed) |
 | `analyze_performance` | Heuristic performance audit with categorized issues |
-| `validate_project` | 30 integrity checks: missing files, required fields, duplicate SIDs/UIDs, repeated layer names, broken references and includes, behaviors and instance variables that events use but their object lacks, missing addons, legacy `"behavior-type"` keys and other keys Construct does not read, layout instances without behavior entries, event shapes older versions wrote that the editor never writes, scripts in the one-string shape of older Construct 3 releases, object images, conditions and actions against Construct r495.2's own definitions or a loaded addon's, expressions inside parameters, addons without definitions, orphaned and backup files, plus the rules the C3 editor enforces at load (trigger and else placement, expression syntax, empty expressions, duplicate names/SIDs, family plugins). Rules verified only in part are reported as warnings; `complete` says whether every object type, event sheet and layout was scanned (details in [API.md](docs/API.md#validate_project)) |
-| `load_addon_definitions` | Load a third-party addon's conditions and actions (addon.json and aces.json, unpacked or as a .c3addon) so its ACEs are checked like the built-in ones; without a path, list what is loaded |
+| `validate_project` | Integrity checks: missing files, required fields, duplicate SIDs/UIDs, repeated layer names, function names shared by several function blocks, broken references and includes, behaviors and instance variables that events use but their object lacks, missing addons, legacy `"behavior-type"` keys, layout instances without behavior entries, hierarchy links to missing instances or one-sided ones, event shapes older versions wrote that the editor never writes, scripts in the one-string shape of older Construct 3 releases, orphaned and backup files, image files named after no object type, plus the rules the C3 editor enforces at load (trigger and else placement, expression syntax limited to unterminated string literals and backslashes outside them, empty expressions, duplicate names/SIDs, family plugins). Rules verified only in part are reported as warnings (details in [API.md](docs/API.md#validate_project)). `valid` means no errors and every registered file was checked; `complete` (and so `valid`) is false when a registered file exists but was not checked (over the size limit (10MB by default), invalid JSON, unreadable; listed in `unscannedFiles`) |
+| `get_project_properties` | The project's property settings and its other top-level scalar settings (reads `project.c3proj` only) |
+| `get_instance_counts` | Instances each object type has on the layouts, per layout (sub-layers and non-world instances included), and the object types with none; names the files it could not parse and says the count is then incomplete |
+| `search_project` | Find text in event sheets, registered script files and, with `scopes`, layout instance values; a literal query or a regular expression (time-limited, refused past a limit); says which files could not be searched |
+| `find_behavior_usage` | Where a behavior is declared, used in events (also through family members and `Object.Behavior.Expression`) and set on placed instances; says what it could not see |
+| `find_effect_usage` | Where an effect is declared (object types, families, layouts, layers), its instance states and the events that name it; says what it could not see |
+| `find_instance_variable_references` | Event references to an instance variable, the values placed instances store, and scripts that may read it; says what it could not see |
 | `get_group_settings` | Event group settings (`isActiveOnStart`, disabled) across sheets, filterable by sheet and active state |
 | `locate_event` | Map an editor event number ("es_game, event 72, action 1") to its JSON path, sid, content and neighbouring events |
 | `get_eventsheet_outline` | Readable, paged event sheet outline with editor event numbers (IF/DO/CALL/SCRIPT/GROUP/FUNCTION/VAR) |
 | `find_runtime_traps` | Runtime traps: Wait for signal tags nothing signals, waits that start after a call already raised their tag, unused/dynamic signal tags, scripts using function parameters without `localVars` |
-| `get_project_properties` | Every project setting: the full `properties` bag and top-level settings such as `bundleAddons` |
-| `search_project` | Find text or a regular expression across event sheets, script files and layout instance values |
-| `find_behavior_usage` | Declarations, event references and per-instance settings of a behavior |
-| `find_effect_usage` | Object types, families, layouts, layers and instances that use an effect |
-| `find_instance_variable_references` | Event references (ACE parameters, expressions, call arguments) and stored values of an instance variable |
-| `get_instance_counts` | Placed instances per object type and layout, including sub-layers and non-world instances |
 
 ### Mutation Tools (Safe Write Operations)
 
@@ -174,62 +159,97 @@ node dist/index.js /path/to/your/project.c3proj
 | Tool | Description |
 |------|-------------|
 | `create_object` | Create a new object type (Sprite, Text, TiledBg, global plugins, etc.); refuses names that clash with an object type, a family, System or the Functions object, ignoring case |
-| `update_object_properties` | Add/remove instance variables and behaviors, change global status, edit a single-global object's settings; removing one that events still use is refused, listing the uses, unless forced |
-| `update_instance_variable` | Rename, retype or describe an instance variable, keeping placed instances and event references in step |
-| `reorder_behaviors` | Reorder the behaviors of an object type or family |
-| `replace_object_image` | Replace the image of a Tiled Background, 9-patch, Particles, Sprite Font or Tilemap object |
-| `delete_object` | Delete an object; refused while anything uses it (events, instances on any layer or sub-layer, families), listing where, unless forced |
+| `update_object_properties` | Add/remove instance variables and behaviors, change global status; removing one that events still use is refused, listing the uses, unless forced |
+| `delete_object` | Delete an object; refused while anything uses it (events, instances on any layer or sub-layer, families), listing where, unless forced; its image files are kept as `.bak` |
+| `rename_object_type` | Rename an object type with its event sheet uses, layout instances, family and container memberships, timeline instance tracks, frame image files and its tilemap brush file (dry run, force); lists other timeline values, strings and scripts that may name it, never changes them |
+| `rename_family` | Rename a family with its event sheet uses (dry run, force) |
 | `create_family` | Create a family; refuses name clashes and members of mixed plugins (load-time checked) |
-| `update_family` | Add/remove members, shared instance variables and shared behaviors; refuses member changes that mix plugins (load-time checked), and removing an instance variable, behavior or member through which events still use them, unless forced |
-| `delete_family` | Delete a family; refused while events or object properties name it or events use its instance variables or behaviors through a member, listing where, unless forced |
-| `list_containers` / `create_container` / `update_container` / `delete_container` | Object containers, whose members Construct creates, picks and destroys together |
+| `update_family` | Add/remove members and shared instance variables; refuses member changes that mix plugins (load-time checked), and removing an instance variable or member through which events still use the family's instance variables, behaviors or effects, unless forced |
+| `update_instance_variable` | Rename an instance variable of an object type or family, or change its type or description, with the values on placed instances; refuses a rename events use, unless forced |
+| `reorder_behaviors` | Put the behaviors of an object type or family in a new order, with those behaviors' entries on placed instances |
+| `delete_family` | Delete a family; refused while events or object properties name it or events use its instance variables, behaviors or effects through a member, listing where, unless forced |
+| `list_containers` | List the containers of `project.c3proj` (each with its index and members) and any member that is no object type; read-only |
+| `create_container` | Create a container of two or more object types, so they are created, picked and destroyed together; refuses a family, a missing or mis-cased name, fewer than two object types, or an object type another container lists |
+| `update_container` | Add or remove object types of a container, found by one of its members (with `index` when a member is in several containers); refuses to leave fewer than two object types |
+| `delete_container` | Delete a container; its object types stay |
 
 **Event sheets**
 
 | Tool | Description |
 |------|-------------|
 | `create_event_sheet` | Create a new event sheet with optional includes; refuses names that differ from an existing sheet only in case |
-| `add_event_to_sheet` | Add a group, function, variable, include, comment or script block to a sheet, at the root or inside a group or event (load-time checked); the names of a new variable and of function parameters are checked like in the editor |
-| `add_event_block` | Add a block event with conditions + actions (gameplay logic) at the sheet root, under a parent SID or beside a sibling SID, written in the editor's own shapes: sub-events (also without conditions), else/else-if blocks, OR blocks, function and custom action calls, script actions, comment rows; refuses writes that break the checked editor load-time rules (expression syntax, empty expressions, trigger placement) |
-| `update_event_block` | Update an existing block, function or custom action body: modify, insert, replace, add or remove actions and conditions, make it an else or OR block (load-time checked) |
+| `add_event_to_sheet` | Add a group, function, variable, include, or comment (with colours) to a sheet (at the top level, in a group, among the sub-events of an event or beside one, where an editor-saved project on record or a checked editor case shows that kind of event; includes at the top level only); script events; a variable's *Static* and *Constant* options (load-time checked); functions take the editor's return type, *Asynchronous* and *Copy picked* options; the names of a new (global) variable, of a function and of its parameters are checked like in the editor (no second function with the same name, ignoring case); returns the new SIDs (`generatedSid`, `functionParameterSids`), `eventPath` and `backupFile`; unknown top-level arguments are refused (keys inside a `functionParams` entry other than `name` and `type` are still dropped) |
+| `add_event_block` | Add a block event with conditions + actions (gameplay logic), placed at the top level, in a group, among the sub-events of an event or beside one, written in the editor's own shapes: sub-events (also without conditions), else/else-if blocks, OR blocks, function calls, script actions, comment rows; refuses writes that break the checked editor load-time rules (unterminated string literals and backslashes outside them, empty expressions, trigger placement) and warns where Else cannot stand (after a triggered event) |
+| `update_event_block` | Update an existing block: modify/add/remove actions and conditions, edit comment rows (text and colours) in place, make it an else or OR block (load-time checked) |
 | `update_event_block_action` | Replace the parameters of one action in a block (by block SID and action index; function call arguments as an array; load-time checked) |
-| `move_event_block_items` | Reorder or move actions/conditions within or between blocks while preserving SIDs, or copy them with fresh SIDs (`copy: true`) |
-| `move_event_block` | Move an event to another container in the same sheet, keeping its SID and every descendant |
-| `move_events_between_sheets` | Copy or move top-level events between sheets by SID (optionally into a group); a move keeps SIDs, a copy gets fresh ones; load-time checked, and a copy or move that would clash event variable names is refused |
-| `add_custom_action` | Add a custom action definition owned by an object type or family |
-| `update_function` | Update a function or custom action definition; a rename rewrites every call when `renameCallers` is set |
-| `update_event_group` | Update a group in place: title, description, active on start, disabled, colors |
-| `update_event_variable` | Rename a variable or change its type, initial value, static or constant flag or comment; a new name is checked like in the editor |
-| `update_comment` | Update a comment, addressed by its index in its container |
-| `update_script_event` | Replace the JavaScript of a standalone script block, or remove the block |
+| `move_event_block` | Move an event with its sub-events to another place in its sheet (group, sub-events of an event, beside an event); refuses a move into itself, a place no editor-saved project on record or checked editor case shows for that kind of event, and (without `force`) a move that takes a used variable or parameter out of scope |
+| `update_event_variable` | Rename a variable (its uses in System variable conditions and actions, in function call arguments and, with the ACE catalogue, in the parameters it types as expressions or variable names, in every sheet that sees it, follow the new name; other uses are listed and refuse without force) or change its type, initial value, static or constant flag; a new name is checked like in the editor (dry run, force) |
+| `move_events_between_sheets` | Copy or move top-level events between sheets by SID (optionally into a group); load-time checked, so copying an event that breaks a load-time rule is refused; a copy or move that would clash event variable names (e.g. a copied global variable) is refused, and so is (without `force`) a move that takes a used variable out of scope, e.g. a global variable moved into a group; copies get new SIDs |
 | `delete_event_from_sheet` | Delete an event from a sheet by SID or include name (dry-run, force); refuses while functions or event variables it removes are still referenced elsewhere (by calls, function maps, System variable ACEs or by name in expressions); warns about an else block the delete leaves behind |
+| `move_event_block_items` | Move, reorder or copy conditions or actions within or between blocks of a sheet (copies of items that have a SID get new ones); refuses moving an else condition and (without `force`) a move that takes a used variable or parameter out of scope, and warns when "Set return value" leaves a function block. `update_event_block` also inserts conditions and actions at an index and replaces conditions in place |
 | `remove_event_from_sheet` | Remove an include from a sheet by included sheet name |
-| `delete_event_sheet` | Delete an event sheet (with reference checking and optional force) |
+| `add_custom_action` | Add a custom action definition to an object type or family (at the top level, in a group with `groupPath` or `parentSid`, or beside an event with `siblingSid` and `position`, and only where every event above it is a group); refuses a second custom action of one name on one owner; calls are `{ customAction, objectClass, parameters }` actions in `add_event_block` and `update_event_block`, which also edits the definition's body |
+| `update_function` | Change a function's or custom action's name, options and parameters, and a function's return type; calls and function maps are rewritten with `updateCallers`, `Functions.Name(...)` expressions and unparsed sheets block without `force`; dry run |
+| `delete_event_sheet` | Delete an event sheet (with reference checking and optional force): includes, layout bindings, and uses in other sheets of the functions and global variables it defines |
+| `update_event_group` | Change a group's title, description, *Active on start*, disabled state and colours in place, keeping its SID and sub-events; refuses a title another group in the same list has, and (without `force`) a rename while a `group-name` parameter or an unparsed sheet may name the old title |
+| `update_comment` | Change a comment event's text and colours in place, by container and index (comments have no SID); a comment row among a block's actions is changed with `update_event_block` |
+| `update_script_event` | Replace a script event's lines, enable or disable it, or remove it, by container and index; a removal needs the script's first line as `expectedText` |
+| `rename_event_sheet` | Rename an event sheet with its includes, layout bindings and project-bar entry (dry run, force); refuses a name taken ignoring case and a change of letter case only |
 | `fix_legacy_behavior_keys` | Rename legacy `"behavior-type"` keys (written by older versions) to `"behaviorType"` in all event sheets, checking each name against the object's behaviors (dry-run by default) |
 | `fix_legacy_event_shapes` | Convert event shapes written by older versions into the editor's own (block `isElse` to a System else condition, condition `isOr` to `isOrBlock`, old-shape function calls to positional arguments, one-string scripts, as older Construct 3 releases also saved them, to lines) where the result is unambiguous; reports the rest and which conversions can change how an event runs (dry-run by default) |
 
-Event SIDs are not always unique in editor-saved sheets. The tools that find an event by SID refuse a SID shared by several events in the sheet and list the candidates; pass `eventPath` (the JSON path that `locate_event` returns, e.g. `events[3].children[1]`) to pick one. `move_events_between_sheets` keeps SIDs on a move and warns when a moved event leaves such a shared SID in the target sheet. See [API.md](docs/API.md#mutation-tools).
+Event SIDs are not always unique in editor-saved sheets. The tools that find an event by SID refuse a SID shared by several events in the sheet and list the candidates; pass `eventPath` (the JSON path that `locate_event` returns, e.g. `events[3].children[1]`) to pick one. `move_events_between_sheets` keeps SIDs when it moves events and warns when that leaves a shared SID in the target sheet, where the tools then refuse it unless `eventPath` picks one; copies get new SIDs. See [API.md](docs/API.md#mutation-tools).
+
+**Find and replace**
+
+| Tool | Description |
+|------|-------------|
+| `replace_object_in_events` | Swap one object type or family for another of the same plugin in one event sheet or all of them, branch by branch, only where the replacement has the behaviors, instance variables and effects the events use; lists what it leaves (dry run, rollback of a failed write) |
+| `replace_in_expressions` | Find and replace text (or a regular expression) in condition and action parameters, leaving name and combo parameters alone unless `parameterKeys` names them (dry run, time limit, rollback of a failed write) |
 
 **Layouts, layers and instances**
 
 | Tool | Description |
 |------|-------------|
 | `create_layout` | Create a new layout with configurable layers; refuses names that differ from an existing layout only in case |
-| `update_layout` | Update layout event sheet binding, dimensions, scrolling, sampling, projection and viewport anchor |
+| `update_layout` | Update layout event sheet binding and dimensions |
 | `delete_layout` | Delete a layout (blocks startup layout, checks references) |
-| `add_layer` | Add a layer, at the top level or as a sub-layer (position, visibility, transparency, parallax, blend mode); refuses a name any layer or sub-layer of the layout uses, ignoring case |
-| `update_layer` | Rename a layer or sub-layer or change visibility, interactivity, parallax, blend mode, scale rate, Z elevation, color, sampling and render settings; refuses a new name used by another layer or sub-layer, ignoring case |
-| `delete_layer` | Delete a layer or sub-layer with its sub-layers (never the last top-level one; blocked while it holds instances or has sub-layers, unless forced) |
-| `reorder_layers` / `move_layer` | Reorder one nesting level, or move a layer to another nesting level |
-| `add_instance_to_layout` | Place an object instance on a layout layer or sub-layer with full property control |
-| `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, origin, blend mode, depth, visibility, tags, instance variables, plugin properties, behaviors, effects) |
-| `move_instance` | Move a placed instance to another layer or change its Z order |
-| `delete_instance_from_layout` | Remove a placed instance by UID (layers, sub-layers and non-world instances) |
-| `add_instances_to_layout` | Place up to 500 instances on one layout in one call; if any item fails, nothing is written (`dryRun`) |
-| `update_instances` | Update up to 500 placed instances of one layout in one call, all or nothing (`dryRun`) |
-| `move_instances` | Move up to 500 world instances of one layout between layers or Z positions in one call, applied in list order, all or nothing (`dryRun`) |
-| `delete_instances_from_layout` | Remove up to 500 instances of one layout by UID in one call, detaching hierarchy links, all or nothing (`dryRun`) |
-| `set_instance_parent` / `remove_instance_children` | Attach an instance to a hierarchy parent or detach it, or detach all of its children |
+| `rename_layout` | Rename a layout with its Go to layout parameters, the timelines that start on it and its project-bar entry; stays the startup layout; lists strings that may name it, never changes them (dry run, force) |
+| `add_layer` | Add a layer (position, visibility, transparency, parallax, blend mode); refuses a name any layer or sub-layer of the layout uses, ignoring case |
+| `update_layer` | Rename a layer or sub-layer or change visibility, interactivity, parallax, blend mode, scale rate, Z elevation; refuses a new name used by another layer or sub-layer, ignoring case; a rename points the event parameters that name the layer at the new name (unless another layout has a layer of that name) and lists other strings that may name it |
+| `rename_layer` | Rename a layer in several layouts at once, with its `"layer"` parameters and a dry run |
+| `delete_layer` | Delete a layer or sub-layer with its sub-layers (never the last top-level one; blocked while they hold instances unless forced); hierarchy links of other instances to the deleted ones are removed |
+| `reorder_layers` | Put the layers of one level of a layout (the layout's own, or a layer's sub-layers) in a new order |
+| `move_layer` | Move a layer with its sub-layers and instances into another layer's sub-layers or to the top level, at an index; refuses a move into its own sub-layers |
+| `add_instance_to_layout` | Place an object instance on a layout layer or sub-layer with full property control; writes a value for every instance variable of the object and its families and refuses names they do not have |
+| `update_instance` | Update a placed instance by UID on any layer or sub-layer (position, size, angle, color, visibility, tags, instance variables of its object and families) |
+| `move_instance` | Move a placed instance to another layer or sub-layer, or to another place in its layer's instances |
+| `move_instances` | Move many placed instances of one layout in one write, each as `move_instance` moves one, in order; all refused when one move is |
+| `delete_instance_from_layout` | Remove a placed instance by UID (layers, sub-layers and non-world instances); its hierarchy children stay without a parent, and its parent no longer lists it |
+| `set_instance_parent` | Make an instance the hierarchy child of another (both sides written, across layers), or take it off its parent; refuses loops and shared UIDs |
+| `remove_instance_children` | Take every hierarchy child off an instance |
+| `add_instances_to_layout` | Place many instances on one layout in one write, each as `add_instance_to_layout` places one; all refused when one item is |
+| `update_instances` | Update many placed instances of one layout in one write, each as `update_instance` does |
+| `delete_instances_from_layout` | Remove many placed instances of one layout by UID in one write, hierarchy links removed as `delete_instance_from_layout` removes them |
+
+**Instance templates**
+
+| Tool | Description |
+|------|-------------|
+| `list_templates` | List every template instance (layout, UID, object type) with the number of replicas that follow it, the replicas whose template was not found, and the layouts that could not be parsed |
+| `set_instance_template` | Make a layout instance a template, a replica of a named template, or neither; the template block is built from the instance's own properties, instance variables, behaviors and effects; a failed write is rolled back |
+| `set_default_template` | Set or clear the template an object type's new instances are created from; a failed write is rolled back |
+
+**Project Bar structure**
+
+| Tool | Description |
+|------|-------------|
+| `move_project_item` | Move an object type, family, layout, event sheet, flowchart, script or imported project file to another Project Bar folder with its files; the old files are kept as `.bak`; refuses a destination folder that differs from a sibling only in case |
+| `duplicate_layout` | Copy a layout with fresh SIDs and new UIDs (hierarchy links remapped); refuses a layout with template instances; warns about timelines and event sheets that address its instances by UID |
+| `duplicate_layer` | Copy a layer next to its source with fresh SIDs and new UIDs; refuses a layer with sub-layers, template instances or hierarchy links to other layers |
+| `duplicate_event_sheet` | Copy an event sheet with fresh SIDs; refuses a sheet that declares groups, functions, custom actions or global variables |
+| `duplicate_object_type` | Copy an object type with fresh SIDs and image IDs, its image files and its tilemap brush file; no instances, families or containers |
+| `duplicate_timeline` | Copy a timeline at the root of the timelines list next to its source; the copy addresses the same instances |
 
 **Sprite animations**
 
@@ -239,146 +259,139 @@ Event SIDs are not always unique in editor-saved sheets. The tools that find an 
 | `update_animation_properties` | Update animation speed, looping, ping-pong, repeat count |
 | `rename_animation` | Rename an animation with its frame image files and the layout instances starting with it |
 | `delete_animation` | Delete an animation (never the last one) |
-| `add_frame_to_animation` | Add a blank frame (placeholder PNG) at an index |
-| `update_frame` | Per-frame duration, size, origin, tag, image points and collision polygon |
-| `delete_frame_from_animation` | Delete a frame by index (never the last one) |
-| `duplicate_frame` | Copy a frame with its image |
+| `create_animation_folder` | Create an animation folder (and the folders above it) on a Sprite |
+| `move_animation_to_folder` | Move an animation into an animation folder or back to the top level |
+| `add_frame_to_animation` | Add a blank frame (placeholder PNG) at an index; later frame images move up with their frames |
+| `update_frame` | Update a frame's duration, size or origin |
+| `delete_frame_from_animation` | Delete a frame by index (never the last one); its image is kept as `.bak`, later frame images move down |
+| `reorder_frames` | Put an animation's frames in a new order; their image files move with them |
+| `reverse_frames` | Reverse an animation's frames with their image files |
+| `duplicate_frame` | Insert a copy of a frame with a copy of its image; later frame images move up |
 | `replace_sprite_image` | Replace a frame's image with base64 PNG data |
-| `reorder_frames` / `reverse_frames` | Reorder or reverse the frames, renaming their image files to match |
-| `create_animation_folder` / `move_animation_to_folder` | Organize animations in subfolders |
+| `replace_object_image` | Replace the single image of an object type without animations (such as a Tiled Background) with base64 PNG data |
 
 **Timelines**
 
 | Tool | Description |
 |------|-------------|
 | `create_timeline` | Create a timeline (duration, loop, ping-pong, repeat count, start-on-layout); refuses a case variant of a timeline in the same folder |
-| `update_timeline` | Update timeline settings, playback modes, or enable/disable it |
-| `delete_timeline` | Delete a timeline (backs up exactly the file it deletes; a registered timeline whose file is missing is only deregistered) |
-| `list_timeline_tracks` | Summarize a timeline's tracks by kind, including untyped tracks from older releases |
-| `add_timeline_track` / `remove_timeline_track` | Add an instance track for a placed instance, or remove any track with its keyframes |
-| `add_property_track` / `remove_property_track` | Add or remove one property track of an instance track |
-| `add_value_track` / `add_audio_track` | Add a value track or an audio track playing a registered sound or music file |
-| `set_keyframe` / `delete_keyframe` | Create, update or delete the keyframes at a time on a track |
-| `update_track` | A track's playback properties; value and audio tracks can also be renamed |
-| `add_timeline_folder` / `rename_timeline_folder` / `delete_timeline_folder` / `move_timeline_track` | Organize timeline tracks in track folders |
-| `list_eases` / `create_ease` / `update_ease` / `delete_ease` | Custom ease curves in `timelines/transitions/`, kept in step with the timelines that use them |
+| `update_timeline` | Update timeline settings or enable/disable it |
+| `delete_timeline` | Delete a timeline (backs up exactly the file it deletes; removes only the registration when its file is missing) |
+| `add_timeline_track` | Add an instance track for one world instance of a layout, with a property track per property holding its current value; refuses an instance that already has a track |
+| `remove_timeline_track` | Remove an instance track by instance UID, or a value or audio track by name, with its keyframes |
+| `add_property_track` | Add one property track to an instance track; refuses a property that already has one |
+| `remove_property_track` | Remove one property track from an instance track |
+| `set_keyframe` | Create or update the keyframe at a time on a track; refuses a time outside the timeline and a value of the wrong kind |
+| `delete_keyframe` | Delete the keyframe at a time (or only one property's keyframe); never the last master keyframe |
+| `update_track` | Update a track's playback properties; rename a value or audio track; point an audio track at another registered audio file |
+| `add_value_track` | Add a value track (a named number animated over time); refuses a name another value or audio track has |
+| `add_audio_track` | Add an audio track that plays a sound or music file registered in the project; refuses an unregistered file |
+| `add_timeline_folder` | Create a track folder; refuses a name its sibling folders already use |
+| `rename_timeline_folder` | Rename a track folder; refuses the root folder |
+| `delete_timeline_folder` | Delete a track folder, moving its contents up or deleting them with `deleteContents`; refuses a move that would change a track's result mode |
+| `move_timeline_track` | Move a track into a track folder or back to the root; refuses a move through a folder that has a result mode of its own |
+| `create_ease` | Create a custom ease curve and register it; refuses a name Construct already uses for an ease |
+| `update_ease` | Change a custom ease's points or linear flag, and refresh its copy in every timeline and event sheet that uses it; refuses while one of them cannot be read |
+| `delete_ease` | Delete a custom ease that no timeline uses; refuses while an event sheet or script mentions its name, unless `force` is set |
 
-**Project, addons and files**
+**Flowcharts**
+
+| Tool | Description |
+|------|-------------|
+| `create_flowchart` | Create an empty flowchart and register it in the same Project Bar folder; refuses a case variant of an existing name; warns when the Flowchart plugin is not in the project |
+| `delete_flowchart` | Delete a flowchart: its registration first, then its file and editor-state file (kept as `.bak`), each only if the editor did not save it meanwhile; the registration is put back at its place when the file cannot be deleted |
+| `add_flowchart_node` | Add a dictionary or comment node with its output pins; one start node is kept |
+| `update_flowchart_node` | Update a node: caption, position, start flag, value type, comment text and formatting; connections are kept |
+| `delete_flowchart_node` | Delete a node and every reference to it |
+| `add_flowchart_output` | Add an output pin to a node, unconnected |
+| `update_flowchart_output` | Update an output pin; its connection is kept |
+| `delete_flowchart_output` | Delete an output pin and the connection it holds |
+| `reorder_flowchart_outputs` | Reorder a node's output pins; a node that holds one output SID twice is refused |
+| `connect_flowchart_nodes` | Connect an output pin to a node |
+| `disconnect_flowchart_nodes` | Disconnect an output pin, leaving other connections between the same two nodes |
+
+**Tilemaps**
+
+| Tool | Description |
+|------|-------------|
+| `get_tilemap_data` | Read the painted tiles of a placed Tilemap instance as rows[y][x] |
+| `set_tilemap_tiles` | Paint, flip or erase single cells or fill a rectangle; other cells are kept |
+| `set_tilemap_data` | Replace all tile data of a Tilemap instance from rows[y][x], resizing the instance by default |
+| `list_tilemap_brushes` | List a Tilemap object type's editor brushes (auto16, auto47, patch) in its brush file |
+| `add_tilemap_brush` | Add one of a Tilemap object type's editor brushes (auto16, auto47, patch) to its brush file |
+| `update_tilemap_brush` | Rename, retype or replace one of a Tilemap object type's editor brushes (auto16, auto47, patch) in its brush file |
+| `delete_tilemap_brush` | Delete one of a Tilemap object type's editor brushes (auto16, auto47, patch) from its brush file |
+
+**Project and addons**
 
 | Tool | Description |
 |------|-------------|
 | `update_project_metadata` | Update project name, version, author, or description |
-| `update_project_properties` | Any project setting, plus the first layout, viewport size, worker mode and functions name |
+| `update_project_properties` | Update project settings: `project.properties` keys, startup layout, viewport size, worker mode, functions name |
 | `register_addon` | Add a plugin, behavior or effect to `usedAddons` |
 | `unregister_addon` | Remove an addon from `usedAddons` (built-ins need `force`) |
-| `register_script_file` | Register a script in `rootFileFolders.script` with `script-info` metadata and a collision-safe SID |
-| `deregister_script_file` | Remove a script registration while preserving the script file |
-| `set_main_script` | Mark one registered script as the main script |
-| `register_project_file` | Copy a file into `files/` and register it in the general, sound, music, video, or font family |
-| `deregister_project_file` | Deregister a Project File and remove its file under `files/` |
-| `create_data_file` | Create an Array, Dictionary, JSON or text data file and register it |
+| `list_effects` | List the effects of an object type, a family, a layout or a layer, and the effect addons registered in the project |
+| `add_effect` | Add an effect (a registered effect addon) to an object type, a family, a layout or a layer, with an entry on each placed instance for an object type or family |
+| `update_effect` | Change an effect's `isEnabled` and `parameters`: a layer's or layout's in its entry, an object type's or family's on one placed instance |
+| `remove_effect` | Remove an effect; refused while event sheets name it (`force` removes it anyway, and the uses are not changed) |
+| `reorder_effects` | Put the effects of a holder in a new order, and the placed instances' entries of an object type's or family's effects with them |
+| `load_addon_definitions` | Load a third-party addon's definitions (`addon.json` and `aces.json`, from a folder or a `.c3addon` archive) so that `validate_project` and the event tools can check its conditions, actions and expressions; changes only what this server checks, no project file |
 
-### More Mutation Tools, by Area
-
-The tables above cover the general write tools. The tools below complete the set, grouped by what they edit; [docs/API.md](docs/API.md) gives the parameters of every one.
-
-#### Flowcharts
+**Scripts and Project Files**
 
 | Tool | Description |
 |------|-------------|
-| `list_flowcharts` / `get_flowchart_details` | List flowcharts, or read one's nodes, outputs and connections |
-| `create_flowchart` / `delete_flowchart` | Create an empty flowchart and register it, or delete one |
-| `add_flowchart_node` / `update_flowchart_node` / `delete_flowchart_node` | Add, update or delete a node; a delete removes every reference to it |
-| `add_flowchart_output` / `update_flowchart_output` / `delete_flowchart_output` | Add, update or delete a node's output pins |
-| `reorder_flowchart_outputs` | Reorder a node's outputs, which is their execution order |
-| `connect_flowchart_nodes` / `disconnect_flowchart_nodes` | Wire an output to a node, or unwire it |
+| `register_script_file` | Register a script in `rootFileFolders.script` with `script-info` metadata and a collision-safe SID; repairs an older registration |
+| `deregister_script_file` | Remove a script registration; the script file is kept |
+| `set_main_script` | Mark one registered script as the main script and clear `main` from the others |
+| `register_project_file` | Copy a file into its family's directory (`files/`, `sounds/`, `music/`, `videos/`, `fonts/`) and register it |
+| `deregister_project_file` | Remove a Project File registration and delete its file; a `.bak` copy is kept |
+| `create_data_file` | Create an Array, Dictionary, JSON or text data file under `files/` and register it |
 
-#### Effects
-
-| Tool | Description |
-|------|-------------|
-| `list_effects` | The effects on an object type, family, layer or layout, and the registered effect addons |
-| `add_effect` / `update_effect` / `remove_effect` / `reorder_effects` | Attach, change, detach or reorder effects; an effect addon must be registered (`register_addon`) before `add_effect` |
-
-#### Tilemaps
+**Change journal**
 
 | Tool | Description |
 |------|-------------|
-| `get_tilemap_data` | Read a placed Tilemap's cells, including flips |
-| `set_tilemap_tiles` | Paint or erase cells, or fill a rectangle, keeping the rest |
-| `set_tilemap_data` | Replace all of a Tilemap's cells, by default resizing the instance to match |
-| `list_tilemap_brushes` / `add_tilemap_brush` / `update_tilemap_brush` / `delete_tilemap_brush` | The editor brushes stored for a Tilemap object type |
-
-#### Instance Templates
-
-| Tool | Description |
-|------|-------------|
-| `list_templates` | Every template instance and how many replicas point at it |
-| `set_instance_template` | Make an instance a template, a replica of a template, or neither |
-| `set_default_template` | Set or clear the template new instances of an object type are created from |
-
-#### Project Bar Moves and Duplicates
-
-| Tool | Description |
-|------|-------------|
-| `move_project_item` | Move an object type, family, layout, event sheet, flowchart, script or project file to another Project Bar folder, moving its files with it |
-| `duplicate_layout` | Copy a layout with fresh SIDs, new UIDs and remapped hierarchy links |
-| `duplicate_layer` | Copy a layer inside its layout, placed above the source |
-| `duplicate_event_sheet` | Copy an event sheet with fresh SIDs (refused when it declares groups, functions, custom actions or global variables) |
-| `duplicate_object_type` | Copy an object type with fresh SIDs and image IDs, its image files and its tilemap brush |
-| `duplicate_timeline` | Copy a timeline under a new name |
-
-#### Find and Replace
-
-| Tool | Description |
-|------|-------------|
-| `replace_object_in_events` | Construct's Replace object: swap one object type or family for another in one sheet or all sheets, skipping events the replacement cannot serve (`dryRun`) |
-| `replace_in_expressions` | Find and replace text in condition and action parameters, scoped by sheet and parameter key (`dryRun`) |
-
-#### Renames with Reference Rewriting
-
-Each rename rewrites the references to the name across the project, not just the name itself.
-
-| Tool | Description |
-|------|-------------|
-| `rename_object_type` | Rename an object type, with event, layout, family, container, image and file references |
-| `rename_family` | Rename a family, with event, project tree and file references |
-| `rename_layout` / `rename_event_sheet` | Rename a layout or event sheet, with every binding, include and file reference |
-| `rename_layer` | Rename a layer and the layer names written in event sheets |
-| `rename_event_variable` | Rename an event variable and every reference in its scope |
+| `list_changes` | What recent tool calls wrote, created, deleted or moved, with the `.bak` backup each write left |
+| `revert_last_change` | Undo the most recent tool call that changed files, from those backups |
 
 ### Runtime Tools (Live Game Control)
 
 | Tool | Description |
 |------|-------------|
-| `inject_runtime_bridge` | Inject a bridge script into the C3 project that exposes the runtime via `globalThis.__c3bridge` |
-| `remove_runtime_bridge` | Remove the bridge script and clean up the project |
-| `get_bridge_commands` | List all commands the bridge supports (callFunction, getGlobalVar, getObjectState, etc.) |
-| `connect_to_game` | Open a persistent CDP connection to a running game and wait for its injected bridge |
-| `disconnect_from_game` | Close a persistent game connection |
-| `call_bridge` | Execute any supported bridge command over a persistent game connection |
-| `wait_for_condition` | Poll a global variable, object property, layout, or page expression until a condition is met |
-| `simulate_input` | Send mouse, touch, keyboard, and text input through CDP, in viewport, canvas or layout coordinates |
-| `get_canvas_size` | Read the game canvas position, CSS size, backing size, and device pixel ratio |
-| `screenshot_game` | Save the connected page, or only its canvas, as a PNG or JPEG file |
-| `subscribe_events` | Observe a global variable, the current layout, or custom events the game emits, into a bounded buffer |
-| `read_events` | Read a subscription's buffered events, clearing them unless asked not to |
-| `unsubscribe_events` | Stop a subscription and release its buffer |
-| `serve_preview` | Serve an exported game folder over loopback HTTP and optionally launch Chrome on it with a debugging port |
-| `stop_preview` | Stop a preview server and the browser it launched |
-| `generate_bridge_eval_script` | Generate a curl/python script to execute a bridge command via browser remote debugging |
-| `export_for_preview` | Pre-flight checks (worker mode, bridge injection) for preview testing |
+| `inject_runtime_bridge` | Add the bridge script that exposes the running game as `globalThis.__c3bridge`, imported by the main script (or as the main script of a project without one) so Construct loads it |
+| `remove_runtime_bridge` | Remove the bridge script, its registration and every line that only imports it (the one it added, or one typed by hand); refuses, changing nothing, while a script uses the bridge otherwise |
+| `get_bridge_commands` | List the commands `call_bridge` runs (callFunction, getGlobalVar, getObjectState, layerToCssPx, the subscription commands, ...) |
+| `connect_to_game` | Connect to the game's browser tab over the Chrome DevTools Protocol; finds the tab whose bridge is ready, on the page or in the runtime's worker (`pageUrl` or `urlContains` name it; several ready tabs are refused, not guessed), and brings it to the front |
+| `disconnect_from_game` | Close a connection |
+| `call_bridge` | Run a bridge command and return its result; a command that times out is withdrawn |
+| `wait_for_condition` | Wait until a global variable, object property or layout matches (page expressions only with `C3MCP_ALLOW_EVAL=1`) |
+| `subscribe_events` / `read_events` / `unsubscribe_events` | Buffer global-variable changes, layout changes and custom events (`__c3bridge.emit`) between polls |
+| `simulate_input` | Click, move, touch (tap, long press, swipe), press keys and type text, in viewport, canvas or layout coordinates |
+| `get_canvas_size` | The game canvas's position and size, for input coordinates |
+| `screenshot_game` | Save the page or the canvas as PNG or JPEG, to a new file outside the project (`overwrite: true` to replace one) |
+| `serve_preview` | Serve an exported game folder on 127.0.0.1 and optionally launch Chrome or Edge on it with its own debugging port and profile |
+| `stop_preview` | Stop preview servers and the browsers they launched |
+| `generate_bridge_eval_script` | Return the browser-console lines that submit a bridge command and read its result, plus a Python snippet that only prints those lines (nothing connects to the browser) |
+| `export_for_preview` | Pre-flight check: where the runtime runs (*Use worker*), bridge injection unless `injectBridge: false`, and the next steps |
 | `clone_project` | Deep-copy the project with optional bridge injection |
-| `pack_project` | Pack the project folder into a `.c3p` file that Construct 3 can open (optionally injects the bridge first) |
+| `pack_project` | Pack the project folder into a `.c3p` file that Construct 3 can open (injects the bridge into the project first unless `injectBridge: false`, and says so with a warning) |
 
-The runtime bridge enables the built-in CDP tools or external tools (Playwright, browser console, curl) to control a running C3 game. Once injected and the game is previewed, you can:
+The runtime tools test a running game from the AI tool: inject the bridge, preview the game in a browser started with `--remote-debugging-port` or export it and `serve_preview` the folder, then `connect_to_game` and drive it with `call_bridge`, `wait_for_condition`, `simulate_input` and the event tools. The connection tools need Node.js 22 or later. A game with *Use worker* on works too: the bridge is reached in the runtime's worker. See the [User Guide](docs/USER-GUIDE.md#testing-a-running-game-with-the-runtime-bridge).
 
-```javascript
-// From the browser console, or use connect_to_game + call_bridge through MCP
-globalThis.__c3bridge.submit("callFunction", { name: "StartGame", params: [] });
-globalThis.__c3bridge.submit("getGlobalVar", { name: "Score" });
-globalThis.__c3bridge.submit("getObjectState", { objectName: "Player" });
+```text
+inject_runtime_bridge                         (then reload the project in Construct 3, export it)
+serve_preview   { folder, launchBrowser: true, headless: true }
+connect_to_game { cdpEndpoint: <browser.pageEndpoint> }
+call_bridge     { connectionId, command: "callFunction", args: { name: "StartGame" } }
+wait_for_condition { connectionId, condition: { type: "globalVar", name: "GameState", operator: "eq", value: "READY" } }
+simulate_input  { connectionId, action: { type: "click", x: 540, y: 720 }, coordinateSpace: "canvas" }
+stop_preview    {}
 ```
+
+The bridge can also be used from the browser console: `globalThis.__c3bridge.submit("getGlobalVar", { name: "Score" })` returns an id, and `getResult(id)` returns `{ ok: true, value }` once, after the next tick (`null` while pending).
+
+Remove the bridge before exporting the game for players: while it runs, anyone with the browser console can change variables and call functions. `remove_runtime_bridge` deletes the script file, its entry in `project.c3proj` and the import line in your main script, the marked one `inject_runtime_bridge` added as well as one you typed by hand for v1.9.2. See the [User Guide](docs/USER-GUIDE.md#remove-the-bridge-before-you-export).
 
 ### Prompts (Workflow Templates)
 
@@ -397,38 +410,53 @@ globalThis.__c3bridge.submit("getObjectState", { objectName: "Player" });
 Mutation tools follow a strict safety protocol (exceptions below):
 
 1. **Validation** — Names checked for reserved words, path traversal, format. Plugin/behavior IDs validated against `usedAddons`.
-2. **Backup** — JSON files are backed up to `<filename>.bak` before modification.
-3. **ID Generation** — SIDs (15-digit random), UIDs (sequential), and imageSpriteIds (7-digit) are collision-checked against the entire project.
-4. **Write** — JSON is pre-validated (round-trip test, size limit), then written to a temp file and renamed into place. Files keep their text style (see below). `project.c3proj` is first put in the shape Construct r495.2 saves (script metadata key, `models3d`, and for older releases the property order and `zAxisScale`), without pruning `usedAddons`; see `src/construct3/project-shape.ts`.
+2. **Backup** — JSON files are backed up to `<filename>.bak` before modification, once per tool call: a call that writes a file twice (`create_object` registering a new plugin and then the object in `project.c3proj`) keeps the state from before the call. A `project.c3proj` that changed on disk after a writer update read it, before the call wrote it, is backed up again, so undoing the call keeps that change.
+3. **ID Generation** — SIDs (15-digit random), UIDs (sequential), and imageSpriteIds (7-digit) are collision-checked against the entire project. Layouts and object types over the size limit (10MB by default) or with invalid JSON are scanned as text for their UIDs and SIDs; when a registered layout or object type exists but cannot be read at all, a new UID is refused instead of guessed. The project is scanned on first use and again after a change on disk the server did not make; the server's own writes add their IDs without a new scan, and an ID once handed out is never handed out again.
+4. **Write** — JSON is pre-validated (round-trip test, size limit), then written to a temp file and renamed into place. Files keep their text style (see below). The size limit, 10MB unless the server's `C3MCP_MAX_FILE_MB` setting changes it, is the same for reading and for writing entity files. An update of `project.c3proj` through the writer's update path (`updateProjectFile`) that writes brings the file towards a fixed save shape (see `src/construct3/project-shape.ts`): scripts carry `script-info` and an empty `models3d` folder is added (after `flowcharts`), whatever release saved the file; for a project saved by release 49501 or older, `uidAllocationMode` also follows `preloadSounds` and `scriptsType` ends `properties`. The shape leaves settings such as `zAxisScale` as saved (in one recorded check, Construct 3 r506-2, Free edition, guest, updated a legacy Z axis scale itself when it opened a release-44903 project saved with that value), never prunes `usedAddons` (`unregister_addon` still removes the entry it is asked to) and never changes `savedWithRelease`. `inject_runtime_bridge` writes `project.c3proj` with its own text and does not reshape the file; the next update does.
 5. **Verify** — Files are read back, compared with what was written, and re-parsed to confirm integrity.
 6. **Cache Invalidation** — All reader caches and indexes are cleared so subsequent reads see fresh data.
 
-Steps 2, 4 and 5 apply in full to writes that go through the project writer: objects, families, event sheets, layouts, animations, project metadata, addon auto-registration, script and project file registration, and the runtime bridge's registration in `project.c3proj`. The other write paths do less:
-- The tools that write their own files (timelines and eases, flowcharts, containers, tilemap brushes, `register_addon` / `unregister_addon`, the rename and duplicate tools) back each file up to `<file>.bak` once per call and write it through a temp file, but do not read the result back.
-- The runtime tools (`inject_runtime_bridge`, `remove_runtime_bridge`, and `export_for_preview` / `pack_project` when they inject the bridge) back up the bridge script and `scripts/main.js` and write them in place, with no read-back check.
-- A replaced image is backed up; a placeholder PNG is written without a backup.
+**Changes made outside the server are picked up.** Every tool call, resource read and prompt starts from the project as it is on disk: the server checks `project.c3proj`, and the files its caches hold the first time the call uses them, by modification time, size and file id, and reads again what changed, for example after `git restore` or a save in the Construct 3 editor. There is no need to reconnect. A write never replaces a change it did not read: when an event sheet, layout, object type or family file changed on disk after the tool call read it, the write is refused with a message that names the file, and the file keeps that change; run the tool again. A call refused this way after it had written other files puts back the entity files and `project.c3proj` it had changed first; an image, flowchart or script file it wrote earlier in the call is not put back (`create_flowchart` and `delete_flowchart` undo only their own registration, on the project as it is then, and remove or restore their flowchart file once `project.c3proj` agrees): it stays as written, and its `.bak` holds the state from before the call. The timeline and ease tools that write several files (`create_timeline`, `delete_timeline`, `create_ease`, `update_ease`, `delete_ease`) do put back the files they wrote earlier in the call. The server's own updates of `project.c3proj` (registering or removing an entity, addon auto-registration, project metadata) read the file right before they write it and keep a change made there; the addon tools merge a `project.c3proj` changed during the call into their update; the timeline tools (`create_timeline`, `delete_timeline`) refuse one changed before their first write and merge into the update that follows; `create_flowchart` and `delete_flowchart` do the same; the runtime-bridge tools refuse one that changed since they read it, before they write anything and again right before they write `project.c3proj`, putting back what they wrote before. Of two parallel tool calls that change the same event sheet, layout, object type or family file, the second one is refused the same way; the animation tools and the `project.c3proj` updates above run one after the other. Changes that keep a file's size, modification time and file id (possible on file systems with coarse timestamps) are not seen. The check costs one file status per file the server has read when a call uses cached data: about 100 ms on a project of 3,000 files.
 
-**Change journal.** Every result ends with the files the call changed. `list_changes` shows what recent calls wrote, created, deleted or moved, and `revert_last_change` undoes the most recent one from its backups, refusing, and restoring nothing, when a later call or another program changed the same files. A write made from content Construct saved since the server read it is refused until `reload_project`.
+**Single-file projects.** With a `.c3p` path the server unpacks the archive into a new folder under the system's temp folder, works on the `project` folder inside it (the working folder; the server logs its path at start) and writes the archive back. A call that starts while no other call runs first reads the archive again when it changed on disk and the working folder holds nothing the archive lacks. When the last running call finishes and a tool call has run since the last write-back, the archive is written back if the working folder changed, and the tool result says `Saved the project to "<archive>"`; calls that start meanwhile wait until the write is done. The first write-back of a session keeps the archive as it was before it in `<name>.c3p.bak`; a file already named so is never replaced, and the previous version is then kept under a second name that the result gives; each later session that writes back keeps one more such copy, and nothing removes them. The server never replaces or deletes a version of the archive another program saved: it compares the archive's content, not only its size and time, before it writes, and it moves the archive aside and places the new file without replacing a file at its path. When the archive changed on disk after the session changed the project (a save in the Construct 3 editor, for example), it is not written, every tool result says `The project was NOT saved` and names the working folder that holds the session's changes, and the server has to be restarted to load the archive as it is. A call made while the archive changed on disk and cannot be read again (a save under way) is refused without running; try it again. During a write-back the archive's path is empty from the moment the archive is moved aside until the new archive is placed: that covers reading and comparing the moved-aside file and placing the new one; a server stopped in that moment leaves the previous version beside the archive as `<name>.c3p.<pid>.<n>.previous` (and the new archive it was placing as `<name>.c3p.<pid>.<n>.tmp`); a server started on that path then refuses to start and names those files, so rename the one you want to the archive's name, and a server started on another `.c3p` names them with the working folder the stopped server left. `pack_project` refuses an output path that is the open archive, its backups (.bak), the files a write-back stages or moves aside (.previous, .tmp) or inside the working folder. When the server stops it writes back what is left and removes the working folder; it keeps the folder when the archive was not written or no longer exists. Working folders left by a server that was killed are named in the log and in the first tool result of the next session on a `.c3p`. A folder whose name ends in `.c3p` is a folder project. See the [User Guide](docs/USER-GUIDE.md#single-file-c3p-projects).
+
+**Change journal.** Every result that is not an error, of a call that changed files, ends with a line naming them (`Changed 2 file(s): layouts/Temp.json, project.c3proj (1 with a .bak backup; revert_last_change undoes this call).`). `list_changes` shows what the calls in the journal wrote, created, deleted or moved (the journal keeps the last 50 calls, and `list_changes` lists 20 by default), and `revert_last_change` undoes the most recent one from its backups. It refuses, restoring nothing, when one of the call's files changed since (saved in the Construct 3 editor, for example) or a backup it needs was replaced by a later call. Each file keeps one backup, which the next call that writes the file replaces (images take the first free `<file>.N.bak` name instead, so their backups accumulate), so in practice only the most recent call that touched a file can be reverted: after `replace_sprite_image` and then `rename_animation` on the same object, the replace cannot be reverted, because both write `objectTypes/<name>.json`, and the refusal says so. A revert that stops part way is finished by running it again. The journal is kept in memory: after a server restart it starts empty, and the `.bak` files stay. Folders a call created stay after a revert.
+
+Every project file a tool writes through the project writer is backed up once per call (item 2 of the list above) and written through a temp file (item 4): objects, families, event sheets, layouts, animations, project metadata, addon registration, timelines, flowcharts, the runtime bridge files and images. Item 5 is a read-back compared byte for byte, and for entity files and `project.c3proj` updates made through `updateProject` it is also re-parsed. The JSON check before a write (`validateJsonData`) runs only for those files too. Each write, delete and restore of a file through the writer takes the file's one lock (the project lock for `project.c3proj`); renaming image files (`renameImageFiles`) makes no backup, and every rename of image files runs under the animation lock and also takes the lock of its target file, never two file locks at once (the animation tools hold the animation lock for their whole call; `delete_object` holds it around its renames, its delete and its rollback, and checks references outside it). The differences:
+- `register_addon` and `unregister_addon` update `project.c3proj` through the writer: it is backed up once per call, the result is read back, and a change saved in the editor during the call is merged in, not refused.
+- The timeline and flowchart tools back up their files once per call, write them through a temp file and read them back. The flowchart tools also refuse to write a flowchart file that changed on disk after the call read it.
+- The file tools (`register_script_file`, `deregister_script_file`, `set_main_script`, `register_project_file`, `deregister_project_file`, `create_data_file`) update `project.c3proj` once through the writer (backed up once per call, read back, a change saved in the editor during the call merged in). `register_project_file` and `create_data_file` register first and then write the file, putting the registration back when the write fails; `deregister_project_file` removes the registration first and then deletes the file, keeping a `.bak` copy, and leaves the registration removed when the delete does not happen (the error says so).
+- The runtime tools (`inject_runtime_bridge`, `remove_runtime_bridge`, and `export_for_preview` / `pack_project` when they inject the bridge) write `project.c3proj` (only when the registration changes), the bridge script and the one import line in the main script through the writer. Each write step backs its file up once per call, reads it back, and is refused when the file changed since the tool read it. The delete of the bridge script by `remove_runtime_bridge` takes no such check: the file is backed up and deleted under its lock, a change made to it after the tool read it is not refused, and its `.bak` keeps the state just before the delete. `remove_runtime_bridge` also takes out bridge import lines typed by hand, and refuses before writing anything while a script uses the bridge in a way it cannot take out, or a script it has to check cannot be read. When a step fails, the tools still undo their own steps, putting back the files they wrote before. A write that replaced a file but whose read-back could not confirm the bytes is put back only when the file could not be read and is still in the state the read-back saw; a file that holds other bytes is left as it is. The error names every file that was not put back, to check before going on. `clone_project`, when it adds the bridge, is the exception: it writes the copy directly, not through the writer. The copy is a new folder outside the open project, so that install takes no lock and makes no backup; a failed write puts back the files it wrote before.
+- PNG images are backed up once per call under the first free `.bak` name (`<file>.bak`, then `<file>.1.bak`, ...), so a backup the frame tools kept is never replaced; `replace_object_image` keeps the image it replaces the same way (see *Frame images move with their frames* below). Image backups therefore accumulate, one more for each call that writes the image, and nothing removes them. `delete_object` keeps the image files of the object it deletes the same way.
+
+The runtime connection tools write nothing to the project and keep to this machine:
+- `serve_preview` listens on 127.0.0.1 only, refuses a port another program answers on, answers only requests addressed to 127.0.0.1, localhost or [::1] (DNS rebinding), and serves only files whose real path lies in the exported folder. The interface, the browser (`CHROME_PATH` or the usual install locations) and its debugging port are not tool parameters. The browser gets a fresh profile and picks its own debugging port, and stopping ends only that browser and removes its profile.
+- `connect_to_game` reaches browsers on this machine only, including the page endpoints their debugging port lists, unless the server runs with `C3MCP_ALLOW_REMOTE_CDP=1`; `wait_for_condition` evaluates JavaScript in the page only with `C3MCP_ALLOW_EVAL=1`. Both are settings of whoever starts the server, not tool parameters, so a prompt that steers the tool calls cannot lift them. When several tabs have a ready bridge, `connect_to_game` refuses instead of picking one, so another site that defines a bridge of its own cannot take the connection (and with it the typed input). Everything else goes through the bridge's fixed commands, which still run game functions and set variables in the connected game.
+- `screenshot_game` writes one image file you name: an absolute path outside the project folder, with the extension of its format, and an existing file only with `overwrite: true`.
 
 **Close and reopen the project in Construct 3 before saving there.** The editor keeps an open project in memory, so saving from a session that was opened before these edits can overwrite them. Its Project Bar reload (F9) re-reads script files only, not event sheets, layouts or `project.c3proj`. Every response that reports a completed write carries this reminder as `editorNote`. Error responses do not, even when a multi-step tool (e.g. `create_object`) failed after an earlier step had already written.
 
 Additional safeguards:
-- **Reference checking** — `delete_object`, `delete_family`, `delete_event_sheet`, and `delete_layout` scan for references before deleting; `update_object_properties` and `update_family` check the events before removing an instance variable, a behavior or a family member. After the checks, the four delete tools remove the registration from `project.c3proj` before deleting the file, so a failure part way leaves an orphaned file, never a registration without a file.
-- **Addon auto-registration** — When creating objects with new plugins or adding behaviors, known Scirra addons are automatically registered in `usedAddons`. Unknown/third-party addons are blocked with an error.
+- **Reference checking** — `delete_object`, `delete_family`, `delete_event_sheet`, and `delete_layout` scan for references before deleting; `delete_event_from_sheet` and `delete_event_sheet` check for calls and uses of the functions and event variables they remove (for a deleted sheet: its functions and global variables, used from other sheets); `update_object_properties` and `update_family` check the events before removing an instance variable, a behavior or a family member. Registered files these checks cannot parse (over the size limit (10MB by default), not valid JSON) are searched as text for the names they look for: a match is a *possible* use (the name may be in another string), and it refuses without `force` just like a use, as does such a file that cannot be read at all. The response lists these files in `unscannedFiles`; without a match the tool goes ahead and warns that the file was only searched as text. `delete_object`, `delete_family` and `delete_event_sheet` also refuse when the object type's, family's or event sheet's own file could not be parsed, and `rename_animation` refuses when such a layout possibly has instances that start with the animation. `delete_event_sheet`, `delete_event_from_sheet` and `move_events_between_sheets` walk the events of all event sheets for the uses of the functions and event variables they delete or move and stop after 100,000 events (sub-events included); in a project that large the uses beyond are unknown, so they refuse without `force` then as well. `remove_effect` checks the events for conditions and actions that name the effect.
+- **Deletes deregister first.** `delete_object`, `delete_family`, `delete_event_sheet` and `delete_layout` check the entity file, take the name out of `project.c3proj`, then delete the file (kept as `.bak`). When taking the name out or deleting the file fails, the call is undone and the error says what is on disk. If `project.c3proj` was saved in the editor during the call and cannot be put back, the error says what it holds: when the saved file no longer lists the name, the entity file stays on disk unregistered. If it lists the name again after the file was deleted, the call is an error, not a success: the name is registered without its file, until the file is put back from its `.bak` or the name is removed in the editor.
+- **Addon auto-registration** — When creating objects with new plugins or adding behaviors, known Scirra addons are automatically registered in `usedAddons`. Unknown/third-party addons are blocked with an error unless `register_addon` added them to `usedAddons` first (it does not check the ID or install anything). `update_object_properties` checks all behaviors it adds before it registers the first, so an unknown one leaves `usedAddons` unchanged.
 - **Global plugin protection** — Singleglobal-inst objects (Audio, AJAX, etc.) cannot be placed on layouts.
 - **Plugin-specific defaults** — Instances are created with correct default properties for each plugin type (Sprite, Text, TiledBg, NinePatch).
 - **Image generation** — Sprite and TiledBg creation automatically generates valid placeholder PNGs, named like the editor names them: `images/<object>-<animation>-000.png`, all lowercase. Batch writes roll back on failure.
-- **Layout instance sync** — Like the editor, every layout instance carries an entry for each behavior of its object type and of the families it belongs to, with the built-in behaviors' default property values. `add_instance_to_layout` writes these entries; adding or removing a behavior (`update_object_properties`) or changing family membership (`update_family`, `delete_family`) updates the existing instances. Behavior or variable changes also make sure every instance of the object has the `behaviors` and `instanceVariables` dicts C3 expects.
-- **Names compared like the editor** — Create and rename tools refuse a name that differs from an existing one only in case where Construct 3 compares names ignoring case: event sheets and layouts (project-wide), object types and families, the layers of one layout (sub-layers included; the editor cannot load a layout with two such layers), the animations of one sprite (in any animation folder), and sibling project-bar folders. Timeline names are compared exactly, as the editor does, but a case variant of a timeline in the same folder is refused because both would share one file on Windows and macOS.
-- **Event variable names checked like the editor** — `add_event_to_sheet` and `update_event_variable` refuse the event variable and function parameter names the editor's variable and parameter dialogs refuse: a name that matches, ignoring case, an event variable or function parameter in its scope (for a global variable, any in the project; for a local one or a parameter, the globals, the variables and parameters of its enclosing events and those below its parent event or function), the name of a System expression (e.g. `time`, `random`), and names with whitespace, punctuation such as `-` `.` `:`, a leading underscore or only digits. Names of object types and families are allowed, as in the editor. `move_events_between_sheets` refuses a copy or move that would create such a clash, e.g. a copy of a global variable (the editor renames a pasted variable instead).
-- **No overwrite on create** — Create tools refuse to write an entity JSON file (object type, family, event sheet, layout) or a timeline file where one already exists, also one whose name differs only in case (an unregistered file, or one registered under another spelling). Nothing is backed up or replaced. Placeholder PNGs are not covered: `create_object` and the animation tools write them over an image file of the same name in `images/`, e.g. one left behind by a deleted object or animation.
+- **Frame images move with their frames.** The editor names a frame's image file after the frame's index, so `add_frame_to_animation` with an `index` and `delete_frame_from_animation` rename the image files of the later frames one index up or down (JPEG and other formats keep their extension). `reorder_frames` and `reverse_frames` rename each frame's image to its new index, and `duplicate_frame` copies the frame's image to the new frame's index, only to a free name. The deleted frame's image, and any unused file whose name a moved image or new placeholder needs, are kept as `<file>.bak` instead of being deleted or replaced. The placeholder is written create-only, under that file's lock, to a name that holds no file: a file another writer put there first refuses the write, and is not replaced. If a write fails, the object file is restored from its backup only while it still holds the failed write's own content. A placeholder image (or the copies `duplicate_frame` wrote) is removed, and the image files are renamed back (also after `reorder_frames` and `reverse_frames`), only when the object file, read again, holds the frames from before the call; an image whose old name is taken keeps its new name, and the error names the file that holds that name. When the object file holds this call's frames, the images stay with them; when it holds neither, or cannot be read, they stay as this call left them, and the error says where they are. When another write made on top of this one kept this call's frames, the call succeeds with a warning instead of an error. The animation tools run one at a time, so parallel calls on one Sprite cannot move each other's images or write its object without each other's frames. `validate_project` reports frames without an image file (`frame-image`) and lists the `.bak` files in `images/`, and the files an interrupted write leaves (`.c3mcp-<16 hex digits>.tmp`, `.link` or `.old`), as `backup-file`.
+- **Layout instance sync** — Like the editor, every layout instance carries an entry for each behavior of its object type and of the families it belongs to, with the built-in behaviors' default property values, and a value for each of their instance variables. `add_instance_to_layout` writes these entries and values; adding or removing a behavior or instance variable (`update_object_properties`, `update_family`) or changing family membership (`update_family`, `delete_family`) updates the existing instances, and a family's effect entries go with the family. `add_instance_to_layout` and `update_instance` refuse values for instance variables the object and its families do not have. `update_instance_variable` moves the values to a renamed variable and gives values that do not fit a new type the default, and `reorder_behaviors` puts those behaviors' entries on instances in the new order.
+- **Hierarchy links follow deletions** — Hierarchy (scene graph) links name UIDs, and a new instance can get the UID of a deleted one. `delete_instance_from_layout`, `delete_instances_from_layout` and `delete_layer` therefore remove the links to the instances they delete (children stay in the layout without a parent), new UIDs are above every UID a link names, and `validate_project` reports links that point at no instance or only one way (`hierarchy-link`). `set_instance_parent` and `remove_instance_children` write both sides of a link and refuse a link that would close a loop.
+- **Names compared like the editor**: Create and rename tools refuse a name that differs from an existing one only in case where Construct 3 compares names ignoring case: event sheets and layouts (project-wide), object types and families, the layers of one layout (sub-layers included; the editor cannot load a layout with two such layers), the animations of one sprite (in any animation folder), and sibling project-bar folders. Timeline names are compared exactly, as the editor does, but a case variant of a timeline in the same folder is refused because both would share one file on Windows and macOS. Tools that check an entity together with the rest of the project take its name only as registered, letter case included: `update_object_properties`, `update_family`, and the event sheet tools whose checks compare a sheet with the other sheets (`add_event_to_sheet`, `delete_event_sheet`, `delete_event_from_sheet`, `update_event_variable`, `move_events_between_sheets`). The flowchart tools take a flowchart name only as registered, and `create_flowchart` refuses a name that differs only in case from an existing flowchart in any folder.
+- **Event variable names checked like the editor** — `add_event_to_sheet` and `update_event_variable` refuse the event variable and function parameter names the editor's variable and parameter dialogs refuse: a name that matches, ignoring case, an event variable or function parameter in its scope (for a global variable, any in the project; for a local one or a parameter, the globals, the variables and parameters of its enclosing events and those below its parent event or function), the name of a System expression (e.g. `time`, `random`), and names with whitespace, punctuation such as `-` `.` `:`, a leading underscore or only digits. Names of object types and families are allowed, as in the editor. `move_events_between_sheets` refuses a copy or move that would create such a clash, e.g. a copy of a global variable (the editor renames a pasted variable instead). Function names must differ, ignoring case, from every other function in the project and from System expression names; a function with a return type also follows the character rules above. `move_events_between_sheets` refuses to copy a function block, and `validate_project` reports names that several function blocks share (`duplicate-function-name`).
+- **No overwrite on create**: Create tools refuse to write an entity JSON file (object type, family, event sheet, layout), a timeline file or a flowchart file where one already exists, also one whose name differs only in case (an unregistered file, or one registered under another spelling). Nothing is backed up or replaced. Placeholder PNGs are not refused: `create_object` and `add_animation_to_sprite` write them over an image file of the same name in `images/`, e.g. one left behind by a deleted animation, but first keep that image as `<file>.bak` (`<file>.1.bak`, ... when taken), so nothing is replaced without a backup (`delete_object` keeps the images of the object it deletes the same way; `add_frame_to_animation` renames such a file first).
 - **File names kept** — Rewriting an existing file keeps its name on disk exactly, including case (e.g. `Layout1.json` registered as `layout1`); the `.bak` backup takes the same name.
-- **Text style preserved** — JSON is written the way Construct 3 saves it (tab indent). In writes through the project writer, the timeline and ease tools, addon registration, and the flowchart, container, tilemap brush, rename and duplicate tools, a file that already exists keeps its own line endings (e.g. CRLF from a git `core.autocrlf` checkout), exact trailing whitespace and BOM. A new file follows `project.c3proj`, then the first JSON file with line breaks in its target folder, then Construct 3's own style (LF, no trailing newline, no BOM). For files in Construct 3's tab layout, diffs show only the lines that changed; files indented another way (e.g. with spaces) are re-indented with tabs in full. Tilemap brush files are the exception in layout: Construct 3 writes them as one line of compact JSON, so a new brush file is written that way and an existing one keeps its own layout (compact, or its indent string) together with its line endings, trailing whitespace and BOM.
+- **Text style preserved** — JSON is written the way Construct 3 saves it (tab indent). A file that already exists keeps its own line endings (e.g. CRLF from a git `core.autocrlf` checkout), exact trailing whitespace and BOM. A new file follows `project.c3proj`, then the first JSON file with line breaks in its target folder, then Construct 3's own style (LF, no trailing newline, no BOM). For files in Construct 3's tab layout, diffs show only the lines that changed; files indented another way (e.g. with spaces) are re-indented with tabs in full.
 
 ## Documentation
 
 Detailed documentation is available in the `/docs` folder:
 
+- [**User Guide**](docs/USER-GUIDE.md) - Install, connect your AI tool, first session, safe editing workflow, runtime testing
 - [**Architecture**](docs/ARCHITECTURE.md) - System design, components, and data flow
 - [**API Reference**](docs/API.md) - Complete reference for all resources, tools, and prompts
 - [**Examples**](docs/EXAMPLES.md) - Usage examples and workflows
@@ -441,58 +469,65 @@ Detailed documentation is available in the `/docs` folder:
 
 - **Node.js** >= 18.0.0
 - **npm** or **yarn**
-- A Construct 3 project saved in **folder format** (.c3proj) or as a **single file** (.c3p); see [Single-file (.c3p) projects](#single-file-c3p-projects)
+- A Construct 3 project saved in **folder format** (.c3proj) or as a **single file** (.c3p)
 
 ### Install Dependencies
 
+The package is not on npm. Clone the repository and install:
+
 ```bash
+git clone https://github.com/liauw-media/construct3-mcp.git
 cd construct3-mcp
-npm install
+npm ci
 ```
 
+`npm install` works too. Do not install with `--omit=dev` or `--production`: the build step needs the TypeScript dev dependency and fails without it.
+
 ### Build
+
+`npm ci` and `npm install` already build the server (the `prepare` script runs `npm run build`), which compiles TypeScript to JavaScript in the `dist/` folder. Run the build yourself only after changing the source:
 
 ```bash
 npm run build
 ```
 
-This compiles TypeScript to JavaScript in the `dist/` folder.
-
 ## Usage
 
-All MCP-compatible tools use the same JSON configuration format. The server auto-detects `.c3proj` in your working directory, or you can pass an explicit project path.
+Step-by-step instructions for each client are in the [User Guide](docs/USER-GUIDE.md#connect-your-ai-tool).
 
-**MCP config** (same for all tools):
+The server finds its project in this order: the first argument after `dist/index.js` (a project folder, the `.c3proj` file or a `.c3p` file), the `C3_PROJECT_PATH` environment variable, the working directory it is started in. A folder must contain the `.c3proj` file directly; subfolders and parent folders are not searched. Most clients do not start the server in your project folder, so pass the project path.
+
+**MCP config** (Claude Desktop, Antigravity, Windsurf and a hand-written Claude Code `.mcp.json`; Cursor and VS Code need `"type": "stdio"`, and VS Code uses a different top-level key, see below):
 ```json
 {
   "mcpServers": {
     "construct3": {
       "command": "node",
-      "args": ["/absolute/path/to/construct3-mcp/dist/index.js"]
+      "args": ["/absolute/path/to/construct3-mcp/dist/index.js", "/absolute/path/to/your-project"]
     }
   }
 }
 ```
 
-To target a specific project instead of auto-detecting:
-```json
-"args": ["/path/to/construct3-mcp/dist/index.js", "/path/to/your-project"]
-```
-
-### Environment variables
-
-| Variable | Effect |
-|---|---|
-| `C3_PROJECT_PATH` | Project folder, `.c3proj` or `.c3p` to serve when no path argument is given (default: the working directory) |
-| `C3_ADDON_DEFINITIONS` | Third-party addon definitions to load at startup: `.c3addon` files or unpacked addon folders, separated by `;` on Windows and `:` elsewhere. Same as calling `load_addon_definitions` |
-| `CHROME_PATH` | Chrome or Edge executable for `serve_preview` to launch, when it is not in a standard install folder |
+On Windows, write paths in JSON with forward slashes (`"C:/Games/My Game"`) or doubled backslashes (`"C:\\Games\\My Game"`); single backslashes make the file invalid JSON. Each path is one array element, also when it contains spaces. Leave out the project path only if the client starts the server in the folder that contains the `.c3proj`.
 
 ### With Claude Code
 
-Add the config above to your project's `.mcp.json` or global `~/.claude/mcp.json`.
+Add the server with the CLI:
 
-1. Open Claude Code inside any Construct 3 project folder
-2. The MCP tools appear automatically
+```bash
+claude mcp add construct3 --scope user -- node /absolute/path/to/construct3-mcp/dist/index.js "/absolute/path/to/your-project"
+claude mcp list
+```
+
+`claude mcp list` should show `construct3: ... - ✔ Connected`. Inside a session, `/mcp` shows the status and can reconnect the server.
+
+- `--scope user` stores the server in `~/.claude.json` for every folder. Without `--scope` (local scope) it only applies when `claude` is started in the folder where you ran the command; if that folder is in a git repository, it applies anywhere in that repository (a second `claude mcp add construct3` for another game in the same repository fails with `already exists in local config`; see the [User Guide](docs/USER-GUIDE.md#which-scope) for several games). `--scope project` writes a `.mcp.json` into the current folder.
+- A `.mcp.json` in the project folder (the JSON above) also works, but Claude Code does not start it until you approve it: `claude mcp list` shows `⏸ Pending approval` until you start `claude` in that folder, trust the folder and approve the server.
+- Claude Code does not read `~/.claude/mcp.json`.
+- Without a project path, the server only starts when Claude Code is started in the folder that directly contains the `.c3proj`. Started anywhere else, `claude mcp list` shows `✘ Failed to connect`.
+
+Windows shell pitfalls (PowerShell and `--`, Git Bash and backslashes) and tool permissions: [User Guide](docs/USER-GUIDE.md#claude-code).
 
 ### With Claude Desktop
 
@@ -501,23 +536,55 @@ Add the config to your Claude Desktop settings file:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-Note: Claude Desktop doesn't change working directory per-project, so pass the project path explicitly in `args`.
+Note: Claude Desktop doesn't change working directory per-project, so pass the project path explicitly in `args`. Quit Claude Desktop completely and start it again after editing the file; closing the window is not enough.
 
 ### With Cursor
 
-Add the config to `.cursor/mcp.json` in your project root (project-specific) or `~/.cursor/mcp.json` (global).
+Add the config to `.cursor/mcp.json` in your project root (project-specific) or `~/.cursor/mcp.json` (global). Cursor's documentation lists `"type": "stdio"` as a required field of each server entry. In `.cursor/mcp.json`, `"${workspaceFolder}"` can stand for the project path:
+
+```json
+{
+  "mcpServers": {
+    "construct3": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/construct3-mcp/dist/index.js", "${workspaceFolder}"]
+    }
+  }
+}
+```
 
 1. Restart Cursor after adding or modifying the config
 2. The Construct 3 tools appear in Cursor's AI agent
+
+### With VS Code
+
+VS Code (GitHub Copilot agent mode) reads `.vscode/mcp.json`, whose top-level key is `"servers"`, not `"mcpServers"`, and each entry needs `"type": "stdio"`:
+
+```json
+{
+  "servers": {
+    "construct3": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/construct3-mcp/dist/index.js", "${workspaceFolder}"]
+    }
+  }
+}
+```
 
 ### With Antigravity
 
 Add the config to Antigravity's MCP configuration:
 
 - **Via UI**: Click the `...` menu in the Agent panel → **MCP Servers** → **Manage MCP Servers** → **View raw config**
-- **Direct edit**: `~/.gemini/antigravity/mcp_config.json`
+- **Direct edit**: the current Antigravity documentation names `~/.gemini/config/mcp_config.json` (global) and `.agents/mcp_config.json` (workspace); the UI route above opens the right file
 
 Note: Antigravity doesn't set a working directory per-project, so pass the project path explicitly in `args`.
+
+### With Windsurf
+
+Windsurf (now Devin Desktop) uses the same `mcpServers` format. This server alone registers 186 tools, more than Windsurf's 100; turn off the tools you do not need in Cascade's MCP settings.
 
 ### Standalone Testing
 
@@ -529,39 +596,12 @@ node /path/to/construct3-mcp/dist/index.js
 # Or pass explicit path
 node dist/index.js /path/to/project.c3proj
 node dist/index.js /path/to/project-folder
+
+# Or a single-file project
 node dist/index.js /path/to/game.c3p
 ```
 
-### Single-file (.c3p) projects
-
-Pass a `.c3p` file instead of a project folder:
-
-```bash
-node dist/index.js /path/to/game.c3p
-```
-
-Or, from a running server whatever it started on, call `open_project` with the `.c3p` path (or any
-other project folder or `.c3proj`). The switch waits for other tool calls to finish and holds new
-ones until it is done; a `.c3p` being left is written back first. If the new project cannot be
-opened, the server keeps the one it had. `get_open_project` reports which project is served.
-
-The server unpacks the archive into a private working folder under the system temp folder and
-loads that. After every tool call that changed a file, it writes the archive back: the new
-archive is built in memory, read back as a check, written beside the original and renamed over
-it, and the tool result ends with a line saying so. The first write of a session keeps the
-archive as it was opened in `game.c3p.bak`. Files that did not change are not compressed again,
-so later writes are fast even on a large project (about 0.2 s for 2,286 files).
-
-The archive is never overwritten with content it no longer matches. If something else, usually
-Construct saving the project, changed the `.c3p` after the server opened it, the write is
-refused, the tool result says so, and this session's changes stay in the working folder, whose
-path the result names. Restart the server to load the archive as it is now. Close the project
-in Construct, or at least do not save it there, while the server writes to it. The working
-folder is deleted when the server exits, unless it holds changes the archive does not.
-
-Tool results and backups name paths inside the working folder, not the archive. Archives
-Construct saves are ZIP64 with backslash paths; the server reads both, and writes plain zip
-with forward slashes and DEFLATE, which Construct r495.2 opens.
+On success the server prints `Construct3 MCP Server ready` (on stderr) and then waits silently for an MCP client on stdin; that is not a hang. Press Ctrl+C to stop it. On a wrong path it prints `Failed to start server: ...` and exits with code 1.
 
 ### Example Queries
 
@@ -588,8 +628,8 @@ Once the MCP server is running, ask Claude:
 - "Place a Player instance at position 100, 200 on the Game layout"
 
 **Documentation:**
-- "Show me the Construct 3 documentation for the Sprite plugin"
-- "What are the best practices for event sheets?"
+- "Which Construct 3 pitfalls should I know about?" (reads `construct3://docs/pitfalls`)
+- "Give me the manual link for the Sprite plugin" (the documentation resources return construct.net links, not the page text)
 
 ## Development
 
@@ -598,43 +638,66 @@ Once the MCP server is running, ask Claude:
 ```
 construct3-mcp/
 ├── src/
-│   ├── index.ts                    # Main MCP server entry point
-│   ├── error-messages.ts           # Removes filesystem paths from client-visible errors
+│   ├── index.ts                    # Entry point: project path (a folder, a .c3proj or a .c3p), server setup, registration, shutdown
 │   ├── construct3/
-│   │   ├── c3p-project.ts          # Serve a .c3p through a working folder, written back after each change
-│   │   ├── project-session.ts      # The served project, and switching it at runtime
-│   │   ├── project-reader.ts       # Project file parser and cache
-│   │   ├── project-writer.ts       # Safe write operations with backup
-│   │   ├── project-shape.ts        # project.c3proj in the shape Construct r495.2 saves
-│   │   ├── change-journal.ts       # File stamps, per-call change record, revert
-│   │   ├── id-generator.ts         # SID/UID generation with collision avoidance
-│   │   ├── templates.ts            # Object, event sheet, layout templates
+│   │   ├── project-reader.ts       # Project file reads, caches, checks for changes on disk
+│   │   ├── project-writer.ts       # Safe writes (backup/validate/write/verify), project.c3proj updates, undo of a tool call's writes
+│   │   ├── id-generator.ts         # SID/UID/imageSpriteId generation with collision avoidance
+│   │   ├── disk-state.ts           # File states on disk, tool call scope, stale-write error
+│   │   ├── change-journal.ts       # What each tool call changed, list_changes and revert_last_change
+│   │   ├── templates.ts            # Entity templates and known addon maps
+│   │   ├── custom-actions.ts       # Custom action definitions and the definition a call runs
 │   │   ├── event-shapes.ts         # The event shapes the editor writes (else, OR, calls, scripts)
-│   │   ├── ease-params.ts          # Custom eases embedded in event parameters
 │   │   ├── instance-behaviors.ts   # Behavior entries on layout instances
-│   │   ├── animation-rename.ts     # Animation lookup in folders; frame image files and layout instances a rename_animation changes
+│   │   ├── instance-variables.ts   # Instance variable values and effect entries on layout instances
+│   │   ├── object-name-references.ts # Where an object type or a family is named (rename_object_type, rename_family)
+│   │   ├── entity-copies.ts        # Fresh SIDs, UIDs and image IDs for a copied entity, the checks that refuse an unfaithful copy, an object type's image copies (duplicate tools)
+│   │   ├── hierarchy.ts            # Hierarchy (scene graph) links between layout instances
+│   │   ├── containers.ts           # Containers in project.c3proj: members, a deleted object type taken out, a container under two members removed
+│   │   ├── layer-references.ts     # Event sheet strings that name a layer (update_layer rename)
+│   │   ├── event-strings.ts        # Strings of an event sheet that can name something (events, parameters, script lines)
+│   │   ├── object-images.ts        # An object type's image files in images/ (kept as .bak on delete)
+│   │   ├── animation-rename.ts     # Frame image files and layout instances a rename_animation changes, frame image moves on frame insert, delete, reorder and duplicate
+│   │   ├── file-size-limit.ts      # The size limit: C3MCP_MAX_FILE_MB, 10MB by default, whole megabytes up to 128
 │   │   ├── json-format.ts          # On-disk text style (line endings, trailing newline, BOM)
+│   │   ├── entity-name-references.ts # Where an event sheet or a layout is named (rename_event_sheet, rename_layout)
+│   │   ├── project-shape.ts        # The save shape of project.c3proj
 │   │   ├── layers.ts               # Layer trees: every layer and sub-layer, their instances, layer names
 │   │   ├── atomic-write.ts         # Temp-file-and-rename writes that keep file names on disk
 │   │   ├── names.ts                # Case-insensitive name and folder comparison
-│   │   ├── event-variable-names.ts # Editor name rules for event variables and function parameters
+│   │   ├── flowchart-model.ts      # Flowchart file shape and the in-memory changes of the flowchart tools
+│   │   ├── flowchart-files.ts      # Reading, writing, creating and deleting flowchart files and their project.c3proj entry
+│   │   ├── file-registration.ts    # rootFileFolders entries of scripts and Project Files
+│   │   ├── data-file-body.ts       # Data file bodies and Project File MIME types
+│   │   ├── event-variable-names.ts # Editor name rules for event variables, function parameters and function names
+│   │   ├── fs-errors.ts            # fs errors in messages: the code and the path in the project
+│   │   ├── error-text.ts           # Error text without absolute paths: project-relative paths, other paths replaced
+│   │   ├── instance-templates.ts   # A layout instance's template block and an object type's default template
 │   │   ├── path-utils.ts           # Path resolution inside the project folder
-│   │   ├── png-generator.ts        # Zero-dep placeholder PNG generation
-│   │   ├── ace-catalog.ts          # Condition, action and expression lookup
-│   │   ├── ace-catalog-data.ts     # Construct r495.2 ACE definitions (generated)
-│   │   ├── addon-definitions.ts    # Third-party addon definitions (addon.json, aces.json)
-│   │   ├── expression-check.ts     # Expression parser and name resolution
-│   │   ├── references.ts           # Reference scanning and rewriting for renames
-│   │   ├── file-registration.ts    # Script and project file registration helpers
-│   │   ├── tilemap-data.ts         # Tilemap tile data codec
+│   │   ├── png-generator.ts        # Zero-dep placeholder PNGs and image file names
+│   │   ├── c3p-archive.ts          # A .c3p project's working folder: unpack, refresh, write back, conflict
+│   │   ├── project-source.ts       # The project path: a folder, a .c3proj or a .c3p
+│   │   ├── raw-text-search.ts      # Streamed whole-word text search and UID/SID scan in files the reader skips
+│   │   ├── script-files.ts         # The script files a project registers, walked once for the index, the runtime-trap check and the usage queries
+│   │   ├── ace-types.ts            # Types of the ACE catalogue, addon definitions and the project data the checks read
+│   │   ├── ace-catalog-source.ts   # Builds an ACE catalogue from the editor's files; its cache file, fetch and build script entry
+│   │   ├── ace-catalog-provider.ts # Hands out the catalogue of a release: local copy, cache or fetch, with the fallback release
+│   │   ├── ace-catalog.ts          # Checks a condition or action against a catalogue (validate_project, event tool warnings)
+│   │   ├── addon-definitions.ts    # Third-party addon definitions (addon.json, aces.json) read from folders and .c3addon archives
+│   │   ├── expression-check.ts     # Parses the expressions in ACE parameters and resolves their names
+│   │   ├── event-change-check.ts   # Warnings an event tool adds for the conditions and actions it wrote
 │   │   ├── timeline-folders.ts     # The editor's Transitions folder in the timelines container
-│   │   ├── timeline-model.ts       # Track kinds, track folders and custom eases in timeline files
-│   │   ├── timeline-properties.ts  # What a property track stores for each property
+│   │   ├── timeline-model.ts       # Track kinds, track folders and custom eases inside timeline files
+│   │   ├── timeline-properties.ts  # What a property track stores for each kind of property
+│   │   ├── timeline-result-modes.ts # Which result mode is in force for a keyframe, and how stored values follow a change
+│   │   ├── ease-params.ts          # Custom eases inside event sheet ease parameters
+│   │   ├── tilemap-data.ts         # Codec for a Tilemap instance's tile data string
+│   │   ├── project-tree.ts         # Project Bar trees: finding, creating and registering folders and items, folder path checks (move and duplicate tools)
 │   │   ├── types.ts                # TypeScript type definitions
 │   │   └── analyzers/
-│   │       ├── index-builder.ts    # Cross-reference index
-│   │       ├── event-flow.ts       # Event sheet flow and function map
-│   │       ├── object-deps.ts      # Object dependencies and orphaned objects
+│   │       ├── index-builder.ts    # Cross-reference index (cached per reader)
+│   │       ├── event-flow.ts       # Event sheet include hierarchy and layout bindings, function map
+│   │       ├── object-deps.ts      # Object dependencies, orphaned and unanalysed objects
 │   │       ├── asset-usage.ts      # Asset usage tracking
 │   │       ├── animations.ts       # Sprite animation trees (items + subfolders)
 │   │       ├── event-outline.ts    # Editor event numbers, event sheet outline
@@ -643,58 +706,77 @@ construct3-mcp/
 │   │       ├── load-rules.ts       # Editor load-time rules (validate_project, pre-write checks)
 │   │       ├── legacy-behavior-keys.ts # Legacy "behavior-type" key scan and repair
 │   │       ├── legacy-event-shapes.ts # Legacy isElse/isOr/function call/script shape scan and repair
-│   │       ├── delete-references.ts # Function and variable names an event delete would leave dangling
+│   │       ├── delete-references.ts # Function and variable names an event or sheet delete would leave dangling
+│   │       ├── variable-renames.ts # The uses of an event variable a rename updates, and those it lists
+│   │       ├── unscanned-uses.ts   # Possible uses in registered files the bulk reads skipped
 │   │       ├── behavior-refs.ts    # Behavior name checks against objects and families
+│   │       ├── effect-uses.ts      # Conditions and actions that name an effect of their object (family effect checks)
 │   │       ├── group-settings.ts   # Event group settings (get_group_settings)
 │   │       ├── runtime-traps.ts    # Signal pairing and order, script/parameter traps
 │   │       └── script-scan.ts      # Lightweight JS/TS scanner for script actions
 │   ├── resources/
-│   │   ├── project.ts              # 6 project resources
-│   │   ├── docs.ts                 # 3 Construct 3 documentation resources
-│   │   └── pitfalls.ts             # Curated pitfalls doc (construct3://docs/pitfalls)
+│   │   ├── project.ts              # Project data resources (6)
+│   │   ├── docs.ts                 # Documentation resources (3)
+│   │   └── pitfalls.ts             # Curated pitfalls text (construct3://docs/pitfalls)
 │   ├── runtime/
-│   │   ├── bridge.ts               # Injectable C3 runtime bridge script generator
-│   │   ├── cdp-client.ts           # Persistent CDP connections and bridge calls
-│   │   ├── preview-server.ts       # Serves an exported game and launches Chrome on it
-│   │   ├── project-files.ts        # The files a folder project packs into a .c3p
-│   │   ├── zip-reader.ts           # Dependency-free .c3p archive reader (ZIP64, DEFLATE)
-│   │   └── zip-writer.ts           # Dependency-free .c3p archive writer
+│   │   ├── bridge.ts               # Injectable runtime bridge script generator
+│   │   ├── cdp-client.ts           # CDP client: game connections, bridge calls, input, screenshots
+│   │   ├── preview-server.ts       # Loopback server for exported games, browser launch
+│   │   ├── project-files.ts        # The files of a folder project (pack_project, .c3p write-back)
+│   │   ├── zip-reader.ts           # Zero-dep ZIP reader for .c3p archives (ZIP64, DEFLATE, backslash paths)
+│   │   └── zip-writer.ts           # Zero-dep ZIP writer for .c3p archives (pack_project, .c3p write-back)
 │   ├── tools/
-│   │   ├── query.ts                # 9 query tools
-│   │   ├── analysis.ts             # 11 analysis tools
-│   │   ├── usage-tools.ts          # 6 usage and search tools
-│   │   ├── session-tools.ts        # 5 project session tools
-│   │   ├── shared.ts               # Shared validation, result/error helpers, editor reload note
-│   │   ├── mutations.ts            # Registers every mutation tool module
-│   │   ├── event-tools.ts          # 19 event sheet tools
-│   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators
-│   │   ├── layout-tools.ts         # 18 layout, layer and instance tools
-│   │   ├── object-tools.ts         # 8 object type and family tools
-│   │   ├── container-tools.ts      # 4 container tools
-│   │   ├── animation-tools.ts      # 14 Sprite animation tools
-│   │   ├── project-tools.ts        # 6 project and addon tools
-│   │   ├── file-tools.ts           # 6 script and project file tools
-│   │   ├── effect-tools.ts         # 5 effect tools
-│   │   ├── timeline-tools.ts       # 12 timeline tools
-│   │   ├── timeline-track-tools.ts # 7 timeline track and folder tools
-│   │   ├── timeline-ease-tools.ts  # 4 custom ease tools
-│   │   ├── flowchart-tools.ts      # 13 flowchart tools
-│   │   ├── structure-tools.ts      # 6 Project Bar move and duplicate tools
-│   │   ├── replace-tools.ts        # 2 find-and-replace tools
-│   │   ├── rename-tools.ts         # 6 rename tools
-│   │   ├── template-tools.ts       # 3 instance template tools
-│   │   ├── tilemap-brush-tools.ts  # 4 tilemap brush tools
-│   │   ├── tilemap-data-tools.ts   # 3 tilemap data tools
-│   │   └── runtime-tools.ts        # 19 runtime control tools
+│   │   ├── query.ts                # Query tools (9)
+│   │   ├── analysis.ts             # Analysis tools (11)
+│   │   ├── usage-tools.ts          # Usage queries (6)
+│   │   ├── mutations.ts            # Registers the domain tool modules below
+│   │   ├── object-rename.ts        # Object type and family renames with their references (2)
+│   │   ├── replace-tools.ts        # Replace object and find-and-replace tools (2)
+│   │   ├── structure-tools.ts      # Project Bar move tool (1)
+│   │   ├── duplicate-tools.ts      # Duplicate tools (5)
+│   │   ├── shared.ts               # Validation, result/error helpers, editor reload note
+│   │   ├── refusals.ts             # The refusal vocabulary: "Nothing was changed." once, no absolute path
+│   │   ├── registered-names.ts     # Names matched with their letter case as registered
+│   │   ├── call-rollback.ts        # Rollback of a tool call whose write failed
+│   │   ├── rename-files.ts         # Rename side writes (timelines, images, view state), file creation for a call (createFileForCall), their rollback, script file search
+│   │   ├── side-files.ts           # Rollback of a Project Bar move or copy: created files are removed only once project.c3proj is back
+│   │   ├── project-sync.ts         # withProjectSync: each handler in a tool call scope, after a check of project.c3proj on disk
+│   │   ├── archive-sync.ts         # withArchiveSync: a .c3p refreshed before the calls, written back after
+│   │   ├── object-tools.ts         # Object and family tools (8)
+│   │   ├── instance-sync.ts        # Sync of layout instances with their object types and families
+│   │   ├── event-tools.ts          # Event sheet tools (19)
+│   │   ├── event-helpers.ts        # Event Zod schemas, builders, validators, load-time gate
+│   │   ├── layout-tools.ts         # Layout, layer and instance tools (9)
+│   │   ├── layer-rename.ts         # rename_layer: a layer renamed in several layouts in one call (1)
+│   │   ├── effect-tools.ts         # Effect tools (5)
+│   │   ├── animation-tools.ts      # Sprite animation, animation folder, frame and image tools (14)
+│   │   ├── container-tools.ts      # Container tools (4)
+│   │   ├── timeline-tools.ts       # Timeline tools (5)
+│   │   ├── layer-order.ts          # Layer and instance order tools (4)
+│   │   ├── entity-rename.ts        # Event sheet and layout renames with their references (2)
+│   │   ├── bulk-instance-tools.ts  # Bulk instance tools (3)
+│   │   ├── timeline-instance-tools.ts  # Instance track and keyframe tools (7)
+│   │   ├── timeline-track-tools.ts  # Value and audio track and track folder tools (7)
+│   │   ├── timeline-ease-tools.ts  # Custom ease tools (4)
+│   │   ├── timeline-kit.ts         # Types the timeline tool modules share
+│   │   ├── timeline-writes.ts      # Refusals, relative paths and rollback for the timeline tools
+│   │   ├── tilemap-data-tools.ts   # Tilemap tile data tools (3)
+│   │   ├── tilemap-brush-tools.ts  # Tilemap brush tools (4)
+│   │   ├── tilemap-support.ts      # Refusals, name checks and path-free messages the tilemap tools share
+│   │   ├── file-tools.ts           # Script and Project File tools (6)
+│   │   ├── project-tools.ts        # Project metadata, project properties and addon tools (6)
+│   │   ├── hierarchy-tools.ts      # Hierarchy link tools (2)
+│   │   ├── flowchart-tools.ts      # Flowchart tools (13)
+│   │   ├── template-tools.ts       # Instance template tools (3)
+│   │   ├── change-tools.ts         # list_changes and revert_last_change (2)
+│   │   └── runtime-tools.ts        # Runtime control tools (19)
 │   └── prompts/
-│       └── workflows.ts            # 7 workflow prompts
+│       └── workflows.ts            # Workflow prompts (7)
 ├── test/                           # Vitest suites, mocks and fixtures
-├── scripts/                        # ACE catalogue build, editor coverage, fixture tools
 ├── dist/                           # Compiled JavaScript (generated)
 ├── package.json
 ├── tsconfig.json
 ├── CHANGELOG.md
-├── FORK.md
 └── README.md
 ```
 
@@ -720,7 +802,7 @@ npm start
 ### Building from Source
 
 ```bash
-git clone -b claude/w84-editor-gap https://github.com/BeatsByZann/construct3-mcp.git
+git clone https://github.com/liauw-media/construct3-mcp.git
 cd construct3-mcp
 npm install
 npm run build
@@ -783,13 +865,8 @@ We welcome contributions! Here's how to get started:
 - [x] Bridge commands: callFunction, get/setGlobalVar, getObjectState, evaluateExpression, etc.
 - [x] Project cloning with bridge injection
 - [x] Export-for-preview pre-flight checks (worker mode, bridge registration)
-- [x] Bridge eval script generation (curl/python for browser CDP)
-- [x] Persistent CDP connection discovery and cleanup
-- [x] Serve an exported game and launch Chrome on it; screenshots; input in layout coordinates
-- [x] Event subscriptions: global-variable changes, layout changes and custom events in bounded buffers
-- [x] Direct runtime bridge command execution with bounded polling
-- [x] Runtime condition waits with bounded polling and graceful timeout results
-- [x] Mouse, touch, keyboard, and text input simulation over CDP
+- [x] Bridge eval script generation (browser-console lines, and a Python snippet that prints them)
+- [x] Game connection over CDP (page or worker), bridge calls, conditions, event buffers, input, screenshots, preview server (issues #8 to #13)
 
 ### M1 Primitive Surface ✅ (v1.8)
 - [x] Layers, instance updates and instance removal
@@ -800,14 +877,6 @@ We welcome contributions! Here's how to get started:
 - [x] Project integrity validation and event group settings
 - [x] `.c3p` packing (`pack_project`) and an end-to-end acceptance test
 
-### Phase 7: Working Beside the Editor and Deeper Validation ✅
-- [x] File stamps: a write from content Construct has since saved is refused until `reload_project`
-- [x] Change journal: every result names the files it changed; `list_changes` and `revert_last_change`
-- [x] `project.c3proj` written in the shape Construct r495.2 saves, without pruning `usedAddons`
-- [x] Third-party addon conditions and actions checked from their own definitions
-- [x] Expressions inside parameters parsed and their names resolved
-- [x] Editor checklist coverage table in [FORK.md](FORK.md)
-
 ### Editor Fidelity ✅ (v1.9)
 - [x] Editor load-time checks in `validate_project` and before event sheet writes
 - [x] Event shapes, names, image file names and instance behavior entries as the editor writes them, with repair tools for older sheets
@@ -815,19 +884,19 @@ We welcome contributions! Here's how to get started:
 - [x] Reference-checked deletes, ambiguous-SID protection and nested sub-layers in every layout tool
 - [x] Byte-faithful writes (line endings, BOM, file-name case)
 
-### Phase 8: Advanced Features
-- [x] Support for .c3p (zipped) projects: pass a `.c3p` path; see [Single-file (.c3p) projects](#single-file-c3p-projects)
-- [x] Rename with reference updates (dry-run preview): the six `rename_*` tools
-- [x] Bulk operations: the four bulk instance tools, plus the many-item edits of the event, object, tilemap and timeline tools
+### Phase 7: Advanced Features
+- [x] Opening .c3p (zipped) projects directly
+- [x] Rename with reference updates (dry-run preview)
+- [ ] Bulk operations
 - [ ] Plugin development assistance
 
 ## Known Limitations
 
-- **One Writer at a Time for a .c3p**: The server writes a `.c3p` back after each change and refuses to overwrite one Construct saved in the meantime. Do not edit the same archive in Construct and through the server at once.
-- **Folder projects and the editor**: every tool reads a file fresh before writing it, and a call whose files Construct saved in the meantime says so in its result; a write made from a stale bulk read is refused until `reload_project`. Still, close the project in Construct before editing it here: the editor keeps its own copy and saves over yours.
-- **The game must be exported first**: `serve_preview` serves and launches an HTML5 export, and `connect_to_game` reaches any browser started with a remote-debugging port, but Construct exports only from its editor; the tools cannot produce the export, and the editor's own preview is not reachable over CDP.
-- **ACE validation needs definitions**: conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships, and a third-party addon's against its own `aces.json` once loaded (`C3_ADDON_DEFINITIONS` or `load_addon_definitions`); `validate_project` names the addons still unloaded. A problem is a warning, not a refusal. Expressions inside parameter values are parsed and their names resolved against the project ([details](docs/API.md#expression-checking)); the type a parameter expects is not checked against the expression's type
-- **Load-time rules are the known ones**: only the editor load-time rules listed under `validate_project` are checked. Triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only
+- **Single-file projects through a working folder**: a `.c3p` project is unpacked into a folder in the system's temp folder, which the tools work on; the archive is written back after the tool calls that change the project (the first write-back of a session keeps the archive as it was before it in `<name>.c3p.bak`; a file already named so is not replaced) and read again when it changes on disk while the session has nothing unsaved. The server never replaces or deletes a version of the archive another program saved: when the archive changed on disk after the session changed the project, it is not written, every tool result says so and names the working folder that holds the session's changes. During a write-back the archive's path is empty from the moment the archive is moved aside until the new archive is placed: that covers reading and comparing the moved-aside file and placing the new one; a server stopped in that moment leaves the previous version beside the archive; a server started on that path refuses to start and names it, and one started on another `.c3p` names it with the stopped server's working folder. Each later session that writes back keeps one more `<name>.c3p.<pid>.<n>.bak` copy of the archive, and nothing removes them. Entries the packer leaves out, `*.tmp` files and `*.bak` files are kept unchanged and are not visible to the tools. Archives are written uncompressed, with at most 65,535 entries and 4 GiB. Each write-back reads every file of the project twice (to build the archive and to check it) and reads the archive and its copies several times (before the write-back, the staged copy, the copy moved aside, and after), so it takes longer for large projects.
+- **Editor Holds the Project in Memory**: Close and reopen the project in Construct 3 after MCP edits and before saving there, or the editor can overwrite them
+- **Renames**: Timelines and flowcharts cannot be renamed (`rename_event_sheet`, `rename_layout`, `rename_object_type` and `rename_family` rename event sheets, layouts, object types and families with what names them); renaming an event variable (`update_event_variable`) updates the uses in System variable conditions and actions and in function and custom action call arguments, and, with the ACE catalogue of the project's release, the parameters it types as expressions (number, string or any) or event variable names; parameters it types as another kind of name (combo, group name, timeline, object) are never changed, and the uses it cannot update (other parameter types such as layer, animation and key, parameters without the catalogue, script lines) are listed and refuse without force, and renaming a layer (`update_layer`) updates only the `"layer"` parameters that are exactly the quoted old name (not while another layout has a layer of that name) and lists other strings that name it in a warning (issue #38); `rename_layer` renames it in several layouts in one call. `rename_animation` renames the frame images and the layout instances' start animation, but not text in events
+- **Runtime Testing Needs an Export or the Editor's Preview**: Only the Construct editor exports or previews a project, so the runtime tools start from an exported folder (`serve_preview`) or a preview in a browser with a debugging port; they drive Chromium-based browsers (Chrome, Edge) only
+- **ACE Validation**: ACE validation covers the built-in plugins and behaviors of the project's release (when the definitions can be built), built on first use from three files that the server requests from editor.construct.net and cached per user, and the addons whose definitions are loaded; findings are warnings; without network access (or a local copy named by C3_ACE_SOURCE_DIR) these checks are skipped and validate_project says so. The editor load-time rules listed under `validate_project` are checked too; triggers are recognised by the `on-` id convention, which third-party addons do not always follow, so their trigger problems are warnings only. OR blocks are created with `isOrBlock`
 
 ## License
 
@@ -846,10 +915,8 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ## Support
 
-This fork and upstream have separate issue trackers. See [FORK.md](FORK.md) for which belongs where.
-
-- **This fork**: [Issues](https://github.com/BeatsByZann/construct3-mcp/issues) - for anything this fork added or changed
-- **Upstream**: [Issues](https://github.com/liauw-media/construct3-mcp/issues), [Discussions](https://github.com/liauw-media/construct3-mcp/discussions)
+- **Issues**: [GitHub Issues](https://github.com/liauw-media/construct3-mcp/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/liauw-media/construct3-mcp/discussions)
 
 ---
 

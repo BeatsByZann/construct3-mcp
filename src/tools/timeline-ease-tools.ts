@@ -4,21 +4,23 @@
  * A custom ease is timelines/transitions/<name>.json, registered in the
  * Transitions folder of the project.c3proj `timelines` container (its first
  * first-level subfolder without a name, wherever it sits), and copied
- * into the `transitionsData` of every timeline that uses it (sample:
- * tasty-cappuccino "LightOutBack", used by 4 of its 15 timelines). Shapes are
+ * into the `transitionsData` of every timeline that uses it. Shapes are
  * documented in ../construct3/timeline-model.ts.
+ *
+ * Every write tool reads the files it will change first, builds all new text,
+ * and then writes through the writer; a failed step puts the earlier ones back.
  */
 
 import { z } from 'zod';
-import { recordDelete } from '../construct3/change-journal.js';
-import { upgradeProjectShape } from '../construct3/project-shape.js';
+import { readFile } from 'fs/promises';
 import { parseJsonText } from '../construct3/json-format.js';
-import { readFile, unlink, stat } from 'fs/promises';
 import { resolveProjectPath } from '../construct3/path-utils.js';
-import { listFileEntries, getFileFolderDirectory } from '../construct3/file-registration.js';
+import { getFileFolderDirectory, listFileEntries } from '../construct3/file-registration.js';
+import { findFileIgnoringCase } from '../construct3/atomic-write.js';
+import { StaleFileError, type FileState } from '../construct3/disk-state.js';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult } from '../construct3/types.js';
-import { validateName, toolResult, toolError } from './shared.js';
+import { toolResult, toolError } from './shared.js';
 import {
   checkEasePoints,
   createCustomEase,
@@ -28,9 +30,21 @@ import {
   type CustomEase,
 } from '../construct3/timeline-model.js';
 import { ensureTransitionsFolder, transitionsFolder } from '../construct3/timeline-folders.js';
-import { atomicWriteJson, backupFile, type TimelineToolkit } from './timeline-tools.js';
 import { easeParameterName, easeParameterValue, forEachEaseParameter, EASE_PARAMETER_KEY } from '../construct3/ease-params.js';
-import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
+import type { TimelineToolkit } from './timeline-kit.js';
+import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
+import {
+  invalidName,
+  readFailure,
+  caseHint,
+  jsonFileText,
+  writeJsonFile,
+  readFileForWrite,
+  rollBackToolCall,
+  type ChangedFile,
+} from './timeline-writes.js';
+import { refuse, stoppedBeforeWrite } from './refusals.js';
 
 const handleSchema = z.object({
   x: z.number().min(-10).max(10),
@@ -46,36 +60,66 @@ const pointsSchema = z.array(z.object({
 
 type ContainerFolder = { name?: string; items: string[]; subfolders: unknown[] };
 
-export function registerTimelineEaseTools({ server, reader, writer }: MutationToolDeps, kit: TimelineToolkit) {
-  async function readJson<T>(filePath: string): Promise<T> {
-    return parseJsonText(await readFile(filePath, 'utf-8')) as T;
+/** An event sheet with ease parameters that name an ease: a private copy of its data, and how many parameters embed or only name the ease. */
+interface EventSheetUse {
+  sheet: string;
+  data: unknown;
+  embedded: number;
+  bare: number;
+}
+
+/** A file one of the write tools will change: its new text, its text before and the state it was read in. */
+interface PlannedWrite {
+  name: string;
+  path: string;
+  text: string;
+  before: string;
+  state: FileState;
+}
+
+/**
+ * Register the custom ease tools.
+ * @param deps The server, reader, writer and id generator.
+ * @param kit The toolkit registerTimelineTools builds: timeline access and ease lookups.
+ */
+export function registerTimelineEaseTools(deps: MutationToolDeps, kit: TimelineToolkit): void {
+  const server = withProjectSync(deps.server, deps.reader);
+  const { reader, writer } = deps;
+
+  /** An ease file read once: the parsed data, the raw text (to put back) and the state it was read in. */
+  async function readEaseFile(path: string): Promise<{ data: CustomEase; text: string; state: FileState }> {
+    const read = await readFileForWrite(path);
+    if (read === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return { data: parseJsonText(read.text) as CustomEase, text: read.text, state: read.state };
+  }
+
+  /** The tool error for an unexpected failure; a writer refusal (a stale project.c3proj) is passed on as it says. */
+  function failure(doing: string, error: unknown) {
+    const text = errorMessage(error, reader.getProjectDir());
+    return toolError(error instanceof StaleFileError ? text : `Error ${doing}: ${text}`);
   }
 
   /** Register or deregister an ease name in project.c3proj. */
   async function updateEaseRegistration(name: string, add: boolean): Promise<void> {
-    const projectPath = reader.getProjectPath();
-    const project = await readJson<Record<string, unknown>>(projectPath);
-    if (!project.timelines) project.timelines = { items: [], subfolders: [] };
-    const container = project.timelines as ContainerFolder;
-    if (!Array.isArray(container.subfolders)) container.subfolders = [];
-    if (add) {
-      const folder = ensureTransitionsFolder(container);
-      if (!folder.items.includes(name)) folder.items.push(name);
-    } else {
+    await writer.updateProject(project => {
+      if (!project.timelines) project.timelines = { items: [], subfolders: [] };
+      const container = project.timelines as ContainerFolder;
+      if (!Array.isArray(container.subfolders)) container.subfolders = [];
+      if (add) {
+        const folder = ensureTransitionsFolder(container);
+        if (!folder.items.includes(name)) folder.items.push(name);
+        return;
+      }
       const folder = transitionsFolder(container);
       if (folder) folder.items = folder.items.filter(item => item !== name);
-    }
-    upgradeProjectShape(project);
-    await backupFile(projectPath);
-    await atomicWriteJson(projectPath, project);
-    await reader.reloadProject();
+    });
   }
 
   /**
    * Event sheets and script files that mention `name` as a whole word. The
-   * Tween behavior stores its ease as an event parameter (63 "ease"
-   * parameters in the samples) and scripts can name eases too, so this is a
-   * lexical search; it can report false positives but not miss a literal use.
+   * Tween behavior stores its ease as an event parameter and scripts can
+   * name eases too, so this is a lexical search; it can report false
+   * positives but not miss a literal use.
    */
   async function textReferences(name: string): Promise<{ hits: string[]; unreadable: string[] }> {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -102,10 +146,11 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
 
   /**
    * Event sheets whose ACE `ease` parameters name `name`, as a bare string or
-   * as the object Construct saves for a custom ease, with the parsed sheets.
+   * as the object Construct saves for a custom ease. Each call reads
+   * the sheets afresh, so editing one for a write changes only this call's copy.
    */
-  async function eventSheetUsers(name: string): Promise<{ sheets: Array<{ sheet: string; data: unknown; embedded: number; bare: number }>; unreadable: string[] }> {
-    const sheets: Array<{ sheet: string; data: unknown; embedded: number; bare: number }> = [];
+  async function eventSheetUsers(name: string): Promise<{ sheets: EventSheetUse[]; unreadable: string[] }> {
+    const sheets: EventSheetUse[] = [];
     const unreadable: string[] = [];
     for (const sheet of await reader.listEventSheets()) {
       let data: unknown;
@@ -132,15 +177,28 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
     return transitionsFolder(kit.projectContainer())?.items.slice() ?? [];
   }
 
-  function result(name: string, action: string, backupPath: string, extra: Record<string, unknown> = {}, warnings: string[] = []) {
-    const out: WriteResult = { success: true, entity: name, category: 'ease', action, backupFile: backupPath };
+  /** The result of a write tool; a new ease has no backup, so `backupFile` is added only when there is one. */
+  function result(name: string, action: string, backupPath: string | undefined, extra: Record<string, unknown> = {}, warnings: string[] = []) {
+    const out: WriteResult = {
+      success: true,
+      entity: name,
+      category: 'ease',
+      action,
+      ...(backupPath === undefined ? {} : { backupFile: backupPath }),
+    };
     if (warnings.length > 0) out.warnings = warnings;
     return toolResult({ ...out, ...extra });
   }
 
   const unsampledPointsWarning = (count: number) => count > 2
-    ? ['The sampled ease has two points only; check points between the ends in the Construct 3 editor.']
+    ? ['No fixture holds an ease with points between the ends; check them in the Construct 3 editor.']
     : [];
+
+  /** The refusal for an ease name that is not registered, with the letter-case hint when one fits. */
+  function notFound(name: string) {
+    const hint = caseHint(name, easeNames());
+    return refuse(`Custom ease "${name}" not found. ${hint ?? 'Use list_eases to see the project\'s custom eases.'}`);
+  }
 
   // ─── list_eases ───────────────────────────────────────────
 
@@ -156,9 +214,9 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
           let ease: CustomEase | undefined;
           let error: string | undefined;
           try {
-            ease = await readJson<CustomEase>(kit.easeFilePath(name));
+            ease = (await readEaseFile(kit.easeFilePath(name))).data;
           } catch (e: unknown) {
-            error = `timelines/transitions/${name}.json could not be read: ${e instanceof Error ? e.message : String(e)}`;
+            error = `timelines/transitions/${name}.json could not be read: ${readFailure(e)}`;
           }
           eases.push({
             name,
@@ -171,7 +229,7 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
         return toolResult({ eases, count: eases.length, ...(unreadable.length > 0 ? { unreadableTimelines: unreadable } : {}) });
       } catch (error) {
         console.error('[list_eases] failed:', error);
-        return toolError(`Error listing eases: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing eases: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -184,36 +242,48 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
     {
       name: z.string().max(200).describe('Ease name'),
       points: pointsSchema.describe('Curve points from (0,0) to (1,1) with optional handles, e.g. [{"x":0,"y":0,"startHandle":{"x":0.43,"y":1.33}},{"x":1,"y":1,"endHandle":{"x":-0.36,"y":0.01}}]'),
-      linear: z.boolean().optional().default(false).describe('The "linear" flag (default: false, as in the sample)'),
+      linear: z.boolean().optional().default(false).describe('The "linear" flag (default: false)'),
     },
     async (args) => {
       try {
-        validateName(args.name);
+        const invalid = invalidName(args.name);
+        if (invalid) return refuse(invalid);
         if (clashesWithBuiltinEase(args.name)) {
-          return toolError(`"${args.name}" is one of Construct's own ease names; choose another name.`);
+          return refuse(`"${args.name}" is one of Construct's own ease names; choose another name.`);
         }
-        if (easeNames().includes(args.name)) return toolError(`Custom ease "${args.name}" already exists.`);
+        const registered = easeNames();
+        if (registered.includes(args.name)) return refuse(`Custom ease "${args.name}" already exists.`);
+        const hint = caseHint(args.name, registered);
+        if (hint) return refuse(`A custom ease whose name differs from "${args.name}" only in letter case is registered. ${hint}`);
         if (kit.timelineNames().includes(args.name)) {
-          return toolError(`"${args.name}" is already the name of a timeline in this project; choose another ease name.`);
+          return refuse(`"${args.name}" is already the name of a timeline in this project; choose another ease name.`);
         }
         const problem = checkEasePoints(args.points);
-        if (problem) return toolError(problem);
+        if (problem) return refuse(problem);
 
         const filePath = kit.easeFilePath(args.name);
-        try {
-          await stat(filePath);
-          return toolError(`timelines/transitions/${args.name}.json already exists on disk but is not registered; remove or register it first.`);
-        } catch { /* free */ }
+        const onDisk = await findFileIgnoringCase(filePath);
+        if (onDisk) {
+          return refuse(`${writer.projectRelative(onDisk)} already exists on disk but is not registered; remove or register it first.`);
+        }
 
         const ease = createCustomEase(args.name, args.points, args.linear, 'any');
-        const backupPath = await backupFile(filePath);
-        // A new ease file follows project.c3proj's text style, not an older ease file's.
-        await atomicWriteJson(filePath, ease, reader.getProjectPath());
-        await updateEaseRegistration(args.name, true);
+        await writer.assertProjectFileCurrent();
+        const changed: ChangedFile[] = [{ path: filePath, before: null }];
+        let backupPath: string | undefined;
+        try {
+          // A new ease file follows project.c3proj's text style, not an older ease file's.
+          // null: the file must still be absent; one created since the check above is refused, not overwritten
+          backupPath = await writeJsonFile(writer, filePath, ease, reader.getProjectPath(), null);
+          await updateEaseRegistration(args.name, true);
+        } catch (error) {
+          return toolError(`Error creating ease: ${await rollBackToolCall(writer, reader.getProjectDir(), error, changed)}`);
+        }
+        await reader.reloadProject();
         return result(args.name, 'created', backupPath, {}, unsampledPointsWarning(args.points.length));
       } catch (error) {
         console.error('[create_ease] failed:', error);
-        return toolError(`Error creating ease: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('creating ease', error);
       }
     }
   );
@@ -222,7 +292,7 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
 
   server.tool(
     'update_ease',
-    'Change a custom ease\'s points or linear flag, and refresh the copy of it in every timeline that uses it and in every event-sheet ease parameter that embeds it',
+    'Change a custom ease\'s points or linear flag, and refresh the copy of it in every timeline that uses it and in every event-sheet ease parameter that embeds it. Refused, changing nothing, while a timeline or an event sheet cannot be read.',
     {
       name: z.string().max(200).describe('Ease name'),
       points: pointsSchema.optional().describe('New curve points from (0,0) to (1,1)'),
@@ -231,60 +301,89 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
     async (args) => {
       try {
         if (args.points === undefined && args.linear === undefined) {
-          return toolError('No updates provided. Specify points or linear.');
+          return refuse('No updates provided. Specify points or linear.');
         }
-        if (!easeNames().includes(args.name)) {
-          return toolError(`Custom ease "${args.name}" not found. Use list_eases to see the project's custom eases.`);
-        }
+        if (!easeNames().includes(args.name)) return notFound(args.name);
         if (args.points) {
           const problem = checkEasePoints(args.points);
-          if (problem) return toolError(problem);
+          if (problem) return refuse(problem);
         }
         const filePath = kit.easeFilePath(args.name);
-        let ease: CustomEase;
+        let read: { data: CustomEase; text: string; state: FileState };
         try {
-          ease = await readJson<CustomEase>(filePath);
-        } catch {
-          return toolError(`Custom ease "${args.name}" is registered but timelines/transitions/${args.name}.json could not be read.`);
+          read = await readEaseFile(filePath);
+        } catch (e: unknown) {
+          return refuse(`Custom ease "${args.name}" is registered but timelines/transitions/${args.name}.json could not be read (${readFailure(e)}).`);
         }
+        const ease = read.data;
         if (args.points) ease.transitionKeyframes = buildEaseKeyframes(args.points);
         if (args.linear !== undefined) ease.linear = args.linear;
-
-        const backupPath = await backupFile(filePath);
-        await atomicWriteJson(filePath, ease);
-
-        const refreshed: string[] = [];
+        const eases = await kit.loadEases();
+        eases.set(args.name, ease);
         const all = await kit.allTimelines();
+        const users = await eventSheetUsers(args.name);
+        // A copy that cannot be read would be left holding the old curve: refuse before the first write
+        if (all.unreadable.length > 0 || users.unreadable.length > 0) {
+          const names = [
+            ...all.unreadable.map(n => `timeline "${n}"`),
+            ...users.unreadable.map(n => `event sheet "${n}"`),
+          ];
+          return refuse(`Custom ease "${args.name}" was not updated: ${names.join(', ')} could not be read, so a copy of the ease in ${names.length === 1 ? 'it' : 'them'} could not be refreshed. Fix or remove ${names.length === 1 ? 'it' : 'them'} first.`);
+        }
+        const timelineWrites: PlannedWrite[] = [];
         for (const timeline of all.timelines) {
           if (!referencedEases(timeline.data).has(args.name)) continue;
-          await kit.saveTimeline(timeline.filePath, timeline.data);
-          refreshed.push(timeline.name);
+          timelineWrites.push({
+            name: timeline.name,
+            path: timeline.filePath,
+            text: await kit.timelineText(timeline.filePath, timeline.data, eases),
+            before: timeline.text,
+            state: timeline.state,
+          });
         }
-        const warnings = unsampledPointsWarning(args.points?.length ?? 0);
-        if (all.unreadable.length > 0) {
-          warnings.push(`Timeline(s) ${all.unreadable.join(', ')} could not be opened, so any copy of the ease they hold was not refreshed.`);
-        }
-
-        // Event parameters embed a copy of the ease; bare names are embedded by the editor on load.
-        const users = await eventSheetUsers(args.name);
-        const sheetsRefreshed: string[] = [];
-        for (const { sheet, data, embedded } of users.sheets) {
-          if (embedded === 0) continue;
+        const easeText = await jsonFileText(filePath, ease, reader.getProjectPath());
+        const sheetWrites = users.sheets.filter(s => s.embedded > 0);
+        for (const { data } of sheetWrites) {
           forEachEaseParameter(data, params => {
             const value = params[EASE_PARAMETER_KEY];
             if (typeof value !== 'string' && easeParameterName(value) === args.name) params[EASE_PARAMETER_KEY] = easeParameterValue(ease);
           });
-          await writer.writeEntityFile('eventSheets', sheet, data as never, writer.getSubfolderForEntity('eventSheets', sheet));
-          sheetsRefreshed.push(sheet);
         }
-        if (sheetsRefreshed.length > 0) resetProjectIndex();
-        if (users.unreadable.length > 0) {
-          warnings.push(`Event sheet(s) ${users.unreadable.join(', ')} could not be read, so any copy of the ease they hold was not refreshed.`);
+        // A text over the size limit is refused before the first backup or write (an event sheet is checked by its own write)
+        try {
+          for (const t of timelineWrites) writer.assertWritableSize(t.text, writer.projectRelative(t.path));
+          writer.assertWritableSize(easeText, writer.projectRelative(filePath));
+        } catch (error) {
+          return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
-        return result(args.name, 'updated', backupPath, { timelinesRefreshed: refreshed, eventSheetsRefreshed: sheetsRefreshed }, warnings);
+        // Writes: event sheets, then timelines, then the ease file, so the file that defines the ease changes last
+        const changed: ChangedFile[] = [];
+        let backupPath: string | undefined;
+        try {
+          for (const { sheet, data } of sheetWrites) {
+            await writer.writeEntityFile('eventSheets', sheet, data, writer.getSubfolderForEntity('eventSheets', sheet));
+          }
+          for (const t of timelineWrites) {
+            // Recorded before the write: a write that lands and then throws is still put back
+            changed.push({ path: t.path, before: t.before });
+            await writer.replaceFile(t.path, t.text, { expected: t.state });
+          }
+          changed.push({ path: filePath, before: read.text });
+          backupPath = await writer.replaceFile(filePath, easeText, { expected: read.state });
+        } catch (error) {
+          return toolError(`Error updating ease: ${await rollBackToolCall(writer, reader.getProjectDir(), error, changed)}`);
+        }
+        await reader.reloadProject();
+        return result(
+          args.name,
+          'updated',
+          backupPath,
+          { timelinesRefreshed: timelineWrites.map(t => t.name), eventSheetsRefreshed: sheetWrites.map(s => s.sheet) },
+          unsampledPointsWarning(args.points?.length ?? 0),
+        );
       } catch (error) {
         console.error('[update_ease] failed:', error);
-        return toolError(`Error updating ease: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('updating ease', error);
       }
     }
   );
@@ -293,23 +392,21 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
 
   server.tool(
     'delete_ease',
-    'Delete a custom ease that no timeline uses: its registration, its file (keeping a .bak) and its editor-state file. Refused while a timeline uses it or cannot be opened, and, unless force is set, while an event sheet or script file mentions its name',
+    'Delete a custom ease that no timeline uses: its registration, its file (keeping a .bak) and its editor-state file. A failed step puts the earlier ones back. Refused while a timeline uses it or cannot be opened, and, unless force is set, while an event sheet or script file mentions its name',
     {
       name: z.string().max(200).describe('Ease name'),
       force: z.boolean().optional().default(false).describe('Delete even though event sheets or script files mention the name, or cannot be read (default: false)'),
     },
     async (args) => {
       try {
-        if (!easeNames().includes(args.name)) {
-          return toolError(`Custom ease "${args.name}" not found. Use list_eases to see the project's custom eases.`);
-        }
+        if (!easeNames().includes(args.name)) return notFound(args.name);
         const { timelines, unreadable } = await kit.allTimelines();
         if (unreadable.length > 0) {
-          return toolError(`Timeline(s) ${unreadable.join(', ')} could not be opened, so it is unknown whether they use custom ease "${args.name}". Fix or remove them first.`);
+          return refuse(`Timeline(s) ${unreadable.join(', ')} could not be opened, so it is unknown whether they use custom ease "${args.name}". Fix or remove them first.`);
         }
         const users = timelines.filter(t => referencedEases(t.data).has(args.name)).map(t => t.name);
         if (users.length > 0) {
-          return toolError(`Custom ease "${args.name}" is used by timeline(s) ${users.join(', ')}; change those eases first (update_timeline, update_track, set_keyframe).`);
+          return refuse(`Custom ease "${args.name}" is used by timeline(s) ${users.join(', ')}; change those eases first (update_timeline, update_track, set_keyframe).`);
         }
 
         const warnings: string[] = [];
@@ -319,48 +416,59 @@ export function registerTimelineEaseTools({ server, reader, writer }: MutationTo
           if (text.hits.length > 0) parts.push(`the name "${args.name}" appears in ${text.hits.join(', ')} (for example as a Tween ease)`);
           if (text.unreadable.length > 0) parts.push(`${text.unreadable.join(', ')} could not be read`);
           if (!args.force) {
-            return toolError(`Custom ease "${args.name}" was not deleted: ${parts.join('; ')}. Check those uses, then pass force: true to delete anyway.`);
+            return refuse(`Custom ease "${args.name}" was not deleted: ${parts.join('; ')}. Check those uses, then pass force: true to delete anyway.`);
           }
           warnings.push(`Deleted with force although ${parts.join('; ')}.`);
           const embedded = (await eventSheetUsers(args.name)).sheets.filter(s => s.embedded > 0).map(s => s.sheet);
           if (embedded.length > 0) {
-            warnings.push(`Event sheet(s) ${embedded.join(', ')} still hold an embedded copy of "${args.name}" in ease parameters; what Construct does with the copy of a deleted ease was not sampled, so change those ease parameters.`);
+            warnings.push(`Event sheet(s) ${embedded.join(', ')} still hold an embedded copy of "${args.name}" in ease parameters; change those ease parameters.`);
           }
         }
 
-        // Deregister first: a failed file delete then leaves an unregistered
-        // file rather than a registration pointing at nothing.
-        await updateEaseRegistration(args.name, false);
-
         const filePath = kit.easeFilePath(args.name);
-        const backupPath = await backupFile(filePath);
-        try { await unlink(filePath); recordDelete(filePath); } catch (e: unknown) {
-          if (!(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT')) throw e;
+        const stale = timelines.filter(t => (Array.isArray(t.data.transitionsData) ? t.data.transitionsData : [])
+          .some((entry) => (entry as { json?: { name?: unknown } })?.json?.name === args.name));
+        const staleWrites: PlannedWrite[] = [];
+        for (const timeline of stale) {
+          // Copies of the ease that no timeline uses any more
+          timeline.data.transitionsData = (timeline.data.transitionsData as Array<{ json?: { name?: unknown } }>).filter(entry => entry?.json?.name !== args.name);
+          staleWrites.push({
+            name: timeline.name,
+            path: timeline.filePath,
+            text: await jsonFileText(timeline.filePath, timeline.data, reader.getProjectPath()),
+            before: timeline.text,
+            state: timeline.state,
+          });
         }
         const uistate = filePath.replace(/\.json$/, '.uistate.json');
+        const uistateRead = await readFileForWrite(uistate);
+        const easeRead = await readFileForWrite(filePath);
+        // Before the first write of any file: a project.c3proj saved meanwhile is a refusal that changes nothing
+        await writer.assertProjectFileCurrent();
+        const changed: ChangedFile[] = [];
+        let backupPath: string | undefined;
         try {
-          await stat(uistate);
-          await backupFile(uistate);
-          await unlink(uistate);
-          recordDelete(uistate);
-          warnings.push(`Also deleted ${args.name}.uistate.json (a .bak was written).`);
-        } catch { /* none */ }
-
-        // Drop stale copies of the ease left in timelines that no longer use it.
-        const cleaned: string[] = [];
-        for (const timeline of timelines) {
-          const entries = Array.isArray(timeline.data.transitionsData) ? timeline.data.transitionsData as Array<{ json?: { name?: unknown } }> : [];
-          if (!entries.some(entry => entry?.json?.name === args.name)) continue;
-          timeline.data.transitionsData = entries.filter(entry => entry?.json?.name !== args.name);
-          await kit.saveTimeline(timeline.filePath, timeline.data);
-          cleaned.push(timeline.name);
+          for (const t of staleWrites) {
+            changed.push({ path: t.path, before: t.before });
+            await writer.replaceFile(t.path, t.text, { expected: t.state });
+          }
+          await updateEaseRegistration(args.name, false);
+          if (uistateRead !== null) {
+            changed.push({ path: uistate, before: uistateRead.text });
+            await writer.deleteFile(uistate, { expected: uistateRead.state });
+            warnings.push(`Also deleted ${args.name}.uistate.json (a .bak was written).`);
+          }
+          if (easeRead !== null) changed.push({ path: filePath, before: easeRead.text });
+          backupPath = await writer.deleteFile(filePath, { expected: easeRead === null ? null : easeRead.state });
+        } catch (error) {
+          return toolError(`Error deleting ease: ${await rollBackToolCall(writer, reader.getProjectDir(), error, changed)}`);
         }
-        if (cleaned.length > 0) warnings.push(`Removed the ease's stored copy from timeline(s) ${cleaned.join(', ')}.`);
-
+        await reader.reloadProject();
+        if (staleWrites.length > 0) warnings.push(`Removed the ease's stored copy from timeline(s) ${staleWrites.map(t => t.name).join(', ')}.`);
         return result(args.name, 'deleted', backupPath, {}, warnings);
       } catch (error) {
         console.error('[delete_ease] failed:', error);
-        return toolError(`Error deleting ease: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('deleting ease', error);
       }
     }
   );

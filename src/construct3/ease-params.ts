@@ -1,26 +1,21 @@
 /**
  * Custom eases inside event-sheet ACE parameters.
  *
- * A Tween action written with a bare custom ease name (`ease: "Bouncy"`) was
- * loaded by Construct r495.2 and saved back (W90 live round trip,
- * 2026-09-17) with the parameter as an object that embeds the ease, like a
- * timeline's `transitionsData` entry:
- *
- *   "ease": { "name": "Bouncy", "json": [ { "folders": [], "json": <ease file> } ] }
- *
- * Built-in ease names stay plain strings (63 `ease` parameters in the example
- * packages and C3-ACE, all built-in and all strings). No other ACE parameter
- * in those samples holds an object: the only non-string values are numbers
- * and booleans (`comparison`, `create-hierarchy`, `transform-*`, ...).
+ * A Tween action whose `ease` names a custom ease is stored by Construct with
+ * the parameter as an object that embeds the ease, like a timeline's
+ * `transitionsData` entry: `{ name, json: [{ folders: [], json: <ease file> }] }`
+ * (test/fixtures/timeline-kinds/shapes-r495.json, `easeParameterRoundtrip`).
+ * Built-in ease names stay plain strings.
  */
 
 import { readFile } from 'fs/promises';
 import { resolveProjectPath } from './path-utils.js';
 import { parseJsonText } from './json-format.js';
+import type { Construct3ProjectReader } from './project-reader.js';
 import { isBuiltinEaseName, type CustomEase } from './timeline-model.js';
 import { TRANSITIONS_DIR, transitionsFolder } from './timeline-folders.js';
 
-/** Parameter key that names an ease in the sampled ACEs (Tween actions). */
+/** Parameter key that names an ease in an ACE (Tween actions). */
 export const EASE_PARAMETER_KEY = 'ease';
 
 export interface EmbeddedEaseParameter {
@@ -76,6 +71,22 @@ export function embedCustomEase(parameters: unknown, eases: Map<string, CustomEa
   if (!ease) return undefined;
   record[EASE_PARAMETER_KEY] = easeParameterValue(ease);
   return ease.name;
+}
+
+/**
+ * Store a bare custom ease name in `parameters.ease` the way Construct saves
+ * it: as an object embedding the ease. Built-in names and names matching no
+ * custom ease are left as they are. Returns the embedded ease name, if any.
+ * `parameters` is changed in place, so pass a copy of any input object.
+ */
+export async function applyCustomEaseParameter(
+  reader: Pick<Construct3ProjectReader, 'getProjectDir' | 'getProject'>,
+  parameters: unknown,
+): Promise<string | undefined> {
+  if (!needsEaseLookup(parameters)) return undefined;
+  const project = reader.getProject() as unknown as { timelines?: { subfolders?: unknown[] } };
+  const eases = await loadCustomEases(reader.getProjectDir(), project.timelines);
+  return embedCustomEase(parameters, eases);
 }
 
 /** Every ACE `parameters` object in a JSON tree that has an `ease` key. */

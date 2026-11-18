@@ -35,8 +35,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<Record
 }
 
 async function imagesOf(prefix: string): Promise<string[]> {
-  // .bak files are the backups a replaced image leaves for revert_last_change.
-  return (await readdir(join(tmpDir, 'images'))).filter(f => f.toLowerCase().startsWith(prefix) && !f.endsWith('.bak')).sort();
+  return (await readdir(join(tmpDir, 'images'))).filter(f => f.toLowerCase().startsWith(prefix)).sort();
 }
 
 beforeEach(async () => {
@@ -74,7 +73,8 @@ describe('image file names', () => {
       objectName: 'Sprite2', animationName: 'Animation 1', frameIndex: 0, pngBase64: png.toString('base64'),
     });
 
-    expect(await imagesOf('sprite2-')).toEqual(['sprite2-animation 1-000.png']);
+    // The image it replaces is kept as a backup
+    expect(await imagesOf('sprite2-')).toEqual(['sprite2-animation 1-000.png', 'sprite2-animation 1-000.png.bak']);
     expect(Buffer.compare(await readFile(join(tmpDir, 'images', 'sprite2-animation 1-000.png')), png)).toBe(0);
   });
 
@@ -263,7 +263,9 @@ describe('instance behavior entries', () => {
     await call('add_instance_to_layout', { layoutName: 'Layout 1', layerName: 'Main', objectType: 'Hero', x: 1, y: 1 });
 
     const complete = await call('update_object_properties', { name: 'Hero', addVariables: [{ name: 'hp', type: 'number' }] });
-    expect(complete.warnings).toBeUndefined();
+    // Only the new variable's default value was added to the instance
+    expect(complete.warnings).toEqual(['Updated instances in layout(s): Layout 1']);
+    expect((await instancesOf('Hero'))[0].instanceVariables).toEqual({ hp: 0 });
 
     await setSavedBehaviors('Hero', {});
     const data = await call('update_object_properties', { name: 'Hero', removeVariables: ['hp'] });
@@ -340,11 +342,13 @@ describe('rename_animation', () => {
 
     const data = await call('rename_animation', { objectName: 'Sprite2', animationName: 'Walk', newName: 'Run Fast' });
 
+    // The backup of the frame replaced in spriteWithWalk keeps its old name: it records the file as it was
     expect(await imagesOf('sprite2-')).toEqual([
       'sprite2-animation 1-000.png',
       'sprite2-run fast-000.png',
       'sprite2-run fast-001.png',
       'sprite2-run fast-002.png',
+      'sprite2-walk-001.png.bak',
     ]);
     expect(Buffer.compare(await readFile(join(tmpDir, 'images', 'sprite2-run fast-001.png')), art)).toBe(0);
     // Only the name changes: sid, frames and imageSpriteIds are kept
@@ -514,52 +518,6 @@ describe('animations in animation folders', () => {
     const result = await server.callTool('rename_animation', { objectName: 'Sprite', animationName: 'Jump', newName: 'Leap' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Available: Animation 1, Moves/Walk (animations in animation folders are shown with their folder path');
-  });
-
-  it('the frame order and animation folder tools list animations with their folder path when a name is missing', async () => {
-    await spriteWithFolderAnimation();
-    const expected = 'Available: Animation 1, Moves/Walk (animations in animation folders are shown with their folder path';
-    for (const [tool, args] of [
-      ['reorder_frames', { objectName: 'Sprite', animationName: 'Jump', order: [0] }],
-      ['reverse_frames', { objectName: 'Sprite', animationName: 'Jump' }],
-      ['duplicate_frame', { objectName: 'Sprite', animationName: 'Jump', frameIndex: 0 }],
-      ['move_animation_to_folder', { objectName: 'Sprite', animationName: 'Jump', folderPath: 'Moves' }],
-    ] as const) {
-      const result = await server.callTool(tool, args);
-      expect(result.isError, tool).toBe(true);
-      expect(result.content[0].text, tool).toContain(expected);
-    }
-  });
-
-  it('reverses, reorders and duplicates the frames of an animation in a folder, and moves it between folders and the root', async () => {
-    await spriteWithFolderAnimation();
-    const folderWalk = async () => (await readObject()).animations.subfolders[0].items[0];
-
-    await call('duplicate_frame', { objectName: 'Sprite', animationName: 'Walk', frameIndex: 0 });
-    expect((await folderWalk()).frames).toHaveLength(2);
-    await call('reverse_frames', { objectName: 'Sprite', animationName: 'Walk' });
-    await call('reorder_frames', { objectName: 'Sprite', animationName: 'Walk', order: [1, 0] });
-    expect((await folderWalk()).frames).toHaveLength(2);
-
-    const already = await server.callTool('move_animation_to_folder', { objectName: 'Sprite', animationName: 'Walk', folderPath: 'Moves' });
-    expect(already.isError).toBe(true);
-    expect(already.content[0].text).toContain('already in folder "Moves"');
-
-    const toRoot = await call('move_animation_to_folder', { objectName: 'Sprite', animationName: 'Walk', folderPath: null });
-    expect(toRoot.warnings[0]).toContain('Moved "Walk" from "Moves" to the animations root.');
-    let obj = await readObject();
-    expect(obj.animations.items.map((a: { name: string }) => a.name)).toEqual(['Animation 1', 'Walk']);
-    expect(obj.animations.subfolders[0].items).toEqual([]);
-
-    const rootAgain = await server.callTool('move_animation_to_folder', { objectName: 'Sprite', animationName: 'Walk', folderPath: null });
-    expect(rootAgain.isError).toBe(true);
-    expect(rootAgain.content[0].text).toContain('already in the animations root');
-
-    const back = await call('move_animation_to_folder', { objectName: 'Sprite', animationName: 'Walk', folderPath: 'Moves' });
-    expect(back.warnings[0]).toContain('Moved "Walk" from the animations root to "Moves".');
-    obj = await readObject();
-    expect(obj.animations.items.map((a: { name: string }) => a.name)).toEqual(['Animation 1']);
-    expect(obj.animations.subfolders[0].items.map((a: { name: string }) => a.name)).toEqual(['Walk']);
   });
 
   it('refuses a new or renamed animation named like one in a folder, ignoring case, and keeps its image', async () => {

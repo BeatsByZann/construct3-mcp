@@ -3,8 +3,8 @@ import type { AddressInfo } from "node:net";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { WebSocketServer, type WebSocket } from "ws";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { TestWebSocketServer, type TestWebSocket } from "../helpers/ws-server.js";
 import { RuntimeConnectionManager } from "../../src/runtime/cdp-client.js";
 import { registerRuntimeTools, type RuntimeToolController } from "../../src/tools/runtime-tools.js";
 import { MockServer } from "../mocks/mock-server.js";
@@ -18,6 +18,31 @@ interface FakeCdpOptions {
   includePageTarget?: boolean;
   canvasGeometry?: Record<string, number> | null;
   resultResponseDelayMs?: number;
+  /** Answer Page.captureScreenshot with this many image bytes instead of the echoed parameters. */
+  screenshotBytes?: number;
+  /** Hold the answer to Page.captureScreenshot until releaseScreenshot() is called. */
+  holdScreenshot?: boolean;
+  /** Never answer bridge.submit: a game that is stuck. */
+  holdSubmit?: boolean;
+  /** What bridge.cancel(id) answers; "absent" plays a bridge without cancel. */
+  cancelAnswer?: "queued" | "result" | false | "absent";
+  /**
+   * The page targets /json/list shows, in order (default: one page with the
+   * bridge on the page). A page's bridge can live on the page, in a
+   * dedicated worker the client reaches through Target.setAutoAttach, or
+   * nowhere; a page can be hidden, and Page.bringToFront can make it visible.
+   */
+  pages?: FakePage[];
+}
+
+interface FakePage {
+  id: string;
+  url?: string;
+  bridge?: "page" | "worker" | "none";
+  hidden?: boolean;
+  frontMakesVisible?: boolean;
+  /** The host /json/list names in the page's WebSocket endpoint (default 127.0.0.1, where the fake listens). */
+  endpointHost?: string;
 }
 
 interface FakeCdp {
@@ -27,6 +52,18 @@ interface FakeCdp {
   activeConnectionCount: () => number;
   commandCount: (command: string) => number;
   cdpCommands: () => Array<{ method: string; params: Record<string, unknown> }>;
+  /** How many page expressions (wait_for_condition type "expression") were evaluated. */
+  expressionCount: () => number;
+  /** The command IDs bridge.cancel was called with. */
+  cancelled: () => number[];
+  /** Connection housekeeping calls (Target.setAutoAttach, Page.bringToFront), kept apart from cdpCommands. */
+  housekeeping: () => Array<{ page: string; method: string }>;
+  /** The CDP session each bridge.submit was evaluated in ("page" for the page itself). */
+  submitSessions: () => string[];
+  /** Send the held screenshot answers (holdScreenshot). */
+  releaseScreenshot: () => void;
+  /** Play a reload of every page: their globals, and with them what a connection marked there, are gone. */
+  reloadPages: () => void;
   close(): Promise<void>;
 }
 
@@ -34,14 +71,21 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
   let port = 0;
   let stateChecks = 0;
   let expressionChecks = 0;
+  const cancelledIds: number[] = [];
+  const housekeeping: Array<{ page: string; method: string }> = [];
+  const submitSessions: string[] = [];
+  const heldScreenshots: Array<() => void> = [];
+  // The connection marks a page's globals with a token (globalThis.__c3mcpConnections); a reload clears them.
+  const pageMarks = new Set<string>();
+  const pages: FakePage[] = options.pages ?? [{ id: "page-1", url: "http://localhost/game", bridge: "page" }];
   let nextCommandId = 17;
   const resultChecks = new Map<number, number>();
   const submittedResults = new Map<number, { ok: boolean; value?: unknown; error?: string }>();
   const commandCounts = new Map<string, number>();
   const cdpCommands: Array<{ method: string; params: Record<string, unknown> }> = [];
   let connectionCount = 0;
-  const sockets = new Set<WebSocket>();
-  const webSockets = new WebSocketServer({ noServer: true });
+  const sockets = new Set<TestWebSocket>();
+  const webSockets = new TestWebSocketServer();
   const httpServer = createServer((request, response) => {
     if (request.url !== "/json/list") {
       response.writeHead(404).end();
@@ -49,19 +93,19 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
     }
     const targets = options.includePageTarget === false
       ? [{ id: "worker-1", type: "worker", title: "Worker" }]
-      : [{
-        id: "page-1",
+      : pages.map((page) => ({
+        id: page.id,
         type: "page",
-        title: "Construct Preview",
-        url: "http://localhost/game",
-        webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/page-1`,
-      }];
+        title: page.id === "page-1" ? "Construct Preview" : page.id,
+        url: page.url ?? "http://localhost/game",
+        webSocketDebuggerUrl: `ws://${page.endpointHost ?? "127.0.0.1"}:${port}/devtools/page/${page.id}`,
+      }));
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(targets));
   });
 
   httpServer.on("upgrade", (request, socket, head) => {
-    if (request.url !== "/devtools/page/page-1") {
+    if (!pages.some((page) => request.url === `/devtools/page/${page.id}`)) {
       socket.destroy();
       return;
     }
@@ -70,30 +114,68 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
     });
   });
 
-  webSockets.on("connection", (socket) => {
+  webSockets.on("connection", (socket: TestWebSocket, upgrade: { url?: string }) => {
     connectionCount++;
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
-    socket.on("message", (raw) => {
+    const page = pages.find((candidate) => upgrade.url === `/devtools/page/${candidate.id}`)!;
+    let visible = page.hidden !== true;
+    socket.on("message", (raw: Buffer) => {
       const request = JSON.parse(raw.toString()) as {
         id: number;
         method: string;
+        sessionId?: string;
         params?: Record<string, unknown> & { expression?: string };
       };
+      const answer = (result: unknown) => socket.send(JSON.stringify({ id: request.id, result, ...(request.sessionId ? { sessionId: request.sessionId } : {}) }));
+      if (request.method === "Target.setAutoAttach" || request.method === "Page.bringToFront") {
+        housekeeping.push({ page: page.id, method: request.method });
+        answer({});
+        if (request.method === "Page.bringToFront" && page.frontMakesVisible) visible = true;
+        if (request.method === "Target.setAutoAttach" && page.bridge === "worker") {
+          socket.send(JSON.stringify({
+            method: "Target.attachedToTarget",
+            params: {
+              sessionId: "worker-session-1",
+              targetInfo: { targetId: "worker-target-1", type: "worker", url: "http://localhost/game/worker.js" },
+              waitingForDebugger: false,
+            },
+          }));
+        }
+        return;
+      }
       if (request.method !== "Runtime.evaluate") {
         cdpCommands.push({ method: request.method, params: request.params ?? {} });
         // A screenshot answers with the parameters it was given, so a test can
         // read the format and clip back out of the "image" file.
-        const result = request.method === "Page.captureScreenshot"
-          ? { data: Buffer.from(`image:${JSON.stringify(request.params ?? {})}`).toString("base64") }
-          : {};
-        socket.send(JSON.stringify({ id: request.id, result }));
+        const result = request.method !== "Page.captureScreenshot"
+          ? {}
+          : options.screenshotBytes !== undefined
+            ? { data: Buffer.alloc(options.screenshotBytes, 0x5a).toString("base64") }
+            : { data: Buffer.from(`image:${JSON.stringify(request.params ?? {})}`).toString("base64") };
+        const send = () => socket.send(JSON.stringify({ id: request.id, result }));
+        if (request.method === "Page.captureScreenshot" && options.holdScreenshot) heldScreenshots.push(send);
+        else send();
         return;
       }
 
       const expression = request.params?.expression ?? "";
+      const context = request.sessionId === "worker-session-1" ? "worker" : "page";
+      const bridgeHere = (page.bridge ?? "page") === context;
       let value: string;
-      if (expression.includes("(0, eval)")) {
+      const addedMark = expression.includes("__c3mcpConnections ??=") ? expression.match(/\.add\(("[^"]+")\)/u)?.[1] : undefined;
+      const checkedMark = expression.match(/__c3mcpConnections\.has\(("[^"]+")\)/u)?.[1];
+      if (addedMark) {
+        pageMarks.add(JSON.parse(addedMark) as string);
+        value = JSON.stringify(true);
+      } else if (checkedMark && !pageMarks.has(JSON.parse(checkedMark) as string)) {
+        // What the check returns when the mark is gone: the JSON string literal after it.
+        value = JSON.parse(expression.match(/__c3mcpConnections\.has\("[^"]+"\)\)\) return ("(?:\\.|[^"\\])*");/u)![1]) as string;
+      } else if (expression.includes("document.visibilityState")) {
+        value = JSON.stringify(visible ? "visible" : "hidden");
+      } else if (!bridgeHere && expression.includes("__c3bridge")) {
+        value = JSON.stringify(null);
+      } else if (expression.includes("(0, eval)")) {
         const values = options.expressionValues ?? [null];
         const expressionValue = values[Math.min(expressionChecks, values.length - 1)];
         expressionChecks++;
@@ -112,6 +194,7 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
           objectCount: 7,
         } : null);
       } else if (expression.includes("bridge.submit")) {
+        submitSessions.push(request.sessionId ?? "page");
         const commandLiteral = expression.match(/bridge\.submit\(("(?:\\.|[^"\\])*")/u)?.[1];
         const command = commandLiteral ? JSON.parse(commandLiteral) as string : "unknown";
         const commandIndex = commandCounts.get(command) ?? 0;
@@ -126,6 +209,9 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
           options.bridgeResult ?? { ok: true, value: commandValue },
         );
         value = JSON.stringify({ id: commandId });
+      } else if (expression.includes("bridge.cancel")) {
+        cancelledIds.push(Number(expression.match(/bridge\.cancel\((\d+)\)/u)?.[1]));
+        value = JSON.stringify(options.cancelAnswer === "absent" ? { cancelled: "unsupported" } : { cancelled: options.cancelAnswer ?? "queued" });
       } else if (expression.includes("bridge.getResult")) {
         const commandId = Number(expression.match(/bridge\.getResult\((\d+)\)/u)?.[1]);
         const checks = (resultChecks.get(commandId) ?? 0) + 1;
@@ -148,7 +234,9 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
             value,
           },
         },
+        ...(request.sessionId ? { sessionId: request.sessionId } : {}),
       });
+      if (expression.includes("bridge.submit") && options.holdSubmit) return;
       if (expression.includes("bridge.getResult") && options.resultResponseDelayMs) {
         setTimeout(() => {
           if (socket.readyState === socket.OPEN) socket.send(response);
@@ -174,6 +262,12 @@ async function startFakeCdp(options: FakeCdpOptions = {}): Promise<FakeCdp> {
     connectionCount: () => connectionCount,
     activeConnectionCount: () => sockets.size,
     commandCount: (command) => commandCounts.get(command) ?? 0,
+    expressionCount: () => expressionChecks,
+    cancelled: () => [...cancelledIds],
+    housekeeping: () => [...housekeeping],
+    submitSessions: () => [...submitSessions],
+    releaseScreenshot: () => { for (const send of heldScreenshots.splice(0)) send(); },
+    reloadPages: () => pageMarks.clear(),
     cdpCommands: () => cdpCommands.map((command) => ({
       method: command.method,
       params: { ...command.params },
@@ -196,14 +290,18 @@ function parseToolResult(result: {
   return JSON.parse(result.content[0].text) as Record<string, any>;
 }
 
-function registerConnectionTools(): {
+/** Where the tests' open project is: a folder no test writes into, unless a test passes its own. */
+const NO_PROJECT_DIR = join(tmpdir(), "c3mcp-cdp-test-project");
+
+function registerConnectionTools(projectDir = NO_PROJECT_DIR): {
   server: MockServer;
   controller: RuntimeToolController;
 } {
   const server = new MockServer();
   const controller = registerRuntimeTools({
-    server,
-    reader: {} as any,
+    server: server as never,
+    // Registered through withProjectSync (#51): each call first checks project.c3proj, which this stub never changes
+    reader: { getProjectDir: () => projectDir, checkProjectFile: async () => false } as any,
     writer: {} as any,
   });
   return { server, controller };
@@ -213,6 +311,7 @@ const openFakes: FakeCdp[] = [];
 const openControllers: RuntimeToolController[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   while (openControllers.length > 0) await openControllers.pop()!.close();
   while (openFakes.length > 0) await openFakes.pop()!.close();
 });
@@ -263,31 +362,139 @@ describe("connect_to_game", () => {
     });
   });
 
-  it("refuses a host off this machine unless allowRemoteHost is set", async () => {
+  it("refuses a host off this machine unless the server environment allows it", async () => {
     const { server, controller } = registerConnectionTools();
     openControllers.push(controller);
+    vi.stubEnv("C3MCP_ALLOW_REMOTE_CDP", undefined);
 
     const byHost = await server.callTool("connect_to_game", { host: "10.1.2.3", port: 1, timeoutMs: 200 });
     expect(byHost.isError).toBe(true);
-    expect(byHost.content[0].text).toContain("allowRemoteHost");
+    expect(byHost.content[0].text).toContain("C3MCP_ALLOW_REMOTE_CDP=1");
     expect(byHost.content[0].text).toContain("10.1.2.3");
 
     const byEndpoint = await server.callTool("connect_to_game", { cdpEndpoint: "ws://example.com:9222/devtools/page/1", timeoutMs: 200 });
     expect(byEndpoint.isError).toBe(true);
-    expect(byEndpoint.content[0].text).toContain("allowRemoteHost");
+    expect(byEndpoint.content[0].text).toContain("C3MCP_ALLOW_REMOTE_CDP=1");
     expect(byEndpoint.content[0].text).toContain("example.com");
+
+    // The caller cannot lift the limit: a tool parameter for it does not exist.
+    const asked = await server.callTool("connect_to_game", { host: "10.1.2.3", port: 1, timeoutMs: 200, allowRemoteHost: true });
+    expect(asked.isError).toBe(true);
+    expect(asked.content[0].text).toContain("C3MCP_ALLOW_REMOTE_CDP=1");
 
     // Loopback spellings pass the guard and fail only on the connection itself.
     for (const host of ["localhost", "127.0.0.1", "::1"]) {
       const attempt = await server.callTool("connect_to_game", { host, port: 1, timeoutMs: 200 });
       expect(attempt.isError).toBe(true);
-      expect(attempt.content[0].text).not.toContain("allowRemoteHost");
+      expect(attempt.content[0].text).not.toContain("C3MCP_ALLOW_REMOTE_CDP");
     }
 
-    // With the flag the remote host is attempted, and fails on the connection, not the guard.
-    const allowed = await server.callTool("connect_to_game", { host: "10.1.2.3", port: 1, timeoutMs: 200, allowRemoteHost: true });
+    // Allowed by the environment, the remote host is attempted and fails on the connection, not the guard.
+    vi.stubEnv("C3MCP_ALLOW_REMOTE_CDP", "1");
+    const allowed = await server.callTool("connect_to_game", { host: "10.1.2.3", port: 1, timeoutMs: 200 });
     expect(allowed.isError).toBe(true);
-    expect(allowed.content[0].text).not.toContain("allowRemoteHost");
+    expect(allowed.content[0].text).not.toContain("C3MCP_ALLOW_REMOTE_CDP");
+  });
+
+  it("reaches a bridge that runs in a dedicated worker, and keeps input on the page", async () => {
+    const fake = await startFakeCdp({ pages: [{ id: "page-1", bridge: "worker" }], canvasGeometry: { left: 0, top: 0, cssWidth: 100, cssHeight: 100, backingWidth: 100, backingHeight: 100, devicePixelRatio: 1, viewportWidth: 100, viewportHeight: 100 } });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 1_000 }));
+    expect(connected).toMatchObject({ bridgeReady: true, bridgeContext: "worker", gameState: { ready: true } });
+    const called = parseToolResult(await server.callTool("call_bridge", { connectionId: connected.connectionId, command: "ping", pollIntervalMs: 10, timeoutMs: 500 }));
+    expect(called.result).toEqual({ pong: true });
+    expect(fake.submitSessions()).toEqual(["worker-session-1"]);
+    parseToolResult(await server.callTool("simulate_input", { connectionId: connected.connectionId, action: { type: "click", x: 5, y: 5 } }));
+    expect(fake.cdpCommands().filter((c) => c.method === "Input.dispatchMouseEvent")).toHaveLength(2);
+  });
+
+  it("picks the one page whose bridge is ready among several tabs", async () => {
+    const fake = await startFakeCdp({
+      pages: [
+        { id: "editor", url: "https://editor.construct.net/", bridge: "none" },
+        { id: "game", url: "http://localhost:8080/index.html", bridge: "page" },
+        { id: "blank", url: "about:blank", bridge: "none" },
+      ],
+    });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const connected = parseToolResult(await server.callTool("connect_to_game", { host: "127.0.0.1", port: fake.port, timeoutMs: 1_000 }));
+    expect(connected.target.id).toBe("game");
+  });
+
+  it("refuses to guess when several pages have a ready bridge, and takes the one pageUrl or urlContains names", async () => {
+    const fake = await startFakeCdp({
+      pages: [
+        { id: "editor", url: "https://editor.construct.net/", bridge: "none" },
+        { id: "game", url: "http://localhost:8080/index.html", bridge: "page" },
+        { id: "other-game", url: "http://localhost:9090/index.html", bridge: "page" },
+        // Another site in the same browser that defines a bridge of its own and names the game in its query.
+        { id: "lure", url: "http://localhost:7070/?from=http://localhost:8080/index.html", bridge: "page" },
+      ],
+    });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connect = (args: Record<string, unknown>) => server.callTool("connect_to_game", { host: "127.0.0.1", port: fake.port, timeoutMs: 1_000, ...args });
+
+    const ambiguous = await connect({});
+    expect(ambiguous.isError).toBe(true);
+    for (const url of ["http://localhost:8080/index.html", "http://localhost:9090/index.html", "http://localhost:7070/"]) {
+      expect(ambiguous.content[0].text).toContain(url);
+    }
+    expect(ambiguous.content[0].text).toMatch(/pageUrl/u);
+    // No page was kept.
+    await vi.waitFor(() => expect(fake.activeConnectionCount()).toBe(0), { timeout: 1_000 });
+
+    // A text in the query or fragment does not make a page match.
+    expect(parseToolResult(await connect({ urlContains: "localhost:8080" })).target.id).toBe("game");
+    expect(parseToolResult(await connect({ urlContains: ":9090/" })).target.id).toBe("other-game");
+    expect(parseToolResult(await connect({ pageUrl: "http://localhost:8080/" })).target.id).toBe("game");
+    expect(parseToolResult(await connect({ pageUrl: "http://localhost:7070/" })).target.id).toBe("lure");
+
+    const none = await connect({ urlContains: "no-such-page", timeoutMs: 300 });
+    expect(none.isError).toBe(true);
+    expect(none.content[0].text).toContain("no-such-page");
+    const otherPort = await connect({ pageUrl: "http://localhost:8081/", timeoutMs: 300 });
+    expect(otherPort.isError).toBe(true);
+    expect(otherPort.content[0].text).toContain("http://localhost:8081/");
+    const mixed = await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, pageUrl: "http://localhost:8080/", timeoutMs: 300 });
+    expect(mixed.isError).toBe(true);
+  });
+
+  it("does not follow a discovered page endpoint to another machine unless the server environment allows it", async () => {
+    vi.stubEnv("C3MCP_ALLOW_REMOTE_CDP", undefined);
+    const fake = await startFakeCdp({ pages: [{ id: "page-1", url: "http://localhost/game", bridge: "page", endpointHost: "10.9.8.7" }] });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+
+    const refused = await server.callTool("connect_to_game", { host: "127.0.0.1", port: fake.port, timeoutMs: 500 });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain("10.9.8.7");
+    expect(refused.content[0].text).toContain("C3MCP_ALLOW_REMOTE_CDP=1");
+  });
+
+  it("brings the game tab to the front and warns when it stays hidden", async () => {
+    for (const [page, warned] of [
+      [{ id: "page-1", hidden: true, frontMakesVisible: true }, false],
+      [{ id: "page-1", hidden: true }, true],
+    ] as const) {
+      const fake = await startFakeCdp({ pages: [page] });
+      openFakes.push(fake);
+      const { server, controller } = registerConnectionTools();
+      openControllers.push(controller);
+      const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 1_000 }));
+      expect(fake.housekeeping().map((h) => h.method)).toContain("Page.bringToFront");
+      expect(connected.pageVisible).toBe(!warned);
+      if (warned) expect(connected.warning).toMatch(/hidden/u);
+      else expect(connected.warning).toBeUndefined();
+    }
   });
 
   it("accepts a direct page WebSocket endpoint", async () => {
@@ -320,6 +527,22 @@ describe("connect_to_game", () => {
     await controller.close();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(fake.activeConnectionCount()).toBe(0);
+  });
+
+  it("names the Node.js version it needs when there is no built-in WebSocket client", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    vi.stubGlobal("WebSocket", undefined);
+    try {
+      const result = await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("Node.js 22");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(fake.connectionCount()).toBe(0);
   });
 
   it("rejects mixed direct and discovery connection inputs", async () => {
@@ -445,6 +668,25 @@ describe("call_bridge", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("timed out after 120ms");
+    // The command is withdrawn, so it does not run later when the game ticks again.
+    expect(fake.cancelled()).toEqual([17]);
+    expect(result.content[0].text).toContain("withdrawn");
+  });
+
+  it("says when a timed-out command ran after all, or may still run on an older bridge", async () => {
+    for (const [cancelAnswer, expected] of [
+      ["result", "ran after all"],
+      ["absent", "may still run"],
+    ] as const) {
+      const fake = await startFakeCdp({ resultAfter: Number.MAX_SAFE_INTEGER, cancelAnswer });
+      openFakes.push(fake);
+      const { server, controller } = registerConnectionTools();
+      openControllers.push(controller);
+      const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+      const result = await server.callTool("call_bridge", { connectionId: connected.connectionId, command: "ping", pollIntervalMs: 10, timeoutMs: 120 });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain(expected);
+    }
   });
 
   it("reports the command timeout when a poll expires at the deadline", async () => {
@@ -464,9 +706,59 @@ describe("call_bridge", () => {
       timeoutMs: 120,
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe(
-      "Failed to call runtime bridge: Runtime bridge command timed out after 120ms",
+    expect(result.content[0].text).toMatch(
+      /^Failed to call runtime bridge: Runtime bridge command timed out after 120ms; it had not run yet and was withdrawn/u,
     );
+  });
+
+  it("reports the command timeout when a poll's timer fires before the clock reaches the deadline", async () => {
+    const fake = await startFakeCdp({ resultResponseDelayMs: 60_000 });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const { connectionId } = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+    // Timers run ahead of Date.now() here, as a Node timer can fire up to a millisecond early on a busy machine.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const calling = server.callTool("call_bridge", { connectionId, command: "ping", pollIntervalMs: 10, timeoutMs: 300 });
+      for (let turn = 0; fake.commandCount("ping") === 0 && turn < 100_000; turn++) await new Promise((r) => setImmediate(r));
+      await vi.advanceTimersByTimeAsync(300);
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.useRealTimers();
+      const result = await calling;
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/^Failed to call runtime bridge: Runtime bridge command timed out after 300ms/u);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the connection with a clear error once the page reloaded, instead of driving a game that started over", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const { connectionId } = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+    const call = () => server.callTool("call_bridge", { connectionId, command: "ping", pollIntervalMs: 10, timeoutMs: 500 });
+    expect(parseToolResult(await call()).result).toEqual({ pong: true });
+
+    fake.reloadPages();
+    const after = await call();
+    expect(after.isError).toBe(true);
+    expect(after.content[0].text).toMatch(/reloaded or navigated.*connect_to_game again/u);
+    // The connection is closed, and says why the next time as well.
+    const again = await server.callTool("wait_for_condition", { connectionId, condition: { type: "globalVar", name: "Score", operator: "eq", value: 1 }, timeoutMs: 300 });
+    expect(again.isError).toBe(true);
+    expect(again.content[0].text).toMatch(/reloaded or navigated/u);
+    await vi.waitFor(() => expect(fake.activeConnectionCount()).toBe(0), { timeout: 1_000 });
+
+    // A page expression notices the reload the same way.
+    vi.stubEnv("C3MCP_ALLOW_EVAL", "1");
+    const second = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+    fake.reloadPages();
+    const expression = await server.callTool("wait_for_condition", { connectionId: second.connectionId, condition: { type: "expression", expr: "1", operator: "eq", value: 1 }, timeoutMs: 300 });
+    expect(expression.isError).toBe(true);
+    expect(expression.content[0].text).toMatch(/reloaded or navigated/u);
   });
 
   it("rejects a closed connection ID", async () => {
@@ -523,7 +815,7 @@ describe("wait_for_condition", () => {
         timeoutMs: 500,
       }));
       expect(result.met).toBe(true);
-      expect(result.elapsed_ms).toBeGreaterThanOrEqual(0);
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
     }
     expect(fake.commandCount("getGlobalVar")).toBe(comparisons.length);
   });
@@ -544,7 +836,7 @@ describe("wait_for_condition", () => {
       pollIntervalMs: 10,
       timeoutMs: 500,
     }));
-    expect(result).toMatchObject({ met: true, final_value: 5 });
+    expect(result).toMatchObject({ met: true, finalValue: 5 });
     expect(fake.commandCount("getGlobalVar")).toBe(3);
   });
 
@@ -580,7 +872,7 @@ describe("wait_for_condition", () => {
       pollIntervalMs: 10,
       timeoutMs: 500,
     }));
-    expect(objectProperty).toMatchObject({ met: true, final_value: "10" });
+    expect(objectProperty).toMatchObject({ met: true, finalValue: "10" });
 
     const instanceVariable = parseToolResult(await server.callTool("wait_for_condition", {
       connectionId: connected.connectionId,
@@ -593,7 +885,7 @@ describe("wait_for_condition", () => {
       },
       timeoutMs: 500,
     }));
-    expect(instanceVariable).toMatchObject({ met: true, final_value: 25 });
+    expect(instanceVariable).toMatchObject({ met: true, finalValue: 25 });
 
     const layout = parseToolResult(await server.callTool("wait_for_condition", {
       connectionId: connected.connectionId,
@@ -601,9 +893,9 @@ describe("wait_for_condition", () => {
       pollIntervalMs: 10,
       timeoutMs: 500,
     }));
-    expect(layout).toMatchObject({ met: true, final_value: "Bonus" });
+    expect(layout).toMatchObject({ met: true, finalValue: "Bonus" });
 
-    const expression = parseToolResult(await server.callTool("wait_for_condition", {
+    const expressionCall = {
       connectionId: connected.connectionId,
       condition: {
         type: "expression",
@@ -613,8 +905,19 @@ describe("wait_for_condition", () => {
       },
       pollIntervalMs: 10,
       timeoutMs: 500,
-    }));
-    expect(expression).toMatchObject({ met: true, final_value: 11 });
+    };
+    // Page script runs only when whoever started the server allowed it.
+    for (const setting of [undefined, "", "0", "true"]) {
+      vi.stubEnv("C3MCP_ALLOW_EVAL", setting);
+      const refused = await server.callTool("wait_for_condition", expressionCall);
+      expect(refused.isError).toBe(true);
+      expect(refused.content[0].text).toContain("C3MCP_ALLOW_EVAL=1");
+    }
+    expect(fake.expressionCount()).toBe(0);
+
+    vi.stubEnv("C3MCP_ALLOW_EVAL", "1");
+    const expression = parseToolResult(await server.callTool("wait_for_condition", expressionCall));
+    expect(expression).toMatchObject({ met: true, finalValue: 11 });
   });
 
   it("returns met false with the last observed value on timeout", async () => {
@@ -634,8 +937,29 @@ describe("wait_for_condition", () => {
       timeoutMs: 120,
     }));
     expect(result.met).toBe(false);
-    expect(result.final_value).toBe("WAITING");
-    expect(result.elapsed_ms).toBeGreaterThanOrEqual(100);
+    expect(result.finalValue).toBe("WAITING");
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(100);
+  });
+
+  it("returns met false when a read ran out of the budget, even when the timer fires before the clock says so", async () => {
+    const fake = await startFakeCdp({ holdSubmit: true });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const { connectionId } = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+    // Timers run ahead of Date.now() here, as a Node timer can fire up to a millisecond early on a busy machine.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const waiting = server.callTool("wait_for_condition", {
+        connectionId, condition: { type: "globalVar", name: "State", operator: "eq", value: "READY" }, timeoutMs: 300,
+      });
+      for (let turn = 0; fake.submitSessions().length === 0 && turn < 100_000; turn++) await new Promise((r) => setImmediate(r));
+      await vi.advanceTimersByTimeAsync(300);
+      vi.useRealTimers();
+      expect(parseToolResult(await waiting)).toMatchObject({ met: false, finalValue: null });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports invalid comparisons and missing object properties", async () => {
@@ -684,15 +1008,15 @@ describe("wait_for_condition", () => {
 });
 
 describe("subscribe_events, read_events and unsubscribe_events", () => {
-  it("travel through the retained connection with the upstream result names and defaults", async () => {
+  it("travel through the retained connection with camelCase result names and the defaults", async () => {
     const fake = await startFakeCdp({
       commandValues: {
-        subscribeEvents: [{ subscription_id: "sub-1" }],
+        subscribeEvents: [{ subscriptionId: "sub-1" }],
         readEvents: [
           { events: [{ type: "globalVarChange", name: "Score", value: 5, previousValue: 0, timestamp: 1, tick: 4 }], count: 1 },
           { events: [], count: 0 },
         ],
-        unsubscribeEvents: [{ subscription_id: "sub-1", unsubscribed: true }],
+        unsubscribeEvents: [{ subscriptionId: "sub-1", unsubscribed: true }],
       },
     });
     openFakes.push(fake);
@@ -703,7 +1027,7 @@ describe("subscribe_events, read_events and unsubscribe_events", () => {
     const made = parseToolResult(await server.callTool("subscribe_events", {
       connectionId: connected.connectionId, eventType: "globalVarChange", filter: { variable: "Score" },
     }));
-    expect(made).toEqual({ subscription_id: "sub-1", eventType: "globalVarChange", filter: { variable: "Score" }, bufferSize: 100 });
+    expect(made).toEqual({ subscriptionId: "sub-1", eventType: "globalVarChange", filter: { variable: "Score" }, bufferSize: 100 });
 
     const read = parseToolResult(await server.callTool("read_events", { connectionId: connected.connectionId, subscriptionId: "sub-1", clear: false }));
     expect(read).toEqual({ events: [{ type: "globalVarChange", name: "Score", value: 5, previousValue: 0, timestamp: 1, tick: 4 }], count: 1 });
@@ -711,7 +1035,7 @@ describe("subscribe_events, read_events and unsubscribe_events", () => {
     expect(cleared).toEqual({ events: [], count: 0 });
 
     const gone = parseToolResult(await server.callTool("unsubscribe_events", { connectionId: connected.connectionId, subscriptionId: "sub-1" }));
-    expect(gone).toEqual({ subscription_id: "sub-1", unsubscribed: true });
+    expect(gone).toEqual({ subscriptionId: "sub-1", unsubscribed: true });
     expect(fake.commandCount("subscribeEvents")).toBe(1);
     expect(fake.commandCount("readEvents")).toBe(2);
     expect(fake.commandCount("unsubscribeEvents")).toBe(1);
@@ -769,6 +1093,105 @@ describe("screenshot_game", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+  it("writes only a new image file outside the project, named for its format, at an absolute path", async () => {
+    const project = await mkdtemp(join(tmpdir(), "c3-shot-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "c3-shot-"));
+    try {
+      await writeFile(join(project, "project.c3proj"), "{\"project\": true}", "utf8");
+      await mkdir(join(project, "images"));
+      await writeFile(join(project, "images", "sprite.png"), "sprite", "utf8");
+      const fake = await startFakeCdp();
+      openFakes.push(fake);
+      const { server, controller } = registerConnectionTools(project);
+      openControllers.push(controller);
+      const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+      const shoot = (args: Record<string, unknown>) => server.callTool("screenshot_game", { connectionId: connected.connectionId, ...args });
+      const refused = async (args: Record<string, unknown>, reason: RegExp) => {
+        const result = await shoot(args);
+        expect(result.isError, JSON.stringify(args)).toBe(true);
+        expect(result.content[0].text).toMatch(reason);
+      };
+
+      await refused({ outputPath: join(project, "project.c3proj") }, /\.png/u);
+      await refused({ outputPath: join(project, "shots", "a.png") }, /inside the open project/u);
+      await refused({ outputPath: join(project, "images", "sprite.png"), overwrite: true }, /inside the open project/u);
+      await refused({ outputPath: "shots/a.png" }, /absolute/u);
+      await refused({ outputPath: join(outside, "a.jpg") }, /\.png/u);
+      await refused({ outputPath: join(outside, "a.png"), format: "jpeg" }, /\.jpg or \.jpeg/u);
+      expect(await readFile(join(project, "project.c3proj"), "utf8")).toBe("{\"project\": true}");
+      expect(await readFile(join(project, "images", "sprite.png"), "utf8")).toBe("sprite");
+      expect(fake.cdpCommands().filter((c) => c.method === "Page.captureScreenshot")).toEqual([]);
+
+      await writeFile(join(outside, "kept.png"), "earlier", "utf8");
+      await refused({ outputPath: join(outside, "kept.png") }, /exists.*overwrite/u);
+      expect(await readFile(join(outside, "kept.png"), "utf8")).toBe("earlier");
+      expect(parseToolResult(await shoot({ outputPath: join(outside, "kept.png"), overwrite: true })).success).toBe(true);
+      expect(await readFile(join(outside, "kept.png"), "utf8")).toBe('image:{"format":"png"}');
+      expect(parseToolResult(await shoot({ outputPath: join(outside, "b.JPEG"), format: "jpeg" })).format).toBe("jpeg");
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("waits longer than an ordinary CDP call for a large capture, 30 s by default or timeoutMs", async () => {
+    const fake = await startFakeCdp({ holdScreenshot: true });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+    const dir = await mkdtemp(join(tmpdir(), "c3-shot-"));
+    const captures = () => fake.cdpCommands().filter((c) => c.method === "Page.captureScreenshot").length;
+    const untilCaptured = async (count: number) => {
+      for (let turn = 0; captures() < count && turn < 100_000; turn++) await new Promise((r) => setImmediate(r));
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // A 4K canvas of noise takes more than the 5 s an ordinary CDP call gets.
+      const slow = server.callTool("screenshot_game", { connectionId: connected.connectionId, outputPath: join(dir, "slow.png") });
+      await untilCaptured(1);
+      await vi.advanceTimersByTimeAsync(20_000);
+      fake.releaseScreenshot();
+      vi.useRealTimers();
+      expect(parseToolResult(await slow).success).toBe(true);
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const bounded = server.callTool("screenshot_game", { connectionId: connected.connectionId, outputPath: join(dir, "bounded.png"), timeoutMs: 2_000 });
+      await untilCaptured(2);
+      await vi.advanceTimersByTimeAsync(2_500);
+      vi.useRealTimers();
+      const timedOut = await bounded;
+      expect(timedOut.isError).toBe(true);
+      expect(timedOut.content[0].text).toMatch(/timed out after 2000ms/u);
+      fake.releaseScreenshot();
+    } finally {
+      vi.useRealTimers();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the connection when a screenshot message is larger than 4 MiB", async () => {
+    // 5 MiB of image data is about 6.7 MiB of base64 in one CDP message.
+    const fake = await startFakeCdp({ screenshotBytes: 5 * 1024 * 1024 });
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+    const dir = await mkdtemp(join(tmpdir(), "c3-shot-"));
+    try {
+      const shot = await server.callTool("screenshot_game", {
+        connectionId: connected.connectionId, outputPath: join(dir, "big.png"),
+      });
+      expect(shot.content[0].text).not.toMatch(/payload|closed/iu);
+      expect(parseToolResult(shot).bytes).toBe(5 * 1024 * 1024);
+      const called = parseToolResult(await server.callTool("call_bridge", {
+        connectionId: connected.connectionId, command: "ping", pollIntervalMs: 10, timeoutMs: 500,
+      }));
+      expect(called.result).toEqual({ pong: true });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("simulate_input in layout coordinates", () => {
@@ -815,24 +1238,23 @@ describe("simulate_input in layout coordinates", () => {
 });
 
 describe("serve_preview and stop_preview", () => {
-  it("refuses a non-loopback interface and a source project, serves an export, and stops it", async () => {
+  it("serves only on this machine at a 127.0.0.1 URL, refuses a source project, and stops", async () => {
     const { server, controller } = registerConnectionTools();
     openControllers.push(controller);
     const root = await mkdtemp(join(tmpdir(), "c3-serve-"));
     try {
       await mkdir(join(root, "game"));
       await writeFile(join(root, "game", "index.html"), "<title>Served</title>", "utf8");
-
-      const remote = await server.callTool("serve_preview", { folder: join(root, "game"), host: "0.0.0.0" });
-      expect(remote.isError).toBe(true);
-      expect(remote.content[0].text).toContain("allowRemoteHost");
+      const folder = join(root, "game");
 
       const archive = await server.callTool("serve_preview", { folder: join(root, "game.c3p") });
       expect(archive.isError).toBe(true);
       expect(archive.content[0].text).toContain("source project, not an exported game");
 
-      const served = parseToolResult(await server.callTool("serve_preview", { folder: join(root, "game"), host: "127.0.0.1" }));
-      expect(served).toMatchObject({ success: true, host: "127.0.0.1", folder: join(root, "game") });
+      const served = parseToolResult(await server.callTool("serve_preview", { folder }));
+      expect(served).toMatchObject({ success: true, host: "127.0.0.1", folder });
+      // 127.0.0.1, not localhost: localhost can resolve to ::1 first, where nothing listens.
+      expect(served.url).toBe(`http://127.0.0.1:${served.port}/`);
       expect(served.next).toContain("launchBrowser: true");
       expect(await (await fetch(served.url)).text()).toBe("<title>Served</title>");
 
@@ -840,9 +1262,33 @@ describe("serve_preview and stop_preview", () => {
       expect(stopped.stopped.map((p: { serverId: string }) => p.serverId)).toEqual([served.serverId]);
       await expect(fetch(served.url)).rejects.toThrow();
 
-      const again = parseToolResult(await server.callTool("serve_preview", { folder: join(root, "game"), host: "127.0.0.1" }));
+      const again = parseToolResult(await server.callTool("serve_preview", { folder, crossOriginIsolated: true }));
+      expect(again.crossOriginIsolated).toBe(true);
+      expect((await fetch(again.url)).headers.get("cross-origin-embedder-policy")).toBe("require-corp");
       const all = parseToolResult(await server.callTool("stop_preview", {}));
       expect(all.stopped.map((p: { serverId: string }) => p.serverId)).toEqual([again.serverId]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a listening interface or a browser executable as parameters", async () => {
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const root = await mkdtemp(join(tmpdir(), "c3-serve-"));
+    try {
+      await writeFile(join(root, "index.html"), "<title>Served</title>", "utf8");
+      // Whoever calls the tool must not open the folder to the network or
+      // start a program of their choice: those are the operator's settings.
+      for (const extra of [
+        { host: "0.0.0.0", allowRemoteHost: true },
+        { allowRemoteHost: true },
+        { launchBrowser: true, chromePath: process.execPath },
+        { chromeDebuggingPort: 9222 },
+      ]) {
+        await expect(server.callTool("serve_preview", { folder: root, ...extra })).rejects.toThrow(/Unrecognized key/u);
+      }
+      expect(parseToolResult(await server.callTool("stop_preview", {})).stopped).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -924,7 +1370,7 @@ describe("simulate_input", () => {
     });
   });
 
-  it("dispatches key combinations and inserts text by Unicode character", async () => {
+  it("dispatches key combinations, and types text as key presses unless insertText is asked for", async () => {
     const fake = await startFakeCdp();
     openFakes.push(fake);
     const { server, controller } = registerConnectionTools();
@@ -944,7 +1390,11 @@ describe("simulate_input", () => {
     }));
     parseToolResult(await server.callTool("simulate_input", {
       connectionId: connected.connectionId,
-      action: { type: "type", text: "A🙂" },
+      action: { type: "type", text: "a.B🙂" },
+    }));
+    parseToolResult(await server.callTool("simulate_input", {
+      connectionId: connected.connectionId,
+      action: { type: "type", text: "A🙂", mode: "insertText" },
     }));
 
     const commands = fake.cdpCommands();
@@ -978,10 +1428,41 @@ describe("simulate_input", () => {
       code: "Space",
       text: " ",
     });
-    expect(commands.slice(-2)).toEqual([
-      { method: "Input.insertText", params: { text: "A" } },
-      { method: "Input.insertText", params: { text: "🙂" } },
+    // "type" presses a key per character, so a game reading the keyboard sees it.
+    const typed = commands.slice(4, -1).map((command) => command.params);
+    expect(commands.slice(4, -1).every((command) => command.method === "Input.dispatchKeyEvent")).toBe(true);
+    expect(typed.map((p) => [p.type, p.key, p.code, p.windowsVirtualKeyCode, p.modifiers, p.text])).toEqual([
+      ["keyDown", "a", "KeyA", 65, 0, "a"],
+      ["keyUp", "a", "KeyA", 65, 0, undefined],
+      ["keyDown", ".", "Period", 190, 0, "."],
+      ["keyUp", ".", "Period", 190, 0, undefined],
+      ["keyDown", "B", "KeyB", 66, 8, "B"],
+      ["keyUp", "B", "KeyB", 66, 8, undefined],
+      ["keyDown", "🙂", "", 0, 0, "🙂"],
+      ["keyUp", "🙂", "", 0, 0, undefined],
     ]);
+    expect(commands.at(-1)).toEqual({ method: "Input.insertText", params: { text: "A🙂" } });
+  });
+
+  it("gives punctuation and shifted characters their US-layout key codes", async () => {
+    const fake = await startFakeCdp();
+    openFakes.push(fake);
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const connected = parseToolResult(await server.callTool("connect_to_game", { cdpEndpoint: fake.endpoint, timeoutMs: 500 }));
+
+    const cases: Array<[string, string, number, number]> = [
+      [".", "Period", 190, 0], [",", "Comma", 188, 0], ["-", "Minus", 189, 0], ["/", "Slash", 191, 0],
+      [";", "Semicolon", 186, 0], ["'", "Quote", 222, 0], ["[", "BracketLeft", 219, 0], ["]", "BracketRight", 221, 0],
+      ["\\", "Backslash", 220, 0], ["`", "Backquote", 192, 0], ["=", "Equal", 187, 0],
+      ["!", "Digit1", 49, 8], ["?", "Slash", 191, 8], [":", "Semicolon", 186, 8], ["_", "Minus", 189, 8],
+      ["7", "Digit7", 55, 0], ["Z", "KeyZ", 90, 8], ["Insert", "Insert", 45, 0], ["F13", "F13", 124, 0],
+    ];
+    for (const [key] of cases) {
+      parseToolResult(await server.callTool("simulate_input", { connectionId: connected.connectionId, action: { type: "key", key } }));
+    }
+    const downs = fake.cdpCommands().filter((command) => command.params.type === "keyDown").map((command) => command.params);
+    expect(downs.map((p) => [p.key, p.code, p.windowsVirtualKeyCode, p.modifiers])).toEqual(cases);
   });
 
   it("dispatches tap, swipe, and long-press touch gestures", async () => {
@@ -1008,12 +1489,16 @@ describe("simulate_input", () => {
       "Emulation.setTouchEmulationEnabled",
       "Input.dispatchTouchEvent",
       "Input.dispatchTouchEvent",
+      "Emulation.setTouchEmulationEnabled",
     ]);
+    expect(afterTap[0].params).toMatchObject({ enabled: true });
     expect(afterTap[1].params).toMatchObject({
       type: "touchStart",
       touchPoints: [{ x: 10, y: 20, id: 1 }],
     });
     expect(afterTap[2].params).toEqual({ type: "touchEnd", touchPoints: [] });
+    // Touch emulation ends with the gesture, so the page does not stay a touch device.
+    expect(afterTap[3].params).toEqual({ enabled: false });
 
     const swipeStartIndex = fake.cdpCommands().length;
     parseToolResult(await server.callTool("simulate_input", {
@@ -1028,7 +1513,7 @@ describe("simulate_input", () => {
       },
     }));
     const swipe = fake.cdpCommands().slice(swipeStartIndex);
-    expect(swipe).toHaveLength(11);
+    expect(swipe).toHaveLength(12);
     expect(swipe[2]).toMatchObject({
       method: "Input.dispatchTouchEvent",
       params: { type: "touchMove", touchPoints: [{ x: 10, y: 20 }] },
@@ -1038,6 +1523,7 @@ describe("simulate_input", () => {
       params: { type: "touchMove", touchPoints: [{ x: 80, y: 90 }] },
     });
     expect(swipe[10].params).toEqual({ type: "touchEnd", touchPoints: [] });
+    expect(swipe[11].params).toEqual({ enabled: false });
 
     const longPressStartedAt = Date.now();
     parseToolResult(await server.callTool("simulate_input", {
@@ -1045,7 +1531,7 @@ describe("simulate_input", () => {
       action: { type: "touch", x: 30, y: 40, gesture: "longPress" },
     }));
     expect(Date.now() - longPressStartedAt).toBeGreaterThanOrEqual(450);
-    expect(fake.cdpCommands().slice(-2).map((command) => command.params.type)).toEqual([
+    expect(fake.cdpCommands().slice(-3, -1).map((command) => command.params.type)).toEqual([
       "touchStart",
       "touchEnd",
     ]);
@@ -1152,5 +1638,18 @@ describe("simulate_input", () => {
     } finally {
       await manager.closeAll();
     }
+  });
+});
+
+describe("get_bridge_commands", () => {
+  it("names call_bridge and lists exactly the commands call_bridge accepts", async () => {
+    const { server, controller } = registerConnectionTools();
+    openControllers.push(controller);
+    const tool = server.getTool("get_bridge_commands")!;
+    expect(tool.description).toContain("call_bridge");
+    expect(tool.description).not.toContain("call_bridge_command");
+    const listed = Object.keys(parseToolResult(await server.callTool("get_bridge_commands", {}))).sort();
+    const accepted = [...(server.getTool("call_bridge")!.schema.command as unknown as { options: string[] }).options].sort();
+    expect(listed).toEqual(accepted);
   });
 });

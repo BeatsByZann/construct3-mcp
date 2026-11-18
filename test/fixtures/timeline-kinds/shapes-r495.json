@@ -1,5 +1,5 @@
 {
-	"source": "Shapes (key order and leaf types, arrays reduced to their first element) of Construct r495.2 example packages, extracted 2026-09-17 by the W90 probe; no values are copied. audioTrackRoundtrip and easeParameterRoundtrip come from the W90 live r495.2 round trip (inbox/w90-roundtrip.c3p, exportFileStructure folders).",
+	"source": "Shapes (key order and leaf types, arrays reduced to their first element) of timelines saved by the Construct 3 r495.2 editor, extracted 2026-09-17; no values are copied. audioTrackRoundtrip and easeParameterRoundtrip come from a live r495.2 round trip (a project exported as folders).",
 	"tracksRootWithFolder": {
 		"enabled": "boolean",
 		"interpolationMode": "string",

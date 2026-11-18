@@ -39,6 +39,15 @@ export class MockWriter {
     return `/mock/backup/${category}/${name}.json.bak`;
   }
 
+  async assertEntityFileCurrent(category: string, name: string, subfolder?: string): Promise<void> {
+    this.calls.push({ method: 'assertEntityFileCurrent', args: [category, name, subfolder] });
+  }
+
+  async entityOnDisk(category: string, name: string, subfolder?: string): Promise<{ project: 'omits'; file: 'absent' }> {
+    this.calls.push({ method: 'entityOnDisk', args: [category, name, subfolder] });
+    return { project: 'omits', file: 'absent' };
+  }
+
   async addToProject(
     category: string,
     name: string,
@@ -50,12 +59,33 @@ export class MockWriter {
   async removeFromProject(
     category: string,
     name: string,
+    options?: { alsoChange?: (project: Record<string, unknown>) => void },
   ): Promise<void> {
-    this.calls.push({ method: 'removeFromProject', args: [category, name] });
+    this.calls.push({ method: 'removeFromProject', args: [category, name, options] });
   }
 
   async updateProjectProperties(updates: Record<string, unknown>): Promise<string> {
     this.calls.push({ method: 'updateProjectProperties', args: [updates] });
+    return '/mock/backup/project.c3proj.bak';
+  }
+
+  async replaceFile(path: string, content: string | Buffer, options?: { expected?: unknown }): Promise<string | undefined> {
+    this.calls.push({ method: 'replaceFile', args: [path, content, options] });
+    return `${path}.bak`;
+  }
+
+  async deleteFile(path: string, _options?: { expected?: unknown }): Promise<string | undefined> {
+    this.calls.push({ method: 'deleteFile', args: [path] });
+    return `${path}.bak`;
+  }
+
+  /** Records the call with the writer's arguments, the expected file state included. */
+  async restoreForCall(path: string, content: string | Buffer | null, options: { expected?: unknown } = {}): Promise<void> {
+    this.calls.push({ method: 'restoreForCall', args: [path, content, options] });
+  }
+
+  async updateProject(change: (project: any) => boolean | void): Promise<string | undefined> {
+    this.calls.push({ method: 'updateProject', args: [change] });
     return '/mock/backup/project.c3proj.bak';
   }
 
@@ -65,6 +95,14 @@ export class MockWriter {
   ): Promise<string | undefined> {
     this.calls.push({ method: 'ensureAddonRegistered', args: [type, id] });
     return undefined;
+  }
+
+  checkAddonRegistrable(_type: 'plugin' | 'behavior', _id: string): void {
+    // every addon is registrable in the mock
+  }
+
+  async assertProjectFileCurrent(): Promise<void> {
+    // the mock has no project file that could change
   }
 
   getSubfolderForEntity(
@@ -114,8 +152,36 @@ export class MockWriter {
     this.calls.push({ method: 'renameImageFiles', args: [renames.map(r => ({ ...r }))] });
   }
 
-  async restoreEntityFile(backupPath: string): Promise<void> {
-    this.calls.push({ method: 'restoreEntityFile', args: [backupPath] });
+  async restoreFailedWrite(error: { backupPath: string }): Promise<{ restored: boolean; label: string }> {
+    this.calls.push({ method: 'restoreFailedWrite', args: [error.backupPath] });
+    return { restored: true, label: error.backupPath.replace(/\.bak$/, '') };
+  }
+
+  /** The mock project folder, as the real writer's projectDir() */
+  projectDir(): string {
+    return '/mock/backup';
+  }
+
+  /** A path inside the mock project as shown in messages: the real writer's project-relative form, here relative to /mock/backup */
+  projectRelative(filePath: string): string {
+    return filePath.replace(/^\/mock\/backup\//, '');
+  }
+
+  /** The mock changes no files, so undoing a tool call puts nothing back */
+  async undoToolCall(): Promise<{ restored: string[]; left: Array<{ label: string; backup: string | null }> }> {
+    this.calls.push({ method: 'undoToolCall', args: [] });
+    return { restored: [], left: [] };
+  }
+
+  /** The mock writes no images, so every image it is asked to put back was its own new one */
+  async putBackImage(path: string): Promise<'removed' | 'restored' | false> {
+    this.calls.push({ method: 'putBackImage', args: [path] });
+    return 'removed';
+  }
+
+  /** Runs `fn` right away (the real writer runs the calls one at a time) */
+  async withAnimationLock<T>(fn: () => Promise<T>): Promise<T> {
+    return fn();
   }
 
   // Helper: get calls for a specific method

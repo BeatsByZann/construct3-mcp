@@ -5,6 +5,7 @@ import {
   easeParameterValue,
   embedCustomEase,
   forEachEaseParameter,
+  type EmbeddedEaseParameter,
 } from '../../src/construct3/ease-params.js';
 import { buildEaseKeyframes, type CustomEase } from '../../src/construct3/timeline-model.js';
 
@@ -18,6 +19,7 @@ describe('ease parameters', () => {
     expect(needsEaseLookup({ ease: easeParameterValue(EASE) })).toBe(false);
     expect(needsEaseLookup({ time: '1' })).toBe(false);
     expect(needsEaseLookup(['Bouncy'])).toBe(false);
+    expect(needsEaseLookup(Object.assign(['x'], { ease: 'Bouncy' }))).toBe(false);
   });
 
   it('reads the ease name from a string or an embedded copy', () => {
@@ -33,7 +35,7 @@ describe('ease parameters', () => {
     expect(embedCustomEase(params, eases)).toBe('Bouncy');
     expect(Object.keys(params)).toEqual(['time', 'ease', 'loop']);
     expect(params.ease).toEqual({ name: 'Bouncy', json: [{ folders: [], json: EASE }] });
-    expect((params.ease as any).json[0].json).not.toBe(EASE);
+    expect((params.ease as EmbeddedEaseParameter).json[0].json).not.toBe(EASE);
 
     const other: Record<string, unknown> = { ease: 'Missing' };
     expect(embedCustomEase(other, eases)).toBeUndefined();
@@ -50,5 +52,9 @@ describe('ease parameters', () => {
     const seen: unknown[] = [];
     forEachEaseParameter(sheet, params => seen.push(params.ease));
     expect(seen.sort()).toEqual(['a', 'b']);
+  });
+
+  it('refuses a tree with more nodes than the walk limit', () => {
+    expect(() => forEachEaseParameter(new Array(2_000_001).fill(0), () => undefined)).toThrow('Event sheet walk exceeded the node limit.');
   });
 });

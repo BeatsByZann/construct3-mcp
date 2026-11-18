@@ -3,17 +3,14 @@
  * Produces valid transparent PNGs without any image library dependencies.
  *
  * C3 image filename conventions (verified from real projects):
- * - Animation objects (Sprite, 3D Shape):
- *   `images/{objectname-animationname-NNN}.png` with the frame index padded to
- *   3 digits and the WHOLE name lowercased. Spaces and other characters of the
- *   animation name are kept (public example: animation "Kyoto Shop (JP)" of
- *   object "Signs" → "signs-kyoto shop (jp)-000.png").
- * - Single-image objects (Tiled Background, Particles, Sprite Font, Tilemap,
- *   9-patch): `images/{objectname lowercase}.png`
+ * - Sprites: `images/{objectname-animationname-NNN}.png` with the frame index
+ *   padded to 3 digits and the WHOLE name lowercased. Spaces and other
+ *   characters of the animation name are kept (public example: animation
+ *   "Kyoto Shop (JP)" of object "Signs" → "signs-kyoto shop (jp)-000.png").
+ * - TiledBg: `images/{objectname lowercase}.png`
  * Only the image file names are lowercased; object JSON files keep their case.
  */
 
-import { SINGLE_IMAGE_PLUGINS } from './templates.js';
 import { deflateSync } from 'zlib';
 
 /** PNG file signature (magic bytes) */
@@ -88,41 +85,29 @@ export function generatePlaceholderPng(width = 1, height = 1): Buffer {
 /**
  * Get the image filename that C3 expects for a given object/animation/frame.
  *
- * The editor writes image file names entirely in lowercase, the animation part
- * included. On a case-sensitive checkout (Linux CI, build tools) a mixed-case
- * name would not match the file the editor expects.
+ * The editor writes image file names entirely in lowercase, so the result is
+ * lowercased as a whole. On a case-sensitive checkout (Linux CI, build tools)
+ * a mixed-case name would not match the file the editor expects.
  *
- * @param objectName    Object type name (will be lowercased)
- * @param animationName Animation name (for Sprites; will be lowercased)
+ * @param objectName    Object type name
+ * @param animationName Animation name (for Sprites)
  * @param frameIndex    Frame index (0-based, zero-padded to 3 digits)
- * @param pluginId      Plugin ID — single-image plugins (SINGLE_IMAGE_PLUGINS) use one file per object
+ * @param pluginId      Plugin ID — 'TiledBg' uses a simpler naming convention
  * @returns Filename like "hero-walk-000.png" or "tiledbackground.png"
- *
- * Construct saves the whole name in lowercase, the animation part included:
- * r495.2 stored an editor-made Sprite whose animation is "Animation 1" as
- * images/<name>-animation 1-000.png, and none of the 3,279 image files it saved
- * across the sampled projects and reference packages has an uppercase letter. Looking up
- * the lowercase name finds a mixed-case file on Windows, whose lookups ignore
- * case, but not on a case-sensitive filesystem.
  */
 export function getImageFileName(
   objectName: string,
   animationName: string,
   frameIndex: number,
   pluginId?: string,
-  extension = 'png',
 ): string {
-  const lowerName = objectName.toLowerCase();
-
-  // Every single-image object type in the sampled r495.2 projects stores its
-  // PNG as images/<lowercase name>.png, not only Tiled Background.
-  if (pluginId !== undefined && SINGLE_IMAGE_PLUGINS.has(pluginId)) {
-    return `${lowerName}.png`;
+  if (pluginId === 'TiledBg') {
+    return `${objectName}.png`.toLowerCase();
   }
 
   // Sprite convention: name-animation-frameIndex(3 digits).png
   const paddedIndex = String(frameIndex).padStart(3, '0');
-  return `${lowerName}-${animationName.toLowerCase()}-${paddedIndex}.${extension}`;
+  return `${objectName}-${animationName}-${paddedIndex}.png`.toLowerCase();
 }
 
 /**

@@ -1,151 +1,271 @@
 /**
- * Roadmap C5 (HANDOFF W94): project.c3proj written by an older release is
- * brought to the shape the r495.2 editor saves, without pruning usedAddons,
- * without touching zAxisScale, and without reordering a newer release's file.
+ * Tests for project-shape.ts: bringing a parsed project.c3proj saved by an
+ * older Construct release to the save shape.
  */
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { upgradeProjectShape, SHAPE_BASELINE_RELEASE, Z_AXIS_SCALE_MIGRATED_RELEASE } from '../../src/construct3/project-shape.js';
+import { stripBom } from '../../src/construct3/json-format.js';
+import { SHAPE_BASELINE_RELEASE, projectShapeChanges, rollbackClosing, upgradeProjectShape } from '../../src/construct3/project-shape.js';
+import { shapeByHand, type ProjectJson } from '../helpers/project-shape.js';
 
-type Json = Record<string, any>;
+const FIXTURES = join(__dirname, '..', 'fixtures');
 
-const fixture = (name: string): Json =>
-  JSON.parse(readFileSync(join(__dirname, '..', 'fixtures', name, 'project.c3proj'), 'utf-8').replace(/^﻿/, ''));
+/** A fresh parse of a fixture's project.c3proj, BOM stripped. */
+function loadFixture(name: string): ProjectJson {
+  return JSON.parse(stripBom(readFileSync(join(FIXTURES, name, 'project.c3proj'), 'utf8'))) as ProjectJson;
+}
 
-/**
- * `properties` key order in the r495.2 editor's save of c3-loadable-minimal
- * (W90 round trip, reports/2026-09-17-w90-construct3-mcp-parity-tiers-evidence/w90-roundtrip3.txt),
- * for the keys the fixture and the save share.
- */
-const R495_PROPERTY_ORDER = [
-  'description', 'version', 'autoIncrementVersion', 'author', 'authorEmail', 'authorWebsite', 'appId',
-  'pixelRounding', 'zAxisScale', 'fov', 'useLoaderLayout', 'fullscreenMode', 'fullscreenQuality',
-  'viewportFit', 'backgroundColor', 'splashColor', 'useThemeColor', 'themeColor', 'orientations', 'webgpu',
-  'multitexturing', 'gpuPreference', 'framerateMode', 'sampling', 'downscaling', 'renderingMode',
-  'anisotropicFiltering', 'zNear', 'zFar', 'maxSpriteSheetSize', 'loaderStyle', 'preloadSounds',
-  'uidAllocationMode', 'cordovaiOSScheme', 'cordovaAndroidScheme', 'exportFileStructure', 'scriptsType',
-];
+/** The same value with every object's keys sorted, so key order does not matter. */
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, item]) => [key, sortKeys(item)]),
+    );
+  }
+  return value;
+}
 
-/** JSON with every object's keys sorted, to compare content regardless of order. */
-const sorted = (value: unknown): unknown =>
-  Array.isArray(value) ? value.map(sorted)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(Object.keys(value as Json).sort().map(k => [k, sorted((value as Json)[k])]))
-      : value;
+/** The properties of a project as an object. */
+function propsOf(project: ProjectJson): Record<string, unknown> {
+  return project.properties as Record<string, unknown>;
+}
 
-describe('upgradeProjectShape on a project an older release saved', () => {
-  it('brings the release-44903 fixture to the r495.2 save shape and changes nothing else', () => {
-    const project = fixture('c3-loadable-minimal');
-    const before = structuredClone(project);
-    expect(project.savedWithRelease).toBeLessThan(SHAPE_BASELINE_RELEASE);
+/** The script items of a project's root script folder. */
+function scriptItems(project: ProjectJson): Array<Record<string, unknown>> {
+  return (project.rootFileFolders as { script: { items: Array<Record<string, unknown>> } }).script.items;
+}
+
+/** `properties` with `key` moved to the end. */
+function withKeyLast(project: ProjectJson, key: string): void {
+  const properties = propsOf(project);
+  const value = properties[key];
+  delete properties[key];
+  properties[key] = value;
+}
+
+describe('upgradeProjectShape', () => {
+  it('B1: brings the release-44903 fixture to the shape and changes nothing else', () => {
+    const fixture = loadFixture('c3-loadable-minimal');
+    expect(fixture.savedWithRelease).toBeLessThan(SHAPE_BASELINE_RELEASE);
+    const project = structuredClone(fixture);
 
     const changes = upgradeProjectShape(project);
 
-    expect(Object.keys(project.properties).filter(k => R495_PROPERTY_ORDER.includes(k))).toEqual(R495_PROPERTY_ORDER);
-    const script = project.rootFileFolders.script.items[0];
-    expect(Object.keys(script)).toEqual(['name', 'type', 'sid', 'script-info']);
-    expect(script['script-info']).toEqual({ purpose: 'none' });
+    const keys = Object.keys(propsOf(project));
+    expect(keys.indexOf('uidAllocationMode')).toBe(keys.indexOf('preloadSounds') + 1);
+    expect(keys[keys.length - 1]).toBe('scriptsType');
+    expect(Object.keys(scriptItems(project)[0]!)).toEqual(['name', 'type', 'sid', 'script-info']);
+    expect(scriptItems(project)[0]!['script-info']).toEqual({ purpose: 'none' });
+    expect(project.models3d).toEqual({ items: [], subfolders: [] });
     const top = Object.keys(project);
     expect(top.indexOf('models3d')).toBe(top.indexOf('flowcharts') + 1);
-    expect(project.models3d).toEqual({ items: [], subfolders: [] });
+    expect(propsOf(project).zAxisScale).toBe('normalized');
+    expect((project.usedAddons as unknown[]).length).toBe(23);
+    expect(project.savedWithRelease).toBe(fixture.savedWithRelease);
 
-    // r495.2 reads this release's "normalized" as "regular" (W90 round trip, C5 load check).
-    expect(before.properties.zAxisScale).toBe('normalized');
-    expect(project.properties.zAxisScale).toBe('regular');
-
-    // Content is otherwise identical: no pruning, no other setting changed, no release claimed.
-    expect(project.usedAddons).toHaveLength(23);
-    expect(project.savedWithRelease).toBe(before.savedWithRelease);
-    const expected = structuredClone(before);
-    const expectedScript = expected.rootFileFolders.script.items[0];
-    expectedScript['script-info'] = expectedScript['file-info'];
-    delete expectedScript['file-info'];
+    const expected = structuredClone(fixture);
     expected.models3d = { items: [], subfolders: [] };
-    expected.properties.zAxisScale = 'regular';
-    expect(sorted(project)).toEqual(sorted(expected));
+    const item = scriptItems(expected)[0]!;
+    item['script-info'] = item['file-info'];
+    delete item['file-info'];
+    expect(sortKeys(project)).toEqual(sortKeys(expected));
 
     expect(changes).toEqual([
       'scripts: script "c3-runtime-bridge.js" file-info renamed to script-info',
       'models3d folder added',
       'properties.uidAllocationMode moved after preloadSounds',
       'properties.scriptsType moved to the end',
-      'properties.zAxisScale "normalized" read as "regular", as r495.2 does for this release',
     ]);
+    expect(JSON.stringify(project)).toBe(JSON.stringify(shapeByHand(fixture)));
   });
 
-  it('changes zAxisScale only at or before the release the editor was seen to migrate', () => {
-    const later = fixture('c3-loadable-minimal');
-    later.savedWithRelease = Z_AXIS_SCALE_MIGRATED_RELEASE + 1;
-    upgradeProjectShape(later);
-    expect(later.properties.zAxisScale).toBe('normalized');
-
-    const regular = fixture('c3-loadable-minimal');
-    regular.properties.zAxisScale = 'regular';
-    expect(upgradeProjectShape(regular).some(c => c.includes('zAxisScale'))).toBe(false);
-    expect(regular.properties.zAxisScale).toBe('regular');
+  it('B2: leaves zAxisScale as saved, whatever the release', () => {
+    const base = loadFixture('c3-loadable-minimal');
+    const cases: Array<{ release: number; zAxisScale: string }> = [
+      { release: 44903, zAxisScale: 'normalized' },
+      { release: 44000, zAxisScale: 'normalized' },
+      { release: 44903, zAxisScale: 'regular' },
+    ];
+    for (const { release, zAxisScale } of cases) {
+      const project = structuredClone(base);
+      project.savedWithRelease = release;
+      propsOf(project).zAxisScale = zAxisScale;
+      const changes = upgradeProjectShape(project);
+      expect(propsOf(project).zAxisScale).toBe(zAxisScale);
+      expect(changes.filter(line => line.includes('zAxisScale'))).toEqual([]);
+    }
   });
 
-  it('is a no-op the second time', () => {
-    const project = fixture('c3-loadable-minimal');
+  it('B3: a second run changes nothing', () => {
+    const project = loadFixture('c3-loadable-minimal');
     upgradeProjectShape(project);
     const once = JSON.stringify(project);
     expect(upgradeProjectShape(project)).toEqual([]);
     expect(JSON.stringify(project)).toBe(once);
   });
 
-  it('adds models3d before properties when the file has no flowcharts key', () => {
-    const project = fixture('minimal-project');
-    expect('flowcharts' in project).toBe(false);
-    upgradeProjectShape(project);
-    const top = Object.keys(project);
-    expect(top.indexOf('models3d')).toBe(top.indexOf('properties') - 1);
+  it('B4: places models3d after flowcharts, else before properties, else at the end, and leaves an existing one', () => {
+    const withFlowcharts = loadFixture('c3-loadable-minimal');
+    upgradeProjectShape(withFlowcharts);
+    const keys = Object.keys(withFlowcharts);
+    expect(keys[keys.indexOf('flowcharts') + 1]).toBe('models3d');
+
+    const noFlowcharts = loadFixture('minimal-project');
+    expect('flowcharts' in noFlowcharts).toBe(false);
+    upgradeProjectShape(noFlowcharts);
+    const noFlowKeys = Object.keys(noFlowcharts);
+    expect(noFlowKeys[noFlowKeys.indexOf('properties') - 1]).toBe('models3d');
+
+    const neither: ProjectJson = { name: 'x', savedWithRelease: 49502 };
+    expect(upgradeProjectShape(neither)).toEqual(['models3d folder added']);
+    expect(Object.keys(neither)).toEqual(['name', 'savedWithRelease', 'models3d']);
+
+    const existing: ProjectJson = {
+      models3d: { items: ['m.glb'], subfolders: [] },
+      flowcharts: { items: [], subfolders: [] },
+      name: 'x',
+    };
+    expect(upgradeProjectShape(existing)).toEqual([]);
+    expect(Object.keys(existing)).toEqual(['models3d', 'flowcharts', 'name']);
+    expect(existing.models3d).toEqual({ items: ['m.glb'], subfolders: [] });
   });
 
-  it('renames file-info on scripts in nested subfolders, and leaves an entry that has both keys alone', () => {
-    const both = { name: 'both.js', type: 'application/javascript', sid: 2, 'file-info': { purpose: 'main' }, 'script-info': { purpose: 'none' } };
-    const nested = { name: 'deep.js', type: 'application/javascript', sid: 3, 'file-info': { purpose: 'main' } };
-    const project: Json = {
-      savedWithRelease: 44000,
-      rootFileFolders: { script: { items: [both], subfolders: [{ name: 'A', items: [], subfolders: [{ name: 'B', items: [nested], subfolders: [] }] }] } },
-      models3d: { items: [], subfolders: [] },
-    };
+  it('B5: renames file-info to script-info at every depth, with the path in the line', () => {
+    const project = loadFixture('minimal-project');
+    const script = (project.rootFileFolders as Record<string, { items: unknown[]; subfolders: unknown[] }>).script!;
+    script.items = [{ name: 'top.js', type: 'application/javascript', sid: 1, 'file-info': { purpose: 'none' } }];
+    script.subfolders = [{
+      name: 'Sub',
+      items: [{ name: 'mid.js', type: 'application/javascript', sid: 2, 'file-info': { purpose: 'none' } }],
+      subfolders: [{
+        name: 'Deep',
+        items: [
+          { name: 'deep.js', type: 'application/javascript', sid: 3, 'file-info': { purpose: 'none' } },
+          { name: 'both.js', type: 'application/javascript', sid: 4, 'file-info': { purpose: 'a' }, 'script-info': { purpose: 'b' } },
+        ],
+        subfolders: [],
+      }],
+    }];
+    const general = (project.rootFileFolders as Record<string, { items: unknown[] }>).general!;
+    general.items = [{ name: 'data.json', type: 'application/json', sid: 5, 'file-info': { purpose: 'none' } }];
+
     const changes = upgradeProjectShape(project);
-    expect(Object.keys(nested)).toEqual(['name', 'type', 'sid', 'script-info']);
-    expect((nested as Json)['script-info']).toEqual({ purpose: 'main' });
-    expect(both).toEqual({ name: 'both.js', type: 'application/javascript', sid: 2, 'file-info': { purpose: 'main' }, 'script-info': { purpose: 'none' } });
-    expect(changes).toEqual(['scripts/A/B: script "deep.js" file-info renamed to script-info']);
+
+    expect(changes.filter(line => line.includes('renamed'))).toEqual([
+      'scripts: script "top.js" file-info renamed to script-info',
+      'scripts/Sub: script "mid.js" file-info renamed to script-info',
+      'scripts/Sub/Deep: script "deep.js" file-info renamed to script-info',
+    ]);
+    expect(Object.keys(scriptItems(project)[0]!)).toEqual(['name', 'type', 'sid', 'script-info']);
+    const deep = (script.subfolders[0] as { subfolders: Array<{ items: Array<Record<string, unknown>> }> }).subfolders[0]!;
+    expect(Object.keys(deep.items[0]!)).toEqual(['name', 'type', 'sid', 'script-info']);
+    expect(deep.items[1]).toEqual({
+      name: 'both.js', type: 'application/javascript', sid: 4, 'file-info': { purpose: 'a' }, 'script-info': { purpose: 'b' },
+    });
+    expect(Object.keys(general.items[0] as Record<string, unknown>)).toEqual(['name', 'type', 'sid', 'file-info']);
   });
 
-  it('leaves Project File entries (sounds, general files) on file-info', () => {
-    const project: Json = {
+  it('B6: leaves a project already in the shape alone, and gates property order at the baseline release', () => {
+    const fixture = loadFixture('c3-loadable-minimal');
+    const shaped = shapeByHand(fixture);
+    shaped.savedWithRelease = SHAPE_BASELINE_RELEASE;
+    const before = JSON.stringify(shaped);
+    expect(upgradeProjectShape(shaped)).toEqual([]);
+    expect(JSON.stringify(shaped)).toBe(before);
+
+    const newer = shapeByHand(fixture);
+    newer.savedWithRelease = 49700;
+    withKeyLast(newer, 'uidAllocationMode');
+    const newerBefore = JSON.stringify(newer);
+    expect(upgradeProjectShape(newer)).toEqual([]);
+    expect(JSON.stringify(newer)).toBe(newerBefore);
+
+    const below = shapeByHand(fixture);
+    below.savedWithRelease = SHAPE_BASELINE_RELEASE - 1;
+    withKeyLast(below, 'uidAllocationMode');
+    expect(upgradeProjectShape(below)).toEqual(['properties.uidAllocationMode moved after preloadSounds']);
+    expect(Object.keys(propsOf(below)).at(-1)).toBe('scriptsType');
+
+    const at = shapeByHand(fixture);
+    at.savedWithRelease = SHAPE_BASELINE_RELEASE;
+    withKeyLast(at, 'uidAllocationMode');
+    const atBefore = JSON.stringify(at);
+    expect(upgradeProjectShape(at)).toEqual([]);
+    expect(JSON.stringify(at)).toBe(atBefore);
+  });
+
+  it('B7: does not throw on a malformed project', () => {
+    const cases: ProjectJson[] = [
+      {},
+      { savedWithRelease: 44000 },
+      { properties: 'text' },
+      { rootFileFolders: { script: 'x' } },
+      { savedWithRelease: 44000, properties: 'text', rootFileFolders: { script: 'x' } },
+      { rootFileFolders: 'text', models3d: 'text' },
+      { rootFileFolders: {} },
+      { rootFileFolders: { script: { items: [], subfolders: [null, 'x'] } } },
+      { rootFileFolders: { script: { items: [null, 'x'], subfolders: null } } },
+    ];
+    for (const project of cases) {
+      let changes: string[] = [];
+      expect(() => { changes = upgradeProjectShape(project); }).not.toThrow();
+      expect(changes.every(line => line === 'models3d folder added')).toBe(true);
+    }
+  });
+
+  it('B8: does not invent a property that is missing or move one whose anchor is missing', () => {
+    const noUid: ProjectJson = {
       savedWithRelease: 44000,
-      rootFileFolders: { general: { items: [{ name: 'a.txt', 'file-info': { purpose: 'none' } }], subfolders: [] } },
       models3d: { items: [], subfolders: [] },
+      properties: { a: 1, scriptsType: 'module', b: 2 },
     };
-    upgradeProjectShape(project);
-    expect(Object.keys(project.rootFileFolders.general.items[0])).toEqual(['name', 'file-info']);
+    expect(upgradeProjectShape(noUid)).toEqual(['properties.scriptsType moved to the end']);
+    expect(JSON.stringify(noUid.properties)).toBe('{"a":1,"b":2,"scriptsType":"module"}');
+
+    const noAnchor: ProjectJson = {
+      savedWithRelease: 44000,
+      models3d: { items: [], subfolders: [] },
+      properties: { a: 1, uidAllocationMode: 'increment', b: 2 },
+    };
+    expect(upgradeProjectShape(noAnchor)).toEqual([]);
+    expect(JSON.stringify(noAnchor.properties)).toBe('{"a":1,"uidAllocationMode":"increment","b":2}');
   });
 });
 
-describe('upgradeProjectShape on a project r495.2 or a later release saved', () => {
-  it.each(['timeline-sample', 'timeline-properties'])('leaves the r495.2-saved %s fixture byte-identical', (name) => {
-    const project = fixture(name);
-    expect(project.savedWithRelease).toBe(SHAPE_BASELINE_RELEASE);
-    const before = JSON.stringify(project);
-    expect(upgradeProjectShape(project)).toEqual([]);
-    expect(JSON.stringify(project)).toBe(before);
+describe('projectShapeChanges', () => {
+  const fixtureText = () => readFileSync(join(FIXTURES, 'c3-loadable-minimal', 'project.c3proj'), 'utf8');
+
+  it('lists each change the shape would make to a file an older release saved, without changing the text', () => {
+    const text = fixtureText();
+    expect(projectShapeChanges(text)).toEqual([
+      'scripts: script "c3-runtime-bridge.js" file-info renamed to script-info',
+      'models3d folder added',
+      'properties.uidAllocationMode moved after preloadSounds',
+      'properties.scriptsType moved to the end',
+    ]);
+    expect(fixtureText()).toBe(text);
   });
 
-  it('keeps a newer release its own property order', () => {
-    const project = fixture('timeline-sample');
-    project.savedWithRelease = 49700;
-    // A release that wrote uidAllocationMode last would be reordered if the release gate were ignored.
-    const { uidAllocationMode, ...rest } = project.properties;
-    project.properties = { ...rest, uidAllocationMode };
-    const before = JSON.stringify(project);
-    expect(upgradeProjectShape(project)).toEqual([]);
-    expect(JSON.stringify(project)).toBe(before);
+  it('lists nothing for a file that already has the shape, and reads a leading BOM', () => {
+    const shaped = loadFixture('c3-loadable-minimal');
+    upgradeProjectShape(shaped);
+    expect(projectShapeChanges(`﻿${JSON.stringify(shaped, null, '\t')}`)).toEqual([]);
+  });
+});
+
+describe('rollbackClosing', () => {
+  it('says nothing was changed when the shape changed nothing', () => {
+    expect(rollbackClosing([])).toBe('Nothing was changed.');
+  });
+
+  it('names the shape changes that stay and that nothing else was changed', () => {
+    expect(rollbackClosing(['models3d folder added', 'properties.scriptsType moved to the end'])).toBe(
+      "project.c3proj keeps the editor's save shape (models3d folder added; properties.scriptsType moved to the end); nothing else was changed.",
+    );
   });
 });

@@ -28,6 +28,21 @@ const waitBlock = (tag: string) => ({
   sid: 3,
 });
 
+describe('validate_project description', () => {
+  it('names every ACE and expression check and the info issue for missing definitions', () => {
+    const { server } = setup();
+    const description = server.getTool('validate_project')!.description;
+    for (const code of [
+      'ace-unknown-ace', 'ace-unknown-parameter', 'ace-missing-parameter', 'ace-invalid-choice',
+      'expression-grammar', 'expression-unknown-object', 'expression-unknown-member',
+      'expression-unknown-function', 'expression-unknown-name', 'expression-argument-count',
+      'ace-catalog-unavailable', 'load_addon_definitions', 'C3_ACE_SOURCE_DIR',
+    ]) {
+      expect(description).toContain(code);
+    }
+  });
+});
+
 describe('find_runtime_traps', () => {
   it('is registered with the analysis tools', () => {
     const { server } = setup();

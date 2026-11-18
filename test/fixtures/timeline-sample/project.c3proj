@@ -1,7 +1,7 @@
 {
 	"projectFormatVersion": 1,
 	"savedWithRelease": 49502,
-	"name": "timeline-add-missing-keyframes-crash",
+	"name": "timeline-sample",
 	"runtime": "c3",
 	"useWorker": "auto",
 	"bundleAddons": false,

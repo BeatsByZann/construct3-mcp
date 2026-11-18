@@ -5,8 +5,12 @@
  * only the executable discovery rules are.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer, request } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   PreviewManager,
@@ -15,6 +19,8 @@ import {
   chromeCandidates,
   findChrome,
   isLoopbackHost,
+  readDevToolsActivePort,
+  removeStaleProfiles,
 } from '../../src/runtime/preview-server.js';
 
 const FIXTURE_PROJECT = join(__dirname, '..', 'fixtures', 'minimal-project');
@@ -55,7 +61,7 @@ describe('checkExportFolder', () => {
 describe('PreviewServer', () => {
   it('serves the export with content types, refuses escapes and other methods, and stops', async () => {
     const { game } = await makeExport();
-    const server = await PreviewServer.start({ folder: game, host: '127.0.0.1' });
+    const server = await PreviewServer.start({ folder: game });
     cleanups.push(() => server.stop());
     expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
 
@@ -86,13 +92,97 @@ describe('PreviewServer', () => {
   });
 });
 
+/** GET `path` from 127.0.0.1:`port` with the given Host header (fetch cannot set one). */
+function getWithHost(port: number, path: string, host: string): Promise<number> {
+  return new Promise((done, fail) => {
+    const req = request({ host: '127.0.0.1', port, path, headers: { host } }, (response) => {
+      response.resume();
+      done(response.statusCode ?? 0);
+    });
+    req.on('error', fail);
+    req.end();
+  });
+}
+
+describe('PreviewServer boundaries', () => {
+  it('answers only requests addressed to this machine by name (DNS rebinding)', async () => {
+    const { game } = await makeExport();
+    const server = await PreviewServer.start({ folder: game });
+    cleanups.push(() => server.stop());
+    for (const host of [`127.0.0.1:${server.port}`, `localhost:${server.port}`, `LOCALHOST:${server.port}`, `[::1]:${server.port}`, '127.0.0.1']) {
+      expect(await getWithHost(server.port, '/', host)).toBe(200);
+    }
+    for (const host of [`attacker.example:${server.port}`, 'attacker.example', `127.0.0.1.nip.io:${server.port}`, `localhost.attacker.example:${server.port}`, `10.0.0.5:${server.port}`]) {
+      expect(await getWithHost(server.port, '/', host)).toBe(403);
+    }
+  });
+
+  it('does not follow a junction or symbolic link out of the export folder', async () => {
+    const { root, game } = await makeExport();
+    const outside = join(root, 'outside');
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret2.txt'), 'not served either', 'utf8');
+    const inside = join(game, 'assets');
+    await mkdir(inside);
+    await writeFile(join(inside, 'a.txt'), 'served', 'utf8');
+    // A junction needs no privilege on Windows; elsewhere a directory symlink.
+    const type = process.platform === 'win32' ? 'junction' : 'dir';
+    await symlink(outside, join(game, 'linked'), type);
+    await symlink(inside, join(game, 'alias'), type);
+    const server = await PreviewServer.start({ folder: game });
+    cleanups.push(() => server.stop());
+
+    expect((await fetch(server.url + 'linked/secret2.txt')).status).toBe(404);
+    // A link that stays inside the export is fine.
+    const alias = await fetch(server.url + 'alias/a.txt');
+    expect(alias.status).toBe(200);
+    expect(await alias.text()).toBe('served');
+  });
+});
+
+describe('PreviewServer on a port another program holds', () => {
+  it('refuses a port another program listens on for all interfaces, instead of handing out its URL', async () => {
+    const { game } = await makeExport();
+    // Windows lets 127.0.0.1:<port> be bound beside 0.0.0.0:<port>; connections the other program holds keep reaching it.
+    const other = createServer((_request, response) => response.end('FROM-OTHER-PROGRAM'));
+    await new Promise<void>((done) => other.listen(0, '0.0.0.0', () => done()));
+    cleanups.push(() => new Promise<void>((done) => other.close(() => done())));
+    const port = (other.address() as AddressInfo).port;
+
+    await expect(PreviewServer.start({ folder: game, port })).rejects.toThrow(/another program|EADDRINUSE/u);
+    expect(await (await fetch(`http://127.0.0.1:${port}/`)).text()).toBe('FROM-OTHER-PROGRAM');
+  });
+});
+
+describe('cross-origin isolation', () => {
+  it('sends COOP and COEP only when asked, so SharedArrayBuffer is available on request', async () => {
+    const { game } = await makeExport();
+    const plain = await PreviewServer.start({ folder: game });
+    cleanups.push(() => plain.stop());
+    const plainIndex = await fetch(plain.url);
+    expect(plainIndex.headers.get('cross-origin-opener-policy')).toBeNull();
+    expect(plainIndex.headers.get('cross-origin-embedder-policy')).toBeNull();
+    expect(plain.info().crossOriginIsolated).toBe(false);
+
+    const isolated = await PreviewServer.start({ folder: game, crossOriginIsolated: true });
+    cleanups.push(() => isolated.stop());
+    for (const path of ['', 'scripts/main.js']) {
+      const response = await fetch(isolated.url + path);
+      expect(response.headers.get('cross-origin-opener-policy')).toBe('same-origin');
+      expect(response.headers.get('cross-origin-embedder-policy')).toBe('require-corp');
+      expect(response.headers.get('cross-origin-resource-policy')).toBe('same-origin');
+    }
+    expect(isolated.info().crossOriginIsolated).toBe(true);
+  });
+});
+
 describe('PreviewManager', () => {
   it('lists, stops by id and closes everything', async () => {
     const { game } = await makeExport();
     const manager = new PreviewManager();
     cleanups.push(() => manager.closeAll());
-    const first = await manager.serve({ folder: game, host: '127.0.0.1' });
-    const second = await manager.serve({ folder: game, host: '127.0.0.1' });
+    const first = await manager.serve({ folder: game });
+    const second = await manager.serve({ folder: game });
     expect(manager.list().map(p => p.serverId).sort()).toEqual([first.serverId, second.serverId].sort());
     expect(first.browser).toBeUndefined();
 
@@ -121,13 +211,59 @@ describe('browser discovery', () => {
     expect(chromeCandidates({}, 'linux')).toContain('/usr/bin/google-chrome');
   });
 
-  it('names a missing explicit executable', () => {
+  it('takes CHROME_PATH when it is set, and says so when it names no file', () => {
+    expect(findChrome({ CHROME_PATH: process.execPath })).toBe(process.execPath);
     // Path-free on purpose: a message with a path reaches the client blanked by the redactor.
-    expect(() => findChrome('Z:/does/not/exist/chrome.exe')).toThrow('Chrome executable not found at the given chromePath.');
+    expect(() => findChrome({ CHROME_PATH: 'Z:/does/not/exist/chrome.exe' })).toThrow('CHROME_PATH is set but names no file (the path is in the server log).');
   });
 
   it('knows which hosts are this machine', () => {
     for (const host of ['localhost', 'LOCALHOST', '127.0.0.1', '127.1.2.3', '::1', '[::1]']) expect(isLoopbackHost(host)).toBe(true);
     for (const host of ['0.0.0.0', '10.0.0.5', 'example.com', '::']) expect(isLoopbackHost(host)).toBe(false);
+  });
+});
+
+describe('DevToolsActivePort', () => {
+  it('reads the port and browser path once both lines are there, and nothing before', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'c3-devtools-port-'));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    expect(await readDevToolsActivePort(dir)).toBeUndefined();
+    await writeFile(join(dir, 'DevToolsActivePort'), '53917', 'utf8');
+    expect(await readDevToolsActivePort(dir)).toBeUndefined();
+    await writeFile(join(dir, 'DevToolsActivePort'), '53917\r\n/devtools/browser/0b1c-42\r\n', 'utf8');
+    expect(await readDevToolsActivePort(dir)).toEqual({ port: 53917, browserPath: '/devtools/browser/0b1c-42' });
+    await writeFile(join(dir, 'DevToolsActivePort'), '0\n/devtools/browser/x', 'utf8');
+    expect(await readDevToolsActivePort(dir)).toBeUndefined();
+  });
+});
+
+describe('stale browser profiles', () => {
+  it('removes the profiles of servers and browsers that are gone, and keeps every other folder', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'c3-profiles-'));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    // A process that has exited: its pid is not alive any more.
+    const gone = spawnSync(process.execPath, ['-e', '0']).pid!;
+    const profile = async (name: string, owner?: { serverPid: number; browserPid: number }) => {
+      await mkdir(join(root, name, 'Default'), { recursive: true });
+      await writeFile(join(root, name, 'Default', 'Preferences'), '{}', 'utf8');
+      if (owner) await writeFile(join(root, name, 'c3mcp-owner.json'), JSON.stringify(owner), 'utf8');
+    };
+    await profile(`c3mcp-chrome-${gone}-aB3dE9`, { serverPid: gone, browserPid: gone });
+    await profile(`c3mcp-chrome-${gone}-nOwNeR`);
+    await profile(`c3mcp-chrome-${process.pid}-mine01`, { serverPid: process.pid, browserPid: gone });
+    await profile(`c3mcp-chrome-${gone}-orphan`, { serverPid: gone, browserPid: process.pid });
+    await profile('c3mcp-chrome-legacy');
+    await profile('something-else');
+
+    const removed = await removeStaleProfiles(root);
+
+    expect(removed.sort()).toEqual([`c3mcp-chrome-${gone}-aB3dE9`, `c3mcp-chrome-${gone}-nOwNeR`].sort());
+    expect(existsSync(join(root, `c3mcp-chrome-${gone}-aB3dE9`))).toBe(false);
+    expect(existsSync(join(root, `c3mcp-chrome-${gone}-nOwNeR`))).toBe(false);
+    // This process's own profile, one whose browser still runs, and folders not ours stay.
+    expect(existsSync(join(root, `c3mcp-chrome-${process.pid}-mine01`))).toBe(true);
+    expect(existsSync(join(root, `c3mcp-chrome-${gone}-orphan`))).toBe(true);
+    expect(existsSync(join(root, 'c3mcp-chrome-legacy'))).toBe(true);
+    expect(existsSync(join(root, 'something-else'))).toBe(true);
   });
 });

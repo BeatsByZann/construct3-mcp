@@ -181,6 +181,27 @@ export function syncInstanceBehaviors(
   return { modified, added, unknownDefaults };
 }
 
+/**
+ * Put the instance's entries for the behaviors in `names` (one owner's
+ * behaviors, in their new order) in that order, among the places those
+ * entries hold, in place: entries of other owners (the object's own,
+ * another family's) and for other names stay where they are. Each owner's
+ * entries are saved in its behaviorTypes order (see the header); how the
+ * editor orders several families' entries is not verified, so that order is
+ * never changed. False when the order was that already.
+ */
+export function orderInstanceBehaviors(instance: Record<string, unknown>, names: readonly string[]): boolean {
+  if (!isRecord(instance.behaviors)) return false;
+  const entries = Object.entries(instance.behaviors);
+  const rank = new Map(names.map((name, i) => [name, i]));
+  const slots = entries.map(([name], i) => (rank.has(name) ? i : -1)).filter(i => i !== -1);
+  const ordered = slots.map(i => entries[i]).sort((a, b) => rank.get(a[0])! - rank.get(b[0])!);
+  if (ordered.every((entry, k) => entry === entries[slots[k]])) return false;
+  slots.forEach((slot, k) => { entries[slot] = ordered[k]; });
+  instance.behaviors = Object.fromEntries(entries);
+  return true;
+}
+
 /** Instances of one object type in one layout that lack behavior entries. */
 export interface MissingBehaviorEntries {
   layout: string;

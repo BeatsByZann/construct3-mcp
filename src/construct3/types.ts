@@ -12,6 +12,9 @@
  * yet modelled here.
  */
 
+import type { UnscannedFileReport } from './analyzers/unscanned-uses.js';
+import type { ContainerMembership } from './containers.js';
+
 // ─── Project Root ───────────────────────────────────────────
 
 export interface Construct3Project {
@@ -35,20 +38,8 @@ export interface Construct3Project {
   firstLayout: string;
   functionsName?: string;
   autosaveData?: unknown;
-  containers?: ObjectContainer[];
-  flowcharts?: FlowchartsContainer;
-}
-
-/**
- * An object container: a set of object types that C3 creates, picks and
- * destroys together. `project.c3proj` stores them as a flat
- * `containers: [{ "members": ["TypeA", "TypeB"] }]` array at the project root.
- * Members are object type names (never families), and an object type may
- * belong to at most one container.
- */
-export interface ObjectContainer {
-  members: string[];
-  [key: string]: unknown;
+  containers?: unknown[];
+  flowcharts?: { items: string[]; subfolders: Subfolder[] };
 }
 
 export interface Addon {
@@ -88,11 +79,6 @@ export interface TimelinesContainer {
   subfolders: Subfolder[];
 }
 
-export interface FlowchartsContainer {
-  items: string[];
-  subfolders: Subfolder[];
-}
-
 export interface Subfolder {
   items: string[];
   subfolders: Subfolder[];
@@ -126,11 +112,11 @@ export interface FileItem {
   name: string;
   type: string;
   sid: number;
-  /** Script files: purpose "main", "imports-for-events" or "none" */
-  'script-info'?: {
+  'file-info'?: {
     purpose: string;
   };
-  'file-info'?: {
+  /** Script files: purpose "main", "imports-for-events" or "none" */
+  'script-info'?: {
     purpose: string;
   };
   'icon-info'?: {
@@ -165,7 +151,6 @@ export interface ProjectProperties {
   gpuPreference: string;
   scriptsType: string;
   framerateMode: string;
-  /** Present when framerateMode is a fixed rate; absent in some projects. */
   fixedFramerate?: number;
   sampling: string;
   downscaling: string;
@@ -184,17 +169,6 @@ export interface ProjectProperties {
 
 // ─── Animation Types ────────────────────────────────────────
 
-/**
- * A named image point on a Sprite animation frame.
- * x and y are normalized 0-1 relative to the frame; the frame origin is not
- * in this list (it is stored as originX/originY).
- */
-export interface ImagePoint {
-  name: string;
-  x: number;
-  y: number;
-}
-
 export interface AnimationFrame {
   width: number;
   height: number;
@@ -206,7 +180,6 @@ export interface AnimationFrame {
   fileType?: string;
   duration?: number;
   tag?: string;
-  imagePoints?: ImagePoint[];
   useCollisionPoly?: boolean;
   imageSpriteId?: number;
   collisionPoly?: { points: number[] };
@@ -309,7 +282,7 @@ export interface FunctionCallAction {
   [key: string]: unknown;
 }
 
-/** Script action. The current editor saves a language tag and the code as an array of lines; older Construct 3 releases (and construct3-mcp 1.8.1 and earlier) saved one string. */
+/** Script action. The current editor saves the code as an array of lines; older Construct 3 releases (and construct3-mcp 1.8.1 and earlier) saved one string. */
 export interface ScriptAction {
   type: 'script';
   language?: string;
@@ -325,7 +298,7 @@ export interface CommentAction {
   [key: string]: unknown;
 }
 
-export type Action = StandardAction | FunctionCallAction | ScriptAction | CommentAction;
+export type Action = StandardAction | FunctionCallAction | CustomActionCall | ScriptAction | CommentAction;
 
 /** Block event — the most common: has conditions, actions, optional children */
 export interface BlockEvent {
@@ -373,31 +346,6 @@ export interface FunctionBlockEvent {
   [key: string]: unknown;
 }
 
-/**
- * Custom ACE block event — defines a custom action on an object type or
- * family. Verified against a real project: every observed definition uses
- * aceType "action"; the condition and expression forms are not implemented
- * because none were observed.
- */
-export interface CustomActionBlockEvent {
-  eventType: 'custom-ace-block';
-  aceType: string;
-  aceName?: string;
-  /** Object type or family the custom action belongs to */
-  objectClass?: string;
-  functionDescription?: string;
-  functionCategory?: string;
-  functionReturnType?: string;
-  functionCopyPicked?: boolean;
-  functionIsAsync?: boolean;
-  functionParameters?: Array<{ name: string; type: string; initialValue?: string; comment?: string; sid?: number }>;
-  conditions: Condition[];
-  actions: Action[];
-  children?: C3Event[];
-  sid?: number;
-  [key: string]: unknown;
-}
-
 /** Group event — organizes events into named groups */
 export interface GroupEvent {
   eventType: 'group';
@@ -407,11 +355,6 @@ export interface GroupEvent {
   isActiveOnStart?: boolean;
   children: C3Event[];
   sid?: number;
-  /** Editor colors, serialized by C3 as kebab-case RGBA arrays of four 0-1 numbers */
-  'background-color'?: number[];
-  'text-color'?: number[];
-  /** Editor bookmark flag */
-  bookmark?: boolean;
   [key: string]: unknown;
 }
 
@@ -426,19 +369,47 @@ export interface IncludeEvent {
 export interface CommentEvent {
   eventType: 'comment';
   text: string;
-  /** Editor colors, serialized by C3 as kebab-case RGBA arrays of four 0-1 numbers */
-  'background-color'?: number[];
-  'text-color'?: number[];
-  /** Editor bookmark flag */
-  bookmark?: boolean;
   [key: string]: unknown;
 }
 
-/** Script block event — inline JavaScript. The editor saves a language tag and the script as an array of lines; older Construct 3 releases (and construct3-mcp 1.8.1 and earlier) saved one string. */
+/** Script block event — inline JavaScript (array of lines, as the editor saves it) */
 export interface ScriptEvent {
   eventType: 'script';
   language?: string;
   script: string | string[];
+  [key: string]: unknown;
+}
+
+/** Custom action call: runs the custom action `customAction` of an object type or family. */
+export interface CustomActionCall {
+  customAction: string;
+  /** The object type or family the action is called on */
+  objectClass: string;
+  /** The family whose custom action runs, when a member calls its family's original (see event-outline.ts) */
+  customActionObjectClass?: string;
+  sid: number;
+  disabled?: boolean;
+  /** Arguments in parameter order: expression strings, and JSON booleans for boolean parameters */
+  parameters?: Array<string | boolean>;
+  [key: string]: unknown;
+}
+
+/** Custom action block: the definition of a custom action of an object type or family */
+export interface CustomActionBlockEvent {
+  eventType: 'custom-ace-block';
+  aceType?: string;
+  aceName: string;
+  objectClass: string;
+  functionDescription?: string;
+  functionCategory?: string;
+  functionReturnType?: string;
+  functionCopyPicked?: boolean;
+  functionIsAsync?: boolean;
+  functionParameters?: Array<{ name: string; type: string; initialValue?: string; comment?: string; sid?: number }>;
+  conditions: Condition[];
+  actions: Action[];
+  children?: C3Event[];
+  sid?: number;
   [key: string]: unknown;
 }
 
@@ -452,7 +423,6 @@ export type C3Event =
   | BlockEvent
   | VariableEvent
   | FunctionBlockEvent
-  | CustomActionBlockEvent
   | GroupEvent
   | IncludeEvent
   | CommentEvent
@@ -467,6 +437,7 @@ export interface ObjectType {
   sid: number;
   isGlobal?: boolean;
   editorNewInstanceIsReplica?: boolean;
+  editorNewInstanceTemplateName?: string;
   instanceVariables?: InstanceVariable[];
   behaviorTypes?: BehaviorType[];
   effectTypes?: Array<Record<string, unknown>>;
@@ -479,12 +450,10 @@ export interface Layout {
   name: string;
   layers: Layer[];
   sid: number;
-  /** Bound event sheet name; the editor writes `null` when nothing is bound. */
-  eventSheet?: string | null;
+  eventSheet?: string;
   width?: number;
   height?: number;
   unboundedScrolling?: boolean;
-  sampling?: string;
   vpX?: number;
   vpY?: number;
   projection?: string;
@@ -508,7 +477,6 @@ export interface Layer {
   color?: number[];
   backgroundColor?: number[];
   isTransparent?: boolean;
-  sampling?: string;
   parallaxX?: number;
   parallaxY?: number;
   scaleRate?: number;
@@ -519,62 +487,6 @@ export interface Layer {
   blendMode?: string;
   zElevation?: number;
   global?: boolean;
-  [key: string]: unknown;
-}
-
-/**
- * Hierarchy inheritance flags a child applies to its parent's transform.
- * Key set observed in Construct 3 r495 project files: x, y, z, w, h, d, a
- * (booleans), o and v (booleans), and sm (a string mode).
- */
-export interface SceneGraphFlags {
-  x: boolean;
-  y: boolean;
-  z: boolean;
-  w: boolean;
-  h: boolean;
-  d: boolean;
-  a: boolean;
-  o: boolean;
-  v: boolean;
-  sm: string;
-  [key: string]: unknown;
-}
-
-/** A child entry on a parent instance's `sceneGraphData.children`. */
-export interface SceneGraphChild {
-  uid: number;
-  flags: SceneGraphFlags;
-}
-
-/** Editor scratch state Construct writes alongside every `sceneGraphData`. */
-export interface SceneGraphPreview {
-  transformX: number;
-  transformY: number;
-  transformZ: number;
-  transformW: number;
-  transformH: number;
-  transformD: number;
-  transformA: number;
-  transformSX: number;
-  transformSY: number;
-  transformSZ: number;
-  transformO: number;
-  previewSceneGraph: boolean;
-  [key: string]: unknown;
-}
-
-/**
- * Hierarchy state on a world instance. Both sides are stored: the child keeps
- * `parent-uid` plus its own `flags`, and the parent keeps a `children` entry
- * carrying the same flag values. `children` is absent when there are none.
- */
-export interface SceneGraphData {
-  'parent-uid': number | null;
-  uid: number;
-  children?: SceneGraphChild[];
-  flags: SceneGraphFlags;
-  preview?: SceneGraphPreview;
   [key: string]: unknown;
 }
 
@@ -589,7 +501,6 @@ export interface Instance {
   showing?: boolean;
   locked?: boolean;
   instanceFolderItem?: { sid: number; expanded?: boolean };
-  sceneGraphData?: SceneGraphData;
   world?: {
     x: number;
     y: number;
@@ -599,84 +510,15 @@ export interface Instance {
     originY?: number;
     color?: number[];
     angle?: number;
-    /** Construct writes the instance Z elevation as `z` (layers use `zElevation`). */
+    /**
+     * Z elevation. Construct 3 r495.2 saves it as world.z on instances, after
+     * color; layers keep theirs as zElevation. construct3-mcp 1.10.0 and
+     * older wrote world.zElevation.
+     */
     z?: number;
     blendMode?: string;
     [key: string]: unknown;
   };
-  [key: string]: unknown;
-}
-
-// ─── Flowchart Types ──────────────────────────────
-//
-// Shape confirmed against a real Construct 3 r495 project. A flowchart file
-// is flowcharts/[subfolder/]<name>.json; per-node editor state (colors, link
-// modes, folder expansion) lives in a sibling <name>.uistate.json that these
-// types deliberately do not model.
-
-/** One output pin on a flowchart node. */
-export interface FlowchartOutput {
-  sid: number;
-  /** SID of the node this output connects to, or null when unconnected. */
-  cnSID: number | null;
-  name: string;
-  value: string;
-  enable: boolean;
-  default: boolean;
-  [key: string]: unknown;
-}
-
-/**
- * One flowchart node.
- *
- * `t` is the node type/title and `c` is the caption (equal on 1170 of the
- * 1539 sampled nodes). `pnSIDs` and `poSIDs` are strictly parallel arrays with
- * one entry per incoming connection: `poSIDs[i]` is an output of the node
- * `pnSIDs[i]`. `nodeSIDs` holds the distinct child node SIDs in creation order,
- * which is independent of the `outputs` array order.
- */
-export interface FlowchartNode {
-  sid: number;
-  /** Parent node SIDs, one entry per incoming connection. */
-  pnSIDs: number[];
-  /** Parent output SIDs, parallel to pnSIDs. */
-  poSIDs: number[];
-  /** Distinct child node SIDs. */
-  nodeSIDs: number[];
-  outputs: FlowchartOutput[];
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  /** Node type/title. Empty string on comment boxes. */
-  t: string;
-  /** True on the single start node; C3 keeps exactly one per flowchart. */
-  s: boolean;
-  /** Enabled. */
-  e: boolean;
-  /** Observed values 0, 1 and 2; meaning not determined from the sample. */
-  pi: number;
-  /** Caption. */
-  c: string;
-  /** Value type. Observed values: "dictionary" and "comment". */
-  ty: string;
-  /** Preset flag. Always false on ordinary nodes in the sample. */
-  pr: boolean;
-  /** Source preset flowchart SID, or null. Never written by the MCP tools. */
-  prfsid?: number | null;
-  /** Source preset node SID, or null. Never written by the MCP tools. */
-  prfnsid?: number | null;
-  [key: string]: unknown;
-}
-
-/** A flowchart file. */
-export interface Flowchart {
-  sid: number;
-  nodes: FlowchartNode[];
-  'preset-nodes': { items: unknown[]; subfolders: unknown[] };
-  name: string;
-  w: number;
-  h: number;
   [key: string]: unknown;
 }
 
@@ -689,8 +531,7 @@ export interface Flowchart {
 // editor UI state: the tools preserve them and never compute them.
 //
 // Nested timelines (`nestedData`, `childrenNestedData`, `nestedTimelinesRoot`)
-// and custom eases are modelled only as opaque containers, because no sample
-// of either was available.
+// and custom eases are opaque containers here.
 
 /** A track, property-track or nested-timeline folder inside a timeline. */
 export interface TimelineFolder {
@@ -745,9 +586,9 @@ export interface TimelineKeyframeAddon {
  * One keyframe on a property track.
  *
  * `value` is the property's value relative to the instance's layout value and
- * `aValue` is its absolute value: the sample's offsetX keyframe carries
- * `value: 0, aValue: 324` for an instance placed at x 324. `rValue` equals
- * `value` in every observed keyframe.
+ * `aValue` is its absolute value: the offsetX keyframe of timeline-sample carries
+ * `value: 0, aValue: 324` for an instance placed at x 324. Under the "default"
+ * result mode `rValue` equals `value`.
  */
 export interface TimelinePropertyKeyframe {
   time: number;
@@ -755,7 +596,7 @@ export interface TimelinePropertyKeyframe {
   resultMode: string;
   ease: string;
   pathMode: string;
-  /** Equal to `aValue` when the result mode in force is "absolute", otherwise to `rValue`. */
+  /** The tools write `aValue` here under the "absolute" result mode and `rValue` otherwise. */
   value: number | string | boolean | number[];
   /** Offset from the instance's own value for numbers; the value itself for strings and booleans; absent for colors. */
   rValue?: number | string | boolean;
@@ -847,10 +688,11 @@ export interface ObjectReference {
   /**
    * How the object is used: as the object of a condition/action, as a whole
    * parameter value (object parameters), inside a parameter expression
-   * ("Name.X"), from a script action/event (runtime.objects.Name), or as the
-   * object a custom action block defines a custom action for.
+   * ("Name.X"), from a script action/event (runtime.objects.Name), as the
+   * object a custom action block defines a custom action for, or as the
+   * literal name System "Create object (by name)" creates.
    */
-  context: 'condition' | 'action' | 'parameter' | 'expression' | 'script' | 'custom-action';
+  context: 'condition' | 'action' | 'parameter' | 'expression' | 'script' | 'custom-action' | 'create-by-name';
 }
 
 /** Node in the event sheet flow graph */
@@ -864,6 +706,19 @@ export interface EventSheetFlowNode {
   groupCount: number;
 }
 
+/**
+ * An object type whose own file could not be parsed (issue #60): its SID is
+ * unknown, so uses by SID cannot be looked up.
+ */
+export interface UnanalysedObjectFile {
+  /** "objectTypes/<name>", as validate_project lists unscanned files */
+  file: string;
+  /** Why it was not parsed, e.g. "over the 10MB size limit" */
+  reason: string;
+  /** What could not be checked because of it */
+  unchecked: string;
+}
+
 /** Node in the object dependency graph */
 export interface ObjectDependencyNode {
   objectName: string;
@@ -872,8 +727,23 @@ export interface ObjectDependencyNode {
     layouts: string[];
   };
   families: string[];
+  /** Containers in project.c3proj that list the object (absent when there are none) */
+  containers?: ContainerMembership[];
   coOccursWith: string[];
+  /** References the index found (event references + layouts) */
   referenceCount: number;
+  /**
+   * Files that could not be parsed whose text names the object (or holds its
+   * SID), or that could not be searched at all: possible references, which
+   * referenceCount does not count
+   */
+  possiblyReferencedIn?: string[];
+  /**
+   * The object's own object type file could not be parsed: its SID is
+   * unknown, so references by SID (object properties of other instances)
+   * are not counted, and `unchecked` says so
+   */
+  unanalysed?: UnanalysedObjectFile;
 }
 
 /** Performance issue found by heuristic analysis */
@@ -932,6 +802,11 @@ export interface WriteResult {
   generatedUid?: number;
   warnings?: string[];
   backupFile?: string;
+  /**
+   * Registered files the bulk reads skipped that the tool's reference check
+   * searched as text (see analyzers/unscanned-uses.ts)
+   */
+  unscannedFiles?: UnscannedFileReport[];
 }
 
 /** Result of checking references before deletion */

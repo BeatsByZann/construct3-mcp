@@ -1,0 +1,388 @@
+/** Where an object type or a family is named: object-name-references.ts on synthetic sheets, layouts, families, flowcharts and timelines. */
+
+import { describe, it, expect } from 'vitest';
+import {
+  findFamilyMemberUses, findFlowchartNodeUses, findInstanceTypeUses, findObjectNameUsesInSheets, findObjectNameUsesWithPolicy,
+  OBJECT_REWRITE_POLICY, objectNameInExpression, objectNameUseLocation, objectNameUsesInSheet, OTHER_NAME_PARAMETER_KEYS, projectVariableNames, renameFamilyMember, renameInstanceTypes,
+  renameObjectInSheet, renameObjectInSheetWithPolicy, renameSingleGlobalInstanceType, scriptReadsObject, TIMELINE_TRACK_PATH,
+  timelineTrackUses,
+} from '../../src/construct3/object-name-references.js';
+import { NON_OBJECT_PARAMETER_KEYS } from '../../src/construct3/analyzers/index-builder.js';
+import type { EventSheet, Layout, Timeline } from '../../src/construct3/types.js';
+
+const sheet = (events: unknown[]): EventSheet => ({ name: 'S', events, sid: 1 } as unknown as EventSheet);
+
+describe('objectNameInExpression', () => {
+  it.each([
+    ['Alpha.X + 1', 'Gamma.X + 1', 1, 0],
+    ['alpha.X + ALPHA(0).Y', 'Gamma.X + Gamma(0).Y', 2, 0],
+    ['Alpha (Alpha.Count - 1) . X', 'Gamma (Gamma.Count - 1) . X', 2, 0],
+    ['"Alpha" & Alpha.X', '"Alpha" & Gamma.X', 1, 0],
+    ['Sprite.Alpha + AlphaBeta.X + Alpha2.X', 'Sprite.Alpha + AlphaBeta.X + Alpha2.X', 0, 0],
+    ['max(Alpha, 1) + Alpha(1)', 'max(Alpha, 1) + Alpha(1)', 0, 2],
+    ['2Alpha.X', '2Alpha.X', 0, 0],
+    ['"unterminated Alpha.X', '"unterminated Alpha.X', 0, 0],
+  ])('%s', (expression, renamed, definite, possible) => {
+    expect(objectNameInExpression(expression, 'Alpha', 'Gamma')).toEqual({ text: renamed, definite, possible });
+    expect(objectNameInExpression(expression, 'Alpha').text).toBe(expression);
+  });
+});
+
+describe('event sheet uses', () => {
+  const events = () => [
+    { eventType: 'variable', name: 'Who', type: 'string', initialValue: 'alpha' },
+    { eventType: 'custom-ace-block', aceName: 'Hit', objectClass: 'Alpha', functionParameters: [{ name: 'p', initialValue: 'Alpha' }], conditions: [], actions: [] },
+    { eventType: 'block', conditions: [{ id: 'is-visible', objectClass: 'ALPHA' }], actions: [
+      { id: 'set-x', objectClass: 'Beta', parameters: { x: 'Alpha.X' } },
+      { id: 'create-object', objectClass: 'System', parameters: { 'object-to-create': 'Alpha', layer: '"Alpha"', x: '0', y: '0' } },
+      { id: 'sort-z', objectClass: 'System', parameters: { object: 'Beta', 'instance-variable': { name: 'hp', objectClass: 'Alpha' } } },
+      { customAction: 'Hit', objectClass: 'Beta', customActionObjectClass: 'Alpha', parameters: ['Alpha'] },
+      { id: 'set-text', objectClass: 'Txt', parameters: { text: '"Alpha"', 'audio-file': 'Alpha' } },
+      { id: 'go-to-layout-by-name', objectClass: 'System', parameters: { layout: 'Alpha.NextLevel' } },
+      { id: 'go-to-layout', objectClass: 'System', parameters: { layout: 'Alpha' } },
+      { type: 'script', script: ['runtime.objects.Alpha.getFirstInstance();', 'runtime.objects["alpha"];', 'runtime.objects.AlphaBeta;'] },
+    ] },
+  ];
+  const names = (events: unknown[]) => projectVariableNames(new Map([['Main', sheet(events)]]));
+
+  it('marks objects, owners, families of calls, whole-value object parameters and member expressions definite, under every key', () => {
+    const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(events())]]), 'Alpha', 'list');
+    const definite = uses.filter(u => u.definite).map(u => `${u.kind}:${u.parameter ?? '-'}`).sort();
+    expect(definite).toEqual([
+      'custom action family:-', 'custom action owner:-', 'expression:layout', 'expression:x',
+      'object parameter:0', 'object parameter:object-to-create', 'objectClass:-',
+    ].sort());
+    const possible = uses.filter(u => !u.definite).map(u => u.kind).sort();
+    expect(possible).toEqual(['instance-variable object', 'script', 'script', 'string literal', 'string literal', 'variable value', 'variable value'].sort());
+    // A whole value under a key that holds another kind of name is no use of the object
+    expect(uses.some(u => u.parameter === 'audio-file' || (u.parameter === 'layout' && u.value === 'Alpha'))).toBe(false);
+  });
+
+  it('keeps a whole value an event variable shares the name with as possible, as the reference index does', () => {
+    const withVariable = [{ eventType: 'variable', name: 'Alpha', type: 'number', initialValue: '0' }, ...events()];
+    const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(withVariable)]]), 'Alpha', 'list');
+    expect(uses.filter(u => u.parameter === '0').map(u => [u.kind, u.definite])).toEqual([['possible expression', false]]);
+    expect(uses.filter(u => u.parameter === 'object-to-create').map(u => u.definite)).toEqual([true]);
+  });
+
+  it('rewrites only the definite uses of one sheet, with the new name as given', () => {
+    const data = sheet(events());
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(events()), 'list')).toBe(7);
+    const text = JSON.stringify(data);
+    expect(text).toContain('"objectClass":"Gamma","functionParameters"');
+    expect(text).toContain('{"id":"is-visible","objectClass":"Gamma"}');
+    expect(text).toContain('"x":"Gamma.X"');
+    expect(text).toContain('"object-to-create":"Gamma"');
+    expect(text).toContain('"instance-variable":{"name":"hp","objectClass":"Alpha"}');
+    expect(text).toContain('"customActionObjectClass":"Gamma","parameters":["Gamma"]');
+    expect(text).toContain('"layout":"Gamma.NextLevel"');
+    expect(text).toContain('"layout":"Alpha"');
+    expect(text).toContain('"layer":"\\"Alpha\\""');
+    expect(text).toContain('"audio-file":"Alpha"');
+    expect(text).toContain('runtime.objects.Alpha.getFirstInstance();');
+    expect(text).toContain('"initialValue":"alpha"');
+  });
+
+  it('rewrites an object-valued instance-variable parameter only under "rewrite"', () => {
+    const data = sheet(events());
+    renameObjectInSheet(data, 'Alpha', 'Gamma', names(events()), 'rewrite');
+    expect(JSON.stringify(data)).toContain('"instance-variable":{"name":"hp","objectClass":"Gamma"}');
+    const ofKind = (setting: 'rewrite' | 'list') => findObjectNameUsesInSheets(new Map([['Main', sheet(events())]]), 'Alpha', setting)
+      .filter(u => u.kind === 'instance-variable object').map(u => u.definite);
+    expect(ofKind('rewrite')).toEqual([true]);
+    expect(ofKind('list')).toEqual([false]);
+  });
+
+  it('lists a parameter whose key is the name as a possible use and never renames the key', () => {
+    const keyed = () => [{ eventType: 'block', conditions: [], actions: [{ id: 'set-text', objectClass: 'Beta', parameters: { alpha: 'a value', text: '"x"' } }] }];
+    const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(keyed())]]), 'Alpha', 'list');
+    expect(uses.map(u => `${u.kind}:${u.parameter}:${u.value}:${u.definite}`)).toEqual(['possible expression:alpha:alpha:false']);
+    const data = sheet(keyed());
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(keyed()), 'list')).toBe(0);
+    expect(JSON.stringify(data)).toContain('"parameters":{"alpha":"a value","text":"\\"x\\""}');
+  });
+
+  it('lists an object a script action reads when its script is one string, not a list of lines', () => {
+    const oneString = () => [{ eventType: 'block', conditions: [], actions: [
+      { type: 'script', script: 'runtime.objects.Alpha.getFirstInstance();' },
+      { type: 'script', script: 'runtime.objects.Beta.getFirstInstance();' },
+    ] }];
+    const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(oneString())]]), 'Alpha', 'list');
+    expect(uses.map(u => `${u.kind}:${u.ace}:${u.value}`)).toEqual(['script:action 0:runtime.objects.Alpha.getFirstInstance();']);
+    const data = sheet(oneString());
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(oneString()), 'list')).toBe(0);
+    expect(JSON.stringify(data)).toContain('"script":"runtime.objects.Alpha.getFirstInstance();"');
+  });
+
+  it('says where a use is', () => {
+    const [use] = findObjectNameUsesInSheets(new Map([['Main', sheet(events())]]), 'Alpha', 'list').filter(u => u.kind === 'expression' && u.parameter === 'x');
+    expect(objectNameUseLocation(use)).toBe('"Main" events[2] action 0 "x"');
+  });
+
+  it('rewrites the object-valued parameters an editor save holds under parent, child, obstacle and array, unless a variable has the name', () => {
+    const savedParameters = () => [{ eventType: 'block', conditions: [], actions: [
+      { id: 'pin', objectClass: 'Beta', parameters: { child: 'Alpha', parent: 'Alpha', obstacle: 'Alpha', array: 'Alpha' } },
+    ] }];
+    const kinds = (events: unknown[]) => findObjectNameUsesInSheets(new Map([['Main', sheet(events)]]), 'Alpha', 'list')
+      .map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort();
+    expect(kinds(savedParameters())).toEqual([
+      'array:object parameter:true', 'child:object parameter:true', 'obstacle:object parameter:true', 'parent:object parameter:true',
+    ]);
+    const data = sheet(savedParameters());
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', names(savedParameters()), 'list')).toBe(4);
+    expect((data.events[0] as unknown as { actions: Array<{ parameters: unknown }> }).actions[0].parameters)
+      .toEqual({ child: 'Gamma', parent: 'Gamma', obstacle: 'Gamma', array: 'Gamma' });
+    // An event variable with the name: the keys the reference index does not know as object keys are only possible uses
+    const shared = [{ eventType: 'variable', name: 'Alpha', type: 'number', initialValue: '0' }, ...savedParameters()];
+    expect(kinds(shared)).toEqual([
+      'array:possible expression:false', 'child:object parameter:true', 'obstacle:possible expression:false', 'parent:possible expression:false',
+    ]);
+  });
+
+  it('lists a whole value that differs from the name only in letter case, and never changes it', () => {
+    const mouse = () => [{ eventType: 'block', conditions: [
+      { id: 'on-click', objectClass: 'Mouse', parameters: { 'mouse-button': 'left', 'click-type': 'clicked' } },
+    ], actions: [{ id: 'pin', objectClass: 'Beta', parameters: { child: 'Left' } }] }];
+    const data = sheet(mouse());
+    const uses = findObjectNameUsesInSheets(new Map([['Main', data]]), 'Left', 'rewrite');
+    expect(uses.map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort()).toEqual(['child:object parameter:true', 'mouse-button:possible expression:false']);
+    expect(renameObjectInSheet(data, 'Left', 'LeftButton', names(mouse()), 'rewrite')).toBe(1);
+    expect(JSON.stringify(data)).toContain('"mouse-button":"left"');
+    expect(JSON.stringify(data)).toContain('"child":"LeftButton"');
+  });
+
+  it('lets an event variable that has the name in another letter case shadow a whole value', () => {
+    const events = [{ eventType: 'variable', name: 'alpha', type: 'number', initialValue: '0' },
+      { eventType: 'block', conditions: [], actions: [{ id: 'set', objectClass: 'Beta', parameters: { value: 'Alpha' } }] }];
+    const uses = findObjectNameUsesInSheets(new Map([['Main', sheet(events)]]), 'Alpha', 'list');
+    expect(uses.filter(u => u.parameter === 'value').map(u => [u.kind, u.definite])).toEqual([['possible expression', false]]);
+  });
+
+  it('finds an object whose name starts with a digit in expressions, as the editor writes it', () => {
+    expect(objectNameInExpression('2Alpha.X + 12Alpha.Y + Sprite.2Alpha + 2AlphaB.X', '2Alpha', 'Alpha2'))
+      .toEqual({ text: 'Alpha2.X + 12Alpha.Y + Sprite.2Alpha + 2AlphaB.X', definite: 1, possible: 0 });
+    const data = sheet([{ eventType: 'block', conditions: [], actions: [{ id: 'set-x', objectClass: '2Alpha', parameters: { x: '2Alpha.X + 1' } }] }]);
+    expect(renameObjectInSheet(data, '2Alpha', 'Alpha2', new Set(), 'list')).toBe(2);
+    expect(JSON.stringify(data)).toContain('"x":"Alpha2.X + 1"');
+  });
+
+  it('rewrites Name.member under every parameter key, the keys that hold a layout, sound or variable name included', () => {
+    const actions = () => [
+      { id: 'go-to-layout-by-name', objectClass: 'System', parameters: { layout: 'Alpha.X & ""' } },
+      { id: 'play', objectClass: 'Audio', parameters: { 'audio-file': 'Alpha.Boom' } },
+      { id: 'plugin-layout', objectClass: 'Widget', parameters: { layout: 'Alpha.X' } },
+      { id: 'plugin-variable', objectClass: 'Widget', parameters: { variable: 'Alpha(0).X' } },
+      { id: 'plugin-instance-variable', objectClass: 'Widget', parameters: { 'instance-variable': 'Alpha.X' } },
+      { id: 'plugin-audio', objectClass: 'Widget', parameters: { 'audio-file': 'Alpha.X' } },
+    ];
+    const data = sheet([{ eventType: 'block', conditions: [], actions: actions() }]);
+    const uses = findObjectNameUsesInSheets(new Map([['Main', data]]), 'Alpha', 'rewrite');
+    expect(uses.map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort()).toEqual([
+      'audio-file:expression:true', 'audio-file:expression:true', 'instance-variable:expression:true', 'layout:expression:true', 'layout:expression:true', 'variable:expression:true',
+    ]);
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', new Set(), 'rewrite')).toBe(6);
+    const after = (JSON.parse(JSON.stringify(data)) as { events: Array<{ actions: Array<{ parameters: Record<string, string> }> }> }).events[0].actions;
+    expect(after.map(a => Object.values(a.parameters)[0])).toEqual(['Gamma.X & ""', 'Gamma.Boom', 'Gamma.X', 'Gamma(0).X', 'Gamma.X', 'Gamma.X']);
+  });
+
+  it('leaves a bare name under a key that holds a layout, sound or variable name, in either letter case', () => {
+    const data = sheet([{ eventType: 'block', conditions: [], actions: [
+      { id: 'go-to-layout', objectClass: 'System', parameters: { layout: 'Alpha' } },
+      { id: 'play', objectClass: 'Audio', parameters: { 'audio-file': 'alpha' } },
+    ] }]);
+    const before = JSON.stringify(data);
+    expect(findObjectNameUsesInSheets(new Map([['Main', data]]), 'Alpha', 'rewrite')).toEqual([]);
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', new Set(), 'rewrite')).toBe(0);
+    expect(JSON.stringify(data)).toBe(before);
+  });
+
+  it('does not match a name made only of digits in an expression, and lists the uses', () => {
+    expect(objectNameInExpression('12.5 + 12(0).Y + 12 + x.12 + a12.Z', '12', 'Gamma'))
+      .toEqual({ text: '12.5 + 12(0).Y + 12 + x.12 + a12.Z', definite: 0, possible: 2 });
+    const data = sheet([{ eventType: 'block', conditions: [], actions: [
+      { id: 'set-x', objectClass: 'Beta', parameters: { x: '12.5', y: '12' } },
+    ] }]);
+    const before = JSON.stringify(data);
+    const uses = findObjectNameUsesInSheets(new Map([['Main', data]]), '12', 'rewrite');
+    expect(uses.map(u => `${u.parameter}:${u.kind}:${u.definite}`).sort()).toEqual(['x:possible expression:false', 'y:possible expression:false']);
+    expect(renameObjectInSheet(data, '12', 'Gamma', new Set(), 'rewrite')).toBe(0);
+    expect(JSON.stringify(data)).toBe(before);
+  });
+
+  it('leaves a parameter whose key holds another kind of name alone, on any object', () => {
+    const data = sheet([{ eventType: 'block', conditions: [], actions: [
+      { id: 'set-value', objectClass: 'Beta', parameters: { variable: 'Alpha', 'instance-variable': 'Alpha', 'audio-file': 'Alpha', layout: 'Alpha' } },
+    ] }]);
+    const before = JSON.stringify(data);
+    expect(findObjectNameUsesInSheets(new Map([['Main', data]]), 'Alpha', 'rewrite')).toEqual([]);
+    expect(renameObjectInSheet(data, 'Alpha', 'Gamma', new Set(), 'rewrite')).toBe(0);
+    expect(JSON.stringify(data)).toBe(before);
+  });
+});
+
+describe('layouts, families, scripts and timelines', () => {
+  it('finds and renames instance types on layers, sub-layers and non-world instances', () => {
+    const layout = {
+      name: 'L', layers: [{ name: 'A', instances: [{ type: 'alpha', uid: 1 }], subLayers: [{ name: 'B', instances: [{ type: 'Alpha', uid: 2 }, { type: 'Beta', uid: 3 }] }] }],
+      'nonworld-instances': [{ type: 'Alpha', uid: 4 }],
+    } as unknown as Layout;
+    expect(findInstanceTypeUses(new Map([['L', layout]]), 'Alpha').map(u => u.uid)).toEqual([1, 2, 4]);
+    expect(renameInstanceTypes(layout, 'Alpha', 'Gamma')).toBe(3);
+    expect(JSON.stringify(layout).match(/"type":"Gamma"/g)).toHaveLength(3);
+  });
+
+  it('finds and renames family members, matched ignoring case', () => {
+    const family = { name: 'Fam', members: ['Beta', 'ALPHA', 7] };
+    expect(findFamilyMemberUses(new Map<string, unknown>([['Fam', family], ['Other', { members: 'none' }]]), 'Alpha').map(u => u.file)).toEqual(['Fam']);
+    expect(renameFamilyMember(family, 'Alpha', 'Gamma')).toBe(1);
+    expect(family.members).toEqual(['Beta', 'Gamma', 7]);
+  });
+
+  it('renames the instance type of an object type\'s own single-global instance and no other type', () => {
+    const own = { name: 'Alpha', 'singleglobal-inst': { type: 'Alpha', properties: {}, tags: '', uid: 5 } };
+    expect(renameSingleGlobalInstanceType(own, 'Alpha', 'Gamma')).toBe(1);
+    expect(own['singleglobal-inst'].type).toBe('Gamma');
+    const other = { name: 'Beta', 'singleglobal-inst': { type: 'Beta' } };
+    expect(renameSingleGlobalInstanceType(other, 'Alpha', 'Gamma')).toBe(0);
+    expect(other['singleglobal-inst'].type).toBe('Beta');
+    expect(renameSingleGlobalInstanceType({ name: 'Alpha' }, 'Alpha', 'Gamma')).toBe(0);
+    expect(renameSingleGlobalInstanceType(null, 'Alpha', 'Gamma')).toBe(0);
+  });
+
+  it('lists flowchart nodes whose "c" value is the name as possible uses, and never reads another key', () => {
+    const flowcharts = new Map<string, unknown>([
+      ['Flow', { name: 'Flow', nodes: [{ c: 'alpha', t: 'x' }, { c: 'Beta' }, { c: 7 }, 'odd', { other: 'Alpha' }], c: 'Alpha' }],
+      ['Odd', { nodes: 'none' }],
+    ]);
+    const uses = findFlowchartNodeUses(flowcharts, 'Alpha');
+    expect(uses).toEqual([{ category: 'flowcharts', file: 'Flow', kind: 'flowchart node', parameter: 'nodes[0].c', value: 'alpha', definite: false }]);
+    expect(objectNameUseLocation(uses[0])).toBe('flowchart "Flow" nodes[0].c');
+  });
+
+  it('tells script lines that read the object through runtime.objects, with the reference index pattern', () => {
+    expect(['const a = runtime.objects.alpha;', 'const b = runtime.objects?.["Alpha"];', 'const c = runtime.objects.AlphaBeta;', 'const d = "Alpha";']
+      .map(line => scriptReadsObject(line, 'Alpha'))).toEqual([true, true, false, false]);
+  });
+
+  it('finds and renames the object type of instance tracks in tracks[] and in track folders at any depth, and nothing else', () => {
+    const track = (objectType: string, extra: Record<string, unknown> = {}) => ({ type: 'instance-track', worldInstance: 1, objectType, ...extra });
+    const folder = (name: string, items: unknown[], subfolders: unknown[] = []) => ({ name, items, subfolders });
+    const deep = track('ALPHA', { name: 'Alpha' });
+    const data = {
+      objectType: 'Alpha',
+      tracks: [track('Alpha'), track('alpha'), track('Beta'), { worldInstance: 2, objectType: 'Alpha' }, { type: 'value-track', name: 'Alpha', objectType: 'Alpha' }],
+      tracksRoot: folder('', [track('Alpha')], [folder('A', [track('Alpha')], [folder('B', [deep])])]),
+    };
+    const timeline = data as unknown as Timeline;
+    expect(timelineTrackUses(timeline, 'Alpha')).toBe(5);
+    expect(data.tracks.map(t => t.objectType)).toEqual(['Alpha', 'alpha', 'Beta', 'Alpha', 'Alpha']);
+    expect(timelineTrackUses(timeline, 'Alpha', 'Gamma')).toBe(5);
+    // Untyped (legacy) and value tracks hold no object name, and a key off the track's path is not its object
+    expect(data.tracks.map(t => t.objectType)).toEqual(['Gamma', 'Gamma', 'Beta', 'Alpha', 'Alpha']);
+    expect(data.objectType).toBe('Alpha');
+    expect(deep).toEqual(track('Gamma', { name: 'Alpha' }));
+    expect(JSON.stringify(data.tracksRoot).match(/"objectType":"(\w+)"/g)).toEqual(['"objectType":"Gamma"', '"objectType":"Gamma"', '"objectType":"Gamma"']);
+    expect(timelineTrackUses(timeline, 'Alpha')).toBe(0);
+  });
+
+  it('rewrites every kind of event sheet use by default, as the editor did on a rename', () => {
+    expect(OBJECT_REWRITE_POLICY).toEqual({
+      'custom action owner': true, objectClass: true, 'custom action family': true, 'instance-variable object': true, 'object parameter': true, expression: true,
+    });
+  });
+
+  it('reads the object type of an instance track at its "objectType" key', () => {
+    expect(TIMELINE_TRACK_PATH).toEqual(['objectType']);
+  });
+
+  it('rewrites and lists by one policy: a kind set to list is listed in every sheet and never changed, beside a kind that is rewritten', () => {
+    // A policy that only lists expressions, as for an editor that leaves them on a rename
+    const listed = { ...OBJECT_REWRITE_POLICY, expression: false };
+    const data = { name: 'Main', events: [{ eventType: 'block', conditions: [], actions: [{ id: 'set-x', objectClass: 'Alpha', parameters: { x: 'Alpha.X + 1' } }] }] } as unknown as EventSheet;
+    const before = JSON.stringify(data);
+    const uses = findObjectNameUsesWithPolicy(new Map([['Main', data]]), 'Alpha', listed);
+    expect(uses.map(u => `${u.kind}:${u.definite}`).sort()).toEqual(['expression:false', 'objectClass:true']);
+    expect(renameObjectInSheetWithPolicy(data, 'Alpha', 'Gamma', new Set(), listed)).toBe(1);
+    const after = JSON.parse(JSON.stringify(data));
+    expect(after.events[0].actions[0]).toEqual({ id: 'set-x', objectClass: 'Gamma', parameters: { x: 'Alpha.X + 1' } });
+    expect(JSON.stringify(data)).not.toBe(before);
+  });
+});
+
+describe('objectNameUsesInSheet', () => {
+  const block = (actions: unknown[]) => ({ eventType: 'block', conditions: [], actions });
+  const mainEvents = () => [
+    block([
+      { id: 'set-x', objectClass: 'Alpha', parameters: { x: 'Alpha.X + 1' } },
+      { id: 'create-object', objectClass: 'System', parameters: { 'object-to-create': 'Alpha', layer: '"Alpha"' } },
+      { id: 'set-text', objectClass: 'Txt', parameters: { text: '"Alpha"' } },
+      { customAction: 'Hit', objectClass: 'Beta', customActionObjectClass: 'Beta', parameters: ['Alpha'] },
+      { type: 'script', script: ['runtime.objects.Alpha.getFirstInstance();'] },
+    ]),
+  ];
+  const otherEvents = () => [
+    { eventType: 'variable', name: 'Alpha', type: 'number', initialValue: '0' },
+    block([{ id: 'set-y', objectClass: 'Alpha', parameters: { y: 'Alpha.Y' } }]),
+  ];
+
+  it('reports the same uses as the whole-project finder when given the project\'s variable names', () => {
+    const sheets = new Map([['Main', sheet(mainEvents())], ['Other', sheet(otherEvents())]]);
+    const whole = findObjectNameUsesWithPolicy(sheets, 'Alpha', OBJECT_REWRITE_POLICY);
+    const variableNames = projectVariableNames(sheets);
+    for (const [name, data] of sheets) {
+      expect(objectNameUsesInSheet(data, name, 'Alpha', variableNames, OBJECT_REWRITE_POLICY)).toEqual(whole.filter(u => u.file === name));
+    }
+    // The shared variable name changed a whole-value parameter of Main from definite to possible
+    expect(whole.find(u => u.file === 'Main' && u.parameter === '0')?.kind).toBe('possible expression');
+  });
+
+  it('with newName it rewrites exactly the definite uses it reports', () => {
+    const data = sheet(mainEvents());
+    const uses = objectNameUsesInSheet(data, 'Main', 'Alpha', new Set(), OBJECT_REWRITE_POLICY, 'Gamma');
+    expect(uses.filter(u => u.definite).map(u => u.kind).sort()).toEqual(['expression', 'object parameter', 'object parameter', 'objectClass']);
+    expect(uses.filter(u => !u.definite).map(u => u.kind).sort()).toEqual(['script', 'string literal', 'string literal']);
+    const action = (index: number) => (data.events[0] as unknown as { actions: Array<Record<string, unknown>> }).actions[index];
+    expect(action(0)).toEqual({ id: 'set-x', objectClass: 'Gamma', parameters: { x: 'Gamma.X + 1' } });
+    expect(action(1).parameters).toEqual({ 'object-to-create': 'Gamma', layer: '"Alpha"' });
+    expect(action(2).parameters).toEqual({ text: '"Alpha"' });
+    expect(action(3).parameters).toEqual(['Gamma']);
+    expect(action(4)).toEqual({ type: 'script', script: ['runtime.objects.Alpha.getFirstInstance();'] });
+    // Without newName nothing is changed
+    const untouched = sheet(mainEvents());
+    objectNameUsesInSheet(untouched, 'Main', 'Alpha', new Set(), OBJECT_REWRITE_POLICY);
+    expect(untouched).toEqual(sheet(mainEvents()));
+  });
+
+  it('a variable of the same name keeps a whole-value parameter a possible use', () => {
+    const argument = (variableNames: ReadonlySet<string>) => objectNameUsesInSheet(sheet(mainEvents()), 'Main', 'Alpha', variableNames, OBJECT_REWRITE_POLICY)
+      .filter(u => u.parameter === '0').map(u => [u.kind, u.definite]);
+    expect(argument(new Set())).toEqual([['object parameter', true]]);
+    expect(argument(new Set(['Alpha']))).toEqual([['possible expression', false]]);
+  });
+
+  it('it walks only the sheet it is given', () => {
+    const first = sheet([block([{ id: 'a', objectClass: 'Alpha' }]), block([{ id: 'b', objectClass: 'Alpha' }])]);
+    const second = sheet([block([{ id: 'c', objectClass: 'Alpha' }])]);
+    const uses = objectNameUsesInSheet(first, 'First', 'Alpha', new Set(), OBJECT_REWRITE_POLICY);
+    expect(uses.map(u => [u.file, u.eventPath])).toEqual([['First', 'events[0]'], ['First', 'events[1]']]);
+    expect(objectNameUsesInSheet(second, 'Second', 'Alpha', new Set(), OBJECT_REWRITE_POLICY).map(u => u.file)).toEqual(['Second']);
+  });
+
+  it('a name-keyed parameter that is not an object is neither reported nor rewritten when its key is in nonObjectKeys', () => {
+    const keyed = () => sheet([block([
+      { id: 'run', objectClass: 'System', parameters: { timeline: 'Player', property: 'Player', function: 'Player', file: 'Player', object: 'Player' } },
+    ])]);
+    const keys = new Set([...NON_OBJECT_PARAMETER_KEYS, ...OTHER_NAME_PARAMETER_KEYS]);
+    const parametersOf = (data: EventSheet) => (data.events[0] as unknown as { actions: Array<{ parameters: unknown }> }).actions[0].parameters;
+
+    const data = keyed();
+    const uses = objectNameUsesInSheet(data, 'Main', 'Player', new Set(), OBJECT_REWRITE_POLICY, 'Hero', keys);
+    expect(uses.map(u => `${u.parameter}:${u.kind}`)).toEqual(['object:object parameter']);
+    expect(parametersOf(data)).toEqual({ timeline: 'Player', property: 'Player', function: 'Player', file: 'Player', object: 'Hero' });
+
+    // Without the argument the index's keys decide, as the rename tools use them
+    const defaulted = keyed();
+    objectNameUsesInSheet(defaulted, 'Main', 'Player', new Set(), OBJECT_REWRITE_POLICY, 'Hero');
+    expect(parametersOf(defaulted)).toEqual({ timeline: 'Hero', property: 'Hero', function: 'Hero', file: 'Hero', object: 'Hero' });
+  });
+});

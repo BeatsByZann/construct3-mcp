@@ -4,7 +4,11 @@
  */
 
 import type { Construct3Project, EventSheet, ObjectType, Layout, FileItem } from '../../src/construct3/types.js';
-import { scanIdsInText, type EntityCategory, type ReadFailure } from '../../src/construct3/project-reader.js';
+import { scanIdsInText, ProjectReadError, type EntityCategory, type ReadFailure } from '../../src/construct3/project-reader.js';
+import { searchText, type RawTextTerm } from '../../src/construct3/raw-text-search.js';
+
+/** The release the mock project records: the one the hand-written catalogue fixtures hold, so no substitute is needed. */
+export const MOCK_SAVED_WITH_RELEASE = 49502;
 
 export interface MockReaderData {
   objects?: Map<string, Record<string, unknown>>;
@@ -40,9 +44,12 @@ export interface MockReaderData {
   containers?: unknown[];
   /**
    * Files below flowcharts/ and timelines/ (`path` relative to the folder);
-   * reading one fails when it has no `text`.
+   * reading one fails when it has no `text`, or throws the typed `failure`
+   * (a size-limit failure, for example) when it has one.
    */
-  dataFiles?: Array<{ folder: 'flowcharts' | 'timelines'; path: string; text?: string }>;
+  dataFiles?: Array<{ folder: 'flowcharts' | 'timelines'; path: string; text?: string; failure?: ReadFailure }>;
+  /** Names registered in the c3proj `timelines` container (no subfolders). */
+  registeredTimelines?: string[];
 }
 
 export type MockFileFolderKey = 'sound' | 'music' | 'video' | 'font' | 'icon' | 'general';
@@ -60,10 +67,13 @@ export class MockReader {
   private files: NonNullable<MockReaderData['files']>;
   private containers: unknown[];
   private dataFiles: NonNullable<MockReaderData['dataFiles']>;
+  private registeredTimelines: string[];
   // Names registered in c3proj but without corresponding data (for file-existence testing)
   private registeredOnly: { objects: string[]; eventSheets: string[]; layouts: string[] } = {
     objects: [], eventSheets: [], layouts: [],
   };
+  // Event sheets that are registered and exist but cannot be read (listed, and their read throws the registered failure)
+  private unreadableEventSheets: string[] = [];
   // Simulated bulk-read failures: category → name → typed failure (for unscanned-file testing)
   private readFailures: Map<string, Map<string, ReadFailure>> = new Map();
   // Raw text served by scanEntityIdsRaw for unreadable entities, keyed "category/name"
@@ -91,6 +101,7 @@ export class MockReader {
     this.files = data.files ?? [];
     this.containers = data.containers ?? [];
     this.dataFiles = data.dataFiles ?? [];
+    this.registeredTimelines = data.registeredTimelines ?? [];
     this.addons = data.usedAddons ?? [
       { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
     ];
@@ -101,7 +112,7 @@ export class MockReader {
   }
 
   async listEventSheets(): Promise<string[]> {
-    return Array.from(this.eventSheets.keys());
+    return [...this.eventSheets.keys(), ...this.unreadableEventSheets];
   }
 
   async listLayouts(): Promise<string[]> {
@@ -119,6 +130,10 @@ export class MockReader {
   }
 
   async readEventSheet(name: string): Promise<EventSheet> {
+    if (this.unreadableEventSheets.includes(name)) {
+      const failure = this.readFailures.get('eventSheets')?.get(name);
+      if (failure) throw new ProjectReadError(failure.code, failure.message);
+    }
     const sheet = this.eventSheets.get(name);
     if (!sheet) throw new Error(`Event sheet "${name}" not found`);
     return sheet as unknown as EventSheet;
@@ -163,7 +178,7 @@ export class MockReader {
   getProject(): Construct3Project {
     return {
       projectFormatVersion: 1,
-      savedWithRelease: 40000,
+      savedWithRelease: MOCK_SAVED_WITH_RELEASE,
       name: this.meta.name!,
       runtime: this.meta.runtime!,
       useWorker: 'auto',
@@ -173,7 +188,7 @@ export class MockReader {
       objectTypes: { items: [...Array.from(this.objects.keys()), ...this.registeredOnly.objects], subfolders: [] },
       families: { items: Array.from(this.families.keys()), subfolders: [] },
       layouts: { items: [...Array.from(this.layouts.keys()), ...this.registeredOnly.layouts], subfolders: [] },
-      eventSheets: { items: [...Array.from(this.eventSheets.keys()), ...this.registeredOnly.eventSheets], subfolders: [] },
+      eventSheets: { items: [...Array.from(this.eventSheets.keys()), ...this.unreadableEventSheets, ...this.registeredOnly.eventSheets], subfolders: [] },
       rootFileFolders: {
         script: this.scriptFolder(),
         sound: this.mediaFolder('sound'),
@@ -184,7 +199,7 @@ export class MockReader {
         general: this.mediaFolder('general'),
       },
       containers: this.containers,
-      timelines: { items: [], subfolders: [] },
+      timelines: { items: [...this.registeredTimelines], subfolders: [] },
       properties: {
         description: this.meta.description!,
         version: this.meta.version!,
@@ -281,6 +296,7 @@ export class MockReader {
 
   async readDataFileText(folder: 'flowcharts' | 'timelines', relativePath: string): Promise<string> {
     const file = this.dataFiles.find(f => f.folder === folder && f.path === relativePath);
+    if (file?.failure) throw new ProjectReadError(file.failure.code, file.failure.message);
     if (file?.text === undefined) throw new Error(`Failed to read ${folder} file "${relativePath}"`);
     return file.text;
   }
@@ -340,12 +356,39 @@ export class MockReader {
     return scanIdsInText(content);
   }
 
+  /** Text search over the raw text registered for an unreadable entity (the search is the production one). */
+  async searchEntityTextRaw(category: EntityCategory, name: string, terms: readonly RawTextTerm[]): Promise<Set<string>> {
+    const key = `${category}/${name}`;
+    const forced = this.rawScanErrors.get(key);
+    if (forced) throw forced;
+    const content = this.rawEntityText.get(key);
+    if (content === undefined) throw new Error(`${key}: raw text not available`);
+    return searchText(content, terms);
+  }
+
   invalidateCaches(): void {
     // no-op for mock
   }
 
   async reloadProject(): Promise<void> {
     // no-op for mock
+  }
+
+  // The mock holds no files: nothing on disk can change under it
+  async syncWithDisk(): Promise<boolean> {
+    return false;
+  }
+
+  async checkProjectFile(): Promise<boolean> {
+    return false;
+  }
+
+  async ensureCachesFresh(): Promise<void> {
+    // nothing to check
+  }
+
+  getDiskEpoch(): number {
+    return 0;
   }
 
   // Helper: add an object at runtime (for tests that build state incrementally)
@@ -363,25 +406,38 @@ export class MockReader {
 
   /**
    * Register a name in c3proj containers without providing data.
-   * Simulates a missing/corrupt file for file-existence tests.
+   * Simulates a missing file for file-existence tests: like the real reader,
+   * the bulk read records E_FILE_NOT_FOUND for it (registerUnreadableEntity
+   * simulates a file that exists but cannot be read).
    */
   registerEntityName(category: 'objects' | 'eventSheets' | 'layouts', name: string): void {
     this.registeredOnly[category].push(name);
+    const readerCategory = category === 'objects' ? 'objectTypes' : category;
+    let failures = this.readFailures.get(readerCategory);
+    if (!failures) {
+      failures = new Map<string, ReadFailure>();
+      this.readFailures.set(readerCategory, failures);
+    }
+    failures.set(name, {
+      code: 'E_FILE_NOT_FOUND',
+      message: `ENOENT: no such file or directory, stat '/mock/project/${readerCategory}/${name}.json'`,
+    });
   }
 
   /**
    * Register an entity that is present in c3proj but unreadable by the bulk
-   * reader (e.g. over the 10MB cap). It is absent from readAll*(), carries a
+   * reader (e.g. over the size limit). It is absent from readAll*(), carries a
    * typed read failure, and (optionally) serves raw text to scanEntityIdsRaw
    * for high-water UID recovery.
    */
   registerUnreadableEntity(
-    category: 'objectTypes' | 'layouts',
+    category: 'objectTypes' | 'layouts' | 'eventSheets',
     name: string,
     failure: ReadFailure,
     rawText?: string
   ): void {
-    this.registeredOnly[category === 'objectTypes' ? 'objects' : 'layouts'].push(name);
+    if (category === 'eventSheets') this.unreadableEventSheets.push(name);
+    else this.registeredOnly[category === 'objectTypes' ? 'objects' : 'layouts'].push(name);
     let failures = this.readFailures.get(category);
     if (!failures) {
       failures = new Map<string, ReadFailure>();

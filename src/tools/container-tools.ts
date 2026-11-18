@@ -2,146 +2,139 @@
  * Container tools: list_containers, create_container, update_container,
  * delete_container.
  *
- * A Construct 3 "container" groups object types so the editor and runtime
- * create, pick and destroy them together. Unlike every other entity in this
- * server, a container has no name and no JSON file of its own: the whole set
- * lives in a flat array at the root of `project.c3proj`:
+ * A container makes object types be created, picked and destroyed together.
+ * It has no name and no file of its own: project.c3proj lists every
+ * container in its root "containers" array (see containers.ts), so each
+ * write here is one writer.updateProject whose `change` checks and edits the
+ * file as it is right before the write. A save of project.c3proj in the
+ * editor during the call is merged, not lost. A refusal found inside `change`
+ * in the first round is thrown before the writer makes its backup, so nothing
+ * is written. One found in a later round, or a later round that finds nothing
+ * left to change (an "unchanged" result), can leave round 1's
+ * project.c3proj.bak behind while project.c3proj itself is as saved.
  *
- *   "containers": [ { "members": ["diBlackboardPersist", "gcC3ACEController"] } ]
- *
- * (shape confirmed against the C3-ACE project, r495 format). A container is
- * therefore identified by any one of its members, and an object type may
- * belong to at most one container.
- *
- * Because there is no per-entity file, these tools read/modify/write
- * `project.c3proj` directly with the same backup + temp-file + rename pattern
- * `timeline-tools.ts` uses, then ask the reader to reload.
+ * Construct 3 r506-2 refuses to open a project with a container of fewer
+ * than two object types, one naming a missing object type, or one in which
+ * an object type is in two containers (it reports "already in a container").
+ * The tools never write any of these. An emptied "containers" list stays [].
+ * The object types themselves are never touched.
  */
 
 import { z } from 'zod';
-import { upgradeProjectShape } from '../construct3/project-shape.js';
-import { parseJsonText } from '../construct3/json-format.js';
-import { readFile } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
-import type { WriteResult, ObjectContainer } from '../construct3/types.js';
+import type { WriteResult } from '../construct3/types.js';
 import { toolResult, toolError } from './shared.js';
-import { atomicWriteJson, backupFile } from './timeline-tools.js';
+import { rollBackFailedCall } from './call-rollback.js';
+import { nameKey } from '../construct3/names.js';
+import {
+  addContainer,
+  checkNewContainerMembers,
+  containerMemberProblems,
+  ContainerRefusal,
+  deleteContainer,
+  findContainerOf,
+  projectContainers,
+  registeredNames,
+  setContainerMembers,
+} from '../construct3/containers.js';
+import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
-/** WriteResult plus the container's resulting member list. */
-interface ContainerWriteResult extends WriteResult {
+/** The parts of a parsed project.c3proj the container tools read. */
+interface ContainerProject {
+  containers?: unknown;
+  objectTypes?: unknown;
+  families?: unknown;
+}
+
+/** What a container tool reports about the container it wrote (or found). */
+interface ContainerResult extends WriteResult {
+  index: number;
   members: string[];
 }
 
-// ─── project.c3proj I/O ────────────────────────────────────
-
-type ProjectJson = Record<string, unknown>;
-
-async function readProjectJson(projectPath: string): Promise<ProjectJson> {
-  const content = await readFile(projectPath, 'utf-8');
-  return parseJsonText(content) as ProjectJson;
+/** What update_container works out for one container, on one reading of the file. */
+interface UpdatePlan {
+  index: number;
+  members: string[];
+  warnings: string[];
+  changed: boolean;
 }
 
-async function atomicWriteProjectJson(projectPath: string, project: ProjectJson): Promise<void> {
-  upgradeProjectShape(project as unknown as Record<string, unknown>);
-  // Keeps the file's own line endings, trailing whitespace and BOM.
-  await atomicWriteJson(projectPath, project);
-}
-
-// ─── Container helpers ─────────────────────────────────────
+const MEMBER_NAME = z.string().min(1).max(200);
 
 /**
- * Read the containers array out of a parsed project, tolerating a missing key
- * and entries whose `members` is absent or not an array (a hand-edited file).
- * Returns normalized copies for reading; use `containersInPlace` to mutate.
+ * The new members of the container that lists `args.member`, on the file as
+ * `project` holds it, or a ContainerRefusal. Run before the write on the
+ * reader's project and again inside the writer's `change` on the parsed file.
  */
-function readContainers(project: { containers?: unknown }): ObjectContainer[] {
-  const raw = project.containers;
-  if (!Array.isArray(raw)) return [];
-  return raw.map(entry => {
-    const members = (entry as ObjectContainer | undefined)?.members;
-    return { ...(entry as ObjectContainer), members: Array.isArray(members) ? members.filter(m => typeof m === 'string') : [] };
-  });
-}
+function planUpdate(
+  project: ContainerProject,
+  args: { member: string; index?: number; addMembers?: string[]; removeMembers?: string[] },
+): UpdatePlan {
+  const found = findContainerOf(project, args.member, args.index);
+  if ('error' in found) throw new ContainerRefusal(found.error);
+  const add = args.addMembers ?? [];
+  const remove = args.removeMembers ?? [];
+  const removeKeys = new Set(remove.map(nameKey));
+  const both = add.find(name => removeKeys.has(nameKey(name)));
+  if (both !== undefined) throw new ContainerRefusal(`"${both}" is in both addMembers and removeMembers.`);
 
-/** Get the live containers array on a parsed project, creating it if absent. */
-function containersInPlace(project: ProjectJson): ObjectContainer[] {
-  if (!Array.isArray(project.containers)) project.containers = [];
-  const containers = project.containers as ObjectContainer[];
-  for (const c of containers) {
-    if (!Array.isArray(c.members)) c.members = [];
+  const current = found.container.members;
+  const currentKeys = new Set(current.map(nameKey));
+  const warnings: string[] = [];
+  for (const name of remove) {
+    if (!currentKeys.has(nameKey(name))) warnings.push(`"${name}" is not in the container, so it was not removed.`);
   }
-  return containers;
-}
-
-/** Index of the container holding `member`, or -1. */
-function findContainerIndex(containers: ObjectContainer[], member: string): number {
-  return containers.findIndex(c => c.members.includes(member));
-}
-
-/**
- * Validate names destined for a container.
- *
- * @param skipIndex  Index of the container being edited; membership in that
- *                   container is not an "already in another container" error.
- * @returns An error message, or null when every name is usable.
- */
-async function validateMembers(
-  reader: MutationToolDeps['reader'],
-  names: string[],
-  containers: ObjectContainer[],
-  skipIndex: number,
-): Promise<string | null> {
-  const seen = new Set<string>();
-  for (const name of names) {
-    if (seen.has(name)) {
-      return `Member "${name}" is listed more than once.`;
-    }
-    seen.add(name);
+  const added: string[] = [];
+  for (const name of add) {
+    if (currentKeys.has(nameKey(name))) warnings.push(`"${name}" is already in the container, so it was not added.`);
+    else added.push(name);
   }
+  const members = [...current.filter(name => !removeKeys.has(nameKey(name))), ...added];
+  const changed = members.length !== current.length || members.some((name, i) => name !== current[i]);
+  if (!changed) return { index: found.index, members: current, warnings, changed };
 
-  const objectTypes = await reader.listObjectTypes();
-  const families = await reader.listFamilies();
-  for (const name of names) {
-    if (!objectTypes.includes(name)) {
-      const hint = families.includes(name)
-        ? ` "${name}" is a family; containers hold object types only.`
-        : ' Use list_objects to see available object types.';
-      return `Object type "${name}" not found.${hint}`;
-    }
-    const existing = findContainerIndex(containers, name);
-    if (existing !== -1 && existing !== skipIndex) {
-      return `Object type "${name}" is already in another container (members: ${containers[existing].members.join(', ')}). ` +
-        'An object type may belong to at most one container; remove it from that container first.';
-    }
+  if (new Set(members.map(nameKey)).size < 2) {
+    throw new ContainerRefusal('The container would be left with fewer than two object types, and Construct 3 r506-2 refuses to open '
+      + `a project with such a container. Use delete_container to remove the container at index ${found.index}.`);
   }
-  return null;
+  checkNewContainerMembers(
+    members, registeredNames(project.objectTypes), registeredNames(project.families), projectContainers(project), found.index,
+  );
+  return { index: found.index, members, warnings, changed };
 }
 
-/** C3 only treats a container as meaningful once it has two or more members. */
-function singleMemberWarning(members: string[]): string | null {
-  if (members.length !== 1) return null;
-  return `Container has only one member ("${members[0]}"). Construct 3 containers are only meaningful with 2 or more members.`;
-}
+/** Register list_containers, create_container, update_container and delete_container. */
+export function registerContainerTools({ server: mcpServer, reader, writer }: MutationToolDeps) {
+  const server = withProjectSync(mcpServer, reader);
 
-// ─── Registration ──────────────────────────────────────────
+  /** The tool error for a failed call: a refusal as it is, anything else after the rollback of the call's writes. */
+  const failure = async (tool: string, error: unknown) => {
+    if (error instanceof ContainerRefusal) return toolError(error.message);
+    console.error(`[${tool}] failed:`, error);
+    return toolError(await rollBackFailedCall(writer, error, { writing: reader.getProjectPath() }));
+  };
 
-export function registerContainerTools({ server, reader }: MutationToolDeps) {
   // ─── list_containers ──────────────────────────────────────
 
   server.tool(
     'list_containers',
-    'List all object containers in the project. A container groups object types so C3 creates, picks and destroys them together.',
+    'List the containers of project.c3proj. A container makes object types be created, picked and destroyed together; it has no name, so each is identified by its index and its members. A member that is no object type of the project is listed in notObjectTypes: Construct 3 r506-2 does not open such a project. A member that differs from an object type only in letter case is listed there too, because these tools refuse it; whether Construct 3 accepts it was not checked. Read-only.',
     {},
     async () => {
       try {
-        const containers = readContainers(reader.getProject());
-        return toolResult({
-          containers: containers.map(c => ({ members: c.members })),
-          count: containers.length,
+        const project = reader.getProject() as ContainerProject;
+        const objectTypes = registeredNames(project.objectTypes);
+        const containers = projectContainers(project).map(({ index, members }) => {
+          const notObjectTypes = containerMemberProblems(members, objectTypes)
+            .flatMap(problem => (problem.kind === 'too-few' || problem.member === undefined ? [] : [problem.member]));
+          return notObjectTypes.length > 0 ? { index, members, notObjectTypes } : { index, members };
         });
+        return toolResult({ containers, count: containers.length });
       } catch (error) {
         console.error('[list_containers] failed:', error);
-        return toolError(`Error listing containers: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing containers: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -150,43 +143,34 @@ export function registerContainerTools({ server, reader }: MutationToolDeps) {
 
   server.tool(
     'create_container',
-    'Create an object container from existing object types. Each object type may belong to at most one container.',
+    'Create a container of two or more object types in project.c3proj, so they are created, picked and destroyed together. Every member must be an object type of the project (not a family), spelled as registered, listed once, and in no other container: Construct 3 r506-2 refuses to open a project with a container of fewer than two object types, one naming a missing type, or an object type in two containers. A refusal changes nothing. Backs up project.c3proj to project.c3proj.bak.',
     {
-      members: z.array(z.string().max(200)).min(1).max(100).describe('Object type names to put in the container (2 or more for a meaningful container)'),
+      members: z.array(MEMBER_NAME).min(2).max(100).describe('Object type names to group, e.g. ["Player", "PlayerHitbox"]'),
     },
     async (args) => {
       try {
-        const projectPath = reader.getProjectPath();
-        const project = await readProjectJson(projectPath);
-        const containers = containersInPlace(project);
-
-        const problem = await validateMembers(reader, args.members, containers, -1);
-        if (problem) return toolError(problem);
-
-        const warnings: string[] = [];
-        const oneMember = singleMemberWarning(args.members);
-        if (oneMember) warnings.push(oneMember);
-
-        const created: ObjectContainer = { members: [...args.members] };
-        containers.push(created);
-
-        const backupPath = await backupFile(projectPath);
-        await atomicWriteProjectJson(projectPath, project);
-        await reader.reloadProject();
-
-        const result: ContainerWriteResult = {
+        const check = (project: ContainerProject) => checkNewContainerMembers(
+          args.members, registeredNames(project.objectTypes), registeredNames(project.families), projectContainers(project),
+        );
+        // Before the write, on the reader's project: the common refusal needs no write lock
+        check(reader.getProject() as ContainerProject);
+        let index = -1;
+        const backup = await writer.updateProject((project: ContainerProject) => {
+          // Again on the file as it is now: the editor may have saved it meanwhile
+          index = addContainer(project, check(project));
+        });
+        const result: ContainerResult = {
           success: true,
-          entity: created.members.join(', '),
+          entity: `containers/${index}`,
           category: 'container',
           action: 'created',
-          members: created.members,
-          warnings: warnings.length > 0 ? warnings : undefined,
-          backupFile: backupPath,
+          index,
+          members: args.members,
+          backupFile: backup,
         };
         return toolResult(result);
       } catch (error) {
-        console.error('[create_container] failed:', error);
-        return toolError(`Error creating container: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('create_container', error);
       }
     }
   );
@@ -195,88 +179,40 @@ export function registerContainerTools({ server, reader }: MutationToolDeps) {
 
   server.tool(
     'update_container',
-    'Add or remove object types in an existing container. The container is identified by any one of its current members. Removing the last member deletes the container.',
+    'Add object types to a container or take some out. The container is found by one of its members (ignoring letter case); give index when the member is in several containers (list_containers shows them). A name already in the container (to add) or not in it (to remove) gives a warning and is skipped. The same rules as create_container apply to the result; a container left with fewer than two object types is refused (use delete_container). When nothing changes the result is "unchanged" and nothing is written. Backs up project.c3proj to project.c3proj.bak.',
     {
-      member: z.string().max(200).describe('Any object type currently in the container to update'),
-      addMembers: z.array(z.string().max(200)).max(100).optional().describe('Object type names to add to the container'),
-      removeMembers: z.array(z.string().max(200)).max(100).optional().describe('Object type names to remove from the container'),
+      member: MEMBER_NAME.describe('An object type in the container to change'),
+      index: z.number().int().min(0).optional().describe('Index of the container (from list_containers); needed only when the member is in several containers'),
+      addMembers: z.array(MEMBER_NAME).max(100).optional().describe('Object type names to add'),
+      removeMembers: z.array(MEMBER_NAME).max(100).optional().describe('Object type names to take out'),
     },
     async (args) => {
       try {
-        if (!args.addMembers?.length && !args.removeMembers?.length) {
-          return toolError('No updates provided. Specify at least one of: addMembers, removeMembers.');
+        // Before the write, on the reader's project: the common refusal and an unchanged call need no write lock
+        let last = planUpdate(reader.getProject() as ContainerProject, args);
+        let backup: string | undefined;
+        if (last.changed) {
+          backup = await writer.updateProject((project: ContainerProject) => {
+            // Again on the file as it is now, in every round of the update: the editor may have saved it meanwhile
+            last = planUpdate(project, args);
+            if (!last.changed) return false;
+            setContainerMembers(project, last.index, last.members);
+          });
         }
-
-        const projectPath = reader.getProjectPath();
-        const project = await readProjectJson(projectPath);
-        const containers = containersInPlace(project);
-
-        const index = findContainerIndex(containers, args.member);
-        if (index === -1) {
-          return toolError(
-            `No container includes object type "${args.member}". Use list_containers to see existing containers.`
-          );
-        }
-        const container = containers[index];
-
-        if (args.addMembers?.length) {
-          const problem = await validateMembers(reader, args.addMembers, containers, index);
-          if (problem) return toolError(problem);
-        }
-
-        const warnings: string[] = [];
-
-        if (args.addMembers) {
-          for (const name of args.addMembers) {
-            if (container.members.includes(name)) {
-              warnings.push(`Member "${name}" already in container, skipping`);
-              continue;
-            }
-            container.members.push(name);
-          }
-        }
-
-        if (args.removeMembers) {
-          for (const name of args.removeMembers) {
-            const i = container.members.indexOf(name);
-            if (i === -1) {
-              warnings.push(`Member "${name}" not in container, skipping`);
-              continue;
-            }
-            container.members.splice(i, 1);
-          }
-        }
-
-        const members = [...container.members];
-        let action = 'updated';
-        if (members.length === 0) {
-          containers.splice(index, 1);
-          action = 'deleted';
-          warnings.push('Container had no members left and was removed.');
-        } else {
-          const oneMember = singleMemberWarning(members);
-          if (oneMember) warnings.push(oneMember);
-        }
-
-        if (containers.length === 0) delete project.containers;
-
-        const backupPath = await backupFile(projectPath);
-        await atomicWriteProjectJson(projectPath, project);
-        await reader.reloadProject();
-
-        const result: ContainerWriteResult = {
+        const written = backup !== undefined;
+        const result: ContainerResult = {
           success: true,
-          entity: members.length > 0 ? members.join(', ') : args.member,
+          entity: `containers/${last.index}`,
           category: 'container',
-          action,
-          members,
-          warnings: warnings.length > 0 ? warnings : undefined,
-          backupFile: backupPath,
+          action: written ? 'updated' : 'unchanged',
+          index: last.index,
+          members: last.members,
+          ...(last.warnings.length > 0 ? { warnings: last.warnings } : {}),
+          ...(written ? { backupFile: backup } : {}),
         };
-        return toolResult(result);
+        return toolResult(result, { projectWritten: written });
       } catch (error) {
-        console.error('[update_container] failed:', error);
-        return toolError(`Error updating container: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('update_container', error);
       }
     }
   );
@@ -285,42 +221,39 @@ export function registerContainerTools({ server, reader }: MutationToolDeps) {
 
   server.tool(
     'delete_container',
-    'Delete the object container that includes the named object type. The object types themselves are not deleted.',
+    'Delete the container that lists a member (found ignoring letter case; give index when the member is in several containers). The object types stay. Backs up project.c3proj to project.c3proj.bak.',
     {
-      member: z.string().max(200).describe('Any object type currently in the container to delete'),
+      member: MEMBER_NAME.describe('An object type in the container to delete'),
+      index: z.number().int().min(0).optional().describe('Index of the container (from list_containers); needed only when the member is in several containers'),
     },
     async (args) => {
       try {
-        const projectPath = reader.getProjectPath();
-        const project = await readProjectJson(projectPath);
-        const containers = containersInPlace(project);
-
-        const index = findContainerIndex(containers, args.member);
-        if (index === -1) {
-          return toolError(
-            `No container includes object type "${args.member}". Use list_containers to see existing containers.`
-          );
-        }
-
-        const [removed] = containers.splice(index, 1);
-        if (containers.length === 0) delete project.containers;
-
-        const backupPath = await backupFile(projectPath);
-        await atomicWriteProjectJson(projectPath, project);
-        await reader.reloadProject();
-
-        const result: ContainerWriteResult = {
+        const find = (project: ContainerProject) => {
+          const found = findContainerOf(project, args.member, args.index);
+          if ('error' in found) throw new ContainerRefusal(found.error);
+          return found;
+        };
+        // Before the write, on the reader's project
+        find(reader.getProject() as ContainerProject);
+        let deleted = { index: -1, members: [] as string[] };
+        const backup = await writer.updateProject((project: ContainerProject) => {
+          // Again on the file as it is now, in every round of the update
+          const { index, container } = find(project);
+          deleted = { index, members: container.members };
+          deleteContainer(project, index);
+        });
+        const result: ContainerResult = {
           success: true,
-          entity: removed.members.join(', '),
+          entity: `containers/${deleted.index}`,
           category: 'container',
           action: 'deleted',
-          members: removed.members,
-          backupFile: backupPath,
+          index: deleted.index,
+          members: deleted.members,
+          backupFile: backup,
         };
         return toolResult(result);
       } catch (error) {
-        console.error('[delete_container] failed:', error);
-        return toolError(`Error deleting container: ${error instanceof Error ? error.message : String(error)}`);
+        return failure('delete_container', error);
       }
     }
   );

@@ -9,9 +9,11 @@ import { MockWriter } from '../mocks/mock-writer.js';
 import { MockIdGenerator } from '../mocks/mock-id-generator.js';
 import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
+import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
+import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { validateProjectIntegrity } from '../../src/construct3/analyzers/integrity.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
-import { EDITOR_RELOAD_NOTE } from '../../src/tools/shared.js';
+import { EDITOR_RELOAD_NOTE, type MutationToolDeps } from '../../src/tools/shared.js';
 import { isCaseInsensitiveFs } from '../helpers/fs-case.js';
 
 const caseInsensitive = isCaseInsensitiveFs();
@@ -133,14 +135,14 @@ describe('list_timelines', () => {
     const server = new MockServer();
     const reader = new MockReader();
     const origGetProject = reader.getProject.bind(reader);
-    (reader as any).getProject = () => ({
+    (reader as unknown as { getProject: () => unknown }).getProject = () => ({
       ...origGetProject(),
       timelines: {
         items: ['Timeline 1'],
         subfolders: [{ items: ['LightOutBack'], subfolders: [] }, { name: 'Scenes', items: ['Intro'], subfolders: [] }],
       },
     });
-    registerTimelineTools({ server, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as any);
+    registerTimelineTools({ server, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as unknown as MutationToolDeps);
 
     const data = parseResult(await server.callTool('list_timelines', {}));
     expect(data.timelines).toEqual(['Timeline 1', 'Intro']);
@@ -149,35 +151,6 @@ describe('list_timelines', () => {
     expect(details.isError).toBe(true);
     expect(details.content[0].text).toContain('not a timeline');
     expect(details.content[0].text).toContain('list_eases');
-  });
-});
-
-describe('value/audio track, folder and ease tools', () => {
-  it('registers every new tool', () => {
-    const { server } = setup();
-    for (const name of [
-      'list_timeline_tracks', 'add_value_track', 'add_audio_track',
-      'add_timeline_folder', 'rename_timeline_folder', 'delete_timeline_folder', 'move_timeline_track',
-      'list_eases', 'create_ease', 'update_ease', 'delete_ease',
-    ]) {
-      expect(server.hasTool(name), name).toBe(true);
-    }
-  });
-
-  it('refuses a timeline subfolder that would sit among the ease files', async () => {
-    const { server } = setup();
-    for (const subfolder of ['transitions', 'TRANSITIONS/more']) {
-      const result = await server.callTool('create_timeline', { name: 'Intro', subfolder });
-      expect(result.isError, subfolder).toBe(true);
-      expect(result.content[0].text).toContain('custom eases');
-    }
-  });
-
-  it('refuses a custom ease named like a built-in ease', async () => {
-    const { server } = setup();
-    const result = await server.callTool('create_ease', { name: 'easeinoutsine', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Construct's own ease names");
   });
 });
 
@@ -220,6 +193,15 @@ describe('create_timeline', () => {
     const result = await server.callTool('create_timeline', { name: 'Timeline 1' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('already exists');
+  });
+
+  it('refuses a timeline subfolder that would sit among the ease files', async () => {
+    const { server } = setup();
+    for (const subfolder of ['transitions', 'TRANSITIONS/more']) {
+      const result = await server.callTool('create_timeline', { name: 'Intro', subfolder });
+      expect(result.isError, subfolder).toBe(true);
+      expect(result.content[0].text).toContain('custom eases');
+    }
   });
 });
 
@@ -275,11 +257,25 @@ describe('delete_timeline', () => {
   });
 });
 
+/** A reader whose project registers `Timeline 1` but has no timeline file. */
+function setupRegistered() {
+  const server = new MockServer();
+  const reader = new MockReader();
+  const origGetProject = reader.getProject.bind(reader);
+  (reader as unknown as { getProject: () => unknown }).getProject = () => ({
+    ...origGetProject(),
+    timelines: { items: ['Timeline 1'], subfolders: [] },
+  });
+  const writer = new MockWriter();
+  const idGen = new MockIdGenerator();
+  registerTimelineTools({ server, reader, writer, idGen } as unknown as MutationToolDeps);
+  return { server, reader };
+}
+
 // ─── track and keyframe tools ─────────────────────────────
-//
-// These pin the guards that fire before any file I/O. The on-disk outcome,
-// the r495.2 track shape and the value/aValue rule are proved in
-// timeline-tools.integration.test.ts against a real project directory.
+// These pin the guards that fire before any file I/O. The on-disk outcome and
+// the stored track shape are proved in timeline-tools.integration.test.ts
+// against a real project directory.
 
 const TRACK_TOOLS = [
   'add_timeline_track',
@@ -290,21 +286,6 @@ const TRACK_TOOLS = [
   'delete_keyframe',
   'update_track',
 ];
-
-/** A reader whose project registers `Timeline 1` but has no timeline file. */
-function setupRegistered() {
-  const server = new MockServer();
-  const reader = new MockReader();
-  const origGetProject = reader.getProject.bind(reader);
-  (reader as any).getProject = () => ({
-    ...origGetProject(),
-    timelines: { items: ['Timeline 1'], subfolders: [] },
-  });
-  const writer = new MockWriter();
-  const idGen = new MockIdGenerator();
-  registerTimelineTools({ server, reader, writer, idGen } as any);
-  return { server, reader };
-}
 
 /** Minimal valid arguments for each track tool, addressing "Timeline 1". */
 const TRACK_TOOL_ARGS: Record<string, Record<string, unknown>> = {
@@ -352,6 +333,28 @@ describe('track and keyframe tools', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('No updates');
     expect(result.content[0].text).toContain('initialVisibility');
+  });
+});
+
+// ─── value tracks, audio tracks and track folders ─────────
+
+describe('value track, audio track, track folder and ease tools', () => {
+  it('registers every new tool', () => {
+    const { server } = setup();
+    for (const name of [
+      'list_timeline_tracks', 'add_value_track', 'add_audio_track',
+      'add_timeline_folder', 'rename_timeline_folder', 'delete_timeline_folder', 'move_timeline_track',
+      'list_eases', 'create_ease', 'update_ease', 'delete_ease',
+    ]) {
+      expect(server.hasTool(name), name).toBe(true);
+    }
+  });
+
+  it('refuses a custom ease named like a built-in ease', async () => {
+    const { server } = setup();
+    const result = await server.callTool('create_ease', { name: 'easeinoutsine', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('"easeinoutsine" is one of Construct\'s own ease names; choose another name. Nothing was changed.');
   });
 });
 
@@ -471,7 +474,7 @@ describe('timeline tools on a project folder', () => {
     const reader = new Construct3ProjectReader(projPath);
     await reader.loadProject();
     server = new MockServer();
-    registerTimelineTools({ server, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as any);
+    registerTimelineTools({ server, reader, writer: new Construct3ProjectWriter(reader, new IdGenerator()), idGen: new MockIdGenerator() } as any);
   });
 
   afterEach(async () => {
@@ -594,7 +597,7 @@ describe('timeline tools on a project folder', () => {
     const reader = new Construct3ProjectReader(projPath);
     await reader.loadProject();
     const local = new MockServer();
-    registerTimelineTools({ server: local, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as any);
+    registerTimelineTools({ server: local, reader, writer: new Construct3ProjectWriter(reader, new IdGenerator()), idGen: new MockIdGenerator() } as any);
     const before = await readFile(projPath, 'utf-8');
 
     const created = await local.callTool('create_timeline', { name: 'X' });
@@ -824,7 +827,7 @@ describe('timeline tools on a project folder', () => {
       const reader = new Construct3ProjectReader(projPath);
       await reader.loadProject();
       server = new MockServer();
-      registerTimelineTools({ server, reader, writer: new MockWriter(), idGen: new MockIdGenerator() } as any);
+      registerTimelineTools({ server, reader, writer: new Construct3ProjectWriter(reader, new IdGenerator()), idGen: new MockIdGenerator() } as any);
     });
 
     it('update_timeline keeps the file name on disk and backs up under it', async () => {

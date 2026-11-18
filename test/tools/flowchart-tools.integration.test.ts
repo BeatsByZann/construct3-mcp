@@ -1,86 +1,50 @@
 /**
- * Real-filesystem tests for the flowchart tools.
- *
- * The unit tests pin the guards that fire before any I/O. These prove the
- * on-disk outcome through the real reader, writer and IdGenerator: the file
- * layout, the project.c3proj registration, the pnSIDs/poSIDs/nodeSIDs
- * bookkeeping, and the reference cleanup on delete.
+ * Real-filesystem tests for the flowchart tools: the on-disk outcome through
+ * the real reader, writer and ID generator. The data is synthetic.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, cp, rm, readFile, writeFile, stat, readdir, rename } from 'fs/promises';
-import { tmpdir } from 'os';
+import { rename, readFile, readdir, stat, writeFile } from 'fs/promises';
 import { join } from 'path';
-import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
-import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
-import { IdGenerator } from '../../src/construct3/id-generator.js';
-import { MockServer } from '../mocks/mock-server.js';
-import { registerFlowchartTools } from '../../src/tools/flowchart-tools.js';
-import type { Flowchart } from '../../src/construct3/types.js';
+import type { Flowchart } from '../../src/construct3/flowchart-model.js';
 import { isCaseInsensitiveFs } from '../helpers/fs-case.js';
+import {
+  makeFlowchartProject,
+  parseResult,
+  readFlowchartFile,
+  registeredFlowcharts as registeredOnDisk,
+  removeFlowchartProject,
+  type FlowchartProject,
+} from '../helpers/flowchart-project.js';
 
-const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
 const caseInsensitive = isCaseInsensitiveFs();
 
-const FLOWCHART_PLUGIN = {
-  type: 'plugin',
-  id: 'Flowchart',
-  name: 'Flowchart controller',
-  author: 'Scirra',
-  bundled: false,
-};
-
-function parseResult(result: { content: Array<{ type: string; text: string }>; isError?: boolean }) {
-  return JSON.parse(result.content[0].text);
-}
-
-async function makeTempProject(withPlugin: boolean): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'c3-flowchart-int-'));
-  await cp(FIXTURE_DIR, dir, { recursive: true });
-  if (withPlugin) {
-    const projectPath = join(dir, 'project.c3proj');
-    const project = JSON.parse(await readFile(projectPath, 'utf-8'));
-    project.usedAddons.push(FLOWCHART_PLUGIN);
-    await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
-  }
-  return dir;
-}
-
 describe('flowchart tools (real project on disk)', () => {
+  let project: FlowchartProject;
   let tmpDir: string;
-  let reader: Construct3ProjectReader;
-  let idGen: IdGenerator;
-  let server: MockServer;
+  let server: FlowchartProject['server'];
 
-  async function boot(dir: string) {
-    tmpDir = dir;
-    reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
-    await reader.loadProject();
-    idGen = new IdGenerator();
-    const writer = new Construct3ProjectWriter(reader, idGen);
-    server = new MockServer();
-    registerFlowchartTools({ server, reader, writer, idGen } as any);
+  async function boot(options: { plugin?: boolean } = {}) {
+    project = await makeFlowchartProject(options);
+    tmpDir = project.dir;
+    server = project.server;
   }
 
   beforeEach(async () => {
-    await boot(await makeTempProject(true));
+    await boot();
   });
 
   afterEach(async () => {
-    await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+    await removeFlowchartProject(project);
   });
 
   /** Read a flowchart straight off disk, bypassing the tools. */
   async function onDisk(name: string, subfolder = ''): Promise<Flowchart> {
-    const path = subfolder
-      ? join(tmpDir, 'flowcharts', ...subfolder.split('/'), `${name}.json`)
-      : join(tmpDir, 'flowcharts', `${name}.json`);
-    return JSON.parse(await readFile(path, 'utf-8')) as Flowchart;
+    return readFlowchartFile(tmpDir, name, subfolder ? subfolder.split('/') : []);
   }
 
   async function registeredFlowcharts(): Promise<unknown> {
-    const project = JSON.parse(await readFile(join(tmpDir, 'project.c3proj'), 'utf-8'));
-    return project.flowcharts;
+    return registeredOnDisk(tmpDir);
   }
 
   /** Create "Graph" and add a node; returns the node SID and its output SIDs. */
@@ -89,7 +53,20 @@ describe('flowchart tools (real project on disk)', () => {
   ): Promise<{ sid: number; outputSids: number[] }> {
     const result = parseResult(await server.callTool('add_flowchart_node', { flowchartName: 'Graph', ...args }));
     expect(result.success).toBe(true);
-    return { sid: result.generatedSid, outputSids: result.outputSids };
+    return { sid: result.generatedSid as number, outputSids: result.outputSids as number[] };
+  }
+
+  /** Connect an output to a node by editing the file, the way an editor-saved flowchart holds a connection. */
+  async function wire(name: string, parentSid: number, outputSid: number, childSid: number): Promise<void> {
+    const path = join(tmpDir, 'flowcharts', `${name}.json`);
+    const data = JSON.parse(await readFile(path, 'utf-8')) as Flowchart;
+    const parent = data.nodes.find(n => n.sid === parentSid)!;
+    const child = data.nodes.find(n => n.sid === childSid)!;
+    parent.outputs.find(o => o.sid === outputSid)!.cnSID = childSid;
+    parent.nodeSIDs.push(childSid);
+    child.pnSIDs.push(parentSid);
+    child.poSIDs.push(outputSid);
+    await writeFile(path, JSON.stringify(data, null, '\t'), 'utf-8');
   }
 
   async function createGraph() {
@@ -105,6 +82,8 @@ describe('flowchart tools (real project on disk)', () => {
     expect(created.category).toBe('flowchart');
     expect(created.action).toBe('created');
     expect(typeof created.generatedSid).toBe('number');
+    expect(created.backupFile).toBeUndefined();
+    expect(created.editorNote).toBeDefined();
 
     const data = await onDisk('Graph');
     expect(data.sid).toBe(created.generatedSid);
@@ -123,17 +102,17 @@ describe('flowchart tools (real project on disk)', () => {
   });
 
   it('creates a flowchart with a warning when the Flowchart plugin is absent, without registering the plugin', async () => {
-    await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
-    await boot(await makeTempProject(false));
+    await removeFlowchartProject(project);
+    await boot({ plugin: false });
 
     const result = await server.callTool('create_flowchart', { name: 'Graph' });
     expect(result.isError).not.toBe(true);
-    expect(parseResult(result).warnings.join(' ')).toContain('Flowchart plugin is not listed');
+    expect(parseResult(result).warnings?.join(' ')).toContain('Flowchart plugin is not listed');
 
     await stat(join(tmpDir, 'flowcharts', 'Graph.json'));
-    const project = JSON.parse(await readFile(join(tmpDir, 'project.c3proj'), 'utf-8'));
-    expect(project.flowcharts.items).toContain('Graph');
-    expect(project.usedAddons.some((a: { id: string }) => a.id === 'Flowchart')).toBe(false);
+    const projectJson = JSON.parse(await readFile(join(tmpDir, 'project.c3proj'), 'utf-8'));
+    expect(projectJson.flowcharts.items).toContain('Graph');
+    expect(projectJson.usedAddons.some((a: { id: string }) => a.id === 'Flowchart')).toBe(false);
   });
 
   it('creates a flowchart in a nested subfolder and finds it again there', async () => {
@@ -174,7 +153,7 @@ describe('flowchart tools (real project on disk)', () => {
 
     const result = parseResult(await server.callTool('delete_flowchart', { name: 'Graph' }));
     expect(result.success).toBe(true);
-    expect(result.warnings.join(' ')).toContain('Graph.uistate.json');
+    expect(result.warnings?.join(' ')).toContain('Graph.uistate.json');
 
     await expect(stat(join(tmpDir, 'flowcharts', 'Graph.json'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(join(tmpDir, 'flowcharts', 'Graph.json.bak'))).resolves.toBeDefined();
@@ -250,16 +229,14 @@ describe('flowchart tools (real project on disk)', () => {
     const result = parseResult(await server.callTool('add_flowchart_node', {
       flowchartName: 'Graph', caption: 'A', x: 0, y: 0,
     }));
-    expect(result.warnings.join(' ')).toContain('no start node');
+    expect(result.warnings?.join(' ')).toContain('no start node');
   });
 
   it('updates node properties and preserves connections, preset links and unknown keys', async () => {
     await createGraph();
     const parent = await addNode({ caption: 'Parent', x: 0, y: 0, isStart: true, outputs: [{ name: 'Option 1' }] });
     const child = await addNode({ caption: 'Child', x: 400, y: 0 });
-    await server.callTool('connect_flowchart_nodes', {
-      flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: child.sid,
-    });
+    await wire('Graph', parent.sid, parent.outputSids[0], child.sid);
 
     // Give the child the preset markers and an unmodelled key, as a real
     // preset-derived node would carry.
@@ -297,7 +274,7 @@ describe('flowchart tools (real project on disk)', () => {
     const result = parseResult(await server.callTool('update_flowchart_node', {
       flowchartName: 'Graph', nodeSid: node.sid, tags: 'alpha,beta',
     }));
-    expect(result.warnings.join(' ')).toContain('"tags"');
+    expect(result.warnings?.join(' ')).toContain('"tags"');
     expect((await onDisk('Graph')).nodes[0].tags).toBe('alpha,beta');
   });
 
@@ -312,6 +289,13 @@ describe('flowchart tools (real project on disk)', () => {
     expect(result.content[0].text).toContain(String(node.sid));
   });
 
+  it('refuses to delete a node that does not exist', async () => {
+    await createGraph();
+    const result = await server.callTool('delete_flowchart_node', { flowchartName: 'Graph', nodeSid: 123 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Node 123 not found in flowchart "Graph".');
+  });
+
   it('deletes a node and cleans every reference to it', async () => {
     await createGraph();
     const parent = await addNode({
@@ -322,9 +306,9 @@ describe('flowchart tools (real project on disk)', () => {
     const sibling = await addNode({ caption: 'Sibling', x: 400, y: 300 });
     const grandchild = await addNode({ caption: 'Grandchild', x: 800, y: 0 });
 
-    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[0], targetNodeSid: doomed.sid });
-    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: parent.outputSids[1], targetNodeSid: sibling.sid });
-    await server.callTool('connect_flowchart_nodes', { flowchartName: 'Graph', outputSid: doomed.outputSids[0], targetNodeSid: grandchild.sid });
+    await wire('Graph', parent.sid, parent.outputSids[0], doomed.sid);
+    await wire('Graph', parent.sid, parent.outputSids[1], sibling.sid);
+    await wire('Graph', doomed.sid, doomed.outputSids[0], grandchild.sid);
 
     const result = parseResult(await server.callTool('delete_flowchart_node', { flowchartName: 'Graph', nodeSid: doomed.sid }));
     expect(result.success).toBe(true);
@@ -358,8 +342,8 @@ describe('flowchart tools (real project on disk)', () => {
     const node = await addNode({ caption: 'A', x: 0, y: 0, isStart: true });
     await addNode({ caption: 'B', x: 400, y: 0 });
     const result = parseResult(await server.callTool('delete_flowchart_node', { flowchartName: 'Graph', nodeSid: node.sid }));
-    expect(result.warnings.join(' ')).toContain('was the start node');
-    expect(result.warnings.join(' ')).toContain('no start node');
+    expect(result.warnings?.join(' ')).toContain('was the start node');
+    expect(result.warnings?.join(' ')).toContain('no start node');
   });
 
   // ─── outputs ────────────────────────────────────────────
@@ -421,7 +405,7 @@ describe('flowchart tools (real project on disk)', () => {
       flowchartName: 'Graph', outputSid: parent.outputSids[0],
     }));
     expect(result.success).toBe(true);
-    expect(result.warnings.join(' ')).toContain(String(child.sid));
+    expect(result.warnings?.join(' ')).toContain(String(child.sid));
 
     const data = await onDisk('Graph');
     expect(data.nodes.find(n => n.sid === parent.sid)!.outputs).toEqual([]);

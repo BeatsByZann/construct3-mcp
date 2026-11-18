@@ -7,11 +7,14 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
 import { findRuntimeTraps } from '../construct3/analyzers/runtime-traps.js';
 import { PITFALLS_URI } from '../resources/pitfalls.js';
+import { withProjectSync } from '../tools/project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 export function registerWorkflowPrompts(
-  server: McpServer,
+  mcpServer: McpServer,
   reader: Construct3ProjectReader
 ) {
+  const server = withProjectSync(mcpServer, reader);
   server.prompt(
     'analyze_project',
     'Get a detailed analysis of the Construct3 project structure and organization',
@@ -70,7 +73,7 @@ export function registerWorkflowPrompts(
             role: 'user' as const,
             content: {
               type: 'text' as const,
-              text: `Error: Could not load event sheet "${args.eventSheetName}": ${error instanceof Error ? error.message : String(error)}`,
+              text: `Error: Could not load event sheet "${args.eventSheetName}": ${errorMessage(error, reader.getProjectDir())}`,
             },
           }],
         };
@@ -119,7 +122,7 @@ export function registerWorkflowPrompts(
             role: 'user' as const,
             content: {
               type: 'text' as const,
-              text: `Error: Could not load object "${args.objectName}": ${error instanceof Error ? error.message : String(error)}`,
+              text: `Error: Could not load object "${args.objectName}": ${errorMessage(error, reader.getProjectDir())}`,
             },
           }],
         };
@@ -167,7 +170,7 @@ export function registerWorkflowPrompts(
             + ':\n'
             + traps.issues.map(i => `- [${i.severity}] ${i.location}: ${i.message}`).join('\n');
       } catch (error) {
-        trapSummary = `find_runtime_traps failed: ${error instanceof Error ? error.message : String(error)}`;
+        trapSummary = `find_runtime_traps failed: ${errorMessage(error, reader.getProjectDir())}`;
       }
 
       return {

@@ -48,7 +48,8 @@
  */
 
 import type { Construct3ProjectReader } from '../project-reader.js';
-import type { C3Event, FileFolder, FileFolderSubfolder, FileItem } from '../types.js';
+import type { C3Event, FileFolder } from '../types.js';
+import { registeredScriptFiles } from '../script-files.js';
 import {
   getScriptSource,
   tokenizeScript,
@@ -625,18 +626,9 @@ async function importsForEventsGlobals(
   }
   if (!folder || typeof reader.readScriptFile !== 'function') return globals;
 
-  const found: Array<{ path: string; item: FileItem }> = [];
-  const walk = (f: FileFolder | FileFolderSubfolder, prefix: string, depth: number) => {
-    if (depth > MAX_DEPTH) return;
-    for (const item of Array.isArray(f.items) ? f.items : []) {
-      const purpose = item?.['script-info']?.purpose ?? item?.['file-info']?.purpose;
-      if (purpose === 'imports-for-events' && typeof item.name === 'string') found.push({ path: prefix + item.name, item });
-    }
-    for (const sub of Array.isArray(f.subfolders) ? f.subfolders : []) {
-      if (sub && typeof sub.name === 'string') walk(sub, `${prefix}${sub.name}/`, depth + 1);
-    }
-  };
-  walk(folder, '', 0);
+  const found = registeredScriptFiles(folder).files.filter(
+    ({ item }) => (item['script-info']?.purpose ?? item['file-info']?.purpose) === 'imports-for-events',
+  );
 
   for (const { path, item } of found) {
     const language: ScriptLanguage = item.type === 'application/typescript' || path.endsWith('.ts')

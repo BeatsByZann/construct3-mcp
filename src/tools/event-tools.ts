@@ -3,30 +3,34 @@
  */
 
 import { z } from 'zod';
-import { aceSnapshot, buildAceContext, changedAceSids, checkEventAces, describeEventAceProblem } from '../construct3/ace-catalog.js';
-import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../construct3/expression-check.js';
 import type { MutationToolDeps } from './shared.js';
-import type { C3Event, EventSheet, FunctionBlockEvent, WriteResult } from '../construct3/types.js';
+import type { C3Event, EventSheet, FunctionBlockEvent, VariableEvent, WriteResult } from '../construct3/types.js';
 import {
   validateName,
   validateSubfolder,
   toolResult,
   toolError,
   notFoundError,
-  orphanedFileError,
   boundedRecord,
   caseClashError,
   folderCaseClashError,
+  deleteRegisteredEntity,
 } from './shared.js';
-import { findFolderPathClash, findNameClash } from '../construct3/names.js';
+import { findFolderPathClash, findNameClash, nameKey } from '../construct3/names.js';
+import { unregisteredNameMessage } from './registered-names.js';
+import type { CustomActionCall } from '../construct3/types.js';
 import {
   SYSTEM_EXPRESSIONS_NOT_IN_R449,
   eventVariableNameUses,
+  listEventVariableDeclarations,
   findEnclosingEvents,
   findEventVariableNameProblem,
   findNewEventVariableNameClashes,
+  findFunctionNameProblem,
+  functionBlockNames,
+  newDuplicateFunctionNames,
 } from '../construct3/event-variable-names.js';
-import type { EventVariableNameProblem, NewEventVariableNameClash } from '../construct3/event-variable-names.js';
+import type { EventVariableNameProblem, FunctionBlockName, FunctionNameProblem, NewEventVariableNameClash } from '../construct3/event-variable-names.js';
 import {
   conditionSchema,
   actionSchema,
@@ -37,21 +41,39 @@ import {
   validateObjectClasses,
   collectObjectRefs,
   buildBlockEvent,
-  mintCondition,
+  locatorShape,
+  resolveContainer,
+  containerParents,
+  containerInFunction,
+  eventPathOf,
+  eventAtEventPath,
+  elsePredecessorWarnings,
+  MAX_SEARCH_DEPTH,
+  MAX_SEARCH_NODES,
+  type ResolvedContainer,
+  buildCondition,
   buildAction,
-  applyCustomEaseParameter,
-  isElseOrLegacyElseBlock,
-  normalizeLegacyBlock,
-  reassignSids,
+  isCustomActionCall,
+  CustomActionCallError,
+  customActionCallError,
+  customActionCallWarnings,
+  loadCustomActionContext,
   resolveEventBySid,
   parseEventPath,
   ambiguousSidMessage,
+  insertIntoContainer,
+  elsePlacementError,
+  placementError,
+  placedKindOf,
+  type PlacedEventKind,
   eventPathSchema,
   collectEventSids,
+  MAX_ITEMS_PER_BLOCK,
   eventSidsMatchingSeveral,
   countDescendants,
   summarizeEvents,
   loadBehaviorLookup,
+  buildScriptEvent,
   normalizeLegacyBehaviorKeys,
   snapshotEvents,
   checkLoadRulesBeforeWrite,
@@ -60,23 +82,17 @@ import {
   loadFunctionSignatures,
   resolveFunctionMapParameter,
   functionCallArgumentSchema,
-  commentColorSchema,
   unknownKeysErrorMap,
   EVENT_INPUT_DESCRIPTIONS,
-  validateLocator,
-  resolveContainer,
-  commitContainer,
-  insertIntoContainer,
-  elsePlacementError,
-  collectSubtree,
-  MAX_ITEMS_PER_BLOCK,
-  MAX_SEARCH_DEPTH,
-  MAX_SEARCH_NODES,
-  type ResolvedContainer,
+  commentColorSchema,
+  buildCommentEvent,
+  reassignSids,
+  dropEmptiedChildren,
 } from './event-helpers.js';
+import { nothingChanged, stoppedBeforeWrite } from './refusals.js';
 import {
   isElseCondition,
-  isActiveElseCondition,
+  isElseBlock,
   createElseCondition,
   setKeyAfterSid,
   setConditionParameters,
@@ -94,87 +110,77 @@ import {
 } from '../construct3/event-shapes.js';
 import {
   findReferencesLeftByDelete,
+  findVariableReferencesLostByChange,
+  recordVariableScopes,
+  recordVariableBindings,
+  findVariableBindingChanges,
+  REBOUND_USE_CONSEQUENCE,
+  REFERENCE_CHECK_MAX_DEPTH,
+  type ReferenceCheckLimit,
+  variablesDeclaredIn,
+  findFunctionReferences,
+  mapCopiedAces,
   definesFunctionsOrVariables,
   countDeleteReferences,
+  globalVariableNames,
+  REFERENCE_CHECK_MAX_EVENTS,
+  namesVisibleToOtherSheets,
   type DeleteReference,
   type DeleteReferenceKind,
   type DeleteReferenceReport,
 } from '../construct3/analyzers/delete-references.js';
+import {
+  describeUsesNotUpdated,
+  notUpdatedEntry,
+  parameterTypesFor,
+  planVariableRename,
+  readRenameSheets,
+  renameWarnings,
+  useEntry,
+  type RenameSheets,
+  type VariableRenamePlan,
+} from '../construct3/analyzers/variable-renames.js';
 import { scanLegacyEventShapes, type LegacyEventShapeHit } from '../construct3/analyzers/legacy-event-shapes.js';
+import { isTriggerId } from '../construct3/analyzers/load-rules.js';
 import type { ObjectRef, SidMatch } from './event-helpers.js';
 import { getProjectIndex, resetProjectIndex } from '../construct3/analyzers/index-builder.js';
+import {
+  blocksWithoutForce,
+  checkUnscannedFiles,
+  ownFileReports,
+  unscannedFields,
+  unscannedFilesOf,
+  unscannedRefusal,
+  unscannedWarnings,
+  type UnscannedFileReport,
+} from '../construct3/analyzers/unscanned-uses.js';
+import { nameTerm } from '../construct3/raw-text-search.js';
+import { rollBackFailedCall, writeEntityOrRollBack } from './call-rollback.js';
 import { scanLegacyBehaviorKeys } from '../construct3/analyzers/legacy-behavior-keys.js';
 import { checkBehaviorName } from '../construct3/analyzers/behavior-refs.js';
 import type { LegacyBehaviorKeyHit, LegacyBehaviorKeyConflict } from '../construct3/analyzers/legacy-behavior-keys.js';
+import {
+  customActionCallSites,
+  customActionDefinitionClashes,
+  customActionOwnerError,
+  customActionRenameCaptures,
+  customActionScan,
+  newCustomActionDuplicates,
+  type CustomActionCallSite,
+  type CustomActionDefinition,
+} from '../construct3/custom-actions.js';
 import {
   createEmptySheet,
   createVariableEvent,
   createGroupEvent,
   createFunctionEvent,
   createIncludeEvent,
-  createCommentEvent,
   createCustomActionEvent,
 } from '../construct3/templates.js';
-
-/** RGBA color as C3 serializes it on groups and comments: four 0-1 numbers. */
-const colorSchema = z.array(z.number().min(0).max(1)).length(4);
-
-/**
- * Visit an event and every descendant, iteratively, with the same node and
- * depth guards findEventBySid uses.
- */
-function walkEvents(
-  events: Record<string, unknown>[],
-  visit: (event: Record<string, unknown>) => void,
-): void {
-  const stack: Array<{ events: Record<string, unknown>[]; depth: number }> = [{ events, depth: 0 }];
-  let nodeCount = 0;
-  while (stack.length > 0) {
-    const { events: current, depth } = stack.pop()!;
-    if (depth > MAX_SEARCH_DEPTH) continue;
-    for (const event of current) {
-      if (++nodeCount > MAX_SEARCH_NODES) {
-        throw new Error(`Event walk exceeded ${MAX_SEARCH_NODES} nodes`);
-      }
-      visit(event);
-      if (Array.isArray(event.children)) {
-        stack.push({ events: event.children as Record<string, unknown>[], depth: depth + 1 });
-      }
-    }
-  }
-}
-
-/** Event types that hold conditions and actions. */
-const BLOCK_LIKE = new Set(['block', 'function-block', 'custom-ace-block']);
-
-/** Escape a name for safe use inside a RegExp literal. */
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Whether an event placed in `container` ends up inside a function block (for
- * the "Set return value" check of validateObjectClasses).
- */
-function containerIsInFunction(events: Record<string, unknown>[], container: ResolvedContainer): boolean {
-  if (container.owner) return isInFunctionBlock(events, container.owner);
-  if (container.siblingEvent) {
-    // A function block's sibling is not inside it (function blocks are not nested in one another)
-    return container.siblingEvent.eventType !== 'function-block' && isInFunctionBlock(events, container.siblingEvent);
-  }
-  return false;
-}
-
-/**
- * The events enclosing an event placed in `container`, outermost first (for
- * event variable and function parameter name checks); empty at the top level.
- */
-function containerParents(events: C3Event[], container: ResolvedContainer): C3Event[] {
-  const anchor = (container.owner ?? container.siblingEvent) as C3Event | undefined;
-  if (!anchor) return [];
-  const enclosing = findEnclosingEvents(events, anchor) ?? [];
-  return container.owner ? [...enclosing, anchor] : enclosing;
-}
+import { applyCustomEaseParameter } from '../construct3/ease-params.js';
+import { withProjectSync } from './project-sync.js';
+import { checkEventChange, warmAceCatalog } from '../construct3/event-change-check.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 /** Per-sheet cap on change details returned by fix_legacy_behavior_keys. */
 const MAX_REPORTED_CHANGES = 100;
@@ -195,16 +201,51 @@ const DANGLING_KIND_LABELS: Record<DeleteReferenceKind, string> = {
   'variable-expression': 'expression(s) using it by name',
 };
 
-/** One sentence per deleted function or variable that is still referenced. */
-function describeDanglingReferences(report: DeleteReferenceReport): string {
+/**
+ * Why a reference check that stopped at its traversal limit refuses without
+ * force: what it did not reach is unknown, as for a file it could not parse.
+ * `limit` says which limit it was: the event count (the default), the depth
+ * events are nested to, or both.
+ */
+function traversalLimitReason(checked: string, limit: ReferenceCheckLimit = 'events'): string {
+  if (limit === 'depth') {
+    return `The check for ${checked} stopped at its nesting-depth limit (events nested more than ${REFERENCE_CHECK_MAX_DEPTH} deep), ` +
+      'so uses further on are unknown.';
+  }
+  if (limit === 'both') {
+    return `The check for ${checked} stopped at both its traversal limit (${REFERENCE_CHECK_MAX_EVENTS.toLocaleString('en-US')} events ` +
+      `across all event sheets) and its nesting-depth limit (events nested more than ${REFERENCE_CHECK_MAX_DEPTH} deep), ` +
+      'so uses further on are unknown.';
+  }
+  return `The check for ${checked} stopped at its traversal limit (${REFERENCE_CHECK_MAX_EVENTS.toLocaleString('en-US')} events ` +
+    'across all event sheets), so uses further on are unknown.';
+}
+
+/** What happens to the uses a move takes out of their variable's scope (see findVariableReferencesLostByChange). */
+const SCOPE_LOSS_CONSEQUENCE =
+  'A variable that is not at the top level of a sheet is local: only the events beside it and below them see it. ' +
+  'After loading a project, Construct 3 resolves these names and throws "cannot find event variable" when one is ' +
+  'not in scope (loader code; whether the project then fails to open has not been confirmed in the editor), and an ' +
+  'expression that uses it by name would name a variable that is not there.';
+
+/** Why two custom actions of one name on one object type or family are refused. */
+const DUPLICATE_CUSTOM_ACTION_RULE =
+  'A call names a custom action by its name, so it could not tell two apart (Construct 3 r506-2 (Free edition) opened such a project, ' +
+  'ran the first definition, and renamed the second one when it saved: DoK became DoK2). Choose another name.';
+
+/**
+ * One sentence per deleted function or variable that is still referenced
+ * `outside` what is deleted ("outside the deleted events").
+ */
+function describeDanglingReferences(report: DeleteReferenceReport, outside = 'outside the deleted events'): string {
   const kinds = (refs: DeleteReference[]) => {
     const counts = new Map<DeleteReferenceKind, number>();
     for (const r of refs) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
     return [...counts].map(([kind, n]) => `${n} ${DANGLING_KIND_LABELS[kind]}`).join(', ');
   };
   return [
-    ...report.functions.map(f => `Function "${f.name}" is still referenced ${f.references.length} time(s) outside the deleted events (${kinds(f.references)}).`),
-    ...report.variables.map(v => `Event variable "${v.name}" is still used ${v.references.length} time(s) outside the deleted events (${kinds(v.references)}).`),
+    ...report.functions.map(f => `Function "${f.name}" is still referenced ${f.references.length} time(s) ${outside} (${kinds(f.references)}).`),
+    ...report.variables.map(v => `Event variable "${v.name}" is still used ${v.references.length} time(s) ${outside} (${kinds(v.references)}).`),
   ].join(' ');
 }
 
@@ -234,7 +275,7 @@ function danglingReferenceList(report: DeleteReferenceReport): Record<string, un
  */
 function parameterlessRowError(action: Record<string, unknown>, index: number): string | null {
   if (action.type === 'comment') {
-    return `Action ${index} is a comment row, which has no parameters. To change its text or colours, use update_event_block (updateActions[].text, textColor, backgroundColor).`;
+    return `Action ${index} is a comment row, which has no parameters. To change its text or colours, use update_event_block with updateActions [{ index: ${index}, text, "text-color", "background-color" }]: the row keeps its place and the keys it has.`;
   }
   if (action.type === 'script') {
     return `Action ${index} is a script action, which has no parameters. To change its code, remove it and add a new { type: "script", script } with update_event_block.`;
@@ -242,7 +283,8 @@ function parameterlessRowError(action: Record<string, unknown>, index: number): 
   return null;
 }
 
-export function registerEventTools({ server, reader, writer, idGen }: MutationToolDeps) {
+export function registerEventTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
+  const server = withProjectSync(mcpServer, reader);
   // ─── create_event_sheet ───────────────────────────────────
 
   server.tool(
@@ -296,7 +338,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         await writer.writeEntityFile('eventSheets', args.name, data, args.subfolder, { createOnly: true });
         await writer.addToProject('eventSheets', args.name, args.subfolder);
-        resetProjectIndex();
+        resetProjectIndex(reader);
 
         const result: WriteResult = {
           success: true,
@@ -308,51 +350,57 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         return toolResult(result);
       } catch (error) {
         console.error('[create_event_sheet] failed:', error);
-        return toolError(`Error creating event sheet: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error creating event sheet: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
 
   // ─── add_event_to_sheet ───────────────────────────────────
 
-  server.tool(
+  // Registered with a strict object schema, so unknown top-level arguments are
+  // refused (server.tool() with a raw shape would drop them; see Strict Input in
+  // event-helpers.ts) (#ISSUE).
+  server.registerTool(
     'add_event_to_sheet',
-    'Add an event (group, function, variable, include, comment, or script block) to an event sheet',
     {
-      sheetName: z.string().max(200).describe('Target event sheet'),
-      eventType: z.enum(['group', 'function', 'variable', 'include', 'comment', 'script']).describe('Type of event to add; "script" adds a standalone JavaScript block (C3 stores it without a SID)'),
-      title: z.string().max(500).optional().describe('For groups: the group title'),
-      functionName: z.string().max(200).optional().describe('For functions: function name'),
-      functionParams: z.array(z.object({
-        name: z.string().describe('Parameter name'),
-        type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
-      })).optional().describe('For functions: parameter definitions. Names are refused like in the editor: a name that matches, ignoring case, a global variable of the project, another parameter of the function or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
-      functionReturnType: z.enum(['none', 'number', 'string', 'any']).optional()
-        .describe('For functions: return type (default: none)'),
-      functionIsAsync: z.boolean().optional().describe('For functions: mark as async (default: false)'),
-      functionCopyPicked: z.boolean().optional().describe('For functions: copy picked instances into the function (default: false)'),
-      variableName: z.string().max(200).optional().describe('For variables: variable name (a global variable at the top level of the sheet, a local one inside a group or event). Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in its scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
-      variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
-      initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
-      variableComment: z.string().max(2000).optional().describe('For variables: the declaration comment'),
-      variableIsStatic: z.boolean().optional().describe('For local variables: keep the value between runs of the event'),
-      variableIsConstant: z.boolean().optional().describe('For variables: constant'),
-      script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional()
-        .describe('For script blocks: JavaScript as one string (split on newlines) or an array of lines'),
-      includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
-      commentText: z.string().max(2000).optional().describe('For comments: comment text'),
-      groupPath: z.string().max(500).optional().describe('Insert inside a group by title path (e.g., "Movement > Collision"), matched like groupPath of add_event_block'),
-      parentSid: z.number().int().positive().optional().describe('Insert inside this group, block, or function-block SID'),
-      position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert the event'),
+      description: 'Add an event (group, function, variable, include, comment or script) to an event sheet: at the top level, in a group (groupPath), among the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"); a place that no editor-saved project on record or checked editor case shows for that kind of event is refused, and includes go only at the top level. A function block is refused under or below a block that has a trigger condition and under or below a function block or a custom action block. A variable at the top level is a global variable, anywhere else a local one. Returns the SID of a new group, function or variable (generatedSid), the SIDs of the function\'s parameters (functionParameterSids), the new event\'s eventPath and the backupFile. Unknown top-level arguments are refused, never dropped; keys inside a functionParams entry other than name and type are still dropped.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
+        eventType: z.enum(['group', 'function', 'variable', 'include', 'comment', 'script']).describe('Type of event to add'),
+        title: z.string().max(500).optional().describe('For groups: the group title'),
+        functionName: z.string().max(200).optional().describe('For functions: function name. Refused like in the editor: a name that matches, ignoring case, another function in the project or a System expression; with a return type also whitespace, punctuation such as - . : or a leading underscore (the name is used in expressions). Without a return type the editor accepts any name that is not empty'),
+        functionParams: z.array(z.object({
+          name: z.string().describe('Parameter name'),
+          type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+        })).optional().describe('For functions: parameter definitions. Names are refused like in the editor: a name that matches, ignoring case, a global variable of the project, another parameter of the function or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+        functionReturnType: z.enum(['none', 'number', 'string', 'any']).optional()
+          .describe('For functions: the editor\'s "Return type" (default "none"); a function with a return type sets its value with the Functions "Set return value" action'),
+        functionIsAsync: z.boolean().optional().describe('For functions: the editor\'s "Asynchronous" option, so a call can be waited for with "Wait for previous actions to complete" (default false)'),
+        functionCopyPicked: z.boolean().optional().describe('For functions: the editor\'s "Copy picked" option, which passes the instances picked where the function is called into the function (default false)'),
+        variableName: z.string().max(200).optional().describe('For variables: name of the new variable (global at the top level, local elsewhere). Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in its scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+        variableType: z.enum(['number', 'string', 'boolean']).optional().describe('For variables: variable type'),
+        initialValue: z.string().max(500).optional().default('').describe('For variables: initial value'),
+        variableComment: z.string().max(2000).optional().describe('For variables: the declaration comment (default empty)'),
+        variableIsStatic: z.boolean().optional().describe('For variables: "Static", which keeps a local variable\'s value between runs of its event (default false)'),
+        variableIsConstant: z.boolean().optional().describe('For variables: "Constant" (default false)'),
+        includeSheet: z.string().max(200).optional().describe('For includes: sheet name to include'),
+        commentText: z.string().max(2000).optional().describe('For comments: comment text'),
+        commentTextColor: commentColorSchema.optional().describe('For comments: the text colour, written as "text-color": [red, green, blue, alpha], each 0-1, as the editor saves it'),
+        commentBackgroundColor: commentColorSchema.optional().describe('For comments: the background colour, written as "background-color": [red, green, blue, alpha], each 0-1'),
+        script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional().describe('For script events: JavaScript as one string (split into lines) or an array of lines, written as the editor saves it'),
+        ...locatorShape,
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of add_event_to_sheet', 'add_event_to_sheet takes sheetName, eventType, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position, title (group), functionName, functionParams, functionReturnType, functionIsAsync, functionCopyPicked (function), variableName, variableType, initialValue, variableComment, variableIsStatic, variableIsConstant (variable), includeSheet (include), commentText, commentTextColor, commentBackgroundColor (comment) and script (script). Block events are added with add_event_block.'),
+      }).strict(),
     },
     async (args) => {
+      // Once the event is placed in memory, an error puts the sheet back (see the catch below)
+      let undoPlacement: (() => void) | undefined;
+      let writeStarted = false;
       try {
-        const locatorError = validateLocator({
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          position: args.position,
-        });
-        if (locatorError) return toolError(locatorError);
+        // Its checks compare the sheet with the other sheets by registered name
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return unregistered;
 
         // Read existing sheet — preserves ALL original events and fields
         let sheet: EventSheet;
@@ -363,40 +411,46 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
         const beforeEvents = snapshotEvents(sheet.events);
 
-        const hasLocator = args.groupPath !== undefined || args.parentSid !== undefined;
-        // C3 only ever serializes includes at the sheet root (verified against
-        // a real project: 15 root includes, 0 nested), so refuse a nested one.
-        if (hasLocator && args.eventType === 'include') {
-          return toolError('Include events can only be added at the event-sheet root; omit groupPath and parentSid.');
+        const PLACED: Record<typeof args.eventType, PlacedEventKind> = {
+          group: 'group', function: 'function-block', variable: 'variable', include: 'include', comment: 'comment', script: 'script',
+        };
+        const resolution = resolveContainer(sheet.events as Record<string, unknown>[], args.sheetName, {
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
+        });
+        if ('error' in resolution) return toolError(nothingChanged(resolution.error));
+        const container = resolution.container;
+        const placement = placementError(PLACED[args.eventType], container);
+        if (placement) return toolError(nothingChanged(placement));
+        // The events enclosing the new event, for the name rules of its scope (empty at the top level)
+        const parents = containerParents(sheet.events, container);
+        if (args.eventType === 'function') {
+          const triggered = functionBlockTriggerRefusal(parents);
+          if (triggered) return toolError(nothingChanged(triggered));
         }
 
-        // Resolve the destination before minting any SIDs so an invalid
-        // locator leaves the sheet untouched.
-        const resolution = resolveContainer(sheet.events as Record<string, unknown>[], args.sheetName, {
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          position: args.position,
-        });
-        if ('error' in resolution) return toolError(resolution.error);
-        const container = resolution.container;
-        // The events enclosing the new event (empty at the top level), for name checks
-        const parents = containerParents(sheet.events, container);
-
         let event: C3Event;
+        // SIDs of what is created, for the result (includes and comments have none)
+        let generatedSid: number | undefined;
+        let functionParameterSids: Array<{ name: string; sid: number }> | undefined;
 
         switch (args.eventType) {
           case 'group': {
             if (!args.title) return toolError('title is required for group events');
             const sid = await idGen.generateSid(reader);
             event = createGroupEvent(args.title, sid);
+            generatedSid = sid;
             break;
           }
           case 'function': {
             if (!args.functionName) return toolError('functionName is required for function events');
+            // The name is checked like in the editor's Function dialog, against every function in the project
+            const allSheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+            const nameProblem = findFunctionNameProblem(args.functionName, args.functionReturnType ?? 'none', functionBlockNames(allSheets));
+            if (nameProblem) return toolError(functionNameMessage(nameProblem, args.functionName, args.functionReturnType ?? 'none'));
             // Parameter names are checked like in the editor's Function parameter dialog
             if (args.functionParams && args.functionParams.length > 0) {
-              const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
-              const paramError = functionParameterNamesError(sheets, args.sheetName, args.functionParams.map(p => p.name), parents);
+              const paramError = functionParameterNamesError(allSheets, args.sheetName, args.functionParams.map(p => p.name), parents);
               if (paramError) return toolError(paramError);
             }
             const sid = await idGen.generateSid(reader);
@@ -414,11 +468,13 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
               isAsync: args.functionIsAsync,
               copyPicked: args.functionCopyPicked,
             });
+            generatedSid = sid;
+            functionParameterSids = paramsWithSids?.map(p => ({ name: p.name, sid: p.sid }));
             break;
           }
           case 'variable': {
             if (!args.variableName) return toolError('variableName is required for variable events');
-            // At the top level of the sheet a global variable; inside a group or event a local one
+            // At the top level a global variable, anywhere else a local one
             const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
             const nameError = eventVariableNameError(sheets, args.sheetName, parents, args.variableName);
             if (nameError) return toolError(nameError);
@@ -426,10 +482,11 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             const defaultValue = args.initialValue || (varType === 'number' ? '0' : varType === 'boolean' ? 'false' : '');
             const sid = await idGen.generateSid(reader);
             event = createVariableEvent(args.variableName, varType, defaultValue, sid);
-            const variable = event as unknown as Record<string, unknown>;
+            const variable = event as VariableEvent;
             if (args.variableComment !== undefined) variable.comment = args.variableComment;
             if (args.variableIsStatic !== undefined) variable.isStatic = args.variableIsStatic;
             if (args.variableIsConstant !== undefined) variable.isConstant = args.variableIsConstant;
+            generatedSid = sid;
             break;
           }
           case 'include': {
@@ -443,19 +500,24 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           }
           case 'comment': {
             if (!args.commentText) return toolError('commentText is required for comment events');
-            event = createCommentEvent(args.commentText);
+            event = buildCommentEvent({
+              eventType: 'comment',
+              text: args.commentText,
+              'text-color': args.commentTextColor,
+              'background-color': args.commentBackgroundColor,
+            });
             break;
           }
           case 'script': {
-            if (args.script === undefined) return toolError('script is required for script blocks');
-            // C3 r495 stores a standalone script block as { eventType, language, script: [lines] } with no SID.
-            event = { eventType: 'script', language: 'javascript', script: toScriptLines(args.script) } as unknown as C3Event;
+            if (args.script === undefined) return toolError(nothingChanged('script is required for script events.'));
+            event = buildScriptEvent({ eventType: 'script', script: args.script });
             break;
           }
         }
 
-        commitContainer(container);
+        undoPlacement = () => { sheet.events = beforeEvents; };
         insertIntoContainer(container, args.position, event as unknown as Record<string, unknown>);
+        const eventPath = eventPathOf(sheet.events as Record<string, unknown>[], event as unknown as Record<string, unknown>);
 
         // Editor load-time rules: block the write if it introduces an error
         const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
@@ -463,22 +525,35 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           sheet.events = beforeEvents;
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
+        // A new event right before an else block makes that block continue it; both arrangements load, so the gate does not report it
+        const warnings = [...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events)];
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        writeStarted = true;
+        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
+        resetProjectIndex(reader);
 
         const result: WriteResult = {
           success: true,
           entity: args.sheetName,
           category: 'eventsheet',
           action: 'updated',
-          warnings: loadCheck.warnings.length > 0 ? loadCheck.warnings : undefined,
+          ...(generatedSid !== undefined ? { generatedSid } : {}),
+          warnings: warnings.length > 0 ? warnings : undefined,
+          backupFile: backupPath,
         };
-        return toolResult(result);
+        return toolResult({
+          ...result,
+          ...(functionParameterSids && functionParameterSids.length > 0 ? { functionParameterSids } : {}),
+          eventPath,
+        });
       } catch (error) {
         console.error('[add_event_to_sheet] failed:', error);
-        return toolError(`Error adding event: ${error instanceof Error ? error.message : String(error)}`);
+        if (undoPlacement) {
+          undoPlacement();
+          if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+        }
+        return toolError(`Error adding event: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -490,7 +565,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
   server.registerTool(
     'add_event_block',
     {
-      description: 'Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Written in the shapes the Construct 3 editor saves: sub-events (blocks, also without conditions, which run whenever their parent runs; comments; scripts), else and else-if blocks (a System "else" first condition), OR blocks (isOrBlock), function calls ({ callFunction, parameters: [...] }), custom action calls ({ customAction, objectClass, parameters: [...] }), script actions (lines, language "javascript"), comment rows and per-condition/per-action disabling. Unknown keys, in the arguments and at any depth, are refused, never dropped. Writes that would break a checked editor load-time rule (expression syntax, empty expressions, trigger placement) are refused.',
+      description: 'Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Written in the shapes the Construct 3 editor saves: sub-events (blocks, also without conditions, which run whenever their parent runs; comments; scripts), else and else-if blocks (a System "else" first condition), OR blocks (isOrBlock), function calls ({ callFunction, parameters: [...] }), script actions (lines, language "javascript"), comment rows and per-condition/per-action disabling. Unknown keys, in the arguments and at any depth, are refused, never dropped. Writes that would break a checked editor load-time rule (expression syntax, empty expressions, trigger placement) are refused. Place it at the top level, in a group (groupPath), among the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"); a place that no editor-saved project on record or checked editor case shows for that kind of event is refused (see the API reference). Returns generatedSid, eventPath and backupFile.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
         eventType: z.literal('block', {
@@ -502,28 +577,22 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         sid: z.number().optional().describe('Ignored: a block copied from get_eventsheet_details may carry its SID, but the new block always gets a new one'),
         conditions: z.array(conditionSchema).optional().default([]).describe(EVENT_INPUT_DESCRIPTIONS.conditions),
         actions: z.array(actionSchema).optional().default([]).describe('Actions: plugin/behavior/System actions, function calls { callFunction, parameters: [...] }, custom action calls { customAction, objectClass, customActionObjectClass?, parameters: [...] }, script actions { type: "script", script } and comment rows { type: "comment", text, "text-color"?, "background-color"? }'),
-        groupPath: z.string().max(500).optional().describe('Insert inside group by title path (e.g., "Movement > Collision"). Titles match exactly first, then ignoring leading/trailing whitespace when that fits one group'),
-        parentSid: z.number().int().positive().optional().describe('Insert as a sub-event under this block, function-block, custom action or group SID'),
-        siblingSid: z.number().int().positive().optional().describe('Insert beside this event SID; use position before or after'),
-        position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('Where to insert the event block'),
+        ...locatorShape,
         disabled: z.boolean().optional().default(false).describe('Create the event block disabled'),
         isElse: z.boolean().optional().default(false).describe(EVENT_INPUT_DESCRIPTIONS.isElse),
         isOrBlock: z.boolean().optional().describe(EVENT_INPUT_DESCRIPTIONS.isOrBlock),
         children: z.array(childEventSchema).optional().default([]).describe('Sub-events nested inside this block (recursive, max depth 10, max 200 total events): blocks { conditions?, actions?, disabled?, isElse?, isOrBlock?, children? }, comments { eventType: "comment", text } and scripts { eventType: "script", script }. Other event types (variables, groups, functions, includes) and unknown keys are refused'),
       }, {
-        errorMap: unknownKeysErrorMap('the arguments of add_event_block', 'add_event_block takes sheetName, eventType, conditions, actions, groupPath, parentSid, siblingSid, position, disabled, isElse, isOrBlock and children; a "sid" is ignored. Comments, groups, variables, functions and includes are added with add_event_to_sheet.'),
+        errorMap: unknownKeysErrorMap('the arguments of add_event_block', 'add_event_block takes sheetName, eventType, conditions, actions, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position, disabled, isElse, isOrBlock and children; a "sid" is ignored. Comments, groups, variables, functions and includes are added with add_event_to_sheet.'),
       }).strict(),
     },
     async (args) => {
+      // Once the event is placed in memory, an error puts the sheet back (see the catch below)
+      let undoPlacement: (() => void) | undefined;
+      let writeStarted = false;
       try {
-        const locatorError = validateLocator({
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          siblingSid: args.siblingSid,
-          position: args.position,
-        });
-        if (locatorError) return toolError(locatorError);
-
+        // The catalogue first: a fetch must not run between the read and the write
+        if (args.conditions.length > 0 || args.actions.length > 0 || args.children.length > 0) await warmAceCatalog(reader);
         // Read the target event sheet
         let sheet: EventSheet;
         try {
@@ -533,22 +602,20 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
         const beforeEvents = snapshotEvents(sheet.events);
 
-        // Resolve the destination before minting any SIDs. This keeps invalid
-        // locators side-effect free and supports root, group, parent-SID, and
-        // sibling-SID insertion with one consistent target array.
+        // Where the block goes, resolved before any SID is drawn, so a refusal changes nothing
         const events = sheet.events as Record<string, unknown>[];
         const resolution = resolveContainer(events, args.sheetName, {
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          siblingSid: args.siblingSid,
-          position: args.position,
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
         });
-        if ('error' in resolution) return toolError(resolution.error);
+        if ('error' in resolution) return toolError(nothingChanged(resolution.error));
         const container = resolution.container;
-
-        if (args.isElse || isActiveElseCondition(args.conditions[0])) {
-          const placement = elsePlacementError(container, args.position);
-          if (placement) return toolError(placement);
+        const placement = placementError('block', container);
+        if (placement) return toolError(nothingChanged(placement));
+        // An else block needs an event block before it where it lands
+        if (args.isElse || isElseCondition(args.conditions[0])) {
+          const elsePlacement = elsePlacementError(container, args.position);
+          if (elsePlacement) return toolError(nothingChanged(elsePlacement));
         }
 
         // Collect all objectClass references from entire tree (parent + descendants)
@@ -560,9 +627,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           allRefs,
         );
 
-        const { errors, warnings } = await validateObjectClasses(reader, allRefs, {
-          insideFunction: containerIsInFunction(events, container),
-        });
+        // The Set return value warning is checked against the block's destination
+        const { errors, warnings } = await validateObjectClasses(reader, allRefs, { insideFunction: containerInFunction(events, container) });
         if (errors.length > 0) {
           return toolError(`Object class validation failed:\n${errors.join('\n')}`);
         }
@@ -586,16 +652,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         warnings.push(...counter.warnings);
         const blockSid = blockEvent.sid as number;
 
-        // Conditions and actions of built-in plugins and behaviors are checked
-        // against Construct's own definitions; the block is still written.
-        const aceContext = await buildAceContext(reader);
-        warnings.push(...checkEventAces([blockEvent], aceContext).map(describeEventAceProblem));
-        warnings.push(...checkEventExpressions([blockEvent], await buildExpressionContext(reader), aceContext).map(describeEventExpressionProblem));
-
-        // Commit deferred children-array creation only after all validation and
-        // block construction have succeeded.
-        commitContainer(container);
+        undoPlacement = () => { sheet.events = beforeEvents; };
         insertIntoContainer(container, args.position, blockEvent as unknown as Record<string, unknown>);
+        const eventPath = eventPathOf(events, blockEvent as unknown as Record<string, unknown>);
 
         // Editor load-time rules, checked on the whole sheet so the insertion
         // context (the new block's ancestors, the event before an else block) counts too
@@ -605,11 +664,15 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
         warnings.push(...loadCheck.warnings);
+        // A block right before an else block (or between a block and its else block) makes that block continue it; both arrangements load, so the gate does not report it
+        warnings.push(...elsePredecessorWarnings(beforeEvents, sheet.events));
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         // Write back
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
+        writeStarted = true;
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        resetProjectIndex(reader);
 
         const result: WriteResult = {
           success: true,
@@ -620,10 +683,548 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
         };
-        return toolResult(result);
+        return toolResult({ ...result, eventPath });
       } catch (error) {
+        if (error instanceof CustomActionCallError) return toolError(nothingChanged(error.message));
         console.error('[add_event_block] failed:', error);
-        return toolError(`Error adding event block: ${error instanceof Error ? error.message : String(error)}`);
+        if (undoPlacement) {
+          undoPlacement();
+          if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+        }
+        return toolError(`Error adding event block: ${errorMessage(error, reader.getProjectDir())}`);
+      }
+    }
+  );
+
+  // ─── add_custom_action ────────────────────────────────────
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
+    'add_custom_action',
+    {
+      description: 'Add a custom action definition (a custom action block) to an event sheet. A custom action belongs to an object type or family and is called on it with { customAction, objectClass, parameters: [...] } in add_event_block or update_event_block; its conditions and actions are added with update_event_block on the returned SID. Placed at the top level, in a group, or beside an event there, and only where every event above it is a group: Construct 3 r506-2 (Free edition) was seen accepting a custom action block only at the top level and in a top-level group, and a group below a block, a block with conditions, a function block or a custom action block is refused (a custom action block is a trigger root for the load check). Runs the load-time gate (new warnings are returned). Event sheets that could not be parsed are searched as text for the name; a possible match refuses without force=true. Refused, changing nothing: an owner that is no object type or family, an empty name, a second custom action of the same name on the same owner (ignoring case), parameter names the editor refuses, and a place that no editor-saved project on record or checked editor case shows for custom action blocks (below a block, a function block or a custom action block, also through a group). Returns generatedSid, parameterSids, eventPath and backupFile.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
+        objectClass: z.string().max(200).describe('The object type or family the custom action belongs to'),
+        aceName: z.string().max(200).describe('The custom action\'s name, as calls give it in customAction'),
+        description: z.string().max(2000).optional().describe('The description shown in the editor'),
+        category: z.string().max(200).optional().describe('The category it is listed under in the editor'),
+        isAsync: z.boolean().optional().describe('The editor\'s "Asynchronous" option (default false)'),
+        copyPicked: z.boolean().optional().describe('The editor\'s "Copy picked" option (default false)'),
+        parameters: z.array(z.object({
+          name: z.string().max(200).describe('Parameter name'),
+          type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
+          initialValue: z.string().max(500).optional().describe('Default value (by type: "0", "" or "false")'),
+          comment: z.string().max(500).optional().describe('Parameter comment'),
+        }, {
+          errorMap: unknownKeysErrorMap('a parameter', 'A parameter has name, type, initialValue and comment.'),
+        }).strict()).max(100).optional().describe('Parameters in call order; names follow the editor\'s function parameter rules'),
+        ...locatorShape,
+        force: z.boolean().optional().default(false).describe('Add even while an event sheet the server could not parse may define a custom action of that name (the sheets are listed in unscannedFiles and a warning)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of add_custom_action', 'add_custom_action takes sheetName, objectClass, aceName, description, category, isAsync, copyPicked, parameters, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position and force.'),
+      }).strict(),
+    },
+    async (args) => {
+      // Set once the new block is in the sheet in memory, so a throw before the write puts the sheet back
+      let undoInsert: (() => void) | undefined;
+      let writeStarted = false;
+      try {
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        const ownerError = customActionOwnerError(args.objectClass, await reader.listObjectTypes(), await reader.listFamilies());
+        if (ownerError) return toolError(nothingChanged(ownerError));
+        if (args.aceName.trim() === '') return toolError(nothingChanged('aceName is empty or only spaces.'));
+
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return toolError(nothingChanged(`Event sheet "${args.sheetName}" is registered in the project but could not be read.`));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
+        });
+        if ('error' in resolution) return toolError(nothingChanged(resolution.error));
+        const container = resolution.container;
+        const placement = placementError('custom-ace-block', container);
+        if (placement) return toolError(nothingChanged(placement));
+        // Only groups may stand above the new definition: a group below a block, a function block or a custom action block is refused
+        const nonGroup = containerParents(sheet.events, container).find(parent => parent.eventType !== 'group');
+        if (nonGroup !== undefined) {
+          const what = nonGroup.eventType === 'block' ? (Array.isArray(nonGroup.conditions) && nonGroup.conditions.length > 0 ? 'a block with conditions' : 'a block')
+            : nonGroup.eventType === 'function-block' ? 'a function block'
+              : nonGroup.eventType === 'custom-ace-block' ? 'a custom action block' : `an event of type "${String(nonGroup.eventType)}"`;
+          return toolError(nothingChanged(
+            `A custom action block is not placed in a group that stands below ${what}${nonGroup.sid !== undefined ? ` (SID ${nonGroup.sid})` : ''}: ` +
+            'Construct 3 r506-2 (Free edition) was seen accepting one only at the top level and in a top-level group, and the load check this tool follows ' +
+            'treats a custom action block as a trigger root, as it does a function block, which r506-2 (Free edition) refused to open under an "On start" block. ' +
+            'This is the tool\'s own rule, not checked in the editor. It can go at the top level, in a group, or in a group that has only groups above it.'));
+        }
+
+        // One custom action of a name per owner, across the project
+        const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        const scan = customActionScan(sheets);
+        const clashes = customActionDefinitionClashes(scan.definitions, args.objectClass, args.aceName);
+        if (clashes.length > 0) {
+          const c = clashes[0];
+          return toolError(nothingChanged(`"${args.objectClass}" already has a custom action "${c.name}" (sheet "${c.sheet}", ${c.eventPath}${c.sid !== undefined ? `, SID ${c.sid}` : ''}). ${DUPLICATE_CUSTOM_ACTION_RULE}`));
+        }
+        // A definition past the scan's limits is unknown, as in a sheet that could not be parsed
+        const scanChecked = 'custom actions of that name';
+        if (!scan.complete && !args.force) {
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'add_blocked',
+            message: nothingChanged(`${traversalLimitReason(scanChecked)} Use force=true to add it anyway.`),
+          }, { projectWritten: false });
+        }
+        const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'))
+          .filter(f => f.name !== args.sheetName);
+        const unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [[nameTerm(args.aceName)], [nameTerm(args.objectClass)]] }]);
+        if (blocksWithoutForce(unscanned) && !args.force) {
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'add_blocked',
+            message: nothingChanged(`${unscannedRefusal(unscanned)} One of them may already define a custom action "${args.aceName}" on "${args.objectClass}". Use force=true to add it anyway.`),
+            ...unscannedFields(unscanned),
+          }, { projectWritten: false });
+        }
+
+        const names = (args.parameters ?? []).map(p => p.name);
+        if (names.length > 0) {
+          const paramError = functionParameterNamesError(sheets, args.sheetName, names, containerParents(sheet.events, container), 'parameters');
+          if (paramError) return toolError(nothingChanged(paramError));
+        }
+
+        const beforeEvents = snapshotEvents(sheet.events);
+        const sid = await idGen.generateSid(reader);
+        const params: Array<NonNullable<typeof args.parameters>[number] & { sid: number }> = [];
+        for (const p of args.parameters ?? []) params.push({ ...p, sid: await idGen.generateSid(reader) });
+        const event = createCustomActionEvent(args.aceName, args.objectClass, sid, params, {
+          description: args.description, category: args.category, isAsync: args.isAsync, copyPicked: args.copyPicked,
+        }) as unknown as Record<string, unknown>;
+        undoInsert = () => { sheet.events = beforeEvents; };
+        insertIntoContainer(container, args.position, event);
+        const eventPath = eventPathOf(events, event);
+
+        // The load-time gate, as add_event_block runs it: the new block may stand between a block and its else block
+        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+        if (loadCheck.errors.length > 0) {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(loadRuleErrorMessage(loadCheck.errors)));
+        }
+        // With force, the sheets that may define the name; without a block, those searched as text without a match
+        const warnings = [...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events), ...unscannedWarnings(unscanned, 'Added')];
+        if (!scan.complete) warnings.push(`Added with force=true: ${traversalLimitReason(scanChecked)}`);
+
+        writeStarted = true;
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', generatedSid: sid,
+          ...(params.length > 0 ? { parameterSids: params.map(p => ({ name: p.name, sid: p.sid })) } : {}),
+          eventPath,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...unscannedFields(unscanned),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[add_custom_action] failed:', error);
+        if (undoInsert) {
+          undoInsert();
+          // Nothing reached the disk: the sheet in memory is as it was
+          if (!writeStarted) {
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+          }
+        }
+        return toolError(`Error adding custom action: ${errorMessage(error, reader.getProjectDir())}`);
+      }
+    }
+  );
+
+  // ─── update_function ──────────────────────────────────────
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
+    'update_function',
+    {
+      description: 'Update a function block or a custom action block: name (functionName; for a custom action its aceName), return type (function blocks only; refused for a custom action), description, category, options, and parameters (add, remove, rename). Calls and function map registrations are rewritten only with updateCallers=true. A custom action call is matched to the definition it runs (its object type\'s own action, else its family\'s, or the family named in customActionObjectClass; names ignoring case); a custom action name its owner already has is refused, and so, even with force, is a rename that would make a call the scan reached run another definition or stop running this one (with force past the scan\'s traversal limit, the calls and definitions beyond it are not checked). A change that Functions.Name(...) expression calls or event sheets that could not be parsed may depend on is refused without force, since this tool cannot rewrite those; such a sheet is searched as text for the old name and, for a rename, the new one. Scripts are not checked. Removing or renaming a parameter that the body still uses by its old name, or renames that make a use in the body find another parameter, are refused without force. A new parameter\'s initial value must be one the calls can take as an argument (a number, a one-line string, true or false). A call is rewritten only when it passes the parameter count from before the update, so a repeated run of a change that alters the parameter count changes nothing more; removing and adding the same number of parameters in one call is refused while calls exist (make two calls). Caller sheets are written first and the definition last; a failed write puts back what the call wrote, except a file saved meanwhile by another program, which is left as it is and named with its .bak. dryRun reports the plan without writing.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet that holds the function, as registered (letter case included)'),
+        sid: z.number().int().positive().describe('SID of the function block or custom action block'),
+        eventPath: eventPathSchema,
+        functionName: z.string().min(1).max(200).optional().describe('New name (for a custom action, its aceName); calls and function maps follow only with updateCallers=true'),
+        description: z.string().max(10_000).optional().describe('The editor\'s Description'),
+        category: z.string().max(200).optional().describe('The editor\'s Category'),
+        returnType: z.enum(['none', 'number', 'string', 'any']).optional().describe('The editor\'s Return type (function blocks only)'),
+        isAsync: z.boolean().optional().describe('The editor\'s Asynchronous option'),
+        copyPicked: z.boolean().optional().describe('The editor\'s Copy picked option'),
+        addParameters: z.array(z.object({
+          name: z.string().min(1).max(200),
+          type: z.enum(['number', 'string', 'boolean']),
+          initialValue: z.string().max(10_000).optional(),
+          comment: z.string().max(10_000).optional(),
+        }, { errorMap: unknownKeysErrorMap('an addParameters entry', 'An entry has name, type, initialValue and comment.') }).strict()).max(100).optional()
+          .describe('Parameters to append, in order; with updateCallers=true each call gets the initial value as its argument'),
+        removeParameters: z.array(z.string().max(200)).max(100).optional().describe('Names of parameters to remove; with updateCallers=true each call loses the argument at that position'),
+        renameParameters: z.array(z.object({ from: z.string().max(200), to: z.string().min(1).max(200) },
+          { errorMap: unknownKeysErrorMap('a renameParameters entry', 'An entry has from and to.') }).strict()).max(100).optional()
+          .describe('Parameter renames; uses in the body are not rewritten'),
+        updateCallers: z.boolean().optional().default(false).describe('Rewrite Call function actions and function map registrations'),
+        force: z.boolean().optional().default(false).describe('Update even when Functions.Name(...) expressions, unparsed sheets or parameter uses in the body depend on the change (listed, left as they are)'),
+        dryRun: z.boolean().optional().default(false).describe('Report what would change and write nothing'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of update_function', 'update_function takes sheetName, sid, eventPath, functionName, description, category, returnType, isAsync, copyPicked, addParameters, removeParameters, renameParameters, updateCallers, force and dryRun.'),
+      }).strict(),
+    },
+    async (args) => {
+      // Set once every sheet has its snapshot, so a throw puts every sheet in memory back
+      let restoreAll: (() => void) | undefined;
+      let writeStarted = false;
+      try {
+        // 1. Nothing given and not dryRun: refuse
+        const removed = args.removeParameters ?? [];
+        const renames = args.renameParameters ?? [];
+        const added = args.addParameters ?? [];
+        const given = [args.functionName, args.description, args.category, args.returnType, args.isAsync, args.copyPicked].some(v => v !== undefined)
+          || removed.length + renames.length + added.length > 0;
+        if (!given && !args.dryRun) {
+          return toolError(nothingChanged('No update given. Give at least one of functionName, description, category, returnType, isAsync, copyPicked, addParameters, removeParameters and renameParameters.'));
+        }
+
+        // 2. The sheet and the function block
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          return toolError(nothingChanged(`Event sheet "${args.sheetName}" is registered in the project but could not be read.`));
+        }
+        const found = resolveEventBySid(sheet.events as Record<string, unknown>[], args.sid, { sheetName: args.sheetName, action: 'update', eventPath: args.eventPath });
+        if ('error' in found) return toolError(nothingChanged(found.error));
+        const func = found.match.event;
+        if (func.eventType !== 'function-block' && func.eventType !== 'custom-ace-block') {
+          return toolError(nothingChanged(`The event with SID ${args.sid} is a "${String(func.eventType)}", not a function block or custom action block.`));
+        }
+        const kind = func.eventType === 'function-block' ? 'function' : 'custom-action';
+        if (kind === 'custom-action' && args.returnType !== undefined) {
+          return toolError(nothingChanged('returnType applies to function blocks only; this tool refuses it for a custom action block.'));
+        }
+
+        // 3. Every sheet, read once here as the whole object the write needs, with a snapshot, and the uses of the function by name
+        const sheetObjects = new Map<string, EventSheet>();
+        for (const name of await reader.listEventSheets()) {
+          if (name === args.sheetName) { sheetObjects.set(name, sheet); continue; }
+          try {
+            const data = await reader.readEventSheet(name);
+            if (Array.isArray(data.events)) sheetObjects.set(name, data);
+          } catch {
+            // An unreadable sheet is searched as text below, as readEventSheetsFresh's callers do
+          }
+        }
+        const sheets = new Map([...sheetObjects].map(([name, data]) => [name, data.events as C3Event[]] as const));
+        const snapshots = new Map([...sheets].map(([name, events]) => [name, snapshotEvents(events)] as const));
+        restoreAll = () => {
+          for (const [name, data] of sheetObjects) data.events = snapshots.get(name)!;
+        };
+        // Only the definition's sheet changes before the last refusal, so putting it back undoes everything
+        const restore = () => { sheet.events = snapshots.get(args.sheetName)!; };
+        const refuse = (message: string) => {
+          restore();
+          return toolError(nothingChanged(message));
+        };
+        const blocked = (reason: string, references: unknown, reports: UnscannedFileReport[] = []) => {
+          restore();
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'update_blocked',
+            message: nothingChanged(reason), references, ...unscannedFields(reports),
+          }, { projectWritten: false });
+        };
+        // A function is named by functionName and called by callFunction; a custom action by aceName and customAction
+        const definitionNameKey = kind === 'function' ? 'functionName' : 'aceName';
+        const callNameKey = kind === 'function' ? 'callFunction' : 'customAction';
+        const oldName = String(func[definitionNameKey]);
+        const owner = String(func.objectClass);
+        const shownName = kind === 'function' ? oldName : `${owner}.${oldName}`;
+        let references: CallReference[] = [];
+        let maps: CallReference[] = [];
+        let expressions: CallReference[] = [];
+        let complete: boolean;
+        let limit: ReferenceCheckLimit | undefined;
+        // For a custom action: the definitions, this one among them, every call, and the families of each object type
+        let customActions: {
+          definitions: CustomActionDefinition[]; self: CustomActionDefinition; sites: CustomActionCallSite[];
+          familiesOf: (objectClass: string) => readonly string[];
+        } | undefined;
+        if (kind === 'function') {
+          ({ references, complete, limit } = findFunctionReferences(sheets, oldName, functionsObjectName(reader)));
+          maps = references.filter(r => r.kind === 'function-map');
+          expressions = references.filter(r => r.kind === 'expression');
+        } else {
+          const scan = customActionScan(sheets);
+          const callSites = customActionCallSites(sheets);
+          // A definition past the scan's limits is not listed; it is still the one the calls are checked against
+          const listed = scan.definitions.find(d => d.sheet === args.sheetName && d.eventPath === found.match.path);
+          const self = listed ?? { owner, name: oldName, sheet: args.sheetName, eventPath: found.match.path, parameters: [] };
+          customActions = {
+            definitions: listed ? scan.definitions : [...scan.definitions, self], self, sites: callSites.sites,
+            familiesOf: (await loadCustomActionContext(reader)).familiesOf,
+          };
+          complete = scan.complete && callSites.complete;
+          limit = scan.limit ?? callSites.limit;
+        }
+
+        // 4. The new name and return type, checked like the editor's Function dialog against every other function;
+        // for a custom action, against the other custom actions of its owner and what each call runs
+        const newName = args.functionName ?? oldName;
+        const oldReturn = String(func.functionReturnType ?? 'none');
+        const newReturn = args.returnType ?? oldReturn;
+        let calls: CallReference[];
+        const renameWarnings: string[] = [];
+        if (customActions === undefined) {
+          if (newName !== oldName || newReturn !== oldReturn) {
+            const others = functionBlockNames(sheets).filter(f => !(f.sheet === args.sheetName && f.eventPath === found.match.path));
+            const problem = findFunctionNameProblem(newName, newReturn, others);
+            if (problem) return refuse(functionNameMessage(problem, newName, newReturn));
+          }
+          calls = references.filter(r => r.kind === 'callFunction');
+        } else {
+          const { definitions, self, sites, familiesOf } = customActions;
+          // Only a new name is checked (a case-only one included), as for functions: a duplicate the project already holds does not stop other changes
+          if (newName !== oldName) {
+            if (newName.trim() === '') return refuse('functionName is empty or only spaces.');
+            const clash = customActionDefinitionClashes(definitions.filter(d => d !== self), owner, newName)[0];
+            if (clash !== undefined) {
+              return refuse(`"${owner}" already has a custom action "${clash.name}" (sheet "${clash.sheet}", ${clash.eventPath}${clash.sid !== undefined ? `, SID ${clash.sid}` : ''}). ${DUPLICATE_CUSTOM_ACTION_RULE}`);
+            }
+          }
+          const { rewrite, captured } = customActionRenameCaptures(sites, definitions, self, newName, familiesOf);
+          if (captured.length > 0) {
+            const runs = (d?: CustomActionDefinition) => (d ? `${d.owner}.${d.name}` : null);
+            // A captured call always runs a definition after the rename: one not rewritten keeps its own, a rewritten one finds the renamed one
+            const shown = captured.slice(0, 10).map(({ site, before, after }) =>
+              `${site.sheet} ${site.path}${site.sid !== undefined ? ` (SID ${site.sid})` : ''} ${before ? `runs "${runs(before)}" now` : 'runs no custom action now'}` +
+              ` and would run "${runs(after)}"`);
+            return blocked(`Renaming "${shownName}" to "${newName}" would change which custom action ${captured.length} call(s) run: ` +
+              `${shown.join('; ')}${captured.length > 10 ? `; and ${captured.length - 10} more` : ''}. ` +
+              'A call names a custom action by its name, so this rename would make the game do something else; force does not override it. Choose another name.',
+            captured.map(({ site, before, after }) => ({ ...referenceEntry(customCallReference(site)), runs: runs(before), wouldRun: runs(after) })));
+          }
+          calls = rewrite.map(customCallReference);
+          references = calls;
+          // A plain call on an object in several families that define the new name: the one it runs is the first, as the other custom action tools warn
+          if (newName !== oldName) {
+            let omitted = 0;
+            for (const site of rewrite) {
+              if (site.call.customActionObjectClass !== undefined || self.owner === site.call.objectClass) continue;
+              const others = familiesOf(site.call.objectClass).filter(family => family !== self.owner
+                && definitions.some(d => d !== self && d.owner === family && nameKey(d.name) === nameKey(newName)));
+              if (others.length === 0) continue;
+              if (renameWarnings.length >= 10) {
+                omitted++;
+                continue;
+              }
+              renameWarnings.push(`${site.sheet} ${site.path}${site.sid !== undefined ? ` (SID ${site.sid})` : ''}: "${site.call.objectClass}" belongs to the families "${self.owner}" and ` +
+                `${others.map(f => `"${f}"`).join(', ')}, which both define a custom action of that name. The call uses the one on "${self.owner}"; which one Construct 3 runs was not checked in the editor.`);
+            }
+            if (omitted > 0) {
+              renameWarnings.push(`And ${omitted} more rewritten call(s) whose object belongs to several families that define a custom action of that name; each uses the one on "${self.owner}".`);
+            }
+          }
+        }
+
+        // 5. Parameters: where the removed and renamed names resolve now, then removals, renames and additions in that order
+        const params = (Array.isArray(func.functionParameters) ? func.functionParameters : []) as Array<Record<string, unknown>>;
+        const oldNames = params.map(p => String(p.name));
+        const oldCount = params.length;
+        for (const name of removed) {
+          if (!oldNames.includes(name)) {
+            return refuse(`The function "${oldName}" has no parameter "${name}" to remove. Its parameters are ${oldNames.length > 0 ? oldNames.map(n => `"${n}"`).join(', ') : 'none'}.`);
+          }
+        }
+        // Every name a rename or removal touches, the new names included, so a use that ends up finding another parameter is seen
+        const watched = new Map([...removed, ...renames.flatMap(r => [r.from, r.to])].map(n => [n.toLowerCase(), n] as const));
+        const bindingsBefore = recordVariableBindings(sheets, watched);
+        const removedIndexes = new Set(removed.map(n => oldNames.indexOf(n)));
+        const current = params.filter((_p, i) => !removedIndexes.has(i));
+        func.functionParameters = current;
+        const parents = [...((findEnclosingEvents(sheet.events, func as unknown as C3Event) ?? []) as C3Event[]), func as unknown as C3Event];
+        for (const { from, to } of renames) {
+          const param = current.find(p => p.name === from);
+          if (!param) return refuse(`The function "${oldName}" has no parameter "${from}" to rename${removed.includes(from) ? ': this update also removes it' : ''}.`);
+          const problem = findEventVariableNameProblem(to, eventVariableNameUses(sheets, args.sheetName, parents, param), from);
+          if (problem) return refuse(eventVariableNameMessage(problem, to, 'function parameter', NAME_SCOPE_RULE.parameter));
+          param.name = to;
+        }
+        // The argument each call gets for a new parameter, built and checked here, before anything is written
+        const addedArguments: FunctionArgument[] = [];
+        for (const p of added) {
+          const argument = callArgumentFor(p.type, p.initialValue);
+          if ('problem' in argument) return refuse(argument.problem);
+          addedArguments.push(argument.value);
+        }
+        for (const p of added) {
+          // Checked against the parameters so far, so a name twice in one call is refused, as functionParameterNamesError does
+          const problem = findEventVariableNameProblem(p.name, eventVariableNameUses(sheets, args.sheetName, parents));
+          if (problem) return refuse(eventVariableNameMessage(problem, p.name, 'function parameter', NAME_SCOPE_RULE.parameter));
+          // The template's key order (createFunctionEvent in templates.ts)
+          current.push({ name: p.name, type: p.type, initialValue: p.initialValue ?? defaultInitialValue(p.type), comment: p.comment ?? '', sid: await idGen.generateSid(reader) });
+        }
+
+        // 6. What the change touches; a case-only rename counts, since calls are rewritten to the new spelling
+        const renamed = newName !== oldName;
+        const shapeChanged = removed.length + added.length > 0;
+        const returnToNone = newReturn === 'none' && oldReturn !== 'none';
+
+        // 7. Blocks: calls without updateCallers, an argument change a repeated run could not recognise, expressions, unparsed sheets, the traversal limit
+        const callerRefs = [...calls, ...(renamed ? maps : [])];
+        if ((renamed || shapeChanged) && callerRefs.length > 0 && !args.updateCallers) {
+          const using = kind === 'function' ? `call(s) or function map registration(s) use "${oldName}"` : `call(s) run the custom action "${shownName}"`;
+          return blocked(`${callerRefs.length} ${using}: ${listReferences(callerRefs)}. Set updateCallers=true to rewrite them, or change them first.`,
+            callerRefs.map(referenceEntry));
+        }
+        if (removed.length > 0 && added.length > 0 && current.length === oldCount && calls.length > 0) {
+          return refuse(`This update removes ${removed.length} and adds ${added.length} parameter(s), so each call would keep ${oldCount} argument(s), and a run repeated after a stop could not tell a call already rewritten from one not yet rewritten. Make two calls: one that removes the parameters, then one that adds them.`);
+        }
+        if ((renamed || shapeChanged || returnToNone) && expressions.length > 0 && !args.force) {
+          return blocked(`${expressions.length} expression(s) call Functions.${oldName}(...): ${listReferences(expressions)}. Functions.Name(...) calls in expressions are not rewritten: change them by hand, or use force=true and change them after.`,
+            expressions.map(referenceEntry));
+        }
+        let unscanned: UnscannedFileReport[] = [];
+        // An unparsed sheet may call Functions.Name(...) in an expression, which a removed return type breaks too
+        if (renamed || shapeChanged || returnToNone) {
+          const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'));
+          // The new name too: such a sheet may hold a call the rename would capture, or a definition the new name would clash with
+          const searched = renamed ? [nameTerm(oldName), nameTerm(newName)] : [nameTerm(oldName)];
+          unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [searched] }]);
+          if (blocksWithoutForce(unscanned) && !args.force) {
+            return blocked(`${unscannedRefusal(unscanned)} Use force=true to update anyway.`, [], unscanned);
+          }
+        }
+        const usesChecked = kind === 'function' ? `uses of the function "${oldName}"` : `uses of the custom action "${shownName}"`;
+        if (!complete && !args.force) return blocked(`${traversalLimitReason(usesChecked, limit)} Use force=true to update anyway.`, references.map(referenceEntry));
+
+        // 8. Parameter uses in the body: a use whose parameter is gone, or that now finds another parameter of its name
+        const { lost, rebound } = findVariableBindingChanges(bindingsBefore, sheets);
+        const lostCount = countDeleteReferences(lost);
+        const reboundCount = countDeleteReferences(rebound);
+        const whereLost = 'where the parameter no longer exists after the update';
+        const whereRebound = 'where the name now finds another parameter after the update';
+        const paramsChecked = `uses of the parameters of "${shownName}"`;
+        if ((lostCount > 0 || reboundCount > 0 || !lost.complete) && !args.force) {
+          const reasons = [
+            ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
+            ...(reboundCount > 0 ? [`${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`] : []),
+            ...(!lost.complete ? [traversalLimitReason(paramsChecked, lost.limit)] : []),
+          ];
+          return blocked(`${reasons.join(' ')} Change those uses first, or use force=true to update anyway.`,
+            { ...danglingReferenceList(lost), ...(reboundCount > 0 ? { rebound: danglingReferenceList(rebound) } : {}) });
+        }
+        const warnings: string[] = [];
+        if (lostCount > 0) warnings.push(`Updated with force=true: ${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
+        if (reboundCount > 0) warnings.push(`Updated with force=true: ${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`);
+        if (!lost.complete) warnings.push(`Updated with force=true: ${traversalLimitReason(paramsChecked, lost.limit)}`);
+        if ((renamed || shapeChanged || returnToNone) && expressions.length > 0) {
+          warnings.push(`Updated with force=true: ${expressions.length} Functions.${oldName}(...) expression call(s) were left as they are: ${listReferences(expressions)}. Change them before opening the project in Construct 3.`);
+        }
+        if (!complete) warnings.push(`Updated with force=true: ${traversalLimitReason(usesChecked, limit)}`);
+        warnings.push(...unscannedWarnings(unscanned, 'Updated'));
+        warnings.push(...renameWarnings);
+        const parameterList = () => current.map(p => ({ name: p.name, type: p.type, sid: p.sid }));
+
+        // 9. dryRun: report the plan, put the definition back, write nothing
+        if (args.dryRun) {
+          const plan = {
+            dryRun: true, kind, name: oldName, newName, ...(kind === 'function' ? { returnType: newReturn } : {}), parameters: parameterList(),
+            calls: calls.map(referenceEntry), maps: maps.map(referenceEntry), expressions: expressions.map(referenceEntry),
+            ...(warnings.length > 0 ? { warnings } : {}),
+            ...unscannedFields(unscanned),
+          };
+          restore();
+          return toolResult(plan, { projectWritten: false });
+        }
+
+        // 10. The definition (the parameters were changed in step 5); a key the stored block lacks is added after the others
+        if (renamed) func[definitionNameKey] = newName;
+        if (args.description !== undefined) func.functionDescription = args.description;
+        if (args.category !== undefined) func.functionCategory = args.category;
+        if (args.returnType !== undefined) func.functionReturnType = args.returnType;
+        if (args.isAsync !== undefined) func.functionIsAsync = args.isAsync;
+        if (args.copyPicked !== undefined) func.functionCopyPicked = args.copyPicked;
+
+        // 11. The callers, with updateCallers only; a call is renamed always, and its arguments change only when it passes oldCount of them
+        let rewrittenCalls = 0;
+        let rewrittenMaps = 0;
+        const leftAlone: CallReference[] = [];
+        if (args.updateCallers) {
+          for (const ref of calls) {
+            let changed = false;
+            if (renamed) { ref.ace[callNameKey] = newName; changed = true; }
+            if (shapeChanged) {
+              if (rewriteCallArguments(ref.ace, oldCount, removedIndexes, addedArguments)) changed = true;
+              else leftAlone.push(ref);
+            }
+            if (changed) rewrittenCalls++;
+          }
+          if (renamed) {
+            for (const ref of maps) {
+              (ref.ace.parameters as Record<string, unknown>).function = newName;
+              rewrittenMaps++;
+            }
+          }
+        }
+        if (leftAlone.length > 0) {
+          warnings.push(`${leftAlone.length} call(s) pass a number of arguments other than the ${oldCount} parameter(s) "${shownName}" had, so their arguments were left as they are (a call this update already rewrote in a run that stopped is one of them): ${listReferences(leftAlone)}.`);
+        }
+
+        // 12. Unchanged: no sheet differs from its snapshot
+        const changedSheets = [...sheets.keys()].filter(name => JSON.stringify(sheets.get(name)) !== JSON.stringify(snapshots.get(name)));
+        if (changedSheets.length === 0) {
+          return toolResult({
+            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', updatedSid: args.sid, kind,
+            name: newName, previousName: oldName, parameters: parameterList(), updatedSheets: [], rewrittenCalls: 0, rewrittenMaps: 0,
+            ...(warnings.length > 0 ? { warnings } : {}),
+          }, { projectWritten: false });
+        }
+
+        // 13. Write the caller sheets in registered order, then the definition's sheet. Every sheet object was read in
+        // step 3, so nothing reads between the writes; any error after the first write rolls back what this call wrote
+        const order = [...changedSheets.filter(name => name !== args.sheetName), ...(changedSheets.includes(args.sheetName) ? [args.sheetName] : [])];
+        const backupFiles: string[] = [];
+        let writing: string | undefined;
+        writeStarted = true;
+        try {
+          for (const name of order) {
+            writing = name;
+            backupFiles.push(await writeEntityOrRollBack(writer, 'eventSheets', name, sheetObjects.get(name)!));
+            writing = undefined;
+          }
+          resetProjectIndex(reader);
+        } catch (error) {
+          // writeEntityOrRollBack has rolled the call back and worded the message; any other error is rolled back here
+          if (writing !== undefined) throw error;
+          throw new Error(await rollBackFailedCall(writer, error));
+        }
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', updatedSid: args.sid, kind,
+          name: newName, previousName: oldName, parameters: parameterList(), updatedSheets: order, rewrittenCalls, rewrittenMaps,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
+          ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          ...unscannedFields(unscanned),
+          backupFiles,
+        });
+      } catch (error) {
+        console.error('[update_function] failed:', error);
+        const message = errorMessage(error, reader.getProjectDir());
+        if (restoreAll) {
+          restoreAll();
+          // Nothing reached the disk: every sheet in memory is as it was
+          if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+        }
+        return toolError(`Error updating function: ${message}`);
       }
     }
   );
@@ -632,10 +1233,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'delete_event_sheet',
-    'Delete an event sheet from the project (checks references first)',
+    'Delete an event sheet from the project (checks references first; refused without force while there are any): sheets that include it, layouts bound to it, and uses in other event sheets of the functions and global variables it defines (Call function actions, function map registrations, Functions.Name(...) expression calls, System conditions/actions on the variable, expressions that use the variable by name; scripts are not checked). Event sheets and layouts that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text for the sheet name, and event sheets also for those functions and global variables: a match (a possible use), or such a file that cannot be read at all, refuses without force (listed in unscannedFiles), as does a sheet to delete that could not be parsed itself or a check that stopped at its traversal limit (100,000 events).',
     {
       name: z.string().max(200).describe('Event sheet name to delete'),
-      force: z.boolean().optional().default(false).describe('If true, delete even if referenced (does NOT clean up references)'),
+      force: z.boolean().optional().default(false).describe('If true, delete even if referenced (does NOT clean up references; the uses of its functions and global variables left behind are listed in "references" and a warning)'),
     },
     async (args) => {
       try {
@@ -661,17 +1262,61 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         const hasRefs = includedBy.length > 0 || boundLayouts.length > 0;
 
-        if (hasRefs && !args.force) {
+        // 3. Functions and global variables the sheet defines that other
+        // sheets still use (issue #58): the same check as
+        // delete_event_from_sheet, with every event of the sheet deleted
+        const sheets = await reader.readAllEventSheets();
+        const ownEvents = sheets.get(args.name)?.events;
+        let dangling: DeleteReferenceReport = { functions: [], variables: [], complete: true };
+        const visibleNames = new Set<string>();
+        if (Array.isArray(ownEvents)) {
+          const sheetEvents = new Map<string, unknown>();
+          for (const [name, other] of sheets) sheetEvents.set(name, other.events);
+          dangling = findReferencesLeftByDelete(sheetEvents, ownEvents as object[], functionsObjectName(reader));
+          for (const event of ownEvents) {
+            for (const name of namesVisibleToOtherSheets(event, true)) visibleNames.add(name);
+          }
+        }
+        const danglingCount = countDeleteReferences(dangling);
+
+        // 4. Event sheets (includes; the functions and globals it defines) and
+        // layouts (bindings) that could not be parsed. When the sheet itself
+        // could not be parsed, what it defines is unknown.
+        const otherFiles = index.unscannedFiles.filter(f => !(f.category === 'eventSheets' && f.name === args.name));
+        const unscanned = [
+          ...ownFileReports(index.unscannedFiles, [{
+            category: 'eventSheets',
+            name: args.name,
+            unchecked: 'the functions and global variables it defines are unknown, so their uses in other event sheets could not be checked',
+          }]),
+          ...await checkUnscannedFiles(reader, otherFiles, [
+            { categories: ['eventSheets', 'layouts'], allOf: [[nameTerm(args.name)]] },
+            { categories: ['eventSheets'], allOf: [[...visibleNames].map(n => nameTerm(n))] },
+          ]),
+        ];
+        const unscannedBlock = blocksWithoutForce(unscanned);
+        const outsideSheet = `in other event sheets than "${args.name}"`;
+        const checked = 'uses of the functions and global variables the sheet defines';
+
+        if ((hasRefs || danglingCount > 0 || unscannedBlock || !dangling.complete) && !args.force) {
+          const reasons = [
+            ...(hasRefs ? ['Event sheet is still referenced.'] : []),
+            ...(danglingCount > 0 ? [`${describeDanglingReferences(dangling, outsideSheet)} ${DANGLING_REFERENCE_CONSEQUENCE}`] : []),
+            ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
+            ...(!dangling.complete ? [traversalLimitReason(checked, dangling.limit)] : []),
+          ];
           return toolResult({
             success: false,
             entity: args.name,
             category: 'eventsheet',
             action: 'delete_blocked',
-            message: 'Event sheet is still referenced. Use force=true to delete anyway (references will NOT be cleaned up).',
+            message: `${reasons.join(' ')} Use force=true to delete anyway (references will NOT be cleaned up).`,
             references: {
               includedBy,
               boundLayouts,
+              ...danglingReferenceList(dangling),
             },
+            ...unscannedFields(unscanned),
           });
         }
 
@@ -680,21 +1325,17 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           const refList = [...includedBy.map(s => `included by "${s}"`), ...boundLayouts.map(l => `bound to layout "${l}"`)];
           warnings.push(`Event sheet deleted but still referenced: ${refList.join(', ')}. References were NOT cleaned up.`);
         }
-
-        // Capture the subfolder first: removeFromProject reloads project.c3proj,
-        // after which the name is no longer resolvable.
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.name);
-        // Deregister before deleting the file. A failure in the second step
-        // then leaves an orphaned file (info-level) instead of a dangling
-        // registration (a file-existence error).
-        await writer.removeFromProject('eventSheets', args.name);
-        let backupPath: string;
-        try {
-          backupPath = await writer.deleteEntityFile('eventSheets', args.name, subfolder);
-        } catch (error) {
-          console.error('[delete_event_sheet] file delete failed after deregistration:', error);
-          return orphanedFileError('eventSheets', args.name, subfolder, error);
+        if (danglingCount > 0) {
+          warnings.push(`Deleted with force=true: ${describeDanglingReferences(dangling, outsideSheet)} ` +
+            `${DANGLING_REFERENCE_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
         }
+        if (!dangling.complete) {
+          warnings.push(`Deleted with force=true: ${traversalLimitReason(checked, dangling.limit)}`);
+        }
+        warnings.push(...unscannedWarnings(unscanned, 'Deleted'));
+
+        const backupPath = await deleteRegisteredEntity(writer, 'eventSheets', args.name);
+        resetProjectIndex(reader);
 
         const result: WriteResult = {
           success: true,
@@ -703,11 +1344,13 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           action: 'deleted',
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
+          ...unscannedFields(unscanned),
         };
-        return toolResult(result);
+        // With force=true, the uses of its functions and global variables left dangling
+        return toolResult(danglingCount > 0 ? { ...result, references: danglingReferenceList(dangling) } : result);
       } catch (error) {
         console.error('[delete_event_sheet] failed:', error);
-        return toolError(`Error deleting event sheet: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting event sheet: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -716,9 +1359,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'delete_event_from_sheet',
-    'Delete an event from an event sheet by SID (for blocks, groups, variables, functions) or by includeSheet name (for includes). Sub-events are deleted with their event. Use get_eventsheet_details to find SIDs. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Refuses (unless force=true) when a function or event variable it removes is still named outside the deleted events: Call function actions, function map registrations, Functions.Name(...) expression calls, System conditions/actions on the variable, expressions that use the variable by name (scripts are not checked). Reports an else block the delete leaves without the block it belonged to (else-placement warning).',
+    'Delete an event from an event sheet by SID (for blocks, groups, variables, functions) or by includeSheet name (for includes). Sub-events are deleted with their event. Use get_eventsheet_details to find SIDs. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Refuses (unless force=true) when a function or event variable it removes is still named outside the deleted events: Call function actions, function map registrations, Functions.Name(...) expression calls, System conditions/actions on the variable, expressions that use the variable by name (scripts are not checked). Other event sheets that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text for the deleted functions and global variables: a match (a possible use), or such a sheet that cannot be read at all, also refuses without force (listed in unscannedFiles), as does a check that stopped at its traversal limit (100,000 events). Reports an else block the delete leaves without the block it belonged to (else-placement warning).',
     {
-      sheetName: z.string().max(200).describe('Target event sheet'),
+      sheetName: z.string().max(200).describe('Target event sheet, as registered (letter case included)'),
       sid: z.number().int().positive().optional().describe('SID of the event to delete (for block, group, variable, function events)'),
       eventPath: eventPathSchema,
       includeSheet: z.string().max(200).optional().describe('For removing includes: the included sheet name'),
@@ -734,6 +1377,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (args.eventPath !== undefined && args.sid === undefined) {
           return toolError('eventPath picks one of several events that share a SID; pass it together with sid.');
         }
+        // Its reference check compares the sheet with the other sheets by registered name
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return unregistered;
 
         // Read the event sheet
         let sheet: EventSheet;
@@ -778,7 +1424,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
           const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
           const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-          resetProjectIndex();
+          resetProjectIndex(reader);
 
           return toolResult({
             success: true,
@@ -809,25 +1455,45 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // function blocks it removes (the event itself or ones inside a
         // deleted group), and event variable parameters naming the variables
         // it removes, anywhere in the project outside the deleted events.
+        // Event sheets that could not be parsed are searched as text for the
+        // functions and global variables the delete removes (issue #55).
         let dangling: DeleteReferenceReport = { functions: [], variables: [], complete: true };
+        let unscanned: UnscannedFileReport[] = [];
         if (definesFunctionsOrVariables(event)) {
+          const sheets = await reader.readAllEventSheets();
+          const sheetFailures = reader.getReadFailures('eventSheets');
           const sheetEvents = new Map<string, unknown>();
-          for (const [name, other] of await reader.readAllEventSheets()) {
+          for (const [name, other] of sheets) {
             sheetEvents.set(name, name === args.sheetName ? sheet.events : other.events);
           }
           sheetEvents.set(args.sheetName, sheet.events);
           dangling = findReferencesLeftByDelete(sheetEvents, event, functionsObjectName(reader));
+          const names = namesVisibleToOtherSheets(event, parentArray === events);
+          if (names.length > 0) {
+            const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), sheets, sheetFailures)
+              .filter(f => f.name !== args.sheetName);
+            unscanned = await checkUnscannedFiles(reader, skipped, [
+              { categories: ['eventSheets'], allOf: [names.map(n => nameTerm(n))] },
+            ]);
+          }
         }
         const danglingCount = countDeleteReferences(dangling);
-        if (danglingCount > 0 && !args.force) {
+        const unscannedBlock = blocksWithoutForce(unscanned);
+        const checked = 'references to the deleted functions and variables';
+        if ((danglingCount > 0 || unscannedBlock || !dangling.complete) && !args.force) {
+          const reasons = [
+            ...(danglingCount > 0 ? [`${describeDanglingReferences(dangling)} ${DANGLING_REFERENCE_CONSEQUENCE}`] : []),
+            ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
+            ...(!dangling.complete ? [traversalLimitReason(checked, dangling.limit)] : []),
+          ];
           return toolResult({
             success: false,
             entity: args.sheetName,
             category: 'eventsheet',
             action: 'delete_blocked',
-            message: `${describeDanglingReferences(dangling)} ${DANGLING_REFERENCE_CONSEQUENCE} ` +
-              'Remove or change these references first, or use force=true to delete anyway.',
+            message: `${reasons.join(' ')} Remove or change these references first, or use force=true to delete anyway.`,
             references: danglingReferenceList(dangling),
+            ...unscannedFields(unscanned),
           });
         }
         if (danglingCount > 0) {
@@ -835,8 +1501,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             `${DANGLING_REFERENCE_CONSEQUENCE} ${args.dryRun ? 'The delete would leave these references dangling; fix' : 'Fix'} ` +
             'them before opening the project in Construct 3.');
         }
+        warnings.push(...unscannedWarnings(unscanned, args.dryRun ? 'Would delete' : 'Deleted'));
         if (!dangling.complete) {
-          warnings.push('The check for references to the deleted functions and variables stopped at its traversal limit; references further on were not checked.');
+          warnings.push(`${args.dryRun ? 'Would delete' : 'Deleted'} with force=true: ${traversalLimitReason(checked, dangling.limit)}`);
         }
 
         // Report children for groups
@@ -860,6 +1527,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // taken out of the sheet for the check and put back for a dry run or
         // a refusal.
         const beforeEvents = snapshotEvents(sheet.events);
+        const owner = (findEnclosingEvents(sheet.events, event as unknown as C3Event) ?? []).at(-1) as Record<string, unknown> | undefined;
         parentArray.splice(index, 1);
         let loadCheck: Awaited<ReturnType<typeof checkLoadRulesBeforeWrite>>;
         try {
@@ -893,13 +1561,15 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
             ...(eventType === 'function-block' ? { deletedFunction: event.functionName as string } : {}),
             ...references,
             ...(warnings.length > 0 ? { warnings } : {}),
+            ...unscannedFields(unscanned),
           });
         }
 
         // The event is already out of the sheet (load-time check above)
+        dropEmptiedChildren(owner);
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        resetProjectIndex(reader);
 
         const result: WriteResult = {
           success: true,
@@ -916,10 +1586,11 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           eventPath: path,
           childrenRemoved: childCount,
           ...references,
+          ...unscannedFields(unscanned),
         });
       } catch (error) {
         console.error('[delete_event_from_sheet] failed:', error);
-        return toolError(`Error deleting event: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting event: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -963,7 +1634,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        resetProjectIndex(reader);
 
         return toolResult({
           success: true,
@@ -976,7 +1647,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         });
       } catch (error) {
         console.error('[remove_event_from_sheet] failed:', error);
-        return toolError(`Error removing include: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error removing include: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -985,17 +1656,18 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'update_event_block_action',
-    'Replace parameters on a single action within an existing event block, function-block or custom action body. Identify the block by SID and the action by its 0-based index. Use get_eventsheet_details to find SIDs and action indices. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Function calls take their arguments as an array in parameter order. Custom action calls take theirs through update_event_block (updateActions[].arguments). Comment rows and script actions have no parameters and are refused. Parameters that would break a checked editor load-time rule (expression syntax, empty expressions) are refused.',
+    'Replace parameters on a single action within an existing event block. Identify the block by SID and the action by its 0-based index. Use get_eventsheet_details to find SIDs and action indices. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Function calls take their arguments as an array in parameter order. A custom action call takes its arguments as an array in parameter order, which replaces the stored ones. Comment rows and script actions have no parameters and are refused. Parameters that would break a checked editor load-time rule (expression syntax, empty expressions) are refused.',
     {
       sheetName: z.string().max(200).describe('Target event sheet'),
       blockSid: z.number().int().positive().describe('SID of the block event containing the action'),
       eventPath: eventPathSchema,
       actionIndex: z.number().int().min(0).describe('0-based index of the action to update'),
       parameters: z.union([boundedRecord(), z.array(functionCallArgumentSchema).max(100)])
-        .describe('New parameter values — replaces existing parameters entirely. Key-value pairs for plugin/behavior/System actions (max 100 keys, depth 6); for a function call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted)'),
+        .describe('New parameter values — replaces existing parameters entirely. Key-value pairs for plugin/behavior/System actions (max 100 keys, depth 6); for a function call, the arguments in parameter order as an array (an object keyed "0", "1", … or by parameter name is converted); for a custom action call, an array in parameter order (an object is refused)'),
     },
     async (args) => {
       try {
+        await warmAceCatalog(reader);
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
@@ -1014,11 +1686,11 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const { event, path } = found.match;
         const eventType = event.eventType as string;
 
-        if (!BLOCK_LIKE.has(eventType)) {
-          return toolError(`Event with SID ${args.blockSid} is a "${eventType}", not a block, function-block or custom action. Only those have actions.`);
+        if (eventType !== 'block' && eventType !== 'function-block' && eventType !== 'custom-ace-block') {
+          return toolError(`Event with SID ${args.blockSid} is a "${eventType}", not a block, function-block or custom action block. Only those have actions.`);
         }
 
-        const actions = (Array.isArray(event.actions) ? event.actions : []) as Record<string, unknown>[];
+        const actions = event.actions as Record<string, unknown>[];
         if (args.actionIndex < 0 || args.actionIndex >= actions.length) {
           return toolError(
             `Action index ${args.actionIndex} is out of range (block has ${actions.length} action(s), ` +
@@ -1030,11 +1702,19 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const action = actions[args.actionIndex];
         const rowProblem = parameterlessRowError(action, args.actionIndex);
         if (rowProblem) return toolError(rowProblem);
-        if (typeof action.customAction === 'string') {
-          return toolError(`Action ${args.actionIndex} is a custom action call, whose arguments are positional; use update_event_block with updateActions[].arguments.`);
-        }
         let warnings: string[];
-        if (isFunctionCall(action)) {
+        if (isCustomActionCall(action)) {
+          // A custom action call takes its arguments as an array; the refusal and the project read come before the call changes
+          if (!Array.isArray(args.parameters)) {
+            return toolError(nothingChanged(`Action ${args.actionIndex} is a custom action call: pass its arguments as an array in parameter order.`));
+          }
+          const customContext = await loadCustomActionContext(reader);
+          const argumentsGiven = args.parameters.map(value => (typeof value === 'boolean' ? value : String(value)));
+          if (argumentsGiven.length > 0) action.parameters = argumentsGiven;
+          else delete action.parameters;
+          warnings = customActionCallWarnings(action as unknown as CustomActionCall, customContext,
+            `Action ${args.actionIndex}, custom action call "${String(action.customAction)}" on "${String(action.objectClass)}"`, 'kept');
+        } else if (isFunctionCall(action)) {
           // Function calls take positional arguments, as the editor saves them
           const name = action.callFunction as string;
           const label = `Call to "${name}"`;
@@ -1043,7 +1723,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           try {
             callArgs = toPositionalArguments(args.parameters, signature, label);
           } catch (error) {
-            return toolError(error instanceof Error ? error.message : String(error));
+            return toolError(errorMessage(error, reader.getProjectDir()));
           }
           warnings = checkFunctionCallArguments(callArgs, signature, name, label);
           if (isLegacyFunctionCall(action)) {
@@ -1055,18 +1735,14 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           if (Array.isArray(args.parameters)) {
             return toolError(`Action ${args.actionIndex} is not a function call: pass its parameters as key-value pairs, not an array.`);
           }
-          action.parameters = { ...args.parameters };
-          await applyCustomEaseParameter(reader, action.parameters);
+          action.parameters = args.parameters;
           // Don't re-emit a legacy "behavior-type" key on the edited action (issue #16)
           warnings = await normalizeLegacyBehaviorKeys(reader, [{ ace: action, kind: 'action' }]);
           await resolveFunctionMapParameter(reader, action, `Action ${args.actionIndex} ("${String(action.id)}")`, warnings,
             () => loadFunctionSignatures(reader));
+          action.parameters = { ...(action.parameters as Record<string, unknown>) };
+          await applyCustomEaseParameter(reader, action.parameters);
         }
-
-        // Built-in ACEs and expressions are checked against Construct's own definitions (warnings only)
-        const aceContext = await buildAceContext(reader);
-        warnings.push(...checkEventAces([{ actions: [action] }], aceContext).map(describeEventAceProblem));
-        warnings.push(...checkEventExpressions([{ actions: [action] }], await buildExpressionContext(reader), aceContext).map(describeEventExpressionProblem));
 
         // Editor load-time rules (expression syntax, empty expressions)
         const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
@@ -1075,10 +1751,11 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
         warnings.push(...loadCheck.warnings);
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        resetProjectIndex(reader);
 
         return toolResult({
           success: true,
@@ -1088,13 +1765,13 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           updatedBlockSid: args.blockSid,
           eventPath: path,
           updatedActionIndex: args.actionIndex,
-          ...(isFunctionCall(action) ? { callFunction: action.callFunction } : { actionId: action.id }),
+          ...(isFunctionCall(action) ? { callFunction: action.callFunction } : isCustomActionCall(action) ? { customAction: action.customAction } : { actionId: action.id }),
           ...(warnings.length > 0 ? { warnings } : {}),
           backupFile: backupPath,
         });
       } catch (error) {
         console.error('[update_event_block_action] failed:', error);
-        return toolError(`Error updating action: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating action: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1103,10 +1780,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'move_events_between_sheets',
-    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). A move keeps SIDs and all nested children; a copy gets fresh SIDs throughout, because SIDs must be unique in the project, and the result warns if a copied SID still matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet.',
+    'Copy (or move) top-level event blocks from one event sheet to another by SID. Set deleteSource=true to remove the events from the source sheet after copying (move semantics). A move keeps the events\' SIDs and all nested children; a copy (deleteSource=false) gives the copied events and everything in them new SIDs (reassignedSids in the result). The result warns when a moved SID then matches more than one event in the target sheet. A SID shared by several top-level events of the source is refused with a list of candidates; pass eventPaths to pick one. Runs the editor load-time gate over both sheets: moving an event that already breaks a load-time rule is allowed, copying it (deleteSource=false) is refused because it adds the problem to a second sheet. Refuses (unless force=true) a move that takes an event variable out of the scope of events that use it, e.g. a used global variable moved into a group (targetGroupPath), where it is a local variable; the uses are listed. Other event sheets that could not be parsed are searched as text for such a global variable; a check that stopped at its traversal limit (100,000 events) also refuses without force. A copy (deleteSource=false) that would leave two custom actions of one name on one object type or family is refused, and so is any copy while the check for custom actions stopped at its traversal limit; a move is not (Construct 3 r506-2 (Free edition) renamed the second of two such definitions on save).',
     {
-      sourceSheet: z.string().max(200).describe('Event sheet to copy/move events from'),
-      targetSheet: z.string().max(200).describe('Event sheet to copy/move events into'),
+      sourceSheet: z.string().max(200).describe('Event sheet to copy/move events from, as registered (letter case included)'),
+      targetSheet: z.string().max(200).describe('Event sheet to copy/move events into, as registered (letter case included)'),
       sids: z.array(z.number().int().positive()).min(1).describe('SIDs of the top-level events to copy/move (each SID once)'),
       eventPaths: z.array(z.string().max(500)).max(100).optional().describe(
         'Only needed when a SID in sids matches more than one top-level event of the source sheet (the call is then refused with a list of candidates): ' +
@@ -1115,11 +1792,21 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
       deleteSource: z.boolean().optional().default(false).describe('If true, remove the events from the source sheet after copying (move semantics). A copy or move that would leave two event variables or function parameters whose names match ignoring case in one scope is refused, e.g. a copy of a global variable (its original keeps the name)'),
       targetGroupPath: z.string().max(500).optional().describe('Insert into a group in the target sheet by title path (e.g. "Movement > Collision"), matched like groupPath of add_event_block'),
       position: z.enum(['start', 'end']).optional().default('end').describe('Where to insert events in the target sheet or group'),
+      force: z.boolean().optional().default(false).describe('If true, move even when events still use an event variable the move takes out of their scope (the uses are listed in "references" and a warning, and left dangling)'),
     },
     async (args) => {
       try {
         if (args.sourceSheet === args.targetSheet) {
           return toolError('sourceSheet and targetSheet must be different sheets.');
+        }
+        // A copy gets new SIDs, so the catalogue checks it: obtained first, so a fetch does not run between the reads and the writes
+        if (!args.deleteSource) await warmAceCatalog(reader);
+        // Its checks compare both sheets with the other sheets by registered
+        // name, and a target that is the source in another case would be
+        // written twice, the second time without the moved events
+        for (const name of [args.sourceSheet, args.targetSheet]) {
+          const unregistered = await unregisteredSheetError(reader, name);
+          if (unregistered) return unregistered;
         }
 
         // Read source sheet
@@ -1215,6 +1902,16 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // Source events are only replaced (never mutated), the target is edited in place
         const targetBefore = snapshotEvents(targetSheetData.events);
 
+        // Where the uses of the variables the events declare resolve now, per
+        // condition/action (compared by identity), for the scope check below
+        const otherSheets = await readEventSheetsFresh(reader, [
+          [args.sourceSheet, sourceEvents as unknown as C3Event[]],
+          [args.targetSheet, targetEvents as unknown as C3Event[]],
+        ]);
+        const movedVariables = variablesDeclaredIn(eventsToMove);
+        const scopesBefore = recordVariableScopes(otherSheets, movedVariables);
+        const globalsBefore = globalVariableNames(otherSheets);
+
         // Determine target insertion array
         let insertTarget: Record<string, unknown>[];
         if (args.targetGroupPath) {
@@ -1227,14 +1924,8 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           insertTarget = targetEvents;
         }
 
-        // Deep-copy events to avoid reference aliasing between sheets. A copy
-        // gets fresh SIDs throughout (a move keeps them), so it never shares a
-        // SID with its original.
+        // Deep-copy events to avoid reference aliasing between sheets
         const copiedEvents = eventsToMove.map(e => JSON.parse(JSON.stringify(e)) as Record<string, unknown>);
-        let reassigned = 0;
-        if (!args.deleteSource) {
-          reassigned = await reassignSids(reader, idGen, copiedEvents);
-        }
 
         // Insert into target
         if (args.position === 'start') {
@@ -1252,11 +1943,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // Event variable names: copies keep their names (the editor renames a
         // pasted variable whose name is taken), so refuse a copy or move that
         // would leave two names in one scope that the editor treats as the same
-        const sheetsBefore = await readEventSheetsFresh(reader, [
-          [args.sourceSheet, sourceEvents as unknown as C3Event[]],
-          [args.targetSheet, targetBefore],
-        ]);
-        const sheetsAfter = new Map(sheetsBefore);
+        const sheetsBefore = new Map(otherSheets);
+        sheetsBefore.set(args.targetSheet, targetBefore);
+        const sheetsAfter = new Map(otherSheets);
         sheetsAfter.set(args.sourceSheet, sourceSheetData.events);
         sheetsAfter.set(args.targetSheet, targetSheetData.events);
         const nameClashes = findNewEventVariableNameClashes(
@@ -1267,6 +1956,28 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           sourceSheetData.events = sourceEvents as unknown as C3Event[];
           targetSheetData.events = targetBefore;
           return toolError(movedEventVariableNameClashMessage(args.targetSheet, args.deleteSource, nameClashes));
+        }
+        // Function names: a copied function block keeps its name, which its original still has
+        const functionClashes = newDuplicateFunctionNames(functionBlockNames(sheetsBefore), functionBlockNames(sheetsAfter));
+        if (functionClashes.length > 0) {
+          sourceSheetData.events = sourceEvents as unknown as C3Event[];
+          targetSheetData.events = targetBefore;
+          return toolError(copiedFunctionNameClashMessage(args.targetSheet, functionClashes));
+        }
+        // Custom actions: a copied definition keeps its name, which its original still has on the same owner
+        const scanBefore = customActionScan(sheetsBefore);
+        const scanAfter = customActionScan(sheetsAfter);
+        if ((!scanBefore.complete || !scanAfter.complete) && !args.deleteSource) {
+          sourceSheetData.events = sourceEvents as unknown as C3Event[];
+          targetSheetData.events = targetBefore;
+          return toolError(nothingChanged(`${traversalLimitReason('custom actions the copy would duplicate')} Move the events instead (deleteSource: true).`));
+        }
+        const customDuplicates = newCustomActionDuplicates(scanBefore.definitions, scanAfter.definitions);
+        if (customDuplicates.length > 0) {
+          sourceSheetData.events = sourceEvents as unknown as C3Event[];
+          targetSheetData.events = targetBefore;
+          const listed = customDuplicates.slice(0, 10).map(g => `- "${g[0].owner}.${g[0].name}": ${g.map(d => `sheet "${d.sheet}" (${d.eventPath})`).join(', ')}`);
+          return toolError(nothingChanged(`Copying these events to "${args.targetSheet}" would leave two custom actions of one name on one object type or family:\n${listed.join('\n')}\n\n${DUPLICATE_CUSTOM_ACTION_RULE} Move the custom action instead (deleteSource: true).`));
         }
 
         // Editor load-time rules over both sheets: a copy of an event that
@@ -1281,12 +1992,70 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           return toolError(loadRuleErrorMessage(loadCheck.errors));
         }
 
-        // Copies keep their SIDs, so a copied event whose SID the target already
-        // has leaves several events with that SID there. The editor opens such
-        // sheets, so this is a warning, not a refusal.
+        // Uses of an event variable that the move takes out of their scope,
+        // e.g. a used global variable moved into a group, where it is local
+        // (issue #38). Copies are compared with the events they were copied from.
+        const copiedAces = mapCopiedAces(eventsToMove, copiedEvents);
+        const lost = findVariableReferencesLostByChange(scopesBefore, sheetsAfter, ace => copiedAces.get(ace) ?? ace);
+        const lostCount = countDeleteReferences(lost);
+        // Global variables that are global no longer: sheets that could not be parsed may use them
+        const globalsAfter = globalVariableNames(sheetsAfter);
+        const noLongerGlobal = [...movedVariables]
+          .filter(([key]) => globalsBefore.has(key) && !globalsAfter.has(key))
+          .map(([, name]) => name);
+        let unscanned: UnscannedFileReport[] = [];
+        if (noLongerGlobal.length > 0) {
+          const allSheets = await reader.readAllEventSheets();
+          const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), allSheets, reader.getReadFailures('eventSheets'))
+            .filter(f => f.name !== args.sourceSheet && f.name !== args.targetSheet);
+          unscanned = await checkUnscannedFiles(reader, skipped, [
+            { categories: ['eventSheets'], allOf: [noLongerGlobal.map(n => nameTerm(n))] },
+          ]);
+        }
+        const unscannedBlock = blocksWithoutForce(unscanned);
+        const whereLost = 'where it is no longer in scope after the move';
+        const checked = 'uses of the moved event variables';
+        if ((lostCount > 0 || unscannedBlock || !lost.complete) && !args.force) {
+          sourceSheetData.events = sourceEvents as unknown as C3Event[];
+          targetSheetData.events = targetBefore;
+          const reasons = [
+            ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
+            ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
+            ...(!lost.complete ? [traversalLimitReason(checked, lost.limit)] : []),
+          ];
+          return toolResult({
+            success: false,
+            sourceSheet: args.sourceSheet,
+            targetSheet: args.targetSheet,
+            category: 'eventsheet',
+            action: 'move_blocked',
+            message: `${reasons.join(' ')} Move the events that use it along, pick another place (a global variable stays global at the top level of a sheet), or use force=true to move anyway. Nothing was written.`,
+            references: danglingReferenceList(lost),
+            ...unscannedFields(unscanned),
+          });
+        }
+
+        // A move keeps its SIDs (the original goes), so a moved event whose SID the target
+        // already has leaves several events with that SID there: a warning, since the
+        // editor opens such sheets. A copy gets new SIDs, drawn only now that every check passed.
         const warnings = [...loadCheck.warnings];
-        const sharedSids = copiedSidsWarning(args.targetSheet, targetSheetData.events as unknown as Record<string, unknown>[], copiedEvents);
-        if (sharedSids) warnings.push(sharedSids);
+        if (lostCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(lost, whereLost)} ` +
+            `${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
+        }
+        if (!lost.complete) {
+          warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
+        }
+        warnings.push(...unscannedWarnings(unscanned, 'Moved'));
+        let reassignedSids = 0;
+        if (args.deleteSource) {
+          const sharedSids = copiedSidsWarning(args.targetSheet, targetSheetData.events as unknown as Record<string, unknown>[], copiedEvents);
+          if (sharedSids) warnings.push(sharedSids);
+        } else {
+          for (const copy of copiedEvents) reassignedSids += await reassignSids(reader, idGen, copy);
+          // The copies' conditions and actions, under their new SIDs; a move keeps its SIDs and is not checked
+          warnings.push(...await checkEventChange(reader, args.targetSheet, targetBefore, targetSheetData.events));
+        }
 
         // Write target sheet first, then source (if modified)
         const targetSubfolder = writer.getSubfolderForEntity('eventSheets', args.targetSheet);
@@ -1298,7 +2067,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           sourceBackup = await writer.writeEntityFile('eventSheets', args.sourceSheet, sourceSheetData, sourceSubfolder);
         }
 
-        resetProjectIndex();
+        resetProjectIndex(reader);
 
         return toolResult({
           success: true,
@@ -1307,149 +2076,214 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           movedSids: args.sids,
           movedCount: eventsToMove.length,
           deleteSource: args.deleteSource,
-          copiedTopLevelSids: args.deleteSource ? undefined : copiedEvents.map(e => e.sid),
-          reassignedSids: args.deleteSource ? undefined : reassigned,
+          ...(args.deleteSource ? {} : { reassignedSids }),
           backupFiles: [targetBackup, ...(sourceBackup ? [sourceBackup] : [])].filter(Boolean),
           warnings: warnings.length > 0 ? warnings : undefined,
+          ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
+          ...unscannedFields(unscanned),
         });
       } catch (error) {
         console.error('[move_events_between_sheets] failed:', error);
-        return toolError(`Error moving events: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error moving events: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
 
-  // ─── move_event_block_items ────────────────────────────────
+  // ─── move_event_block_items ───────────────────────────────
 
-  server.tool(
+  /** Event types that hold conditions and actions. */
+  const ITEM_HOLDERS: ReadonlySet<string> = new Set(['block', 'function-block', 'custom-ace-block']);
+
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
     'move_event_block_items',
-    'Move, reorder or copy actions or conditions within and between block events. A move keeps the item SIDs; with copy=true the source is left unchanged and each copy gets fresh SIDs.',
     {
-      sheetName: z.string().max(200).describe('Target event sheet'),
-      sourceBlockSid: z.number().int().positive().describe('SID of the source block or function-block'),
-      sourceEventPath: z.string().max(500).optional().describe('Only needed when sourceBlockSid matches more than one event in the sheet: the path of the one you mean, e.g. "events[3].children[1]"'),
-      targetBlockSid: z.number().int().positive().describe('SID of the target block or function-block'),
-      targetEventPath: z.string().max(500).optional().describe('Only needed when targetBlockSid matches more than one event in the sheet: the path of the one you mean'),
-      itemType: z.enum(['actions', 'conditions']).describe('Array to move: actions or conditions'),
-      indices: z.array(z.number().int().min(0)).min(1).describe('Source indexes to move, in their existing order'),
-      targetIndex: z.number().int().min(0).describe('Destination index; for same-block moves, measured after removal (a copy removes nothing)'),
-      copy: z.boolean().optional().default(false).describe('Copy the items instead of moving them: the source keeps its items and the copies get fresh SIDs'),
+      description: 'Move, reorder or copy conditions or actions within a block, function block or custom action block, or into another one of the same event sheet. A move keeps the items\' SIDs; copies (copy=true) get new SIDs and the source keeps its items. Refused, changing nothing: a System "else" condition (it stays first in its block) and an item put before one, indexes that do not fit, a target that would hold more than 100 items, an object class that is no object type, family, System or the Functions object, a new load-time error, and (unless force=true) a move after which an item uses an event variable or function parameter outside its scope. "Set return value" moved out of a function block is written with a warning, as add_event_block gives it.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        sourceBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items are in'),
+        sourceEventPath: z.string().max(500).optional().describe('Only when sourceBlockSid matches several events: the path of the one you mean'),
+        targetBlockSid: z.number().int().positive().describe('SID of the block, function block or custom action block the items go to (the same SID to reorder)'),
+        targetEventPath: z.string().max(500).optional().describe('Only when targetBlockSid matches several events: the path of the one you mean'),
+        itemType: z.enum(['actions', 'conditions']).describe('Which list the items are in'),
+        indices: z.array(z.number().int().min(0)).min(1).max(100).describe('Indexes of the items in the source, each once; they keep their order'),
+        targetIndex: z.number().int().min(0).describe('Where the items go in the target; within one block, counted after the items are taken out'),
+        copy: z.boolean().optional().default(false).describe('Copy instead of move: the copies get new SIDs, the source keeps its items'),
+        force: z.boolean().optional().default(false).describe('Move even when an item then uses an event variable or function parameter outside its scope (the uses are listed in "references" and a warning)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of move_event_block_items', 'move_event_block_items takes sheetName, sourceBlockSid, sourceEventPath, targetBlockSid, targetEventPath, itemType, indices, targetIndex, copy and force.'),
+      }).strict(),
     },
     async (args) => {
+      // Set once the events are read: puts them back as they were read
+      let restoreSheet: (() => void) | undefined;
+      let writeStarted = false;
       try {
+        // Copies get new SIDs, so the catalogue checks them: obtained first, so a fetch does not run between the read and the write
+        if (args.copy) await warmAceCatalog(reader);
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
         }
-
         const events = sheet.events as Record<string, unknown>[];
         const beforeEvents = snapshotEvents(sheet.events);
-        const sourceResolved = resolveEventBySid(events, args.sourceBlockSid, {
-          sheetName: args.sheetName, action: 'take items from', eventPath: args.sourceEventPath, argument: 'sourceEventPath',
-        });
-        if ('error' in sourceResolved) return toolError(`Source block: ${sourceResolved.error}`);
-        const targetResolved = resolveEventBySid(events, args.targetBlockSid, {
-          sheetName: args.sheetName, action: 'put items into', eventPath: args.targetEventPath, argument: 'targetEventPath',
-        });
-        if ('error' in targetResolved) return toolError(`Target block: ${targetResolved.error}`);
-        const sourceFound = sourceResolved.match;
-        const targetFound = targetResolved.match;
-        const sourceType = sourceFound.event.eventType as string;
-        const targetType = targetFound.event.eventType as string;
-        if (!BLOCK_LIKE.has(sourceType)) {
-          return toolError(`Source event with SID ${args.sourceBlockSid} is a "${sourceType}", not a block, function-block or custom action.`);
-        }
-        if (!BLOCK_LIKE.has(targetType)) {
-          return toolError(`Target event with SID ${args.targetBlockSid} is a "${targetType}", not a block, function-block or custom action.`);
-        }
-        if (args.itemType === 'conditions' && args.targetIndex === 0
-          && (isElseOrLegacyElseBlock(targetFound.event) || isElseCondition((targetFound.event.conditions as unknown[] | undefined)?.[0]))) {
-          return toolError('The else condition must stay first in an else block (also when it is disabled); use targetIndex 1 or later.');
-        }
-        if (args.itemType === 'conditions'
-          && args.indices.some(index => isElseCondition((sourceFound.event.conditions as unknown[] | undefined)?.[index]))) {
-          return toolError(`An else condition cannot be ${args.copy ? 'copied' : 'moved'}: it must stay first in its own block. ${args.copy ? 'Copy' : 'Move'} the other conditions instead.`);
-        }
-
-        const sourceItems = sourceFound.event[args.itemType];
-        const targetItems = targetFound.event[args.itemType];
-        if (!Array.isArray(sourceItems) || !Array.isArray(targetItems)) {
-          return toolError(`Source or target block has no ${args.itemType} array.`);
-        }
-        const uniqueIndices = [...new Set(args.indices)];
-        if (uniqueIndices.length !== args.indices.length) {
-          return toolError('Move indexes must be unique.');
-        }
-        if (uniqueIndices.some(index => index >= sourceItems.length)) {
-          return toolError(`Move index is out of range (source has ${sourceItems.length} ${args.itemType}).`);
-        }
-        const orderedIndices = [...uniqueIndices].sort((a, b) => a - b);
-        const selected = orderedIndices.map(index => sourceItems[index]);
-        const remainingLength = sourceFound.event === targetFound.event && !args.copy
-          ? sourceItems.length - selected.length
-          : targetItems.length;
-        if (args.targetIndex > remainingLength) {
-          return toolError(`targetIndex ${args.targetIndex} is out of range (valid range 0-${remainingLength}).`);
-        }
-        if ((args.copy || sourceFound.event !== targetFound.event) && targetItems.length + selected.length > MAX_ITEMS_PER_BLOCK) {
-          return toolError(`Target block would exceed the maximum of ${MAX_ITEMS_PER_BLOCK} ${args.itemType}.`);
-        }
-
-        const warnings: string[] = [];
-
-        let reassigned = 0;
-        if (args.copy) {
-          const copies = selected.map(item => JSON.parse(JSON.stringify(item)) as Record<string, unknown>);
-          reassigned = await reassignSids(reader, idGen, copies);
-          targetItems.splice(args.targetIndex, 0, ...copies);
-          selected.splice(0, selected.length, ...copies);
-        } else if (sourceFound.event === targetFound.event) {
-          const selectedSet = new Set(orderedIndices);
-          const remaining = sourceItems.filter((_item, index) => !selectedSet.has(index));
-          remaining.splice(args.targetIndex, 0, ...selected);
-          sourceFound.event[args.itemType] = remaining;
-        } else {
-          for (let i = orderedIndices.length - 1; i >= 0; i--) {
-            sourceItems.splice(orderedIndices[i], 1);
-          }
-          targetItems.splice(args.targetIndex, 0, ...selected);
-          if (args.itemType === 'conditions' && sourceItems.length === 0 && !isElseOrLegacyElseBlock(sourceFound.event)) {
-            warnings.push('All conditions were removed — block will match unconditionally (always true).');
-          }
-        }
-
-        // Editor load-time rules (e.g. a trigger moved away from first place)
-        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
-        if (loadCheck.errors.length > 0) {
+        restoreSheet = () => { sheet.events = beforeEvents; };
+        const refuse = (message: string) => {
           sheet.events = beforeEvents;
-          return toolError(loadRuleErrorMessage(loadCheck.errors));
+          return toolError(nothingChanged(message));
+        };
+        const source = resolveEventBySid(events, args.sourceBlockSid, { sheetName: args.sheetName, action: 'take items from', eventPath: args.sourceEventPath, argument: 'sourceEventPath' });
+        if ('error' in source) return refuse(`Source: ${source.error}`);
+        const target = resolveEventBySid(events, args.targetBlockSid, { sheetName: args.sheetName, action: 'put items into', eventPath: args.targetEventPath, argument: 'targetEventPath' });
+        if ('error' in target) return refuse(`Target: ${target.error}`);
+        const from = source.match.event;
+        const to = target.match.event;
+        for (const [role, ev, sid] of [['Source', from, args.sourceBlockSid], ['Target', to, args.targetBlockSid]] as const) {
+          if (!ITEM_HOLDERS.has(String(ev.eventType))) {
+            return refuse(`${role} event with SID ${sid} is a "${String(ev.eventType)}", not a block, function block or custom action block.`);
+          }
         }
-        warnings.push(...loadCheck.warnings);
+        if (!Array.isArray(from[args.itemType])) from[args.itemType] = [];
+        if (!Array.isArray(to[args.itemType])) to[args.itemType] = [];
+        const sourceItems = from[args.itemType] as Record<string, unknown>[];
+        const targetItems = to[args.itemType] as Record<string, unknown>[];
+        const kind = args.itemType === 'actions' ? 'action' : 'condition';
 
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        if (new Set(args.indices).size !== args.indices.length) return refuse('indices lists an index more than once.');
+        const outOfRange = args.indices.find(i => i >= sourceItems.length);
+        if (outOfRange !== undefined) return refuse(`Index ${outOfRange} is out of range: the source has ${sourceItems.length} ${kind}(s).`);
+        const sameBlock = from === to;
+        const room = sameBlock && !args.copy ? sourceItems.length - args.indices.length : targetItems.length;
+        if (args.targetIndex > room) return refuse(`targetIndex ${args.targetIndex} is out of range: the target has ${room} ${kind}(s) there, so 0-${room}.`);
+        if ((args.copy || !sameBlock) && targetItems.length + args.indices.length > MAX_ITEMS_PER_BLOCK) {
+          return refuse(`The target would hold ${targetItems.length + args.indices.length} ${kind}s (max ${MAX_ITEMS_PER_BLOCK}).`);
+        }
+        if (args.itemType === 'conditions') {
+          if (args.indices.some(i => isElseCondition(sourceItems[i]))) {
+            return refuse(`An else condition cannot be ${args.copy ? 'copied' : 'moved'}: it stays first in its own block. ${args.copy ? 'Copy' : 'Move'} the other conditions instead.`);
+          }
+          if (args.targetIndex === 0 && isElseCondition(targetItems[0])) {
+            return refuse('The else condition of the target block stays first (also when it is disabled); use targetIndex 1 or later.');
+          }
+        }
+        const ordered = [...args.indices].sort((x, y) => x - y);
+        const selected = ordered.map(i => sourceItems[i]);
+
+        // Object classes, against the destination's function context: the target block (upstream warns when
+        // "Set return value" stands outside a function block)
+        const refs: ObjectRef[] = [];
+        collectObjectRefs(args.itemType === 'conditions' ? selected as Array<Record<string, unknown> & { objectClass: string }> : [],
+          args.itemType === 'actions' ? selected : [], [], refs);
+        const classWarnings: string[] = [];
+        if (refs.length > 0) {
+          const { errors, warnings: found } = await validateObjectClasses(reader, refs, { insideFunction: isInFunctionBlock(events, to) });
+          if (errors.length > 0) return refuse(`Object class validation failed:\n${errors.join('\n')}`);
+          classWarnings.push(...found);
+        }
+
+        // The declaration each use of this sheet's variables and parameters finds now
+        const sheetsNow = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        const declared = new Map(listEventVariableDeclarations(sheet.events).map(d => [d.name.toLowerCase(), d.name] as const));
+        const bindingsBefore = recordVariableBindings(sheetsNow, declared);
+
+        let moved: Record<string, unknown>[];
+        const copies = new Map<object, object>();
+        if (args.copy) {
+          moved = [];
+          for (const item of selected) {
+            const copy = JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
+            if (typeof copy.sid === 'number') copy.sid = await idGen.generateSid(reader);
+            copies.set(copy, item);
+            moved.push(copy);
+          }
+          targetItems.splice(args.targetIndex, 0, ...moved);
+        } else if (sameBlock) {
+          const keep = sourceItems.filter((_item, i) => !ordered.includes(i));
+          keep.splice(args.targetIndex, 0, ...selected);
+          sourceItems.splice(0, sourceItems.length, ...keep);
+          moved = selected;
+        } else {
+          for (const i of [...ordered].reverse()) sourceItems.splice(i, 1);
+          targetItems.splice(args.targetIndex, 0, ...selected);
+          moved = selected;
+        }
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({
+            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged',
+            sourceBlockSid: args.sourceBlockSid, targetBlockSid: args.targetBlockSid, itemType: args.itemType, copy: args.copy,
+            sids: moved.map(m => m.sid).filter((s): s is number => typeof s === 'number'), targetIndex: args.targetIndex,
+          }, { projectWritten: false });
+        }
+
+        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+        if (loadCheck.errors.length > 0) return refuse(loadRuleErrorMessage(loadCheck.errors));
+        const warnings = [...classWarnings, ...loadCheck.warnings];
+        // Only a move out of another block empties the source: a reorder puts the items back and a copy leaves them
+        if (args.itemType === 'conditions' && sourceItems.length === 0) {
+          // A function block or custom action block has no parent to run it: it runs when it is called
+          const runsWhen = from.eventType === 'function-block' ? 'it now runs on every call of the function.'
+            : from.eventType === 'custom-ace-block' ? 'it now runs on every call of the custom action.'
+              : 'it now runs whenever its parent runs (every tick at the top level, every call in a function or custom action).';
+          warnings.push(`All conditions of the source (SID ${args.sourceBlockSid}) were moved: ${runsWhen}`);
+        }
+
+        // A copy is compared with the item it was copied from
+        const { lost, rebound } = findVariableBindingChanges(bindingsBefore, sheetsNow, ace => copies.get(ace) ?? ace);
+        const lostCount = countDeleteReferences(lost);
+        const reboundCount = countDeleteReferences(rebound);
+        const whereLost = 'where it is no longer in scope after the move';
+        const whereRebound = 'where the name now finds another event variable or function parameter after the move';
+        const checked = 'uses of the event variables and function parameters of this sheet';
+        if ((lostCount > 0 || reboundCount > 0 || !lost.complete) && !args.force) {
+          sheet.events = beforeEvents;
+          const reasons = [
+            ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
+            ...(reboundCount > 0 ? [`${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`] : []),
+            ...(!lost.complete ? [traversalLimitReason(checked, lost.limit)] : []),
+          ];
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'move_blocked',
+            message: nothingChanged(`${reasons.join(' ')} ${lostCount > 0 || reboundCount > 0 ? 'Move them to a place where the same declaration is in scope, or use force=true to move anyway.' : 'Use force=true to move anyway.'}`),
+            references: danglingReferenceList(lost),
+            ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          }, { projectWritten: false });
+        }
+        if (lostCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
+        }
+        if (reboundCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`);
+        }
+        if (!lost.complete) warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
+        // A moved item keeps its SID and content, so only copies are checked against the catalogue
+        if (args.copy) warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
+
+        writeStarted = true;
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        resetProjectIndex(reader);
         return toolResult({
-          success: true,
-          entity: args.sheetName,
-          category: 'eventsheet',
-          action: 'updated',
-          sourceBlockSid: args.sourceBlockSid,
-          targetBlockSid: args.targetBlockSid,
-          itemType: args.itemType,
-          copy: args.copy,
-          movedSids: args.copy ? undefined : selected.map(item => item.sid).filter((sid): sid is number => typeof sid === 'number'),
-          copiedSids: args.copy ? selected.map(item => item.sid).filter((sid): sid is number => typeof sid === 'number') : undefined,
-          reassignedSids: args.copy ? reassigned : undefined,
-          targetIndex: args.targetIndex,
-          warnings: warnings.length > 0 ? warnings : undefined,
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated',
+          sourceBlockSid: args.sourceBlockSid, targetBlockSid: args.targetBlockSid, itemType: args.itemType, copy: args.copy,
+          sids: moved.map(m => m.sid).filter((s): s is number => typeof s === 'number'), targetIndex: args.targetIndex,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
+          ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
           backupFile: backupPath,
         });
       } catch (error) {
         console.error('[move_event_block_items] failed:', error);
-        return toolError(`Error moving event block items: ${error instanceof Error ? error.message : String(error)}`);
+        if (restoreSheet) {
+          restoreSheet();
+          if (!writeStarted) {
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+          }
+        }
+        return toolError(`Error moving items: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1460,10 +2294,10 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
   server.registerTool(
     'update_event_block',
     {
-      description: 'Update an existing block, function-block or custom action body in an event sheet — modify action parameters, call arguments and comment rows, add, insert, replace or remove actions or conditions, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Unknown arguments and keys are refused, never dropped. Changes that would break a checked editor load-time rule are refused.',
+      description: 'Update an existing block, function block or custom action block in an event sheet — modify action parameters, add/remove actions or conditions, insert them at an index, replace conditions in place, toggle disabled state, make it an else or OR block. Identify the block by its SID (use get_eventsheet_details to find it). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. A trigger condition added to a block that holds a function block or a custom action block, at any depth below it, is refused by the load-time check. Unknown arguments and keys are refused, never dropped.',
       inputSchema: z.object({
         sheetName: z.string().max(200).describe('Target event sheet'),
-        sid: z.number().int().positive().describe('SID of the block, function-block or custom-ace-block to update'),
+        sid: z.number().int().positive().describe('SID of the block, function block or custom action block to update'),
         eventPath: eventPathSchema,
         disabled: z.boolean().optional().describe('Enable or disable the entire block'),
         isElse: z.boolean().optional().describe('true: make the block an else block (puts the System "else" condition first; existing conditions then make an else-if). false: remove the leading "else" condition. Applied after all other condition changes.'),
@@ -1471,50 +2305,52 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         updateActions: z.array(z.object({
           index: z.number().int().min(0).describe('Action index (0-based)'),
           parameters: z.union([boundedRecord(), z.array(functionCallArgumentSchema).max(100)]).optional()
-            .describe('New parameter values — merged with existing (max 100 keys, depth 6). For a function call: an array replaces the arguments; an object keyed by position ("0", "1", …) or parameter name replaces single arguments'),
-          arguments: z.array(z.string().max(50_000)).max(100).optional().describe('Replacement positional arguments for a function call or custom action call'),
-          text: z.string().max(10_000).optional().describe('New text for an action comment'),
-          textColor: commentColorSchema.optional().describe('Action comment text color [r,g,b,a], written as "text-color"'),
-          backgroundColor: commentColorSchema.optional().describe('Action comment background color [r,g,b,a], written as "background-color"'),
+            .describe('New parameter values — merged with existing (max 100 keys, depth 6). For a function call: an array replaces the arguments; an object keyed by position ("0", "1", …) or parameter name replaces single arguments. For a custom action call: an array in parameter order replaces them, and an object is refused'),
           disabled: z.boolean().optional().describe('Enable or disable this action'),
+          text: z.string().max(10_000).optional().describe('Comment rows only: the new text; the row keeps its place and colours'),
+          'text-color': commentColorSchema.nullable().optional().describe('Comment rows only: the new text colour [red, green, blue, alpha], each 0-1; null removes it'),
+          'background-color': commentColorSchema.nullable().optional().describe('Comment rows only: the new background colour [red, green, blue, alpha], each 0-1; null removes it'),
         }, {
-          errorMap: unknownKeysErrorMap('an updateActions entry', 'An entry has index, parameters, arguments, text, textColor, backgroundColor and disabled; to change anything else, remove the action (removeActionIndices) and add a new one (addActions or insertActions).'),
-        }).strict()).optional().describe('Actions to update by index'),
+          errorMap: unknownKeysErrorMap('an updateActions entry', 'An entry has index, parameters and disabled, and for a comment row text, "text-color" and "background-color"; to change anything else, remove the action (removeActionIndices) and add a new one (addActions).'),
+        }).strict()).optional().describe('Actions to update by index. A comment row is edited in place with text, "text-color" and "background-color"'),
         updateConditions: z.array(z.object({
           index: z.number().int().min(0).describe('Condition index (0-based)'),
           parameters: boundedRecord().optional().describe('New parameter values — merged with existing (max 100 keys, depth 6)'),
           isInverted: z.boolean().optional().describe('Toggle inversion'),
           disabled: z.boolean().optional().describe('Enable or disable this condition'),
         }, {
-          errorMap: unknownKeysErrorMap('an updateConditions entry', 'An entry has index, parameters, isInverted and disabled; to change anything else, replace the condition (replaceConditions) or remove it (removeConditionIndices) and add a new one (addConditions).'),
+          errorMap: unknownKeysErrorMap('an updateConditions entry', 'An entry has index, parameters, isInverted and disabled; to change anything else, remove the condition (removeConditionIndices) and add a new one (addConditions).'),
         }).strict()).optional().describe('Conditions to update by index'),
         insertActions: z.array(z.object({
-          index: z.number().int().min(0).describe('Insertion index (0-based, after removals)'),
-          action: actionSchema.describe('Action to insert (same shapes as add_event_block)'),
+          index: z.number().int().min(0).describe('Where the action goes: its index in the actions after removeActionIndices, before this call\'s other inserts and addActions'),
+          action: actionSchema.describe('The action, in the shapes of add_event_block'),
         }, {
           errorMap: unknownKeysErrorMap('an insertActions entry', 'An entry has index and action.'),
-        }).strict()).optional().describe('Insert actions at indexes; duplicate indexes are rejected'),
+        }).strict()).max(100).optional().describe('Insert actions at indexes; two inserts at one index are refused'),
         insertConditions: z.array(z.object({
-          index: z.number().int().min(0).describe('Insertion index (0-based, after removals)'),
-          condition: conditionSchema.describe('Condition to insert'),
+          index: z.number().int().min(0).describe('Where the condition goes: its index in the conditions after removeConditionIndices, before this call\'s other inserts and addConditions'),
+          condition: conditionSchema.describe('The condition'),
         }, {
           errorMap: unknownKeysErrorMap('an insertConditions entry', 'An entry has index and condition.'),
-        }).strict()).optional().describe('Insert conditions at indexes; duplicate indexes are rejected'),
+        }).strict()).max(100).optional().describe('Insert conditions at indexes; a System "else" condition in first place stays first'),
         replaceConditions: z.array(z.object({
-          index: z.number().int().min(0).describe('Condition index (0-based)'),
-          condition: conditionSchema.describe('Replacement condition; a fresh SID is minted'),
+          index: z.number().int().min(0).describe('Index of the condition to replace (before this call\'s removals)'),
+          condition: conditionSchema.describe('The new condition; it gets a new SID'),
         }, {
           errorMap: unknownKeysErrorMap('a replaceConditions entry', 'An entry has index and condition.'),
-        }).strict()).optional().describe('Replace condition ACEs in place'),
+        }).strict()).max(100).optional().describe('Replace conditions in place'),
         addActions: z.array(actionSchema).optional().describe('Append new actions to the block (same shapes as add_event_block)'),
         addConditions: z.array(conditionSchema).optional().describe('Append new conditions to the block'),
         removeActionIndices: z.array(z.number().int().min(0)).optional().describe('Remove actions by index (0-based, applied before adds)'),
         removeConditionIndices: z.array(z.number().int().min(0)).optional().describe('Remove conditions by index (0-based, applied before adds)'),
       }, {
-        errorMap: unknownKeysErrorMap('the arguments of update_event_block', 'update_event_block takes sheetName, sid, eventPath, disabled, isElse, isOrBlock, updateActions, updateConditions, insertActions, insertConditions, replaceConditions, addActions, addConditions, removeActionIndices and removeConditionIndices. It does not add sub-events.'),
+        errorMap: unknownKeysErrorMap('the arguments of update_event_block', 'update_event_block takes sheetName, sid, eventPath, disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices and removeConditionIndices. It does not add sub-events.'),
       }).strict(),
     },
     async (args) => {
+      // Set once the events are read and snapshotted: puts them back as they were read
+      let restoreSheet: (() => void) | undefined;
+      let writeStarted = false;
       try {
         // Validate at least one update is provided
         const hasUpdate = args.disabled !== undefined
@@ -1522,55 +2358,76 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           || args.isOrBlock !== undefined
           || (args.updateActions && args.updateActions.length > 0)
           || (args.updateConditions && args.updateConditions.length > 0)
+          || (args.addActions && args.addActions.length > 0)
+          || (args.addConditions && args.addConditions.length > 0)
           || (args.insertActions && args.insertActions.length > 0)
           || (args.insertConditions && args.insertConditions.length > 0)
           || (args.replaceConditions && args.replaceConditions.length > 0)
-          || (args.addActions && args.addActions.length > 0)
-          || (args.addConditions && args.addConditions.length > 0)
           || (args.removeActionIndices && args.removeActionIndices.length > 0)
           || (args.removeConditionIndices && args.removeConditionIndices.length > 0);
 
         if (!hasUpdate) {
-          return toolError('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, insertActions, insertConditions, replaceConditions, addActions, addConditions, removeActionIndices, removeConditionIndices.');
+          return toolError(nothingChanged('No updates provided. Specify at least one of: disabled, isElse, isOrBlock, updateActions, updateConditions, addActions, addConditions, insertActions, insertConditions, replaceConditions, removeActionIndices, removeConditionIndices.'));
         }
 
+        // The catalogue first: a fetch must not run between the read and the write
+        if (args.updateActions?.length || args.updateConditions?.length || args.addActions?.length || args.addConditions?.length
+          || args.insertActions?.length || args.insertConditions?.length || args.replaceConditions?.length) {
+          await warmAceCatalog(reader);
+        }
         // Read the event sheet
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(
+            notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets').content[0].text,
+          ));
         }
 
         const events = sheet.events as Record<string, unknown>[];
         const beforeEvents = snapshotEvents(sheet.events);
+        // From the snapshot on, a refusal or an error puts the events back as they were read
+        restoreSheet = () => { sheet.events = beforeEvents; };
+        /** A refusal made when the sheet may have changed in memory: puts the events back, then refuses with "Nothing was changed.". */
+        const refuseAfterChanges = (message: string) => {
+          sheet.events = beforeEvents;
+          return toolError(nothingChanged(message));
+        };
         const found = resolveEventBySid(events, args.sid, {
           sheetName: args.sheetName,
           action: 'update',
           eventPath: args.eventPath,
         });
-        if ('error' in found) return toolError(found.error);
+        if ('error' in found) return toolError(nothingChanged(found.error));
 
         const { event, path } = found.match;
         const eventType = event.eventType as string;
-        // A refusal after this point puts the sheet's events back as they were
-        const refuse = (message: string) => {
-          sheet.events = beforeEvents;
-          return toolError(message);
-        };
 
-        // Must hold conditions and actions (not a group, variable, include, etc.)
-        if (!BLOCK_LIKE.has(eventType)) {
-          return toolError(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action. Only those can be updated with this tool.`);
+        // Must be a block, function-block or custom action block (not a group, variable, include, etc.)
+        if (eventType !== 'block' && eventType !== 'function-block' && eventType !== 'custom-ace-block') {
+          return toolError(nothingChanged(`Event with SID ${args.sid} is a "${eventType}", not a block, function-block or custom action block. Only those can be updated with this tool.`));
         }
         if (args.isElse !== undefined && eventType !== 'block') {
-          return toolError('isElse applies to block events only; a function block or custom action cannot be an else block.');
+          return toolError(nothingChanged('isElse applies to block events only; a function block or custom action block cannot be an else block.'));
         }
 
-        if ((event.conditions !== undefined && !Array.isArray(event.conditions))
-          || (event.actions !== undefined && !Array.isArray(event.actions))) {
-          return toolError(`Event with SID ${args.sid} has malformed conditions/actions arrays and cannot be updated.`);
+        // Custom action calls: checked before anything changes, so a refusal leaves the block as it was
+        const customAdds = [...(args.addActions ?? []), ...(args.insertActions ?? []).map(i => i.action)]
+          .filter(a => isCustomActionCall(a as Record<string, unknown>));
+        const storedActions = Array.isArray(event.actions) ? event.actions as Record<string, unknown>[] : [];
+        const customUpdates = (args.updateActions ?? []).filter(u => storedActions[u.index] !== undefined && isCustomActionCall(storedActions[u.index]));
+        for (const upd of customUpdates) {
+          if (upd.parameters !== undefined && !Array.isArray(upd.parameters)) {
+            return toolError(nothingChanged(`Action ${upd.index} is a custom action call: pass its arguments as an array in parameter order.`));
+          }
         }
+        const customContext = customAdds.length > 0 || customUpdates.length > 0 ? await loadCustomActionContext(reader) : undefined;
+        for (const add of customAdds) {
+          const callError = customActionCallError(add as { objectClass: string; customActionObjectClass?: string }, customContext!);
+          if (callError) return toolError(nothingChanged(callError));
+        }
+
         if (!Array.isArray(event.conditions)) event.conditions = [];
         if (!Array.isArray(event.actions)) event.actions = [];
         const conditions = event.conditions as Record<string, unknown>[];
@@ -1580,171 +2437,32 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         // Existing conditions/actions edited in place (checked for the legacy behavior key before writing)
         const touched: Array<{ ace: Record<string, unknown>; kind: 'condition' | 'action' }> = [];
         const where = `Block (SID ${args.sid})`;
-        const aceBefore = aceSnapshot(event);
-
-        // Rewrite keys older versions wrote (isElse, condition isOr) before any
-        // index is checked: adding the else condition shifts condition indexes.
-        const legacyElse = 'isElse' in event ? event.isElse : undefined;
-        const hadLegacyOr = conditions.some(c => typeof c === 'object' && c !== null && 'isOr' in c);
-        try {
-          await normalizeLegacyBlock(reader, idGen, event);
-        } catch (error) {
-          return refuse(error instanceof Error ? error.message : String(error));
-        }
-        if (legacyElse === true && conditions[0] !== undefined && isElseCondition(conditions[0]) && !isActiveElseCondition(conditions[0])) {
-          warnings.push(`${where}: dropped the block-level "isElse" key written by older builds of this server (Construct 3 does not read it). The block starts with a System "else" condition that is disabled, so it stays an ordinary block; isElse: true enables that condition.`);
-        } else if (legacyElse === true) {
-          warnings.push(`${where}: dropped the block-level "isElse" key written by older builds of this server; Construct 3 marks an else block with a System "else" first condition, which was written instead before this update was applied, so condition indexes count it.`);
-        } else if (legacyElse !== undefined) {
-          warnings.push(`${where}: dropped the block-level "isElse" key written by older builds of this server (Construct 3 does not read it).`);
-        }
-        if (hadLegacyOr) {
-          warnings.push(`${where}: the condition-level isOr flags older builds of this server wrote were dropped${event.isOrBlock === true ? '; the block is an OR block (isOrBlock), the key Construct 3 reads' : ''}.`);
-        }
-        // A disabled else condition is still kept in first place (enabling it later makes the
-        // block an else block), but removing it changes nothing about how the block runs.
-        if (isElseCondition(conditions[0])) {
-          if ((args.insertConditions ?? []).some(item => item.index === 0)) {
-            return refuse('The else condition must stay first in an else block (also when it is disabled); insert at index 1 or later.');
-          }
-          if (isActiveElseCondition(conditions[0])
-            && ((args.replaceConditions ?? []).some(item => item.index === 0) || (args.removeConditionIndices ?? []).includes(0))) {
-            warnings.push('Condition 0 of this block is its else condition; replacing or removing it turns the block into an ordinary block.');
-          }
-        }
-
-        // What each action update may change depends on the kind of action
-        for (const upd of args.updateActions ?? []) {
-          const target = actions[upd.index];
-          if (!target) continue;
-          const isComment = target.type === 'comment';
-          const isCustomCall = typeof target.customAction === 'string';
-          const isCall = isFunctionCall(target) || isCustomCall;
-          if ((upd.text !== undefined || upd.textColor !== undefined || upd.backgroundColor !== undefined) && !isComment) {
-            return refuse(`Action ${upd.index} is not an action comment; text and colors apply to comment rows only.`);
-          }
-          if (upd.arguments !== undefined && !isCall) {
-            return refuse(`Action ${upd.index} is not a function or custom action call; use parameters for standard actions.`);
-          }
-          if (upd.arguments !== undefined && upd.parameters !== undefined) {
-            return refuse(`Action ${upd.index}: pass the call's arguments either as arguments or as parameters, not both.`);
-          }
-          if (upd.parameters !== undefined) {
-            const rowProblem = parameterlessRowError(target, upd.index);
-            if (rowProblem) return refuse(rowProblem);
-            if (isCustomCall) {
-              return refuse(`Action ${upd.index} is a custom action call, whose arguments are positional; use arguments instead of parameters.`);
-            }
-          }
-          if (upd.disabled !== undefined && isComment) {
-            return refuse(`Action ${upd.index} is a comment row, which cannot be disabled (editor-saved comment rows are { type, text } with optional "text-color" and "background-color"; none carries "disabled").`);
-          }
-        }
-
-        // Preflight every index and structural conflict before mutating the
-        // event. Existing update/remove indexes remain relative to the
-        // original arrays; insertion indexes are relative to post-removal
-        // arrays and are applied in descending order below.
-        for (const upd of args.updateConditions ?? []) {
-          if (upd.index >= conditions.length) {
-            return refuse(`Condition index ${upd.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
-          }
-        }
-        for (const upd of args.updateActions ?? []) {
-          if (upd.index >= actions.length) {
-            return refuse(`Action index ${upd.index} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
-          }
-        }
-        const removedConditionSet = new Set(args.removeConditionIndices ?? []);
-        const removedActionSet = new Set(args.removeActionIndices ?? []);
-        const updatedConditionSet = new Set((args.updateConditions ?? []).map(update => update.index));
-        const updatedActionSet = new Set((args.updateActions ?? []).map(update => update.index));
-        if (updatedConditionSet.size !== (args.updateConditions ?? []).length || updatedActionSet.size !== (args.updateActions ?? []).length) {
-          return refuse('Update indexes must be unique.');
-        }
-        if ([...updatedConditionSet].some(index => removedConditionSet.has(index)) || [...updatedActionSet].some(index => removedActionSet.has(index))) {
-          return refuse('An item cannot be updated and removed in the same update.');
-        }
-        for (const index of removedConditionSet) {
-          if (index >= conditions.length) {
-            return refuse(`Condition index ${index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
-          }
-        }
-        for (const index of removedActionSet) {
-          if (index >= actions.length) {
-            return refuse(`Action index ${index} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
-          }
-        }
-        const replacementConditionSet = new Set((args.replaceConditions ?? []).map(replacement => replacement.index));
-        if (replacementConditionSet.size !== (args.replaceConditions ?? []).length) {
-          return refuse('Replacement condition indexes must be unique.');
-        }
-        for (const replacement of args.replaceConditions ?? []) {
-          if (replacement.index >= conditions.length) {
-            return refuse(`Condition index ${replacement.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
-          }
-          if (removedConditionSet.has(replacement.index)) {
-            return refuse(`Condition index ${replacement.index} cannot be replaced and removed in the same update.`);
-          }
-          if (updatedConditionSet.has(replacement.index)) {
-            return refuse(`Condition index ${replacement.index} cannot be updated and replaced in the same update.`);
-          }
-        }
-        const checkInsertionIndexes = (
-          items: Array<{ index: number }> | undefined,
-          length: number,
-          removed: Set<number>,
-          label: string,
-        ): string | undefined => {
-          if (!items || items.length === 0) return undefined;
-          const indexes = items.map(item => item.index);
-          if (new Set(indexes).size !== indexes.length) {
-            return `${label} insertion indexes must be unique.`;
-          }
-          const postRemovalLength = length - removed.size;
-          if (indexes.some(index => index > postRemovalLength)) {
-            return `${label} insertion index is out of range after removals (valid range 0-${postRemovalLength}).`;
-          }
-          return undefined;
-        };
-        const conditionInsertError = checkInsertionIndexes(args.insertConditions, conditions.length, removedConditionSet, 'Condition');
-        if (conditionInsertError) return refuse(conditionInsertError);
-        const actionInsertError = checkInsertionIndexes(args.insertActions, actions.length, removedActionSet, 'Action');
-        if (actionInsertError) return refuse(actionInsertError);
-        const resultingConditionCount = conditions.length - removedConditionSet.size
-          + (args.insertConditions?.length ?? 0) + (args.addConditions?.length ?? 0);
-        const resultingActionCount = actions.length - removedActionSet.size
-          + (args.insertActions?.length ?? 0) + (args.addActions?.length ?? 0);
-        if (resultingConditionCount > MAX_ITEMS_PER_BLOCK || resultingActionCount > MAX_ITEMS_PER_BLOCK) {
-          return refuse(`Updated block exceeds the maximum of ${MAX_ITEMS_PER_BLOCK} conditions and actions per block.`);
-        }
 
         // ── Validate objectClasses of all additions up front, in one pass ──
         // (normalizes the deprecated behavior-type alias; throws on conflicting keys before anything changes)
-        const newConditions = [
-          ...(args.insertConditions ?? []).map(item => item.condition),
-          ...(args.replaceConditions ?? []).map(item => item.condition),
-          ...(args.addConditions ?? []),
-        ];
-        const newActions = [...(args.insertActions ?? []).map(item => item.action), ...(args.addActions ?? [])];
         const addRefs: ObjectRef[] = [];
-        collectObjectRefs(newConditions, newActions as Array<Record<string, unknown>>, [], addRefs);
+        collectObjectRefs(
+          [...(args.addConditions ?? []), ...(args.insertConditions ?? []).map(i => i.condition), ...(args.replaceConditions ?? []).map(r => r.condition)],
+          [...(args.addActions ?? []), ...(args.insertActions ?? []).map(i => i.action)] as Array<Record<string, unknown>>,
+          [],
+          addRefs,
+        );
         if (addRefs.length > 0) {
           const { errors, warnings: valWarnings } = await validateObjectClasses(reader, addRefs, {
             insideFunction: isInFunctionBlock(events, event),
           });
           if (errors.length > 0) {
-            return refuse(`Object class validation failed:\n${errors.join('\n')}`);
+            return refuseAfterChanges(`Object class validation failed:\n${errors.join('\n')}`);
           }
           warnings.push(...valWarnings);
         }
 
         // The deprecated per-condition isOr flag is never written: it only
         // passes when the block ends up an OR block anyway.
-        if (newConditions.some(c => c.isOr === true)) {
+        if ([...(args.addConditions ?? []), ...(args.insertConditions ?? []).map(i => i.condition), ...(args.replaceConditions ?? []).map(r => r.condition)].some(c => c.isOr === true)) {
           const willBeOrBlock = args.isOrBlock ?? event.isOrBlock === true;
           if (!willBeOrBlock) {
-            return refuse('isOr on a condition is not written: Construct 3 ORs a whole event. Set isOrBlock: true to make this block an OR block.');
+            return refuseAfterChanges('isOr on a condition is not written: Construct 3 ORs a whole event. Set isOrBlock: true to make this block an OR block.');
           }
           warnings.push(`${where}: the deprecated per-condition isOr flag is not written; the block is an OR block.`);
         }
@@ -1756,6 +2474,65 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           return functions.get(name.toLowerCase());
         };
 
+        // Check inserts and replacements before anything changes
+        // A removal index past the end is named before the inserts are counted, which count the list after the removals
+        const badConditionRemoval = (args.removeConditionIndices ?? []).find(i => i < 0 || i >= conditions.length);
+        if (badConditionRemoval !== undefined) {
+          return refuseAfterChanges(`Condition index ${badConditionRemoval} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
+        }
+        const badActionRemoval = (args.removeActionIndices ?? []).find(i => i < 0 || i >= actions.length);
+        if (badActionRemoval !== undefined) {
+          return refuseAfterChanges(`Action index ${badActionRemoval} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
+        }
+        const removedConditionCount = new Set(args.removeConditionIndices ?? []).size;
+        const removedActionCount = new Set(args.removeActionIndices ?? []).size;
+        const conditionsAfterRemoval = conditions.length - removedConditionCount;
+        const actionsAfterRemoval = actions.length - removedActionCount;
+        const insertProblem = (kind: 'Action' | 'Condition', items: ReadonlyArray<{ index: number }>, length: number): string | undefined => {
+          const seen = new Set<number>();
+          for (const item of items) {
+            if (item.index > length) {
+              return `${kind} insert index ${item.index} is out of range: after the removals the block has ${length} ${kind.toLowerCase()}(s), so indexes 0-${length}.`;
+            }
+            if (seen.has(item.index)) return `Two ${kind.toLowerCase()} inserts at index ${item.index}; give each insert its own index.`;
+            seen.add(item.index);
+          }
+          return undefined;
+        };
+        const insertError = insertProblem('Condition', args.insertConditions ?? [], conditionsAfterRemoval)
+          ?? insertProblem('Action', args.insertActions ?? [], actionsAfterRemoval);
+        if (insertError) return refuseAfterChanges(insertError);
+        const replaced = new Set<number>();
+        for (const r of args.replaceConditions ?? []) {
+          if (r.index >= conditions.length) {
+            return refuseAfterChanges(`Condition index ${r.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
+          }
+          if (replaced.has(r.index)) return refuseAfterChanges(`replaceConditions names condition ${r.index} twice.`);
+          if ((args.removeConditionIndices ?? []).includes(r.index)) return refuseAfterChanges(`Condition ${r.index} is both replaced and removed.`);
+          if ((args.updateConditions ?? []).some(u => u.index === r.index)) return refuseAfterChanges(`Condition ${r.index} is both updated and replaced; replace it with the condition you want.`);
+          replaced.add(r.index);
+        }
+        // The list the inserts go into: the conditions after this call's replacements and removals
+        const replacementAt = new Map((args.replaceConditions ?? []).map(r => [r.index, r.condition as unknown] as const));
+        const removedConditionIndices = new Set(args.removeConditionIndices ?? []);
+        const keptConditions = conditions.map((c, i) => replacementAt.get(i) ?? c).filter((_c, i) => !removedConditionIndices.has(i));
+        // With isElse: false the else condition is taken out at the end, so an insert in front of it is a valid way to put a condition first
+        if (isElseCondition(keptConditions[0]) && args.isElse !== false && (args.insertConditions ?? []).some(i => i.index === 0)) {
+          return refuseAfterChanges('Condition 0 of this block is a System "else" condition, which stays first (also when it is disabled); insert at index 1 or later.');
+        }
+        // A block that starts with an else condition (or gets one through isElse: true) holds Else once, first
+        const startsWithElse = args.isElse !== false && (args.isElse === true || isElseCondition(keptConditions[0]));
+        // The cap applies to a call that adds items; a block already over it can still be edited otherwise.
+        // isElse: true adds the else condition unless the block's first condition is one then.
+        const firstCondition = (args.insertConditions ?? []).find(i => i.index === 0)?.condition ?? keptConditions[0] ?? args.addConditions?.[0];
+        const elseAdded = args.isElse === true && !isElseCondition(firstCondition) ? 1 : 0;
+        const tooMany = (kind: string, after: number, added: number) => (added > 0 && after + added > MAX_ITEMS_PER_BLOCK
+          ? `${where} would hold ${after + added} ${kind} (max ${MAX_ITEMS_PER_BLOCK}).` : undefined);
+        const sizeError = tooMany('conditions', conditionsAfterRemoval, (args.insertConditions?.length ?? 0) + (args.addConditions?.length ?? 0) + elseAdded)
+          ?? tooMany('actions', actionsAfterRemoval, (args.insertActions?.length ?? 0) + (args.addActions?.length ?? 0));
+        if (sizeError) return refuseAfterChanges(sizeError);
+
+        // From here the block is changed in memory
         // ── Apply block-level toggles (in the editor's key order: disabled right after sid) ──
         if (args.disabled !== undefined) {
           if (args.disabled) {
@@ -1773,139 +2550,177 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
 
         // All index-based operations reference the ORIGINAL array positions.
-        // Order: updates first (non-mutating on length), then replacements and
-        // removals, then insertions at post-removal indexes, then appends.
+        // Order: updates first (non-mutating on length), then removals (shrink array).
+        // This ensures user-supplied indices are consistent across all operations.
 
         // ── Update existing conditions by index (merge parameters) ──
-        for (const upd of args.updateConditions ?? []) {
-          const cond = conditions[upd.index];
-          touched.push({ ace: cond, kind: 'condition' });
-          if (upd.parameters) {
-            // Parameters go before isInverted, where the editor writes them
-            const merged = { ...(cond.parameters as Record<string, unknown> || {}), ...upd.parameters };
-            await applyCustomEaseParameter(reader, merged);
-            setConditionParameters(cond, merged);
-          }
-          if (upd.isInverted !== undefined) {
-            if (upd.isInverted) {
-              cond.isInverted = true;
-            } else {
-              delete cond.isInverted;
+        if (args.updateConditions) {
+          for (const upd of args.updateConditions) {
+            if (upd.index < 0 || upd.index >= conditions.length) {
+              return refuseAfterChanges(`Condition index ${upd.index} is out of range (block has ${conditions.length} condition(s), indices 0-${conditions.length - 1}).`);
             }
-          }
-          if (upd.disabled !== undefined) {
-            if (upd.disabled) {
-              setKeyAfterSid(cond, 'disabled', true);
-            } else {
-              delete cond.disabled;
+            const cond = conditions[upd.index];
+            touched.push({ ace: cond, kind: 'condition' });
+            if (upd.parameters) {
+              // Parameters go before isInverted, where the editor writes them
+              const merged = { ...(cond.parameters as Record<string, unknown> || {}), ...upd.parameters };
+              await applyCustomEaseParameter(reader, merged);
+              setConditionParameters(cond, merged);
             }
-          }
-        }
-
-        // ── Update existing actions by index ──
-        for (const upd of args.updateActions ?? []) {
-          const act = actions[upd.index];
-          const callArguments = upd.arguments ?? (isFunctionCall(act) ? upd.parameters : undefined);
-          if (callArguments !== undefined && isFunctionCall(act)) {
-            // Function calls take positional arguments, as the editor saves them
-            const name = act.callFunction as string;
-            const label = `${where}, action ${upd.index} (call to "${name}")`;
-            const signature = await signatureOf(name);
-            let merged: FunctionArgument[];
-            try {
-              merged = mergeCallArguments(act.parameters, callArguments, signature, label);
-            } catch (error) {
-              return refuse(error instanceof Error ? error.message : String(error));
+            if (upd.isInverted !== undefined) {
+              if (upd.isInverted) {
+                cond.isInverted = true;
+              } else {
+                delete cond.isInverted;
+              }
             }
-            warnings.push(...checkFunctionCallArguments(merged, signature, name, label));
-            if (isLegacyFunctionCall(act)) {
-              warnings.push(`${label} was stored in an old shape; it was rewritten as { callFunction, sid, parameters: [...] } without id/objectClass, the shape Construct 3 saves.`);
-            }
-            rewriteFunctionCallInPlace(act, merged);
-            act.callFunction = resolveCallName(name, signature, label, warnings);
-          } else if (upd.arguments !== undefined) {
-            // Custom action call: the arguments replace the stored ones
-            if (upd.arguments.length > 0) act.parameters = [...upd.arguments];
-            else delete act.parameters;
-          } else if (upd.parameters !== undefined) {
-            if (Array.isArray(upd.parameters)) {
-              return refuse(`Action ${upd.index} is not a function call: pass its parameters as key-value pairs, not an array.`);
-            }
-            touched.push({ ace: act, kind: 'action' });
-            act.parameters = { ...(act.parameters as Record<string, unknown> || {}), ...upd.parameters };
-            await applyCustomEaseParameter(reader, act.parameters);
-            await resolveFunctionMapParameter(reader, act, `${where}, action ${upd.index} ("${String(act.id)}")`, warnings, async () => {
-              functions ??= await loadFunctionSignatures(reader);
-              return functions;
-            });
-          } else if (!isFunctionCall(act) && typeof act.customAction !== 'string' && act.type === undefined) {
-            touched.push({ ace: act, kind: 'action' });
-          }
-          if (upd.text !== undefined) act.text = upd.text;
-          if (upd.textColor !== undefined) act['text-color'] = upd.textColor;
-          if (upd.backgroundColor !== undefined) act['background-color'] = upd.backgroundColor;
-          if (upd.disabled !== undefined) {
-            if (upd.disabled) {
-              setKeyAfterSid(act, 'disabled', true);
-            } else {
-              delete act.disabled;
+            if (upd.disabled !== undefined) {
+              if (upd.disabled) {
+                setKeyAfterSid(cond, 'disabled', true);
+              } else {
+                delete cond.disabled;
+              }
             }
           }
         }
 
-        // ── Replace condition ACEs in place (fresh SID, same array index) ──
-        for (const replacement of args.replaceConditions ?? []) {
-          conditions[replacement.index] = await mintCondition(reader, idGen, replacement.condition) as unknown as Record<string, unknown>;
+        // ── Update existing actions by index (merge parameters) ──
+        if (args.updateActions) {
+          for (const upd of args.updateActions) {
+            if (upd.index < 0 || upd.index >= actions.length) {
+              return refuseAfterChanges(`Action index ${upd.index} is out of range (block has ${actions.length} action(s), indices 0-${actions.length - 1}).`);
+            }
+            const act = actions[upd.index];
+            const commentEdit = upd.text !== undefined || upd['text-color'] !== undefined || upd['background-color'] !== undefined;
+            if (commentEdit) {
+              if (act.type !== 'comment') {
+                return refuseAfterChanges(`Action ${upd.index} is not a comment row: text, "text-color" and "background-color" apply to comment rows only.`);
+              }
+              editCommentRowInPlace(act, upd);
+            }
+            if (upd.parameters) {
+              const rowProblem = parameterlessRowError(act, upd.index);
+              if (rowProblem) return refuseAfterChanges(rowProblem);
+            }
+            if (upd.disabled !== undefined && act.type === 'comment') {
+              return refuseAfterChanges(`Action ${upd.index} is a comment row, which cannot be disabled (editor-saved comment rows are { type, text } with optional "text-color" and "background-color"; none carries "disabled").`);
+            }
+            if (upd.parameters) {
+              if (isCustomActionCall(act)) {
+                const argumentsGiven = (upd.parameters as unknown[]).map(value => (typeof value === 'boolean' ? value : String(value)));
+                if (argumentsGiven.length > 0) act.parameters = argumentsGiven;
+                else delete act.parameters;
+                warnings.push(...customActionCallWarnings(act as unknown as CustomActionCall, customContext!,
+                  `${where}, action ${upd.index}, custom action call "${String(act.customAction)}" on "${String(act.objectClass)}"`, 'kept'));
+              } else if (isFunctionCall(act)) {
+                const name = act.callFunction as string;
+                const label = `${where}, action ${upd.index} (call to "${name}")`;
+                const signature = await signatureOf(name);
+                const merged = mergeCallArguments(act.parameters, upd.parameters, signature, label);
+                warnings.push(...checkFunctionCallArguments(merged, signature, name, label));
+                if (isLegacyFunctionCall(act)) {
+                  warnings.push(`${label} was stored in an old shape; it was rewritten as { callFunction, sid, parameters: [...] } without id/objectClass, the shape Construct 3 saves.`);
+                }
+                rewriteFunctionCallInPlace(act, merged);
+                act.callFunction = resolveCallName(name, signature, label, warnings);
+              } else {
+                if (Array.isArray(upd.parameters)) {
+                  return refuseAfterChanges(`Action ${upd.index} is not a function call: pass its parameters as key-value pairs, not an array.`);
+                }
+                touched.push({ ace: act, kind: 'action' });
+                act.parameters = { ...(act.parameters as Record<string, unknown> || {}), ...upd.parameters };
+                await resolveFunctionMapParameter(reader, act, `${where}, action ${upd.index} ("${String(act.id)}")`, warnings, async () => {
+                  functions ??= await loadFunctionSignatures(reader);
+                  return functions;
+                });
+                act.parameters = { ...(act.parameters as Record<string, unknown>) };
+                await applyCustomEaseParameter(reader, act.parameters);
+              }
+            } else if (!isFunctionCall(act) && !isCustomActionCall(act)) {
+              touched.push({ ace: act, kind: 'action' });
+            }
+            if (upd.disabled !== undefined) {
+              if (upd.disabled) {
+                setKeyAfterSid(act, 'disabled', true);
+              } else {
+                delete act.disabled;
+              }
+            }
+          }
+        }
+
+        // Replace conditions in place (a new SID each)
+        for (const r of args.replaceConditions ?? []) {
+          // isElse: true puts an else condition back in front, so the block stays an else block
+          if (r.index === 0 && isElseCondition(conditions[0]) && !isElseCondition(r.condition) && args.isElse !== true) {
+            warnings.push(`${where}: condition 0 was the System "else" condition; replacing it makes the block an ordinary block.`);
+          }
+          if (isElseCondition(r.condition) && r.index !== 0) {
+            warnings.push(misplacedElseWarning(where, 'a replacing', r.index, args.isElse, startsWithElse));
+          }
+          conditions[r.index] = await buildCondition(reader, r.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>;
         }
 
         // ── Remove conditions by index (descending order to avoid index shifting) ──
         let removedConditions = false;
-        for (const idx of [...removedConditionSet].sort((a, b) => b - a)) {
-          conditions.splice(idx, 1);
-          removedConditions = true;
+        if (args.removeConditionIndices && args.removeConditionIndices.length > 0) {
+          const sorted = [...new Set(args.removeConditionIndices)].sort((a, b) => b - a);
+          for (const idx of sorted) {
+            conditions.splice(idx, 1);
+            removedConditions = true;
+          }
         }
 
         // ── Remove actions by index (descending order) ──
-        for (const idx of [...removedActionSet].sort((a, b) => b - a)) {
-          actions.splice(idx, 1);
+        if (args.removeActionIndices && args.removeActionIndices.length > 0) {
+          const sorted = [...new Set(args.removeActionIndices)].sort((a, b) => b - a);
+          for (const idx of sorted) {
+            actions.splice(idx, 1);
+          }
         }
 
-        // ── Insert new conditions/actions at post-removal indexes ──
-        const ctx = { warnings, functions };
-        if (args.insertConditions && args.insertConditions.length > 0) {
-          const sorted = [...args.insertConditions].sort((a, b) => b.index - a.index);
-          for (const insertion of sorted) {
-            const built = await mintCondition(reader, idGen, insertion.condition);
-            conditions.splice(insertion.index, 0, built as unknown as Record<string, unknown>);
+        // The else condition the block starts with, which isElse: false takes out even when an insert at 0 put another condition in front of it
+        const leadingElse = isElseCondition(conditions[0]) ? conditions[0] : undefined;
+        // Insert at indexes counted after the removals (highest first, so each index counts in that list)
+        for (const insert of [...(args.insertConditions ?? [])].sort((x, y) => y.index - x.index)) {
+          if (isElseCondition(insert.condition) && insert.index !== 0) {
+            warnings.push(misplacedElseWarning(where, 'an inserted', insert.index, args.isElse, startsWithElse));
           }
+          conditions.splice(insert.index, 0, await buildCondition(reader, insert.condition, await idGen.generateSid(reader)) as unknown as Record<string, unknown>);
         }
-        if (args.insertActions && args.insertActions.length > 0) {
-          const sorted = [...args.insertActions].sort((a, b) => b.index - a.index);
-          for (const insertion of sorted) {
-            const built = await buildAction(reader, idGen, insertion.action, ctx, where);
-            actions.splice(insertion.index, 0, built as unknown as Record<string, unknown>);
+        if ((args.insertActions ?? []).length > 0) {
+          const insertCtx = { warnings, functions, customActions: customContext };
+          for (const insert of [...(args.insertActions ?? [])].sort((x, y) => y.index - x.index)) {
+            actions.splice(insert.index, 0, await buildAction(reader, idGen, insert.action, insertCtx, where) as unknown as Record<string, unknown>);
           }
+          functions = insertCtx.functions;
         }
 
         // ── Add new conditions (validated up front) ──
-        for (const c of args.addConditions ?? []) {
-          // An added "else" condition is appended: fine on a block without
-          // conditions, a duplicate in an else block (or one isElse makes), misplaced otherwise
-          if (isElseCondition(c) && conditions.length > 0) {
-            if (args.isElse === true || isElseCondition(conditions[0])) {
-              warnings.push(`${where}: dropped the added System "else" condition: the block ${args.isElse === true ? 'gets one first through isElse: true' : 'already starts with one'}, and Construct 3 saves Else once, as the first condition.`);
-              continue;
+        if (args.addConditions && args.addConditions.length > 0) {
+          for (const c of args.addConditions) {
+            // An added "else" condition is appended: fine on a block without
+            // conditions, a duplicate in an else block (or one isElse makes), misplaced otherwise
+            if (isElseCondition(c) && conditions.length > 0) {
+              if (args.isElse === true || isElseCondition(conditions[0])) {
+                warnings.push(`${where}: dropped the added System "else" condition: the block ${args.isElse === true ? 'gets one first through isElse: true' : 'already starts with one'}, and Construct 3 saves Else once, as the first condition.`);
+                continue;
+              }
+              warnings.push(`${where}: an added System "else" condition goes after the existing conditions, but Construct 3 saves Else as the first condition. Use isElse: true instead.`);
             }
-            warnings.push(`${where}: an added System "else" condition goes after the existing conditions, but Construct 3 saves Else as the first condition. Use isElse: true instead.`);
+            const condSid = await idGen.generateSid(reader);
+            conditions.push(await buildCondition(reader, c, condSid));
           }
-          conditions.push(await mintCondition(reader, idGen, c) as unknown as Record<string, unknown>);
         }
 
         // ── Add new actions (validated up front) ──
-        for (const a of args.addActions ?? []) {
-          actions.push(await buildAction(reader, idGen, a, ctx, where) as unknown as Record<string, unknown>);
+        if (args.addActions && args.addActions.length > 0) {
+          const ctx = { warnings, functions, customActions: customContext };
+          for (const a of args.addActions) {
+            actions.push(await buildAction(reader, idGen, a, ctx, where) as unknown as Record<string, unknown>);
+          }
+          functions = ctx.functions;
         }
-        functions = ctx.functions;
 
         // ── Else: the System "else" condition first, applied after all other condition changes ──
         // (where the else block stands is checked by the load-time gate below)
@@ -1914,21 +2729,16 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           delete event.isElse;
           if (args.isElse && !isElseCondition(conditions[0])) {
             conditions.unshift(createElseCondition(await idGen.generateSid(reader)));
-          } else if (args.isElse && !isActiveElseCondition(conditions[0])) {
-            // The block starts with a disabled else: enable it rather than add a second one
-            delete conditions[0].disabled;
-            warnings.push(`${where}: enabled the disabled System "else" condition; the block is now an else block.`);
-          } else if (!args.isElse && isElseCondition(conditions[0])) {
-            conditions.shift();
-            removedConditions = true;
+          } else if (!args.isElse) {
+            const at = leadingElse !== undefined && conditions.includes(leadingElse) ? conditions.indexOf(leadingElse) : isElseCondition(conditions[0]) ? 0 : -1;
+            if (at >= 0) {
+              conditions.splice(at, 1);
+              removedConditions = true;
+            }
           }
           if (hadLegacyFlag) {
             warnings.push(`${where}: dropped the block-level "isElse" key written by older versions (Construct 3 marks an else block with a System "else" first condition instead).`);
           }
-        }
-
-        if (event.isOrBlock && conditions.filter(c => !isElseCondition(c)).length < 2) {
-          warnings.push('The block is an OR block with fewer than two conditions; OR has no effect until another condition is added.');
         }
 
         // Only warn when this call removed the last condition. Blocks that
@@ -1936,7 +2746,9 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         if (removedConditions && conditionCountBefore > 0 && conditions.length === 0) {
           warnings.push(eventType === 'block'
             ? 'All conditions were removed: the block now runs whenever its parent runs (every tick at the top level).'
-            : `All conditions were removed: the ${eventType === 'function-block' ? 'function' : 'custom action'} body now runs on every call.`);
+            : eventType === 'function-block'
+              ? 'All conditions were removed: the function body now runs on every call.'
+              : 'All conditions were removed: the custom action body now runs on every call.');
         }
 
         // Edited conditions/actions written by older versions may still carry
@@ -1946,34 +2758,18 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           touched.filter(t => (t.kind === 'condition' ? conditions : actions).includes(t.ace)),
         ));
 
-        // Check the conditions and actions this call added or changed against
-        // Construct's own definitions; the block is still written.
-        const aceContext = await buildAceContext(reader);
-        const changed = changedAceSids(aceBefore, event);
-        warnings.push(...checkEventAces(
-          [{ conditions: event.conditions, actions: event.actions }],
-          aceContext,
-          changed,
-        ).map(describeEventAceProblem));
-        warnings.push(...checkEventExpressions(
-          [{ conditions: event.conditions, actions: event.actions }],
-          await buildExpressionContext(reader),
-          aceContext,
-          changed,
-        ).map(describeEventExpressionProblem));
-
         // Editor load-time rules, checked on the whole sheet so the block's
         // ancestors (an enclosing trigger or function) count too
         const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
-        if (loadCheck.errors.length > 0) {
-          return refuse(loadRuleErrorMessage(loadCheck.errors));
-        }
+        if (loadCheck.errors.length > 0) return refuseAfterChanges(loadRuleErrorMessage(loadCheck.errors));
         warnings.push(...loadCheck.warnings);
+        warnings.push(...await checkEventChange(reader, args.sheetName, beforeEvents, sheet.events));
 
         // Write back
+        writeStarted = true;
         const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
         const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        resetProjectIndex(reader);
 
         const result: WriteResult = {
           success: true,
@@ -1986,913 +2782,187 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         return toolResult({ ...result, eventPath: path });
       } catch (error) {
         console.error('[update_event_block] failed:', error);
-        return toolError(`Error updating event block: ${error instanceof Error ? error.message : String(error)}`);
+        restoreSheet?.();
+        // Before the write nothing reached the disk, also when the error came before the snapshot
+        if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+        return toolError(`Error updating event block: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
 
-  // ─── add_custom_action ──────────────────────────────────────
+  // ─── move_event_block ─────────────────────────────
 
-  server.tool(
-    'add_custom_action',
-    'Add a custom action definition (eventType "custom-ace-block") to an event sheet. A custom action belongs to an object type or family, not to System. Conditions and actions are added afterwards with update_event_block using the returned SID.',
-    {
-      sheetName: z.string().max(200).describe('Target event sheet'),
-      objectClass: z.string().max(200).describe('Object type or family that owns the custom action'),
-      aceName: z.string().max(200).describe('Custom action name as it appears in the editor (spaces and punctuation allowed)'),
-      description: z.string().max(2000).optional().describe('functionDescription'),
-      category: z.string().max(200).optional().describe('functionCategory — the editor grouping, e.g. "_AI_Behavior Tree"'),
-      returnType: z.enum(['none', 'number', 'string', 'any']).optional().describe('functionReturnType (default: none)'),
-      isAsync: z.boolean().optional().describe('functionIsAsync (default: false)'),
-      copyPicked: z.boolean().optional().describe('functionCopyPicked (default: false)'),
-      parameters: z.array(z.object({
-        name: z.string().max(200).describe('Parameter name'),
-        type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
-        initialValue: z.string().max(500).optional().describe('Default value (defaults by type)'),
-        comment: z.string().max(500).optional().describe('Parameter comment'),
-      })).optional().describe('Parameter definitions, in call order'),
-      groupPath: z.string().max(500).optional().describe('Insert inside a group by title path (e.g., "Movement > Collision")'),
-      parentSid: z.number().int().positive().optional().describe('Insert inside this group, block, or function-block SID'),
-      siblingSid: z.number().int().positive().optional().describe('Insert beside this event SID; requires position before or after'),
-      position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('Where to insert the definition'),
-    },
-    async (args) => {
-      try {
-        const locatorError = validateLocator({
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          siblingSid: args.siblingSid,
-          position: args.position,
-        });
-        if (locatorError) return toolError(locatorError);
-        if (args.aceName.trim().length === 0) {
-          return toolError('aceName cannot be empty.');
-        }
-
-        // A custom ACE hangs off an object type or family; "System" has no
-        // custom actions, so validateObjectClasses' System allowance is too
-        // permissive here.
-        const objects = await reader.listObjectTypes();
-        const families = await reader.listFamilies();
-        if (!objects.includes(args.objectClass) && !families.includes(args.objectClass)) {
-          const suggestions = reader.findNearestName(args.objectClass, 'objects');
-          const hint = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(', ')}?` : '';
-          return toolError(`Unknown objectClass "${args.objectClass}". A custom action must belong to an object type or family, not System.${hint}`);
-        }
-
-        const parameterNames = (args.parameters ?? []).map(p => p.name);
-        if (new Set(parameterNames).size !== parameterNames.length) {
-          return toolError('Parameter names must be unique.');
-        }
-        if (parameterNames.some(name => name.trim().length === 0)) {
-          return toolError('Parameter name cannot be empty.');
-        }
-        if (parameterNames.length > MAX_ITEMS_PER_BLOCK) {
-          return toolError(`Custom action has ${parameterNames.length} parameters (max ${MAX_ITEMS_PER_BLOCK}).`);
-        }
-
-        let sheet: EventSheet;
-        try {
-          sheet = await reader.readEventSheet(args.sheetName);
-        } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
-        }
-
-        // The editor keys a custom ACE by object class plus name, so refuse a
-        // duplicate anywhere in the project.
-        for (const name of await reader.listEventSheets()) {
-          const data = name === args.sheetName ? sheet : await reader.readEventSheet(name).catch(() => null);
-          if (!data) continue;
-          let clash = false;
-          walkEvents(data.events as Record<string, unknown>[], event => {
-            if (event.eventType === 'custom-ace-block'
-              && event.objectClass === args.objectClass
-              && event.aceName === args.aceName) {
-              clash = true;
-            }
-          });
-          if (clash) {
-            return toolError(`"${args.objectClass}" already defines a custom action named "${args.aceName}" (in sheet "${name}").`);
-          }
-        }
-
-        const events = sheet.events as Record<string, unknown>[];
-        const resolution = resolveContainer(events, args.sheetName, {
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          siblingSid: args.siblingSid,
-          position: args.position,
-        });
-        if ('error' in resolution) return toolError(resolution.error);
-        const container = resolution.container;
-
-        const sid = await idGen.generateSid(reader);
-        const paramsWithSids = args.parameters
-          ? await Promise.all(args.parameters.map(async (p) => ({
-              ...p,
-              sid: await idGen.generateSid(reader),
-            })))
-          : undefined;
-        const event = createCustomActionEvent(args.aceName, args.objectClass, sid, paramsWithSids, {
-          description: args.description,
-          category: args.category,
-          returnType: args.returnType,
-          isAsync: args.isAsync,
-          copyPicked: args.copyPicked,
-        });
-
-        commitContainer(container);
-        insertIntoContainer(container, args.position, event as unknown as Record<string, unknown>);
-
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
-
-        const result: WriteResult = {
-          success: true,
-          entity: args.sheetName,
-          category: 'eventsheet',
-          action: 'updated',
-          generatedSid: sid,
-          backupFile: backupPath,
-        };
-        return toolResult(result);
-      } catch (error) {
-        console.error('[add_custom_action] failed:', error);
-        return toolError(`Error adding custom action: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  );
-
-  // ─── move_event_block ───────────────────────────────────────
-
-  server.tool(
+  // Registered with a strict object schema, so unknown arguments are refused (see add_event_block).
+  server.registerTool(
     'move_event_block',
-    'Move an existing event (block, group, variable, comment, function-block, custom-ace-block) to another container in the same event sheet. The event keeps its SID and every descendant. Use move_events_between_sheets to move top-level events across sheets.',
     {
-      sheetName: z.string().max(200).describe('Event sheet containing the event'),
-      sid: z.number().int().positive().describe('SID of the event to move'),
-      eventPath: eventPathSchema,
-      groupPath: z.string().max(500).optional().describe('Move inside a group by title path (e.g., "Movement > Collision")'),
-      parentSid: z.number().int().positive().optional().describe('Move inside this group, block, or function-block SID'),
-      siblingSid: z.number().int().positive().optional().describe('Move beside this event SID; requires position before or after'),
-      position: z.enum(['start', 'end', 'before', 'after']).optional().default('end').describe('Where to place the moved event'),
+      description: 'Move an event, with its sub-events, to another place in the same event sheet: the top level, a group (groupPath), the sub-events of an event (parentSid) or beside one (siblingSid with position "before" or "after"). Blocks, groups, variables, function blocks and custom action blocks are moved by SID (comments, includes and script events have none). The event keeps its SID and everything in it. Refused, changing nothing: a move into the event itself or its sub-events, a place that no editor-saved project on record or checked editor case shows for that kind of event, a function block (or an event holding one) under or below a block that has a trigger condition or under or below a function block or a custom action block, a custom action block (or an event holding one) with an event that is not a group above it (it goes at the top level or in groups only), a new load-time error, a name that would clash in the new scope, and (unless force=true) a move that leaves events using an event variable or function parameter out of its scope. Event sheets that could not be parsed are searched as text for a global variable the move makes local. A move to where the event already is changes nothing.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        sid: z.number().int().positive().describe('SID of the event to move'),
+        eventPath: eventPathSchema,
+        ...locatorShape,
+        force: z.boolean().optional().default(false).describe('Move even when events then use an event variable or function parameter outside its scope (the uses are listed in "references" and a warning, and left as they are)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of move_event_block', 'move_event_block takes sheetName, sid, eventPath, groupPath, parentSid, parentEventPath, siblingSid, siblingEventPath, position and force.'),
+      }).strict(),
     },
     async (args) => {
+      // Once the event is placed in memory, an error puts the sheet back (see the catch below)
+      let undoPlacement: (() => void) | undefined;
+      let writeStarted = false;
       try {
-        const locatorError = validateLocator({
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          siblingSid: args.siblingSid,
-          position: args.position,
-        });
-        if (locatorError) return toolError(locatorError);
-        if (args.siblingSid !== undefined && args.siblingSid === args.sid) {
-          return toolError(`siblingSid ${args.sid} is the event being moved; an event cannot be placed beside itself.`);
-        }
-        if (args.parentSid !== undefined && args.parentSid === args.sid) {
-          return toolError(`parentSid ${args.sid} is the event being moved; an event cannot be placed inside itself.`);
-        }
-
+        // Its scope check compares the sheet with the other sheets by registered name
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
         let sheet: EventSheet;
         try {
           sheet = await reader.readEventSheet(args.sheetName);
         } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
         }
-
         const events = sheet.events as Record<string, unknown>[];
         const beforeEvents = snapshotEvents(sheet.events);
-        const resolved = resolveEventBySid(events, args.sid, {
-          sheetName: args.sheetName,
-          action: 'move',
-          eventPath: args.eventPath,
-        });
-        if ('error' in resolved) {
-          return toolError(`${resolved.error}\nComments and includes carry no SID in C3 and cannot be moved with this tool.`);
-        }
-        const found = resolved.match;
-
-        const moving = found.event;
-        const movedType = moving.eventType as string;
-
-        // Resolve the destination before detaching anything, so an invalid
-        // locator leaves the sheet exactly as it was.
-        const resolution = resolveContainer(events, args.sheetName, {
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          siblingSid: args.siblingSid,
-          position: args.position,
-        });
-        if ('error' in resolution) return toolError(resolution.error);
-        const container: ResolvedContainer = resolution.container;
-
-        // A destination inside the moved event's own subtree would detach the
-        // whole branch from the sheet. Check the owner, the sibling, and the
-        // target array itself by object identity.
-        const subtree = collectSubtree(moving);
-        const ownerInSubtree = container.owner !== undefined && subtree.events.has(container.owner);
-        const siblingInSubtree = container.siblingEvent !== undefined && subtree.events.has(container.siblingEvent);
-        if (ownerInSubtree || siblingInSubtree || subtree.childArrays.has(container.targetEvents)) {
-          return toolError(
-            `Cannot move event SID ${args.sid} into its own descendants — the destination is inside the event being moved.`,
-          );
-        }
-
-        const childCount = countDescendants(moving);
-
-        // An else block keeps needing a block before it where it lands, and
-        // an else left behind loses the block it followed.
-        if (isElseOrLegacyElseBlock(moving)) {
-          const placement = elsePlacementError(container, args.position, moving);
-          if (placement) return toolError(placement);
-        }
-        const warnings: string[] = [];
-        const siblings = found.parentArray;
-        let next = found.index + 1;
-        while (next < siblings.length && siblings[next].eventType === 'comment') next++;
-        const nextInSource = siblings[next];
-        if (nextInSource && isElseOrLegacyElseBlock(nextInSource) && moving.eventType === 'block') {
-          let previous = found.index - 1;
-          while (previous >= 0 && siblings[previous].eventType === 'comment') previous--;
-          const before = previous >= 0 ? siblings[previous] : undefined;
-          if (!before || before.eventType !== 'block') {
-            warnings.push(`The else block after SID ${args.sid} no longer follows an event block; Construct's editor never writes an else in that position. Move or delete it.`);
-          }
-        }
-
-        // Detach first, then insert. insertIntoContainer reads the sibling
-        // index at insert time, so a move within one array still lands beside
-        // the intended sibling after the removal shifted it.
-        found.parentArray.splice(found.index, 1);
-        commitContainer(container);
-        insertIntoContainer(container, args.position, moving);
-
-        // Editor load-time rules, checked on the whole sheet (e.g. a trigger moved under another trigger)
-        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
-        if (loadCheck.errors.length > 0) {
+        // A refusal after the move below puts the sheet's events back first
+        const refuse = (message: string) => {
           sheet.events = beforeEvents;
-          return toolError(loadRuleErrorMessage(loadCheck.errors));
+          return toolError(nothingChanged(message));
+        };
+
+        const found = resolveEventBySid(events, args.sid, { sheetName: args.sheetName, action: 'move', eventPath: args.eventPath });
+        if ('error' in found) return refuse(`${found.error}\nComments, includes and script events have no SID and cannot be moved with this tool.`);
+        const moving = found.match.event;
+        const kind = placedKindOf(moving.eventType);
+        if (kind === undefined) return refuse(`The event with SID ${args.sid} is a "${String(moving.eventType)}", which this tool does not move.`);
+
+        const resolution = resolveContainer(events, args.sheetName, {
+          groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath,
+          siblingSid: args.siblingSid, siblingEventPath: args.siblingEventPath, position: args.position,
+        });
+        if ('error' in resolution) return refuse(resolution.error);
+        const container = resolution.container;
+        if (container.siblingEvent === moving) return refuse('An event cannot be placed beside itself.');
+        let intoItself: boolean;
+        try {
+          intoItself = container.owner !== undefined && (container.owner === moving || isWithin(moving, container.owner));
+        } catch (error) {
+          return refuse(errorMessage(error, reader.getProjectDir()));
         }
-        warnings.push(...loadCheck.warnings);
+        if (intoItself) {
+          return refuse(`The event with SID ${args.sid} cannot go into its own sub-events: the destination is inside the event being moved.`);
+        }
+        const placement = placementError(kind, container);
+        if (placement) return refuse(placement);
+        // An else block keeps needing an event block before it where it lands
+        if (isElseBlock(moving)) {
+          const elsePlacement = elsePlacementError(container, args.position, moving);
+          if (elsePlacement) return refuse(elsePlacement);
+        }
+        // A function block, or an event that holds one, goes only where a function block is placed
+        const functionRefusal = movedFunctionBlockRefusal(moving, containerParents(sheet.events, container));
+        if (functionRefusal) return refuse(functionRefusal);
+        // A custom action block, or an event that holds one, goes only where every event above it is a group
+        const customActionRefusal = movedCustomActionBlockRefusal(moving, containerParents(sheet.events, container));
+        if (customActionRefusal) return refuse(customActionRefusal);
 
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        // The declaration each use of this sheet's variables and parameters finds now, for the scope check after the move
+        const sheetsNow = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        const declared = new Map(listEventVariableDeclarations(sheet.events).map(d => [d.name.toLowerCase(), d.name] as const));
+        const bindingsBefore = recordVariableBindings(sheetsNow, declared);
+        const globalsBefore = globalVariableNames(sheetsNow);
 
+        // Take the event out, then insert it (the sibling's index is read after the removal)
+        const from = found.match.path;
+        const sourceOwner = (findEnclosingEvents(sheet.events, moving as unknown as C3Event) ?? []).at(-1) as Record<string, unknown> | undefined;
+        undoPlacement = () => { sheet.events = beforeEvents; };
+        found.match.parentArray.splice(found.match.index, 1);
+        insertIntoContainer(container, args.position, moving);
+        // An event left without sub-events is written without the key, as the editor and the builders do (templates.ts:535)
+        dropEmptiedChildren(sourceOwner);
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({
+            success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged',
+            movedSid: args.sid, movedType: moving.eventType, from, to: from, childrenMoved: countDescendants(moving),
+          }, { projectWritten: false });
+        }
+        const to = eventPathOf(events, moving) ?? from;
+
+        // Names: the variables and parameters in the moved event, in their new scope
+        const sheetsBefore = new Map(sheetsNow);
+        sheetsBefore.set(args.sheetName, beforeEvents);
+        const original = eventAtEventPath(beforeEvents as unknown as Record<string, unknown>[], from);
+        const clashes = findNewEventVariableNameClashes(
+          sheetsBefore, args.sheetName, [original as unknown as C3Event], sheetsNow, args.sheetName, [moving as unknown as C3Event]);
+        if (clashes.length > 0) return refuse(sameSheetNameClashMessage(args.sheetName, clashes));
+
+        const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+        if (loadCheck.errors.length > 0) return refuse(loadRuleErrorMessage(loadCheck.errors));
+
+        // Uses that found a declaration before and now find none, or another one, in this sheet and the others
+        const { lost, rebound } = findVariableBindingChanges(bindingsBefore, sheetsNow);
+        const lostCount = countDeleteReferences(lost);
+        const reboundCount = countDeleteReferences(rebound);
+        const globalsAfter = globalVariableNames(sheetsNow);
+        const noLongerGlobal = [...declared].filter(([key]) => globalsBefore.has(key) && !globalsAfter.has(key)).map(([, name]) => name);
+        let unscanned: UnscannedFileReport[] = [];
+        if (noLongerGlobal.length > 0) {
+          const allSheets = await reader.readAllEventSheets();
+          const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), allSheets, reader.getReadFailures('eventSheets'))
+            .filter(f => f.name !== args.sheetName);
+          unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [noLongerGlobal.map(n => nameTerm(n))] }]);
+        }
+        const unscannedBlock = blocksWithoutForce(unscanned);
+        const whereLost = 'where it is no longer in scope after the move';
+        const whereRebound = 'where the name now finds another event variable or function parameter after the move';
+        const checked = 'uses of the event variables and function parameters of this sheet';
+        if ((lostCount > 0 || reboundCount > 0 || unscannedBlock || !lost.complete) && !args.force) {
+          sheet.events = beforeEvents;
+          const reasons = [
+            ...(lostCount > 0 ? [`${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE}`] : []),
+            ...(reboundCount > 0 ? [`${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`] : []),
+            ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
+            ...(!lost.complete ? [traversalLimitReason(checked, lost.limit)] : []),
+          ];
+          return toolResult({
+            success: false, entity: args.sheetName, category: 'eventsheet', action: 'move_blocked',
+            message: nothingChanged(`${reasons.join(' ')} ${lostCount > 0
+              ? 'Move the events that use it along, pick another place, or use force=true to move anyway.'
+              : 'Pick another place, or use force=true to move anyway.'}`),
+            references: danglingReferenceList(lost),
+            ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+            ...unscannedFields(unscanned),
+          }, { projectWritten: false });
+        }
+        const warnings = [...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events)];
+        if (lostCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(lost, whereLost)} ${SCOPE_LOSS_CONSEQUENCE} Fix them before opening the project in Construct 3.`);
+        }
+        if (reboundCount > 0) {
+          warnings.push(`Moved with force=true: ${describeDanglingReferences(rebound, whereRebound)} ${REBOUND_USE_CONSEQUENCE}`);
+        }
+        if (!lost.complete) warnings.push(`Moved with force=true: ${traversalLimitReason(checked, lost.limit)}`);
+        warnings.push(...unscannedWarnings(unscanned, 'Moved'));
+
+        writeStarted = true;
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        resetProjectIndex(reader);
         return toolResult({
-          success: true,
-          entity: args.sheetName,
-          category: 'eventsheet',
-          action: 'updated',
-          movedSid: args.sid,
-          eventPath: found.path,
-          movedType,
-          childrenMoved: childCount,
-          destination: args.groupPath !== undefined
-            ? { groupPath: args.groupPath, position: args.position }
-            : args.parentSid !== undefined
-              ? { parentSid: args.parentSid, position: args.position }
-              : args.siblingSid !== undefined
-                ? { siblingSid: args.siblingSid, position: args.position }
-                : { root: true, position: args.position },
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated',
+          movedSid: args.sid, movedType: moving.eventType, from, to, childrenMoved: countDescendants(moving),
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(lostCount > 0 ? { references: danglingReferenceList(lost) } : {}),
+          ...(reboundCount > 0 ? { reboundReferences: danglingReferenceList(rebound) } : {}),
+          ...unscannedFields(unscanned),
           backupFile: backupPath,
-          warnings: warnings.length > 0 ? warnings : undefined,
         });
       } catch (error) {
         console.error('[move_event_block] failed:', error);
-        return toolError(`Error moving event: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  );
-
-  // ─── update_event_group ─────────────────────────────────────
-
-  server.tool(
-    'update_event_group',
-    'Update a group event in place — title, description, active-on-start, disabled state, and the group colors C3 serializes (background-color, text-color). Children are untouched.',
-    {
-      sheetName: z.string().max(200).describe('Event sheet containing the group'),
-      sid: z.number().int().positive().describe('SID of the group event to update'),
-      eventPath: eventPathSchema,
-      title: z.string().max(500).optional().describe('New group title; must be unique among sibling groups so group paths stay unambiguous'),
-      description: z.string().max(2000).optional().describe('New group description'),
-      isActiveOnStart: z.boolean().optional().describe('Whether the group is active when the layout starts'),
-      disabled: z.boolean().optional().describe('Disable or enable the group in the editor'),
-      backgroundColor: colorSchema.optional().describe('Group background color, written as the "background-color" key'),
-      textColor: colorSchema.optional().describe('Group text color, written as the "text-color" key'),
-    },
-    async (args) => {
-      try {
-        const hasUpdate = args.title !== undefined || args.description !== undefined
-          || args.isActiveOnStart !== undefined || args.disabled !== undefined
-          || args.backgroundColor !== undefined || args.textColor !== undefined;
-        if (!hasUpdate) {
-          return toolError('No updates provided. Specify at least one of: title, description, isActiveOnStart, disabled, backgroundColor, textColor.');
+        if (undoPlacement) {
+          undoPlacement();
+          if (!writeStarted) return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
         }
-        if (args.title !== undefined && args.title.trim().length === 0) {
-          return toolError('title cannot be empty.');
-        }
-
-        let sheet: EventSheet;
-        try {
-          sheet = await reader.readEventSheet(args.sheetName);
-        } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
-        }
-
-        const events = sheet.events as Record<string, unknown>[];
-        const resolved = resolveEventBySid(events, args.sid, {
-          sheetName: args.sheetName,
-          action: 'update',
-          eventPath: args.eventPath,
-        });
-        if ('error' in resolved) return toolError(resolved.error);
-        const found = resolved.match;
-        const group = found.event;
-        if (group.eventType !== 'group') {
-          return toolError(`Event with SID ${args.sid} is a "${group.eventType}", not a group.`);
-        }
-
-        const warnings: string[] = [];
-        if (args.title !== undefined && args.title !== group.title) {
-          // findGroupByPath resolves one title per container, so a duplicate
-          // sibling title would make "A > B" paths ambiguous.
-          const siblingClash = found.parentArray.some(
-            e => e !== group && e.eventType === 'group' && e.title === args.title,
-          );
-          if (siblingClash) {
-            return toolError(`A sibling group titled "${args.title}" already exists in the same container of "${args.sheetName}"; group paths would be ambiguous.`);
-          }
-          let elsewhere = 0;
-          walkEvents(events, e => {
-            if (e !== group && e.eventType === 'group' && e.title === args.title) elsewhere++;
-          });
-          if (elsewhere > 0) {
-            warnings.push(`${elsewhere} other group(s) in "${args.sheetName}" already use the title "${args.title}" in a different container.`);
-          }
-          group.title = args.title;
-        }
-
-        if (args.description !== undefined) group.description = args.description;
-        if (args.isActiveOnStart !== undefined) group.isActiveOnStart = args.isActiveOnStart;
-        if (args.disabled !== undefined) group.disabled = args.disabled;
-        if (args.backgroundColor !== undefined) group['background-color'] = args.backgroundColor;
-        if (args.textColor !== undefined) group['text-color'] = args.textColor;
-
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
-
-        const result: WriteResult = {
-          success: true,
-          entity: args.sheetName,
-          category: 'eventsheet',
-          action: 'updated',
-          warnings: warnings.length > 0 ? warnings : undefined,
-          backupFile: backupPath,
-        };
-        return toolResult({ ...result, updatedSid: args.sid, title: group.title });
-      } catch (error) {
-        console.error('[update_event_group] failed:', error);
-        return toolError(`Error updating event group: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  );
-
-  // ─── update_comment ─────────────────────────────────────────
-
-  server.tool(
-    'update_comment',
-    'Update a comment event. C3 does not give comments a SID, so address one by its 0-based index among its container\'s events (optionally with groupPath or parentSid); sid is accepted for the rare comment that carries one.',
-    {
-      sheetName: z.string().max(200).describe('Event sheet containing the comment'),
-      sid: z.number().int().positive().optional().describe('SID of the comment, when it has one'),
-      eventPath: eventPathSchema,
-      index: z.number().int().min(0).optional().describe('0-based index of the comment among its container\'s events'),
-      groupPath: z.string().max(500).optional().describe('With index: the container group by title path (e.g., "Movement > Collision")'),
-      parentSid: z.number().int().positive().optional().describe('With index: the container group, block, or function-block SID'),
-      text: z.string().max(2000).optional().describe('New comment text'),
-      backgroundColor: colorSchema.optional().describe('Comment background color, written as the "background-color" key'),
-      textColor: colorSchema.optional().describe('Comment text color, written as the "text-color" key'),
-    },
-    async (args) => {
-      try {
-        if ((args.sid === undefined) === (args.index === undefined)) {
-          return toolError('Specify exactly one of: sid, or index (optionally with groupPath or parentSid).');
-        }
-        if (args.eventPath !== undefined && args.sid === undefined) {
-          return toolError('eventPath picks one of several events that share a SID; pass it together with sid.');
-        }
-        if (args.sid !== undefined && (args.groupPath !== undefined || args.parentSid !== undefined)) {
-          return toolError('groupPath and parentSid apply to index addressing only; omit them when using sid.');
-        }
-        if (args.text === undefined && args.backgroundColor === undefined && args.textColor === undefined) {
-          return toolError('No updates provided. Specify at least one of: text, backgroundColor, textColor.');
-        }
-
-        let sheet: EventSheet;
-        try {
-          sheet = await reader.readEventSheet(args.sheetName);
-        } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
-        }
-
-        const events = sheet.events as Record<string, unknown>[];
-        let comment: Record<string, unknown>;
-
-        if (args.sid !== undefined) {
-          const resolved = resolveEventBySid(events, args.sid, {
-            sheetName: args.sheetName,
-            action: 'update',
-            eventPath: args.eventPath,
-          });
-          if ('error' in resolved) {
-            return toolError(`${resolved.error}\nComments usually carry no SID — address one by index instead.`);
-          }
-          const found = resolved.match;
-          if (found.event.eventType !== 'comment') {
-            return toolError(`Event with SID ${args.sid} is a "${found.event.eventType}", not a comment.`);
-          }
-          comment = found.event;
-        } else {
-          const locatorError = validateLocator({
-            groupPath: args.groupPath,
-            parentSid: args.parentSid,
-            position: 'end',
-          });
-          if (locatorError) return toolError(locatorError);
-          const resolution = resolveContainer(events, args.sheetName, {
-            groupPath: args.groupPath,
-            parentSid: args.parentSid,
-            position: 'end',
-          });
-          if ('error' in resolution) return toolError(resolution.error);
-          const target = resolution.container.targetEvents;
-          const index = args.index!;
-          if (index >= target.length) {
-            return toolError(`Index ${index} is out of range (the container holds ${target.length} event(s), indices 0-${Math.max(0, target.length - 1)}).`);
-          }
-          const candidate = target[index];
-          if (candidate.eventType !== 'comment') {
-            return toolError(`Event at index ${index} is a "${candidate.eventType}", not a comment. Indices count every event in the container, not only comments.`);
-          }
-          comment = candidate;
-        }
-
-        if (args.text !== undefined) comment.text = args.text;
-        if (args.backgroundColor !== undefined) comment['background-color'] = args.backgroundColor;
-        if (args.textColor !== undefined) comment['text-color'] = args.textColor;
-
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
-
-        const result: WriteResult = {
-          success: true,
-          entity: args.sheetName,
-          category: 'eventsheet',
-          action: 'updated',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
-      } catch (error) {
-        console.error('[update_comment] failed:', error);
-        return toolError(`Error updating comment: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  );
-
-  // ─── update_script_event ────────────────────────────────────
-
-  server.tool(
-    'update_script_event',
-    'Replace the JavaScript of a standalone script block, or remove the block. C3 stores script blocks without a SID, so address one by its 0-based index among its container\'s events (optionally with groupPath or parentSid).',
-    {
-      sheetName: z.string().max(200).describe('Event sheet containing the script block'),
-      index: z.number().int().min(0).describe('0-based index of the script block among its container\'s events'),
-      groupPath: z.string().max(500).optional().describe('Container group by title path (e.g., "Movement > Collision")'),
-      parentSid: z.number().int().positive().optional().describe('Container group, block, function-block or custom action SID'),
-      script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional()
-        .describe('New JavaScript as one string (split on newlines) or an array of lines'),
-      remove: z.boolean().optional().default(false).describe('Remove the script block instead of editing it'),
-    },
-    async (args) => {
-      try {
-        if ((args.script === undefined) === !args.remove) {
-          return toolError('Specify exactly one of: script (to edit) or remove: true.');
-        }
-        const locatorError = validateLocator({ groupPath: args.groupPath, parentSid: args.parentSid, position: 'end' });
-        if (locatorError) return toolError(locatorError);
-
-        let sheet: EventSheet;
-        try {
-          sheet = await reader.readEventSheet(args.sheetName);
-        } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
-        }
-        const resolution = resolveContainer(sheet.events as Record<string, unknown>[], args.sheetName, {
-          groupPath: args.groupPath,
-          parentSid: args.parentSid,
-          position: 'end',
-        });
-        if ('error' in resolution) return toolError(resolution.error);
-        const target = resolution.container.targetEvents;
-        if (args.index >= target.length) {
-          return toolError(`Index ${args.index} is out of range (the container holds ${target.length} event(s), indices 0-${Math.max(0, target.length - 1)}).`);
-        }
-        const candidate = target[args.index];
-        if (candidate.eventType !== 'script') {
-          return toolError(`Event at index ${args.index} is a "${String(candidate.eventType)}", not a script block. Indices count every event in the container.`);
-        }
-
-        if (args.remove) {
-          target.splice(args.index, 1);
-        } else {
-          candidate.script = toScriptLines(args.script!);
-          if (typeof candidate.language !== 'string') candidate.language = 'javascript';
-        }
-
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
-        const result: WriteResult = {
-          success: true,
-          entity: args.sheetName,
-          category: 'eventsheet',
-          action: args.remove ? 'deleted' : 'updated',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
-      } catch (error) {
-        console.error('[update_script_event] failed:', error);
-        return toolError(`Error updating script block: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  );
-
-  // ─── update_function ────────────────────────────────────────
-
-  server.tool(
-    'update_function',
-    'Update a function-block or a custom action definition (custom-ace-block) — name, description, category, return type, async/copy-picked flags, and its parameter list. A rename rewrites every call (callFunction actions, or customAction calls that resolve to this definition) across all sheets when renameCallers is true, and is refused otherwise. dryRun reports the calls without writing.',
-    {
-      sheetName: z.string().max(200).describe('Event sheet containing the definition'),
-      sid: z.number().int().positive().describe('SID of the function-block or custom-ace-block to update'),
-      eventPath: eventPathSchema,
-      functionName: z.string().max(200).optional().describe('New name: the function name, or the custom action name (aceName) for a custom-ace-block'),
-      renameCallers: z.boolean().optional().default(false).describe('Rewrite every call that targets the old name; without it a rename with callers is refused'),
-      dryRun: z.boolean().optional().default(false).describe('Report the definition and its call sites without writing'),
-      description: z.string().max(2000).optional().describe('New functionDescription'),
-      category: z.string().max(200).optional().describe('New functionCategory'),
-      returnType: z.enum(['none', 'number', 'string', 'any']).optional().describe('New functionReturnType'),
-      isAsync: z.boolean().optional().describe('New functionIsAsync'),
-      copyPicked: z.boolean().optional().describe('New functionCopyPicked'),
-      addParameters: z.array(z.object({
-        name: z.string().max(200).describe('Parameter name'),
-        type: z.enum(['number', 'string', 'boolean']).describe('Parameter type'),
-        initialValue: z.string().max(500).optional().describe('Default value (defaults by type)'),
-        comment: z.string().max(500).optional().describe('Parameter comment'),
-      })).optional().describe('Parameters appended to the end of the list; existing callers keep passing their current arguments'),
-      removeParameters: z.array(z.string().max(200)).optional().describe('Parameter names to remove; refused while callers exist because callers pass arguments positionally'),
-      renameParameters: z.array(z.object({
-        from: z.string().max(200).describe('Current parameter name'),
-        to: z.string().max(200).describe('New parameter name'),
-      })).optional().describe('Rename parameters in place; the position is unchanged so callers keep working'),
-    },
-    async (args) => {
-      try {
-        const hasUpdate = args.functionName !== undefined || args.description !== undefined
-          || args.category !== undefined || args.returnType !== undefined
-          || args.isAsync !== undefined || args.copyPicked !== undefined
-          || (args.addParameters?.length ?? 0) > 0
-          || (args.removeParameters?.length ?? 0) > 0
-          || (args.renameParameters?.length ?? 0) > 0;
-        if (!hasUpdate && !args.dryRun) {
-          return toolError('No updates provided. Specify at least one of: functionName, description, category, returnType, isAsync, copyPicked, addParameters, removeParameters, renameParameters.');
-        }
-
-        let sheet: EventSheet;
-        try {
-          sheet = await reader.readEventSheet(args.sheetName);
-        } catch {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
-        }
-
-        const events = sheet.events as Record<string, unknown>[];
-        const resolved = resolveEventBySid(events, args.sid, {
-          sheetName: args.sheetName,
-          action: 'update',
-          eventPath: args.eventPath,
-        });
-        if ('error' in resolved) return toolError(resolved.error);
-        const found = resolved.match;
-        const func = found.event;
-        const isCustomAction = func.eventType === 'custom-ace-block';
-        if (func.eventType !== 'function-block' && !isCustomAction) {
-          return toolError(`Event with SID ${args.sid} is a "${func.eventType}", not a function-block or custom-ace-block.`);
-        }
-        const nameKey = isCustomAction ? 'aceName' : 'functionName';
-        const oldName = func[nameKey] as string;
-        const owner = isCustomAction ? String(func.objectClass ?? '') : '';
-        // Family membership decides which unqualified custom action calls on a
-        // member object type resolve to a family definition.
-        const familyMembers = new Map<string, string[]>();
-        if (isCustomAction) {
-          // Loaded for family owners (member resolution) and object-type owners (capture checks).
-          for (const [family, data] of await reader.readAllFamilies()) {
-            if (Array.isArray(data.members)) familyMembers.set(family, data.members as string[]);
-          }
-        }
-
-        // Load every sheet once: the same pass finds duplicate function names
-        // and the call sites, using index-builder's rule that a call site is a
-        // non-script action carrying callFunction.
-        const sheetNames = await reader.listEventSheets();
-        const loaded = new Map<string, EventSheet>([[args.sheetName, sheet]]);
-        for (const name of sheetNames) {
-          if (loaded.has(name)) continue;
-          try {
-            loaded.set(name, await reader.readEventSheet(name));
-          } catch {
-            // A sheet that cannot be read holds no rewritable call site; the
-            // rename reports it rather than silently claiming full coverage.
-            loaded.set(name, { name, events: [], sid: 0 } as unknown as EventSheet);
-          }
-        }
-
-        const callSites: Array<{ sheet: string; action: Record<string, unknown> }> = [];
-        const otherFunctionNames = new Set<string>();
-        // Custom action definitions by owner: "owner::name".
-        const customDefinitions = new Set<string>();
-        for (const [, data] of loaded) {
-          walkEvents(data.events as Record<string, unknown>[], event => {
-            if (event.eventType === 'custom-ace-block' && event !== func) {
-              customDefinitions.add(`${String(event.objectClass)}::${String(event.aceName)}`);
-            }
-          });
-        }
-        const resolvesToThis = (action: Record<string, unknown>): boolean => {
-          if (action.customAction !== oldName) return false;
-          const explicit = action.customActionObjectClass as string | undefined;
-          if (explicit !== undefined) return explicit === owner;
-          const callee = String(action.objectClass ?? '');
-          if (callee === owner) return true;
-          // An unqualified call on a member resolves to the family definition
-          // unless the member defines its own custom action of that name.
-          return (familyMembers.get(owner) ?? []).includes(callee)
-            && !customDefinitions.has(`${callee}::${oldName}`);
-        };
-        for (const [name, data] of loaded) {
-          walkEvents(data.events as Record<string, unknown>[], event => {
-            if (event.eventType === 'function-block' && event !== func && typeof event.functionName === 'string') {
-              otherFunctionNames.add(event.functionName);
-            }
-            if (!Array.isArray(event.actions)) return;
-            for (const action of event.actions as Record<string, unknown>[]) {
-              if (action.type === 'script' || action.type === 'comment') continue;
-              if (isCustomAction ? resolvesToThis(action) : action.callFunction === oldName) {
-                callSites.push({ sheet: name, action });
-              }
-            }
-          });
-        }
-
-        if (args.dryRun && !hasUpdate) {
-          return toolResult({
-            dryRun: true,
-            kind: isCustomAction ? 'custom-action' : 'function',
-            name: oldName,
-            objectClass: isCustomAction ? owner : undefined,
-            callSites: callSites.map(site => ({ sheet: site.sheet, sid: site.action.sid, objectClass: site.action.objectClass, arguments: site.action.parameters })),
-            callCount: callSites.length,
-            parameters: (Array.isArray(func.functionParameters) ? func.functionParameters as Array<Record<string, unknown>> : []).map(p => p.name),
-          });
-        }
-
-        const warnings: string[] = [];
-        const parameters = Array.isArray(func.functionParameters)
-          ? func.functionParameters as Array<Record<string, unknown>>
-          : [];
-
-        // ── Preflight the rename ──
-        if (args.functionName !== undefined && args.functionName !== oldName) {
-          try {
-            validateName(args.functionName);
-          } catch (error) {
-            return toolError(`Invalid functionName: ${error instanceof Error ? error.message : String(error)}`);
-          }
-          if (!isCustomAction && otherFunctionNames.has(args.functionName)) {
-            return toolError(`A function named "${args.functionName}" already exists in this project.`);
-          }
-          if (isCustomAction && customDefinitions.has(`${owner}::${args.functionName}`)) {
-            return toolError(`"${owner}" already defines a custom action named "${args.functionName}".`);
-          }
-          if (isCustomAction) {
-            // Family owner: a member's own action of the new name would capture
-            // the renamed plain calls on that member.
-            const capturing = (familyMembers.get(owner) ?? []).filter(member => customDefinitions.has(`${member}::${args.functionName}`));
-            if (capturing.length > 0) {
-              return toolError(`Member object type(s) ${capturing.join(', ')} already define a custom action named "${args.functionName}"; renaming the family action to that name would send their plain calls to the member's own action. Choose another name.`);
-            }
-            // Object-type owner: plain calls of the new name on this object that
-            // currently reach a family definition would be captured by this one.
-            const familiesWithName = [...familyMembers].filter(([family, members]) => members.includes(owner) && customDefinitions.has(`${family}::${args.functionName}`)).map(([family]) => family);
-            if (familiesWithName.length > 0) {
-              let captured = 0;
-              for (const [, data] of loaded) {
-                walkEvents(data.events as Record<string, unknown>[], event => {
-                  for (const action of (Array.isArray(event.actions) ? event.actions : []) as Record<string, unknown>[]) {
-                    if (action.customAction === args.functionName && action.objectClass === owner && action.customActionObjectClass === undefined) captured++;
-                  }
-                });
-              }
-              if (captured > 0) {
-                return toolError(`${captured} plain call(s) of "${args.functionName}" on "${owner}" currently reach the family definition in ${familiesWithName.join(', ')}; renaming this action to "${args.functionName}" would redirect them. Choose another name.`);
-              }
-            }
-          }
-          if (callSites.length > 0 && !args.renameCallers && !args.dryRun) {
-            const bySheet = [...new Set(callSites.map(c => c.sheet))];
-            return toolError(
-              `${isCustomAction ? 'Custom action' : 'Function'} "${oldName}" is called by ${callSites.length} action(s) in: ${bySheet.join(', ')}. ` +
-              `Set renameCallers=true to rewrite every call, or remove the callers first.`,
-            );
-          }
-        }
-
-        // ── Preflight the parameter edits ──
-        const paramNames = parameters.map(p => p.name as string);
-        for (const name of args.removeParameters ?? []) {
-          if (!paramNames.includes(name)) {
-            return toolError(`Function "${oldName}" has no parameter named "${name}". Parameters: ${paramNames.join(', ') || '(none)'}.`);
-          }
-        }
-        if ((args.removeParameters?.length ?? 0) > 0 && callSites.length > 0) {
-          const bySheet = [...new Set(callSites.map(c => c.sheet))];
-          return toolError(
-            `Cannot remove parameters from "${oldName}": ${callSites.length} caller action(s) in ${bySheet.join(', ')} pass arguments positionally ` +
-            `(call actions store a "parameters" array indexed by position), so dropping a parameter would silently shift every later argument. ` +
-            `Update or delete the callers first.`,
-          );
-        }
-        const projectedNames = paramNames.filter(n => !(args.removeParameters ?? []).includes(n));
-        for (const rename of args.renameParameters ?? []) {
-          const at = projectedNames.indexOf(rename.from);
-          if (at === -1) {
-            return toolError(`Function "${oldName}" has no parameter named "${rename.from}" to rename. Parameters: ${projectedNames.join(', ') || '(none)'}.`);
-          }
-          if (rename.to.trim().length === 0) {
-            return toolError('Parameter rename target cannot be empty.');
-          }
-          if (projectedNames.includes(rename.to) && rename.to !== rename.from) {
-            return toolError(`Function "${oldName}" already has a parameter named "${rename.to}".`);
-          }
-          projectedNames[at] = rename.to;
-        }
-        for (const added of args.addParameters ?? []) {
-          if (added.name.trim().length === 0) {
-            return toolError('Parameter name cannot be empty.');
-          }
-          if (projectedNames.includes(added.name)) {
-            return toolError(`Function "${oldName}" already has a parameter named "${added.name}".`);
-          }
-          projectedNames.push(added.name);
-        }
-        if (projectedNames.length > MAX_ITEMS_PER_BLOCK) {
-          return toolError(`Function would have ${projectedNames.length} parameters (max ${MAX_ITEMS_PER_BLOCK}).`);
-        }
-
-        if (args.dryRun) {
-          const renaming = args.functionName !== undefined && args.functionName !== oldName;
-          return toolResult({
-            dryRun: true,
-            kind: isCustomAction ? 'custom-action' : 'function',
-            name: oldName,
-            newName: renaming ? args.functionName : undefined,
-            objectClass: isCustomAction ? owner : undefined,
-            callSites: callSites.map(site => ({ sheet: site.sheet, sid: site.action.sid, objectClass: site.action.objectClass, arguments: site.action.parameters })),
-            callCount: callSites.length,
-            wouldRenameCallers: renaming ? callSites.length : 0,
-            parameters: projectedNames,
-          });
-        }
-
-        // ── Apply ──
-        const modifiedSheets = new Set<string>([args.sheetName]);
-        let renamedCallers = 0;
-        if (args.functionName !== undefined && args.functionName !== oldName) {
-          for (const site of callSites) {
-            if (isCustomAction) site.action.customAction = args.functionName;
-            else site.action.callFunction = args.functionName;
-            renamedCallers++;
-            modifiedSheets.add(site.sheet);
-          }
-          func[nameKey] = args.functionName;
-          if (isCustomAction) {
-            const overrides = [...familyMembers.get(owner) ?? []].filter(member => customDefinitions.has(`${member}::${oldName}`));
-            if (overrides.length > 0) {
-              warnings.push(`Member object type(s) ${overrides.join(', ')} define their own "${oldName}" custom action, which overrides the family one; those definitions and their calls were left unchanged.`);
-            }
-          }
-          // Expression references such as Functions.oldName(...) live inside
-          // parameter strings and are not rewritten here.
-          const expression = new RegExp(`Functions\\.${escapeRegExp(oldName)}\\b`, 'g');
-          let expressionRefs = 0;
-          if (!isCustomAction) {
-            for (const data of loaded.values()) {
-              expressionRefs += (JSON.stringify(data.events).match(expression) ?? []).length;
-            }
-          }
-          if (expressionRefs > 0) {
-            warnings.push(`${expressionRefs} expression reference(s) to "Functions.${oldName}" were left unchanged; update them by hand.`);
-          }
-        }
-
-        if (args.description !== undefined) func.functionDescription = args.description;
-        if (args.category !== undefined) func.functionCategory = args.category;
-        if (args.returnType !== undefined) func.functionReturnType = args.returnType;
-        if (args.isAsync !== undefined) func.functionIsAsync = args.isAsync;
-        if (args.copyPicked !== undefined) func.functionCopyPicked = args.copyPicked;
-
-        let nextParameters = parameters;
-        if ((args.removeParameters?.length ?? 0) > 0) {
-          const drop = new Set(args.removeParameters);
-          nextParameters = nextParameters.filter(p => !drop.has(p.name as string));
-        }
-        for (const rename of args.renameParameters ?? []) {
-          const target = nextParameters.find(p => p.name === rename.from);
-          if (target) {
-            target.name = rename.to;
-            // A parameter is referenced by bare name inside the function body,
-            // so report the hits rather than rewriting expressions blindly.
-            const bare = new RegExp(`\\b${escapeRegExp(rename.from)}\\b`, 'g');
-            const hits = (JSON.stringify(func.conditions ?? []).match(bare) ?? []).length
-              + (JSON.stringify(func.actions ?? []).match(bare) ?? []).length
-              + (JSON.stringify(func.children ?? []).match(bare) ?? []).length;
-            if (hits > 0) {
-              warnings.push(`${hits} expression reference(s) to parameter "${rename.from}" remain inside "${String(func[nameKey])}"; update them by hand.`);
-            }
-          }
-        }
-        for (const added of args.addParameters ?? []) {
-          nextParameters.push({
-            name: added.name,
-            type: added.type,
-            initialValue: added.initialValue ?? (added.type === 'number' ? '0' : added.type === 'boolean' ? 'false' : ''),
-            comment: added.comment ?? '',
-            sid: await idGen.generateSid(reader),
-          });
-        }
-        if ((args.addParameters?.length ?? 0) > 0 && callSites.length > 0) {
-          warnings.push(`${callSites.length} existing caller action(s) do not pass the newly added parameter(s); they fall back to the declared initial values.`);
-        }
-        func.functionParameters = nextParameters;
-
-        // Caller sheets first and the definition's sheet last, so a failure
-        // part way leaves the old name findable and the same call resumes.
-        const writeOrder = [...modifiedSheets].filter(name => name !== args.sheetName);
-        writeOrder.push(args.sheetName);
-        const backupFiles: string[] = [];
-        const filesWritten: string[] = [];
-        for (const name of writeOrder) {
-          const data = loaded.get(name)!;
-          const subfolder = writer.getSubfolderForEntity('eventSheets', name);
-          try {
-            backupFiles.push(await writer.writeEntityFile('eventSheets', name, data, subfolder));
-          } catch (error) {
-            resetProjectIndex();
-            const reason = error instanceof Error ? error.message : String(error);
-            const written = filesWritten.length > 0
-              ? ` Sheets already written (in order): ${filesWritten.join(', ')}; not written: ${writeOrder.slice(filesWritten.length).join(', ')}.`
-              : ' No sheet was written.';
-            return toolError(
-              `update_function failed writing sheet "${name}": ${reason}.${written} ` +
-              'The definition is written last, so re-running the same call resumes: callers already renamed are skipped.'
-            );
-          }
-          filesWritten.push(name);
-        }
-        resetProjectIndex();
-
-        return toolResult({
-          success: true,
-          entity: args.sheetName,
-          category: 'eventsheet',
-          action: 'updated',
-          updatedSid: args.sid,
-          kind: isCustomAction ? 'custom-action' : 'function',
-          functionName: func[nameKey],
-          previousFunctionName: oldName,
-          renamedCallers,
-          updatedSheets: [...modifiedSheets],
-          parameters: (func.functionParameters as Array<Record<string, unknown>>).map(p => p.name),
-          warnings: warnings.length > 0 ? warnings : undefined,
-          backupFiles,
-        });
-      } catch (error) {
-        console.error('[update_function] failed:', error);
-        return toolError(`Error updating function: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error moving event: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -2976,7 +3046,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           sheets.push(entry);
         }
 
-        if (writtenSheets.length > 0) resetProjectIndex();
+        if (writtenSheets.length > 0) resetProjectIndex(reader);
 
         const parts: string[] = [];
         if (totalRenamed > 0) {
@@ -3026,7 +3096,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const partial = writtenSheets.length > 0
           ? ` Sheets already rewritten before the failure: ${writtenSheets.join(', ')}.`
           : '';
-        return toolError(`Error fixing legacy behavior keys: ${error instanceof Error ? error.message : String(error)}${partial}`);
+        return toolError(`Error fixing legacy behavior keys: ${errorMessage(error, reader.getProjectDir())}${partial}`);
       }
     }
   );
@@ -3100,7 +3170,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           sheets.push(entry);
         }
 
-        if (writtenSheets.length > 0) resetProjectIndex();
+        if (writtenSheets.length > 0) resetProjectIndex(reader);
 
         const parts: string[] = [];
         if (totalConverted > 0) {
@@ -3151,7 +3221,7 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         const partial = writtenSheets.length > 0
           ? ` Sheets already rewritten before the failure: ${writtenSheets.join(', ')}.`
           : '';
-        return toolError(`Error fixing legacy event shapes: ${error instanceof Error ? error.message : String(error)}${partial}`);
+        return toolError(`Error fixing legacy event shapes: ${errorMessage(error, reader.getProjectDir())}${partial}`);
       }
     }
   );
@@ -3160,26 +3230,32 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
 
   server.tool(
     'update_event_variable',
-    'Update an existing event variable declaration (rename, change type, change initial value). A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one.',
+    'Update an existing event variable declaration (rename, change type, change initial value, static and constant flags). A rename points uses of the variable at the new name where the server can tell what the parameter holds: the "variable" parameter of System variable conditions and actions, the arguments of function and custom action calls, and, when the ACE catalogue of the project\'s release is available, the parameters the catalogue types as number, string or any (expressions) and as eventvar, eventvarbool or eventvarany (the variable\'s name), in every event sheet that sees the variable (a global variable: every sheet; a local one: the events beside it and below them); uses of the same name that find another variable (a local of that name in another group or one that hides a global, a function parameter) are left as they are. Any other parameter that names the variable (a combo, group, timeline or object parameter, a parameter of another type, or any parameter of an ACE the catalogue does not define or when no catalogue is available), script lines that read it, event sheets that could not be parsed, or a search cut short at its limit, refuse the rename without force; with force those uses keep the old name. A failure midway puts back what was written. A SID shared by several events in the sheet is refused with a list of candidates; pass eventPath to pick one. Use dryRun first to see the uses.',
     {
-      sheetName: z.string().max(200).describe('Event sheet containing the variable'),
+      sheetName: z.string().max(200).describe('Event sheet containing the variable, as registered (letter case included)'),
       sid: z.number().int().describe('SID of the variable event to update'),
       eventPath: eventPathSchema,
-      newName: z.string().max(200).optional().describe('New variable name. Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in the variable\'s scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore'),
+      newName: z.string().max(200).optional().describe('New variable name. Refused like in the editor: a name that matches, ignoring case, an event variable or function parameter in the variable\'s scope (for a global variable: anywhere in the project) or a System expression, or that has whitespace, punctuation such as - . : or a leading underscore. Uses of the variable are pointed at the new name where the server can (see the tool description)'),
       newType: z.enum(['number', 'string', 'boolean']).optional().describe('New variable type'),
       newInitialValue: z.string().max(1000).optional().describe('New initial value (as string — use "0", "false", or "" for defaults)'),
       isStatic: z.boolean().optional().describe('Mark as static (value persists between calls)'),
       isConstant: z.boolean().optional().describe('Mark as constant (cannot be changed at runtime)'),
-      comment: z.string().max(2000).optional().describe('New declaration comment'),
+      dryRun: z.boolean().optional().default(false).describe('Report what the update would change, the uses a rename points at the new name included, and write nothing'),
+      force: z.boolean().optional().default(false).describe('Rename even when uses would keep the old name or a clash cannot be ruled out: parameters the server cannot update, script lines, event sheets that could not be parsed and possibly use a renamed global or declare the new name, or uses past the limit of the search (those uses are NOT updated, and expressions left with the old name made Construct 3 r506-2 show an "Invalid expressions" dialog naming them, offering only to close the project)'),
     },
     async (args) => {
       try {
         const hasUpdates = args.newName !== undefined || args.newType !== undefined ||
-          args.newInitialValue !== undefined || args.isStatic !== undefined || args.isConstant !== undefined ||
-          args.comment !== undefined;
+          args.newInitialValue !== undefined || args.isStatic !== undefined || args.isConstant !== undefined;
         if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: newName, newType, newInitialValue, isStatic, isConstant, comment.');
+          return toolError('No updates provided. Specify at least one of: newName, newType, newInitialValue, isStatic, isConstant.');
         }
+        // Its name check compares the sheet with the other sheets by registered name
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return unregistered;
+
+        // A rename reads the parameter types of the ACE catalogue; a first fetch is not spent between the sheet's read and its write
+        if (args.newName !== undefined) await warmAceCatalog(reader);
 
         let sheet: EventSheet;
         try {
@@ -3201,27 +3277,103 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
         }
 
         const varEvent = findResult.event as unknown as import('../construct3/types.js').VariableEvent;
+        const oldName = varEvent.name;
+        const renaming = args.newName !== undefined && args.newName !== oldName;
+        const parents = findEnclosingEvents(sheet.events, findResult.event as C3Event) ?? [];
+        const isGlobal = parents.length === 0;
 
-        // Check the new name against the variable's scope, as the editor does;
-        // changing the case of this variable's own name is fine
-        if (args.newName !== undefined && args.newName !== varEvent.name) {
-          const parents = findEnclosingEvents(sheet.events, findResult.event as C3Event) ?? [];
-          const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
-          const nameError = eventVariableNameError(
-            sheets, args.sheetName, parents, args.newName, findResult.event as C3Event);
+        // Every check before any change: the name, the sheets that see the variable, its uses
+        let read: RenameSheets | undefined;
+        let plan: VariableRenamePlan | undefined;
+        if (renaming) {
+          try {
+            read = await readRenameSheets(reader, args.sheetName, sheet);
+          } catch (error) {
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+          }
+          // Check the new name against the variable's scope, as the editor does;
+          // changing the case of this variable's own name is fine
+          const nameSheets = new Map<string, C3Event[]>();
+          for (const [name, data] of read.sheets) if (Array.isArray(data.events)) nameSheets.set(name, data.events);
+          const nameError = eventVariableNameError(nameSheets, args.sheetName, parents, args.newName!, findResult.event as C3Event);
           if (nameError) return toolError(nameError);
-          varEvent.name = args.newName;
+          try {
+            plan = await planVariableRename(reader, read, args.sheetName, findResult.event, isGlobal, args.newName!, await parameterTypesFor(reader));
+          } catch (error) {
+            return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+          }
+          const reasons = [
+            ...(blocksWithoutForce(plan.unscanned)
+              ? [`${unscannedRefusal(plan.unscanned)} Such a sheet may ${isGlobal ? `use "${oldName}" or ` : ''}declare a variable named "${args.newName}", which the name check cannot see.`]
+              : []),
+            ...(plan.complete ? [] : [traversalLimitReason(`the uses of "${oldName}"`, plan.limit)]),
+            ...(plan.notUpdated.length > 0 ? [describeUsesNotUpdated(plan.notUpdated, oldName)] : []),
+          ];
+          if (reasons.length > 0 && !args.force) {
+            return toolResult({
+              success: false,
+              entity: args.sheetName,
+              category: 'eventsheet',
+              action: 'rename_blocked',
+              message: `${reasons.join(' ')} Use force=true to rename anyway; those uses keep the old name. Nothing was changed.`,
+              uses: plan.found.uses.map(useEntry),
+              usesNotUpdated: plan.notUpdated.map(notUpdatedEntry),
+              ...unscannedFields(plan.unscanned),
+            });
+          }
         }
 
+        const warnings: string[] = [];
+        if (plan) {
+          warnings.push(...renameWarnings(plan, oldName, args.newName!, args.dryRun));
+          if (!plan.complete) {
+            warnings.push(`${args.dryRun ? 'Would rename' : 'Renamed'} with force=true: ${traversalLimitReason(`the uses of "${oldName}"`, plan.limit)} `
+              + 'Uses there were NOT updated.');
+          }
+          warnings.push(...unscannedWarnings(plan.unscanned, args.dryRun ? 'Would rename' : 'Renamed'));
+        }
+        const renameFields = plan ? {
+          uses: plan.found.uses.map(useEntry),
+          ...(plan.notUpdated.length > 0 ? { usesNotUpdated: plan.notUpdated.map(notUpdatedEntry) } : {}),
+          ...(plan.found.captured.length > 0 ? { captured: plan.found.captured.map(c => ({ sheet: c.sheet, path: c.path, kind: c.kind })) } : {}),
+          ...unscannedFields(plan.unscanned),
+        } : {};
+        // The other sheets with a use, in registration order, then the variable's own sheet
+        const otherSheets = read && plan ? [...read.sheets].filter(([name]) => name !== args.sheetName && plan!.changedSheets.has(name)) : [];
+
+        if (args.dryRun) {
+          return toolResult({
+            success: true,
+            dryRun: true,
+            entity: args.sheetName,
+            category: 'eventsheet',
+            action: 'would_update',
+            eventPath: findResult.path,
+            sheetsToWrite: [...otherSheets.map(([name]) => name), args.sheetName].map(n => reader.getEntityRelativePath('eventSheets', n)),
+            ...renameFields,
+            warnings: warnings.length > 0 ? warnings : undefined,
+          });
+        }
+
+        // The changes, after every check
+        if (plan) {
+          for (const use of plan.found.uses) use.apply(args.newName!);
+          varEvent.name = args.newName!;
+        }
         if (args.newType !== undefined) varEvent.type = args.newType;
         if (args.newInitialValue !== undefined) varEvent.initialValue = args.newInitialValue;
         if (args.isStatic !== undefined) varEvent.isStatic = args.isStatic;
         if (args.isConstant !== undefined) varEvent.isConstant = args.isConstant;
-        if (args.comment !== undefined) (varEvent as unknown as Record<string, unknown>).comment = args.comment;
 
-        const subfolder = writer.getSubfolderForEntity('eventSheets', args.sheetName);
-        const backupPath = await writer.writeEntityFile('eventSheets', args.sheetName, sheet, subfolder);
-        resetProjectIndex();
+        // A failed write rolls the call back (writeEntityOrRollBack)
+        const sheetsWritten: string[] = [];
+        for (const [name, data] of otherSheets) {
+          await writeEntityOrRollBack(writer, 'eventSheets', name, data);
+          sheetsWritten.push(reader.getEntityRelativePath('eventSheets', name));
+        }
+        const backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        sheetsWritten.push(reader.getEntityRelativePath('eventSheets', args.sheetName));
+        resetProjectIndex(reader);
 
         const result: WriteResult = {
           success: true,
@@ -3229,21 +3381,507 @@ export function registerEventTools({ server, reader, writer, idGen }: MutationTo
           category: 'eventsheet',
           action: 'updated',
           backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
-        return toolResult({ ...result, eventPath: findResult.path });
+        return toolResult({ ...result, eventPath: findResult.path, sheetsWritten, ...renameFields });
       } catch (error) {
         console.error('[update_event_variable] failed:', error);
-        return toolError(`Error updating event variable: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating event variable: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
+
+  // ─── update_event_group ───────────────────────────────────
+
+  server.registerTool(
+    'update_event_group',
+    {
+      description: 'Update a group event in place: title, description, "Active on start", disabled, and its colours. Its sub-events and SID stay. A new title is refused when another group in the same list has it, and (unless force=true) while a System "set-group-active" or "is-group-active" parameter ("group-name") or an event sheet that could not be parsed may name the old title: those uses are listed and never rewritten. An update to the values the group already has changes nothing.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        sid: z.number().int().positive().describe('SID of the group'),
+        eventPath: eventPathSchema,
+        title: z.string().max(500).optional().describe('New title'),
+        description: z.string().max(2000).optional().describe('New description'),
+        isActiveOnStart: z.boolean().optional().describe('The editor\'s "Active on start"'),
+        disabled: z.boolean().optional().describe('Disable or enable the group'),
+        backgroundColor: commentColorSchema.nullable().optional().describe('The background colour [red, green, blue, alpha], each 0-1, written as "background-color"; null removes it'),
+        textColor: commentColorSchema.nullable().optional().describe('The text colour [red, green, blue, alpha], each 0-1, written as "text-color"; null removes it'),
+        force: z.boolean().optional().default(false).describe('Rename even while parameters or unparsed sheets may name the old title (they are listed and left as they are)'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of update_event_group', 'update_event_group takes sheetName, sid, eventPath, title, description, isActiveOnStart, disabled, backgroundColor, textColor and force.'),
+      }).strict(),
+    },
+    async (args) => {
+      try {
+        const given = [args.title, args.description, args.isActiveOnStart, args.disabled, args.backgroundColor, args.textColor].some(v => v !== undefined);
+        if (!given) return toolError(nothingChanged('No update given. Give at least one of title, description, isActiveOnStart, disabled, backgroundColor, textColor.'));
+        if (args.title !== undefined && args.title.trim() === '') return toolError(nothingChanged('title is empty.'));
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        const found = resolveEventBySid(events, args.sid, { sheetName: args.sheetName, action: 'update', eventPath: args.eventPath });
+        if ('error' in found) return toolError(nothingChanged(found.error));
+        const group = found.match.event;
+        if (group.eventType !== 'group') return toolError(nothingChanged(`The event with SID ${args.sid} ${typeof group.eventType === 'string' ? `is a "${group.eventType}"` : 'has no eventType'}, ${typeof group.eventType === 'string' ? 'not a group' : 'so it is not a group'}.`));
+        const oldTitle = String(group.title ?? '');
+        const warnings: string[] = [];
+        const sheets = await readEventSheetsFresh(reader, [[args.sheetName, sheet.events]]);
+        let uses: GroupNameUse[] = [];
+        let unscanned: UnscannedFileReport[] = [];
+        const newTitle = args.title !== undefined && args.title !== oldTitle ? args.title : undefined;
+
+        if (newTitle !== undefined) {
+          // A sibling with that title, exactly or once outer whitespace is ignored, makes group paths ambiguous
+          const sibling = found.match.parentArray.find(e => e !== group && e.eventType === 'group' && typeof e.title === 'string'
+            && (e.title === newTitle || e.title.trim() === newTitle.trim()));
+          if (sibling) {
+            return toolError(nothingChanged(`Group "${String(sibling.title)}" (SID ${String(sibling.sid)}) has that title in the same list, so a group path could not tell them apart.`));
+          }
+          const elsewhere = groupTitledElsewhere(sheets, newTitle, group);
+          if (elsewhere) {
+            warnings.push(`Another group of the project has the title "${elsewhere.title}" (sheet "${elsewhere.sheet}", SID ${String(elsewhere.sid)}); "set-group-active" and "is-group-active" name a group by its title.`);
+          }
+          const scan = groupNameUses(sheets, oldTitle);
+          uses = scan.uses;
+          const usesChecked = `"group-name" parameters that name "${oldTitle}"`;
+          const skipped = unscannedFilesOf('eventSheets', await reader.listEventSheets(), await reader.readAllEventSheets(), reader.getReadFailures('eventSheets'))
+            .filter(f => f.name !== args.sheetName);
+          unscanned = await checkUnscannedFiles(reader, skipped, [{ categories: ['eventSheets'], allOf: [[nameTerm(oldTitle)]] }]);
+          const limitReasons = groupNameSearchLimitReasons(usesChecked, scan.stopped);
+          if ((uses.length > 0 || blocksWithoutForce(unscanned) || limitReasons.length > 0) && !args.force) {
+            const listed = uses.slice(0, 10).map(u => `${u.sheet} ${u.path}${u.sid !== undefined ? ` (SID ${u.sid})` : ''}: ${u.value}`);
+            const reasons = [
+              ...(uses.length > 0 ? [`${uses.length} "group-name" parameter(s) name the group "${oldTitle}" or may name it: ${listed.join('; ')}${uses.length > 10 ? `; and ${uses.length - 10} more` : ''}. They are not rewritten.`] : []),
+              ...(blocksWithoutForce(unscanned) ? [unscannedRefusal(unscanned)] : []),
+              ...limitReasons,
+            ];
+            return toolResult({
+              success: false, entity: args.sheetName, category: 'eventsheet', action: 'rename_blocked',
+              message: nothingChanged(`${reasons.join(' ')} Change them first, or use force=true to rename anyway.`),
+              references: uses,
+              ...unscannedFields(unscanned),
+            }, { projectWritten: false });
+          }
+          if (uses.length > 0) {
+            warnings.push(`Renamed with force=true: ${uses.length} "group-name" parameter(s) still name "${oldTitle}" and were left as they are; set them to "${newTitle}".`);
+          }
+          warnings.push(...limitReasons.map(reason => `Renamed with force=true: ${reason}`));
+          warnings.push(...unscannedWarnings(unscanned, 'Renamed'));
+        }
+
+        try {
+          if (newTitle !== undefined) setKeyInOrder(group, 'title', newTitle, GROUP_KEY_ORDER);
+          if (args.description !== undefined) setKeyInOrder(group, 'description', args.description, GROUP_KEY_ORDER);
+          if (args.isActiveOnStart !== undefined) setKeyInOrder(group, 'isActiveOnStart', args.isActiveOnStart, GROUP_KEY_ORDER);
+          if (args.disabled !== undefined) setKeyInOrder(group, 'disabled', args.disabled, GROUP_KEY_ORDER);
+          for (const [key, value] of [['background-color', args.backgroundColor], ['text-color', args.textColor]] as const) {
+            if (value === undefined) continue;
+            if (value === null) delete group[key];
+            else setKeyInOrder(group, key, [...value], GROUP_KEY_ORDER);
+          }
+        } catch (error) {
+          sheet.events = beforeEvents;
+          return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+        }
+
+        const path = found.match.path;
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', updatedSid: args.sid, eventPath: path, title: group.title }, { projectWritten: false });
+        }
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        } catch (error) {
+          sheet.events = beforeEvents;
+          throw error;
+        }
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', updatedSid: args.sid, eventPath: path, title: group.title,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...(uses.length > 0 ? { references: uses } : {}),
+          ...unscannedFields(unscanned),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[update_event_group] failed:', error);
+        return toolError(`Error updating group: ${errorMessage(error, reader.getProjectDir())}`);
+      }
+    }
+  );
+
+  // ─── update_comment ───────────────────────────────────────
+
+  server.registerTool(
+    'update_comment',
+    {
+      description: 'Update a comment event in place: its text and colours. Comments have no SID, so give its container (the top level, groupPath, or parentSid for the sub-events of an event) and its 0-based index among all events there (get_eventsheet_details lists them). A comment row among a block\'s actions is edited with update_event_block instead.',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        groupPath: locatorShape.groupPath,
+        parentSid: locatorShape.parentSid,
+        parentEventPath: locatorShape.parentEventPath,
+        index: z.number().int().min(0).describe('Index of the comment among all events of its container'),
+        text: z.string().max(10_000).optional().describe('New text'),
+        textColor: commentColorSchema.nullable().optional().describe('Text colour [red, green, blue, alpha], each 0-1, written as "text-color"; null removes it'),
+        backgroundColor: commentColorSchema.nullable().optional().describe('Background colour, written as "background-color"; null removes it'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of update_comment', 'update_comment takes sheetName, groupPath, parentSid, parentEventPath, index, text, textColor and backgroundColor. A comment is addressed by its container and index.'),
+      }).strict(),
+    },
+    async (args) => {
+      try {
+        if (args.text === undefined && args.textColor === undefined && args.backgroundColor === undefined) {
+          return toolError(nothingChanged('No update given. Give at least one of text, textColor, backgroundColor.'));
+        }
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        const found = indexedEvent(events, args.sheetName, args, 'comment');
+        if ('error' in found) return toolError(nothingChanged(found.error));
+        const eventPath = eventPathOf(events, found.event);
+        try {
+          editCommentRowInPlace(found.event, { text: args.text, 'text-color': args.textColor, 'background-color': args.backgroundColor }, 'eventType');
+        } catch (error) {
+          sheet.events = beforeEvents;
+          return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+        }
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', eventPath }, { projectWritten: false });
+        }
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        } catch (error) {
+          sheet.events = beforeEvents;
+          throw error;
+        }
+        resetProjectIndex(reader);
+        return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'updated', eventPath, backupFile: backupPath });
+      } catch (error) {
+        console.error('[update_comment] failed:', error);
+        return toolError(`Error updating comment: ${errorMessage(error, reader.getProjectDir())}`);
+      }
+    }
+  );
+
+  // ─── update_script_event ──────────────────────────────────
+
+  server.registerTool(
+    'update_script_event',
+    {
+      description: 'Replace the JavaScript of a script event, enable or disable it, or remove it. Script events have no SID, so give the container (the top level, groupPath, or parentSid) and the 0-based index among all events there. Give exactly one of script, disabled and remove; remove also needs expectedText, the first line of the script event to remove, and is refused when the script event at that index starts otherwise. A script action among a block\'s actions is changed with update_event_block instead. Removing one runs the load-time gate (an else block after it may change the block it follows).',
+      inputSchema: z.object({
+        sheetName: z.string().max(200).describe('Event sheet, as registered (letter case included)'),
+        groupPath: locatorShape.groupPath,
+        parentSid: locatorShape.parentSid,
+        parentEventPath: locatorShape.parentEventPath,
+        index: z.number().int().min(0).describe('Index of the script event among all events of its container'),
+        script: z.union([z.string().max(200_000), z.array(z.string().max(10_000)).max(10_000)]).optional().describe('New JavaScript: one string (split into lines) or an array of lines'),
+        disabled: z.boolean().optional().describe('Disable or enable the script event'),
+        remove: z.boolean().optional().describe('Remove the script event; needs expectedText'),
+        expectedText: z.string().max(10_000).optional().describe('With remove: the first line of the script event to remove, which must match'),
+      }, {
+        errorMap: unknownKeysErrorMap('the arguments of update_script_event', 'update_script_event takes sheetName, groupPath, parentSid, parentEventPath, index, script, disabled, remove and expectedText. A script event is addressed by its container and index.'),
+      }).strict(),
+    },
+    async (args) => {
+      try {
+        const chosen = [args.script !== undefined, args.disabled !== undefined, args.remove === true].filter(Boolean).length;
+        if (chosen !== 1) return toolError(nothingChanged('Give exactly one of script, disabled and remove.'));
+        if (args.remove && args.expectedText === undefined) {
+          return toolError(nothingChanged('remove needs expectedText, the first line of the script event to remove.'));
+        }
+        if (!args.remove && args.expectedText !== undefined) {
+          return toolError(nothingChanged('expectedText is only used with remove.'));
+        }
+        const unregistered = await unregisteredSheetError(reader, args.sheetName);
+        if (unregistered) return toolError(nothingChanged(unregistered.content[0].text));
+        let sheet: EventSheet;
+        try {
+          sheet = await reader.readEventSheet(args.sheetName);
+        } catch {
+          const missing = notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+          return toolError(nothingChanged(missing.content[0].text));
+        }
+        const events = sheet.events as Record<string, unknown>[];
+        const beforeEvents = snapshotEvents(sheet.events);
+        const found = indexedEvent(events, args.sheetName, args, 'script');
+        if ('error' in found) return toolError(nothingChanged(found.error));
+        const eventPath = eventPathOf(events, found.event);
+        const warnings: string[] = [];
+        if (args.remove) {
+          const stored = found.event.script;
+          // A list entry may hold a line break, which the editor shows as two lines
+          const firstLine = String((typeof stored === 'string' || Array.isArray(stored) ? toScriptLines(stored as string | string[]) : [])[0] ?? '').split(/\r?\n/)[0];
+          if (firstLine !== args.expectedText) {
+            return toolError(nothingChanged(`The script event at index ${args.index} of ${found.where} starts with "${firstLine}", not "${args.expectedText}". Read the sheet again and give the index of the script event to remove.`));
+          }
+        }
+        try {
+          if (args.remove) {
+            found.list.splice(args.index, 1);
+            dropEmptiedChildren(found.owner);
+            const loadCheck = await checkLoadRulesBeforeWrite(reader, args.sheetName, beforeEvents, sheet.events);
+            if (loadCheck.errors.length > 0) {
+              sheet.events = beforeEvents;
+              return toolError(nothingChanged(loadRuleErrorMessage(loadCheck.errors)));
+            }
+            warnings.push(...loadCheck.warnings, ...elsePredecessorWarnings(beforeEvents, sheet.events));
+          } else if (args.script !== undefined) {
+            found.event.script = toScriptLines(args.script);
+          } else if (args.disabled) {
+            setKeyAfterSid(found.event, 'disabled', true);
+          } else {
+            delete found.event.disabled;
+          }
+        } catch (error) {
+          sheet.events = beforeEvents;
+          return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
+        }
+        if (JSON.stringify(sheet.events) === JSON.stringify(beforeEvents)) {
+          return toolResult({ success: true, entity: args.sheetName, category: 'eventsheet', action: 'unchanged', eventPath }, { projectWritten: false });
+        }
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'eventSheets', args.sheetName, sheet);
+        } catch (error) {
+          sheet.events = beforeEvents;
+          throw error;
+        }
+        resetProjectIndex(reader);
+        return toolResult({
+          success: true, entity: args.sheetName, category: 'eventsheet', action: args.remove ? 'deleted' : 'updated', eventPath,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          backupFile: backupPath,
+        });
+      } catch (error) {
+        console.error('[update_script_event] failed:', error);
+        return toolError(`Error updating script event: ${errorMessage(error, reader.getProjectDir())}`);
+      }
+    }
+  );
+}
+
+/**
+ * Edit a comment row or comment event in place: its text and colours keep
+ * their place, a new colour goes where the editor writes it ({ type, text,
+ * "text-color", "background-color" } for a row among the actions, { eventType,
+ * text, ... } for a comment event; `typeKey` names the first), and null
+ * removes a colour.
+ */
+function editCommentRowInPlace(
+  row: Record<string, unknown>,
+  edit: { text?: string; 'text-color'?: number[] | null; 'background-color'?: number[] | null },
+  typeKey: 'type' | 'eventType' = 'type',
+): void {
+  if (edit.text !== undefined) row.text = edit.text;
+  for (const key of ['text-color', 'background-color'] as const) {
+    const color = edit[key];
+    if (color === undefined) continue;
+    if (color === null) {
+      delete row[key];
+    } else if (key in row) {
+      row[key] = [...color];
+    } else {
+      // After the keys the editor writes before it
+      const before = key === 'text-color' ? [typeKey, 'text'] : [typeKey, 'text', 'text-color'];
+      const entries = Object.entries(row);
+      let at = 0;
+      entries.forEach(([k], i) => { if (before.includes(k)) at = i + 1; });
+      entries.splice(at, 0, [key, [...color]]);
+      for (const k of Object.keys(row)) delete row[k];
+      for (const [k, v] of entries) row[k] = v;
+    }
+  }
+}
+
+/**
+ * The key order Construct 3 r506-2 (Free edition) saved a group in: eventType
+ * first, sid after children, and the colour keys last, text-color before
+ * background-color.
+ */
+const GROUP_KEY_ORDER = ['eventType', 'disabled', 'title', 'description', 'isActiveOnStart', 'children', 'sid', 'text-color', 'background-color'];
+
+/** Set `key` on `target` in place when it is there, else insert it after the keys `order` puts before it. */
+function setKeyInOrder(target: Record<string, unknown>, key: string, value: unknown, order: readonly string[]): void {
+  if (key in target) {
+    target[key] = value;
+    return;
+  }
+  const before = new Set(order.slice(0, order.indexOf(key)));
+  const entries = Object.entries(target);
+  let at = 0;
+  entries.forEach(([k], i) => { if (before.has(k)) at = i + 1; });
+  entries.splice(at, 0, [key, value]);
+  for (const k of Object.keys(target)) delete target[k];
+  for (const [k, v] of entries) target[k] = v;
+}
+
+/** A condition or action parameter "group-name" that names, or may name, a group title. */
+interface GroupNameUse {
+  sheet: string;
+  /** "events[2] > action:0", in the event path form */
+  path: string;
+  sid?: number;
+  value: string;
+  /** True when the value is the title as a plain quoted string, exactly; false for anything that may give it */
+  definite: boolean;
+}
+
+/**
+ * The "group-name" parameters in `sheets` (sheet name to events) that name
+ * `title`: a quoted string equal to it (definite), equal to it ignoring case,
+ * or any value that is not a plain quoted string (possible, since an
+ * expression may give the title). `stopped` says which limit the walk hit,
+ * the node limit (`events`) or the depth limit (`depth`): a use past it is
+ * unknown.
+ */
+function groupNameUses(sheets: ReadonlyMap<string, readonly unknown[]>, title: string): { uses: GroupNameUse[]; stopped: GroupNameSearchStops } {
+  const uses: GroupNameUse[] = [];
+  const quoted = /^"((?:[^"]|"")*)"$/;
+  const stopped: GroupNameSearchStops = { events: false, depth: false };
+  let nodes = 0;
+  for (const [sheet, events] of sheets) {
+    const stack: Array<{ list: readonly unknown[]; path: string; depth: number }> = [{ list: events, path: 'events', depth: 0 }];
+    while (stack.length > 0) {
+      const { list, path, depth } = stack.pop()!;
+      if (depth > MAX_SEARCH_DEPTH) {
+        stopped.depth = true;
+        continue;
+      }
+      list.forEach((ev, i) => {
+        if (typeof ev !== 'object' || ev === null) return;
+        if (++nodes > MAX_SEARCH_NODES) {
+          stopped.events = true;
+          return;
+        }
+        const event = ev as Record<string, unknown>;
+        const eventPath = `${path}[${i}]`;
+        for (const kind of ['condition', 'action'] as const) {
+          const aces = kind === 'condition' ? event.conditions : event.actions;
+          (Array.isArray(aces) ? aces : []).forEach((ace, j) => {
+            const params = typeof ace === 'object' && ace !== null ? (ace as Record<string, unknown>).parameters : undefined;
+            const value = typeof params === 'object' && params !== null ? (params as Record<string, unknown>)['group-name'] : undefined;
+            if (typeof value !== 'string') return;
+            const literal = quoted.exec(value)?.[1]?.replace(/""/g, '"');
+            if (literal !== undefined && literal !== title && literal.toLowerCase() !== title.toLowerCase()) return;
+            uses.push({ sheet, path: `${eventPath} > ${kind}:${j}`, ...(typeof event.sid === 'number' ? { sid: event.sid } : {}), value, definite: literal === title });
+          });
+        }
+        if (Array.isArray(event.children)) stack.push({ list: event.children, path: `${eventPath}.children`, depth: depth + 1 });
+      });
+    }
+  }
+  return { uses, stopped };
+}
+
+/** Which limit a groupNameUses walk hit. */
+interface GroupNameSearchStops {
+  events: boolean;
+  depth: boolean;
+}
+
+/**
+ * Why a groupNameUses walk that hit a limit refuses a rename without force:
+ * one sentence per limit it hit, naming the search's own limits.
+ */
+function groupNameSearchLimitReasons(checked: string, stopped: GroupNameSearchStops): string[] {
+  return [
+    ...(stopped.events
+      ? [`The check for ${checked} stopped at its traversal limit (${MAX_SEARCH_NODES.toLocaleString('en-US')} events across all event sheets), so uses further on are unknown.`]
+      : []),
+    ...(stopped.depth
+      ? [`The check for ${checked} stopped at its nesting-depth limit (events nested more than ${MAX_SEARCH_DEPTH} deep), so uses further on are unknown.`]
+      : []),
+  ];
+}
+
+/**
+ * The first group of `sheets` (sheet name to events), other than `except`,
+ * whose title equals `title` once outer whitespace and letter case are
+ * ignored. Sheets in their order, each list before the lists below it.
+ */
+function groupTitledElsewhere(
+  sheets: ReadonlyMap<string, readonly unknown[]>,
+  title: string,
+  except: Record<string, unknown>,
+): { sheet: string; title: string; sid?: number } | undefined {
+  const wanted = title.trim().toLowerCase();
+  for (const [sheet, events] of sheets) {
+    const lists: Array<readonly unknown[]> = [events];
+    for (let next = 0; next < lists.length; next++) {
+      for (const ev of lists[next]) {
+        if (typeof ev !== 'object' || ev === null) continue;
+        const event = ev as Record<string, unknown>;
+        if (event !== except && event.eventType === 'group' && typeof event.title === 'string' && event.title.trim().toLowerCase() === wanted) {
+          return { sheet, title: event.title, ...(typeof event.sid === 'number' ? { sid: event.sid } : {}) };
+        }
+        if (Array.isArray(event.children)) lists.push(event.children);
+      }
+    }
+  }
+  return undefined;
+}
+
+/** An event that has no SID (a comment or script event), found by its container and index. */
+interface IndexedEvent {
+  event: Record<string, unknown>;
+  list: Record<string, unknown>[];
+  /** Where it stands, for messages: "the top level", 'group "G"' or "the sub-events of SID 12" */
+  where: string;
+  /** The group or event whose sub-events `list` is; undefined at the top level. */
+  owner: Record<string, unknown> | undefined;
+}
+
+/**
+ * Resolve the container and index of an event that has no SID (a comment or
+ * script event) and check it is of the `wanted` type. Changes nothing.
+ */
+function indexedEvent(
+  events: Record<string, unknown>[],
+  sheetName: string,
+  args: { groupPath?: string; parentSid?: number; parentEventPath?: string; index: number },
+  wanted: 'comment' | 'script',
+): IndexedEvent | { error: string } {
+  const resolution = resolveContainer(events, sheetName, { groupPath: args.groupPath, parentSid: args.parentSid, parentEventPath: args.parentEventPath, position: 'end' });
+  if ('error' in resolution) return { error: resolution.error };
+  const { targetEvents: list, owner, kind } = resolution.container;
+  const where = owner === undefined
+    ? 'the top level'
+    : kind === 'group' ? `group "${String(owner.title)}"` : `the sub-events of SID ${String(owner.sid)}`;
+  if (args.index >= list.length) return { error: `Index ${args.index} is out of range: ${where} holds ${list.length} event(s), indexes 0-${Math.max(0, list.length - 1)}.` };
+  const event = list[args.index];
+  if (event.eventType !== wanted) {
+    const noun = wanted === 'comment' ? 'comment' : 'script event';
+    const what = typeof event.eventType === 'string' ? `is a "${event.eventType}", not a ${noun}` : `has no eventType, so it is not a ${noun}`;
+    return { error: `The event at index ${args.index} of ${where} ${what}; indexes count every event of the container.` };
+  }
+  return { event, list, where, owner };
 }
 
 /** SIDs listed in the copied-SIDs warning; the rest are counted. */
 const MAX_LISTED_SHARED_SIDS = 10;
 
 /**
- * Warning for events copied into a sheet (already inserted there) whose SIDs,
+ * Warning for events moved into a sheet (already inserted there) whose SIDs,
  * or those of their sub-events, now match more than one event of that sheet,
  * or undefined when every copied SID is unique there. Such SIDs are refused by
  * the SID-based tools in that sheet unless an eventPath picks one.
@@ -3266,11 +3904,216 @@ function copiedSidsWarning(
   const more = entries.length > MAX_LISTED_SHARED_SIDS ? `; and ${entries.length - MAX_LISTED_SHARED_SIDS} more` : '';
   const one = shared.size === 1;
   return (
-    `${one ? 'A SID' : `${shared.size} SIDs`} of the copied events now ${one ? 'matches' : 'match'} more than one event in "${sheetName}", ` +
-    `because copied events keep their SIDs: ${listed}${more}. ` +
+    `${one ? 'A SID' : `${shared.size} SIDs`} of the moved events now ${one ? 'matches' : 'match'} more than one event in "${sheetName}", ` +
+    `because moved events keep their SIDs: ${listed}${more}. ` +
     `update_event_block, update_event_block_action, update_event_variable and delete_event_from_sheet refuse ${one ? 'this SID' : 'these SIDs'} ` +
     `in "${sheetName}" unless eventPath names one of the events.`
   );
+}
+
+/** True when `target` (compared by identity) is among the sub-events of `event`, at any depth. */
+function isWithin(event: Record<string, unknown>, target: Record<string, unknown>): boolean {
+  const stack: unknown[] = Array.isArray(event.children) ? [...event.children] : [];
+  let nodes = 0;
+  while (stack.length > 0) {
+    if (++nodes > MAX_SEARCH_NODES) throw new Error(`Sub-event scan exceeded ${MAX_SEARCH_NODES} nodes`);
+    const current = stack.pop();
+    if (current === target) return true;
+    if (typeof current === 'object' && current !== null && Array.isArray((current as Record<string, unknown>).children)) {
+      stack.push(...((current as Record<string, unknown>).children as unknown[]));
+    }
+  }
+  return false;
+}
+
+/**
+ * Why `moving`, once it stands below `parents` (the events enclosing its new
+ * place, outermost first), puts a function block where one is not placed
+ * (functionBlockTriggerRefusal), or undefined. The function block is `moving`
+ * itself or one inside it at any depth; what stands between it and `moving`
+ * does not change with the move, so only `parents` decides, and the first
+ * function block found is the one the message names.
+ */
+function movedFunctionBlockRefusal(moving: Record<string, unknown>, parents: readonly C3Event[]): string | undefined {
+  const stack: Array<Record<string, unknown>> = [moving];
+  while (stack.length > 0) {
+    const event = stack.pop()!;
+    if (event.eventType === 'function-block') {
+      const refusal = functionBlockTriggerRefusal(parents);
+      if (refusal === undefined || event === moving) return refusal;
+      const sid = typeof event.sid === 'number' ? ` with SID ${event.sid}` : '';
+      return `The event with SID ${String(moving.sid)} holds the function block${sid}. ${refusal}`;
+    }
+    if (!Array.isArray(event.children)) continue;
+    for (const child of [...event.children as unknown[]].reverse()) {
+      if (typeof child === 'object' && child !== null) stack.push(child as Record<string, unknown>);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Why `moving`, once it stands below `parents` (the events enclosing its new
+ * place, outermost first), puts a custom action block where an event that is
+ * not a group stands above it, or undefined. The custom action block is
+ * `moving` itself or one inside it at any depth; the events between `moving`
+ * and that block count as well as `parents`, and the first block found with a
+ * non-group above it is the one the message names. Construct 3 r506-2 (Free
+ * edition) was seen accepting a custom action block only at the top level and
+ * in a top-level group, and the load-time check treats a custom action block
+ * as a trigger root; the rule is this tool's own and was not checked in the
+ * editor.
+ */
+function movedCustomActionBlockRefusal(moving: Record<string, unknown>, parents: readonly C3Event[]): string | undefined {
+  const stack: Array<{ event: Record<string, unknown>; above: Array<Record<string, unknown>> }> = [
+    { event: moving, above: [...parents as ReadonlyArray<Record<string, unknown>>] },
+  ];
+  while (stack.length > 0) {
+    const { event, above } = stack.pop()!;
+    if (event.eventType === 'custom-ace-block') {
+      const nonGroup = above.find(parent => parent.eventType !== 'group');
+      if (nonGroup === undefined) continue;
+      const what = nonGroup.eventType === 'block' ? (Array.isArray(nonGroup.conditions) && nonGroup.conditions.length > 0 ? 'a block with conditions' : 'a block')
+        : nonGroup.eventType === 'function-block' ? 'a function block'
+          : nonGroup.eventType === 'custom-ace-block' ? 'a custom action block' : `an event of type "${String(nonGroup.eventType)}"`;
+      const held = event === moving ? '' : `The event with SID ${String(moving.sid)} holds the custom action block${typeof event.sid === 'number' ? ` with SID ${event.sid}` : ''}. `;
+      return `${held}A custom action block is not placed below ${what}${typeof nonGroup.sid === 'number' ? ` (SID ${nonGroup.sid})` : ''}: ` +
+        'Construct 3 r506-2 (Free edition) was seen accepting one only at the top level and in a top-level group, and the load check this tool follows ' +
+        'treats a custom action block as a trigger root, as it does a function block, which r506-2 (Free edition) refused to open under an "On start" block. ' +
+        'This is the tool\'s own rule, not checked in the editor. It can go at the top level, in a group, or in a group that has only groups above it.';
+    }
+    if (!Array.isArray(event.children)) continue;
+    for (const child of [...event.children as unknown[]].reverse()) {
+      if (typeof child === 'object' && child !== null) stack.push({ event: child as Record<string, unknown>, above: [...above, event] });
+    }
+  }
+  return undefined;
+}
+
+/** Error text for a move within one sheet that would put names Construct 3 treats as the same into one scope; a name in another sheet is placed by its sheet. */
+function sameSheetNameClashMessage(sheetName: string, clashes: readonly NewEventVariableNameClash[]): string {
+  const lines = clashes.slice(0, 10).map(({ declaration, use }) => {
+    const what = declaration.kind === 'function parameter' ? 'function parameter' : declaration.parents.length === 0 ? 'global variable' : 'local variable';
+    const other = use.kind === 'variable' ? 'event variable' : 'function parameter';
+    const relation = use.name === declaration.name ? 'has the same name as' : 'differs only in case from';
+    return `- the ${what} "${declaration.name}" ${relation} the ${other} "${use.name}"${use.sheet === sheetName ? '' : ` in sheet "${use.sheet}"`}`;
+  });
+  if (clashes.length > 10) lines.push(`- and ${clashes.length - 10} more`);
+  return 'Moving the event would put names that Construct 3 treats as the same (ignoring case) into one event variable scope:\n' +
+    `${lines.join('\n')}\n\nRename one of them first (update_event_variable).`;
+}
+
+/**
+ * The warning for a System "else" condition that update_event_block inserts or
+ * puts in place of a condition anywhere but first. `startsWithElse` is true
+ * when the block starts with an else condition or gets one through isElse:
+ * true; the advice to use isElse: true then does not apply, because Else is
+ * saved once, as the first condition.
+ */
+function misplacedElseWarning(where: string, what: 'an inserted' | 'a replacing', index: number, isElse: boolean | undefined, startsWithElse: boolean): string {
+  const start = `${where}: ${what} System "else" condition is condition ${index}, but `;
+  if (startsWithElse) {
+    return `${start}this block ${isElse === true ? 'gets an else condition first through isElse: true' : 'already starts with one'}, and Construct 3 saves Else once, as the first condition.`;
+  }
+  return `${start}Construct 3 saves Else as the first condition. Use isElse: true instead.`;
+}
+
+/**
+ * A "not found" error when the project registers no event sheet under exactly
+ * `name`, else undefined. On a file system that ignores case the reader also
+ * opens a sheet by a name that differs in case, but the tools that check a
+ * sheet together with the other event sheets key them by their registered
+ * names: they would see that sheet twice, once as saved, and miss what the
+ * change does to it (issue #38). A name that differs only in letter case gets
+ * its own hint, as in update_object_properties.
+ */
+async function unregisteredSheetError(
+  reader: MutationToolDeps['reader'],
+  name: string,
+): Promise<ReturnType<typeof toolError> | undefined> {
+  const message = unregisteredNameMessage(
+    'Event sheet', name, await reader.listEventSheets(), () => reader.findNearestName(name, 'eventsheets'), 'list_eventsheets',
+  );
+  return message === undefined ? undefined : toolError(message);
+}
+
+/**
+ * Rewrite a call's positional arguments for a parameter list change:
+ * drop the arguments at `removed` (indexes in the old list) and append
+ * `added`. Only a call that passes exactly `oldCount` arguments is
+ * changed, so a call this rewrite already changed (a run repeated after
+ * the process stopped, for a change that alters the count) is left as it
+ * is. Returns false for a call left alone.
+ */
+function rewriteCallArguments(call: Record<string, unknown>, oldCount: number, removed: ReadonlySet<number>, added: readonly FunctionArgument[]): boolean {
+  const args = Array.isArray(call.parameters) ? call.parameters as FunctionArgument[] : [];
+  if (args.length !== oldCount) return false;
+  const next = [...args.filter((_a, i) => !removed.has(i)), ...added];
+  rewriteFunctionCallInPlace(call, next);
+  return true;
+}
+
+/** A new parameter's initial value when none is given, as createFunctionEvent writes it (templates.ts). */
+function defaultInitialValue(type: 'number' | 'string' | 'boolean'): string {
+  return type === 'number' ? '0' : type === 'boolean' ? 'false' : '';
+}
+
+/**
+ * The argument a call passes for a new parameter, or why the initial value
+ * cannot be one: a number as its numeric literal, a string as a Construct
+ * string literal (a quote inside is written twice, as layerNameLiteral does
+ * in layer-references.ts; a line break is refused), a boolean as JSON true
+ * or false, as calls store booleans.
+ */
+function callArgumentFor(
+  type: 'number' | 'string' | 'boolean',
+  initialValue: string | undefined,
+): { value: FunctionArgument } | { problem: string } {
+  if (type === 'boolean') {
+    const text = initialValue ?? 'false';
+    if (text !== 'true' && text !== 'false') return { problem: `The initial value of a boolean parameter is "true" or "false", not "${text}".` };
+    return { value: text === 'true' };
+  }
+  if (type === 'number') {
+    const text = (initialValue ?? '0').trim();
+    if (!/^-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/.test(text)) {
+      return { problem: `The initial value of a number parameter is a number, such as "0" or "2.5", not "${initialValue}"; the calls get it as their argument.` };
+    }
+    return { value: text };
+  }
+  // This tool's own rule: whether the editor accepts a line break inside a string literal has not been checked
+  if (/[\r\n]/.test(initialValue ?? '')) {
+    return {
+      problem: 'The initial value of a string parameter cannot hold a line break (a newline or carriage return): this tool writes it into each call ' +
+        'as a one-line string literal, and whether Construct 3 accepts a line break there has not been checked.',
+    };
+  }
+  return { value: `"${(initialValue ?? '').replace(/"/g, '""')}"` };
+}
+
+/** A call or other use of a function or custom action where it stands, with the stored action for a rewrite in place. */
+interface CallReference {
+  kind: DeleteReferenceKind | 'customAction';
+  sheet: string;
+  path: string;
+  sid?: number;
+  ace: Record<string, unknown>;
+}
+
+/** A custom action call as update_function lists and rewrites calls. */
+function customCallReference(site: CustomActionCallSite): CallReference {
+  return { kind: 'customAction', sheet: site.sheet, path: site.path, ...(site.sid !== undefined ? { sid: site.sid } : {}), ace: site.ace };
+}
+
+/** A reference as a result lists it. */
+function referenceEntry(r: Omit<CallReference, 'ace'>): Record<string, unknown> {
+  return { sheet: r.sheet, path: r.path, ...(r.sid !== undefined ? { sid: r.sid } : {}), kind: r.kind };
+}
+
+/** Up to ten references for a message, then how many more. */
+function listReferences(refs: readonly Omit<CallReference, 'ace'>[]): string {
+  const shown = refs.slice(0, 10).map(r => `${r.sheet} ${r.path}${r.sid !== undefined ? ` (SID ${r.sid})` : ''}`);
+  return `${shown.join('; ')}${refs.length > 10 ? `; and ${refs.length - 10} more` : ''}`;
 }
 
 /**
@@ -3367,34 +4210,107 @@ function eventVariableNameError(
 }
 
 /**
- * Why the editor would refuse the parameter `names` of a new function added to
- * sheet `sheetName` under `parents`, checked in order like the
+ * Why the editor would refuse the parameter `names` of a new function that
+ * goes into sheet `sheetName` under `parents` (the events enclosing it,
+ * outermost first; empty at the top level), checked in order like the
  * editor's Function parameter dialog when the parameters are added one by
  * one; undefined when it would accept them all. `sheets` holds the events of
- * every event sheet (from readEventSheetsFresh).
+ * every event sheet (from readEventSheetsFresh). `argument` is the tool
+ * argument that lists the names, for the messages about duplicates.
  */
-function functionParameterNamesError(
+export function functionParameterNamesError(
   sheets: ReadonlyMap<string, readonly C3Event[]>,
   sheetName: string,
   names: readonly string[],
   parents: readonly C3Event[] = [],
+  argument = 'functionParams',
 ): string | undefined {
-  // The new function has no sub-events yet, so a parameter's scope is every
-  // global variable, those of the events enclosing the function (`parents`,
-  // outermost first; empty at the top level) and the parameters before it
+  // The new function has no sub-events yet, so a parameter's scope is every global variable, the variables of the events enclosing it and the parameters before it
   const fn = { eventType: 'function-block', functionParameters: [] as Array<{ name: string }>, children: [] };
+  const parameterRule = parents.length === 0
+    ? NAME_SCOPE_RULE.parameter
+    : `${NAME_SCOPE_RULE.parameter} This tool also refuses a name the variables of the events enclosing the new function have (its own rule for a function in a group or event, not checked in the Construct 3 editor).`;
   for (const name of names) {
     const problem = findEventVariableNameProblem(name, eventVariableNameUses(sheets, sheetName, [...parents, fn as unknown as C3Event]));
+    if (problem?.problem === 'in-use' && problem.use.kind === 'function parameter'
+      && !fn.functionParameters.some(p => p.name === problem.use.name)) {
+      // Not one of the new function's own parameters: a parameter of a function enclosing it
+      return `${argument} lists "${name}", which ${problem.use.name === name ? 'is also a parameter of' : `differs only in case from the parameter "${problem.use.name}" of`} the function that encloses the new function (sheet "${problem.use.sheet}"). ` +
+        'This tool refuses a parameter name that a function enclosing the new function has (its own rule, not checked in the Construct 3 editor). Choose a different name.';
+    }
     if (problem?.problem === 'in-use' && problem.use.kind === 'function parameter') {
       return problem.use.name === name
-        ? `functionParams lists "${name}" more than once. ${NAME_SCOPE_RULE.parameter}`
-        : `functionParams lists "${problem.use.name}" and "${name}", which differ only in case. Construct 3 treats ` +
+        ? `${argument} lists "${name}" more than once. ${NAME_SCOPE_RULE.parameter}`
+        : `${argument} lists "${problem.use.name}" and "${name}", which differ only in case. Construct 3 treats ` +
           `them as the same function parameter name. ${NAME_SCOPE_RULE.parameter}`;
     }
-    if (problem) return eventVariableNameMessage(problem, name, 'function parameter', NAME_SCOPE_RULE.parameter);
+    if (problem) return eventVariableNameMessage(problem, name, 'function parameter', parameterRule);
     fn.functionParameters.push({ name });
   }
   return undefined;
+}
+
+/**
+ * Why a function block may not go below `parents` (the events enclosing it,
+ * outermost first; empty at the top level), or undefined. An event branch
+ * holds one trigger, and a function block is a trigger root, so a function
+ * block is refused under or below a block that holds a trigger condition and
+ * under or below a function block or a custom action block (the load-time
+ * check, load-rules.ts, counts both kinds of block as triggers). Recorded
+ * editor case: Construct 3 r506-2 (Free edition) refused to open a function
+ * block under an "On start" block. The other arrangements follow the
+ * load-time check and were not tried in the editor. Groups do not count. A
+ * condition is a trigger by its id (isTriggerId: the id starts with "on-"),
+ * as in the load-time check, whatever addon it belongs to; the editor was
+ * seen refusing only the built-in "On start of layout".
+ */
+function functionBlockTriggerRefusal(parents: readonly C3Event[]): string | undefined {
+  const recorded = 'Construct 3 r506-2 (Free edition) refused to open a project with a function block under an "On start" block ("cannot add another trigger to event branch")';
+  const goes = 'It can go at the top level, in a group, or among the sub-events of blocks that have no trigger in them or above them and are not inside a function block or a custom action block.';
+  for (const parent of parents as ReadonlyArray<Record<string, unknown>>) {
+    const sid = typeof parent.sid === 'number' ? ` with SID ${parent.sid}` : '';
+    if (parent.eventType === 'function-block' || parent.eventType === 'custom-ace-block') {
+      const kind = parent.eventType === 'function-block' ? 'function block' : 'custom action block';
+      return `A function block is not placed under or below the ${kind}${sid}: the load-time check of this tool counts a function block and a custom action block as a trigger, and an event branch holds one trigger. ` +
+        `${recorded}; this arrangement was not tried in the editor. ${goes}`;
+    }
+    if (!Array.isArray(parent.conditions)) continue;
+    const trigger = (parent.conditions as Array<Record<string, unknown> | null>).find(c => isTriggerId(c?.id));
+    if (!trigger) continue;
+    return `A function block is not placed under the block${sid}, which has a condition with the trigger id "${String(trigger.id)}", which this tool takes for a trigger because the id starts with "on-", whatever addon the condition belongs to, or below it: ${recorded}, and the load-time check of this tool treats a trigger in an enclosing event the same way. ${goes}`;
+  }
+  return undefined;
+}
+
+/** Error text for a function name the editor would refuse (see event-variable-names.ts, Function names). */
+function functionNameMessage(problem: FunctionNameProblem, name: string, returnType: string): string {
+  if (problem.problem === 'invalid') {
+    return `"${name}" is not a valid name for a function with return type "${returnType}": ${problem.reason}. ` +
+      'A function with a return type is used in expressions (Functions.Name(...)), so Construct 3 gives it only a name ' +
+      'it accepts for an event variable: no whitespace, no punctuation such as - . : ( ), no leading underscore, not ' +
+      'only digits. A function without a return type (functionReturnType "none") may have such a name. Choose a different name.';
+  }
+  if (problem.problem === 'reserved') {
+    return `"${name}" is the name of the System expression "${problem.expression}"${problem.expression === name ? '' : ' (ignoring case)'}. ` +
+      'Construct 3 reserves the names of its built-in System functions for functions; choose a different name.';
+  }
+  const { use } = problem;
+  const same = use.name === name ? `A function named "${name}"` : `The function "${use.name}", which differs from "${name}" only in case,`;
+  return `${same} already exists in sheet "${use.sheet}" (${use.eventPath}${use.sid !== undefined ? `, SID ${use.sid}` : ''}). ` +
+    'Construct 3 requires a function name to differ, ignoring case, from every other function in the project (it looks ' +
+    'functions up ignoring case, so a call could not tell them apart). Choose a different name.';
+}
+
+/** Error text for a copy that would leave two function blocks whose names match ignoring case. */
+function copiedFunctionNameClashMessage(targetSheet: string, groups: readonly FunctionBlockName[][]): string {
+  const lines = groups.slice(0, 10).map(g =>
+    `- ${g.map(f => `"${f.name}" in sheet "${f.sheet}" (${f.eventPath})`).join(', ')}`);
+  if (groups.length > 10) lines.push(`- and ${groups.length - 10} more`);
+  return `Copying these events to "${targetSheet}" would leave function blocks whose names match, ignoring case:\n` +
+    `${lines.join('\n')}\n\n` +
+    'Construct 3 requires a function name to differ, ignoring case, from every other function in the project, and ' +
+    'renames a pasted function block; this tool keeps the names, so nothing was written. Move the function instead ' +
+    '(deleteSource: true).';
 }
 
 /** Error text for copied or moved events whose variable or parameter names clash in their new scope. */

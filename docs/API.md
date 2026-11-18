@@ -6,17 +6,11 @@ Complete reference for all resources, tools, and prompts provided by the Constru
 
 - [Resources](#resources)
 - [Query Tools](#query-tools)
-- [Project Session Tools](#project-session-tools)
 - [Analysis Tools](#analysis-tools)
+- [Usage Tools](#usage-tools)
 - [Mutation Tools](#mutation-tools)
-- [Timeline Tools](#timeline-tools)
-- [Effect Tools](#effect-tools)
-- [Flowchart Tools](#flowchart-tools)
-- [Structure Tools](#structure-tools)
-- [Rename Tools](#rename-tools)
-- [Template and Tilemap Tools](#template-and-tilemap-tools)
-- [Runtime Bridge and Packaging Tools](#runtime-bridge-and-packaging-tools)
-- [Runtime Connection Tools](#runtime-connection-tools)
+- [Change Journal Tools](#change-journal-tools)
+- [Runtime Tools](#runtime-tools)
 - [Prompts](#prompts)
 - [Error Handling](#error-handling)
 - [Type Definitions](#type-definitions)
@@ -70,7 +64,7 @@ Index of documentation: the manual URL, topic categories (interface, project, pl
 
 ### `construct3://docs/manual/{topic}`
 
-Official Construct 3 documentation fetched from construct.net.
+A short Markdown stub with the construct.net manual URL for the topic. The page content is not fetched; the stub asks the client to open the URL itself (construct.net blocks many automated requests).
 
 ### `construct3://docs/pitfalls`
 
@@ -136,7 +130,29 @@ Search objects by name pattern (case-insensitive substring match).
 
 Comprehensive project overview including metadata, statistics, addon counts, and entity lists. No parameters.
 
-The read-only timeline tools `list_timelines`, `list_timeline_tracks` and `get_timeline_details` are described under [Timeline Tools](#timeline-tools).
+### `list_timelines`
+
+List all timeline names (root and subfolders) with a count, in project-bar order. No parameters. Transitions (the easing curves in the editor's Transitions folder, which `project.c3proj` keeps as the first-level `timelines` subfolder without a `name`) are returned separately in `transitions`. Any other subfolder without a name is malformed (reported by `validate_project`); its items are not listed, the other timeline tools report them as unresolvable, and `create_timeline` refuses their names so they are not registered twice.
+
+### `get_timeline_details`
+
+Full timeline JSON, including tracks and settings. The file is located from the timeline's folder in `project.c3proj`: `timelines/<name>.json` at the root, `timelines/<folder>/.../<name>.json` in a subfolder. Transitions (stored in `timelines/transitions/`) are refused: the timeline tools never read, change or delete them.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Timeline name |
+
+### `list_flowcharts`
+
+List all flowchart names (root and folders) with a count, in project-bar order. No parameters. A name registered in a folder without a name is not listed, and the other flowchart tools do not resolve it.
+
+### `get_flowchart_details`
+
+Full flowchart JSON: its nodes, outputs and connections. The file is located from the flowchart's folder in `project.c3proj`: `flowcharts/<name>.json` at the root, `flowcharts/<folder>/.../<name>.json` in a folder. The name must be given as registered; a name in another letter case is refused with the registered name. A file that is missing, cannot be read, is not valid JSON or holds no list of nodes is refused, with the file named project-relative.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Flowchart name |
 
 ### `list_addons`
 
@@ -145,54 +161,6 @@ List the addons registered in the project's `usedAddons`, with a count.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `type` | `"plugin"` \| `"behavior"` \| `"effect"` \| `"all"` | No | Filter by addon type (default: all) |
-
----
-
-## Project Session Tools
-
-The server starts on the project its command line names. These tools report it, switch to another one while the server runs, re-read it after an outside save, and list or undo what recent calls changed.
-
-### File stamps and the change journal
-
-The server remembers the size and modification time of every project file it reads or writes. A call that reads a file Construct or another program saved since then says so in its result (`Note: 1 file(s) changed on disk since this server last read them ...`) and works from the file's current content. A write that starts from a stale bulk read (the caches `validate_project` and the analyzers fill) is refused with the same wording until `reload_project` runs, so a stale copy never overwrites an editor save.
-
-Every call also gets a journal entry: the files it wrote, created, deleted or moved, and the `.bak` backup each write or delete left beside the file. A file written twice in one call keeps one backup, holding its content from before the call. A mutation result ends with `Changed N file(s): ...` naming them. `list_changes` shows the entries and `revert_last_change` undoes the most recent one from those backups. A placeholder image overwritten by `create_object` or `add_frame_to_animation` has no backup and is reported as not restorable. Files outside the served project (a `clone_project` target, a screenshot) and the `.c3p` write-back, which its own line reports, are not journaled.
-
-### `reload_project`
-
-Re-read the project from disk: every cached file, the project index and the file stamps. No parameters. Returns the project name and `changedOnDisk`, the files whose stamp no longer matched (`changed`) or that are gone (`missing`) before the stamps were cleared.
-
-### `list_changes`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `limit` | integer | No | How many calls to list, newest first, 1 to 50 (default 20) |
-
-Returns `calls`: for each call that changed a file, its `id`, `tool`, `at`, `reverted` flag and `changes` (`kind` of `write`, `create`, `delete`, `move`, `copy` or `overwrite-no-backup`, the `file`, a move's `from`, and the `backup` when one exists), paths relative to the project.
-
-### `revert_last_change`
-
-Undo the most recent call that changed files, last change first: a written or deleted file is restored from its `.bak`, a created or copied file removed, a moved file moved back. No parameters. Refused when a later call, reverted or not, touched any of the same files, because their backups then hold that later state; the message names those calls. Also refused, before anything is restored, when any of the call's files or backups no longer holds what it held when the call ended (Construct, another program or a hand edit changed it), because restoring would then not return the project to its state before the call; the message names those files. Returns `reverted` (the entry), `restored` (file and how) and `notRestored` (file and why) when a change had no backup. The project is re-read afterwards.
-
-### `get_open_project`
-
-Report the served project. No parameters. Returns `name`, `projectFile` (the `.c3proj` path), `format` (`folder` or `c3p`) and, for a `.c3p`, `archivePath` and `workDir`, the working folder the archive is served through.
-
-### `open_project`
-
-Switch to another project.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | Yes | Absolute path of a project folder, a `.c3proj` file, or a `.c3p` file |
-
-**Behavior:**
-- Waits until no other tool call is running, and holds calls that arrive meanwhile until the switch is done; they then run on the new project.
-- A `.c3p` is unpacked into a new working folder and written back after every call that changes it, as when the server starts on one (see the README's "Single-file (.c3p) projects").
-- A `.c3p` being left is written back first, then its working folder is removed. When it cannot be written (Construct saved the archive meanwhile, or the write failed), the switch still happens, the working folder is kept, and `warnings` names it.
-- If the new project cannot be opened (no project file, an unreadable archive, an invalid `.c3proj`), the result is an error and the server keeps serving the project it had.
-- Returns `opened` (`name`, `projectFile`, `format`, and `archivePath` and `workDir` for a `.c3p`) and `closed` (`name`, `projectFile`, `archivePath`).
-- Close the project in Construct before editing it here.
 
 ---
 
@@ -212,7 +180,7 @@ Event sheet include hierarchy and layout bindings.
 
 ### `get_function_map`
 
-Function definitions and call sites across event sheets. Call sites are *Call function* actions (`via: "callFunction"`), `Functions.Name(...)` calls in the expressions of conditions and actions, function call arguments included (`via: "expression"`), and *Map function* / *Map function default* actions of the Functions object (`via: "function-map"`). A function map registration does not call the function itself; it makes it callable by *Call mapped function*. All three count in `callCount` and `totalCallSites`, and a function that has any of them is not listed in `uncalledFunctions`. Function names are matched ignoring case, as the editor does. Scripts are not scanned.
+Function definitions and call sites across event sheets. Call sites are *Call function* actions (`via: "callFunction"`), `Functions.Name(...)` calls in the expressions of conditions and actions, function call arguments included (`via: "expression"`), and *Map function* / *Map function default* actions of the Functions object (`via: "function-map"`). A function map registration does not call the function itself; it makes it callable by *Call mapped function*. All three count in `callCount` and `totalCallSites`, and a function that has any of them is not listed in `uncalledFunctions`. Function names are matched ignoring case, as the editor does. Scripts are not scanned. Every function block is listed on its own, with its `sheet` and `params`, the names of its parameters as the editor saves them (`functionParameters`); function blocks whose names match ignoring case (which the editor refuses to create, see `duplicate-function-name` in [`validate_project`](#validate_project)) each get `sameNameAs` (the others, `{ name, sheet }`) and the same call sites, which `totalCallSites` counts once, and `summary.duplicateFunctionNames` lists such names. `totalFunctions` counts function blocks.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -221,7 +189,11 @@ Function definitions and call sites across event sheets. Call sites are *Call fu
 
 ### `get_object_dependencies`
 
-Where objects are used: event sheets, layouts, families, co-occurring objects. Event sheet uses include object parameters, expressions and script actions; layout uses include instances on sub-layers, non-world instances and object properties of other instances that hold the object's SID (see [`find_orphaned_objects`](#find_orphaned_objects)). The project-wide `orphanedObjects` list follows the same rule as `find_orphaned_objects`, and `totalReferenced` counts the other objects (use through a family included), so the two add up to `totalObjects`. `orphanedFamilyMembers` (present when there are any) lists the orphans that are members of a family, as `{ name, families }`: `delete_object` refuses them until they leave the family.
+Where objects are used: event sheets, layouts, families, co-occurring objects. Event sheet uses include object parameters, expressions, script actions and System *Create object (by name)* with a literal name; layout uses include instances on sub-layers, non-world instances and object properties of other instances that hold the object's SID (see [`find_orphaned_objects`](#find_orphaned_objects)). The project-wide `orphanedObjects` list follows the same rule as `find_orphaned_objects`, and `totalReferenced` counts the other objects (use through a family included), so `totalReferenced`, `orphanedObjects`, `possiblyUsedObjects` and `unanalysedObjects` add up to `totalObjects`. `orphanedFamilyMembers` (present when there are any) lists the orphans that are members of a family, as `{ name, families }`: `delete_object` refuses them until they leave the family. An object that a container lists gets `containers` (`{ index, members, others }`), read from `project.c3proj` as it is at the call.
+
+While registered event sheets, layouts or families could not be parsed (see [Files the server could not parse](#mutation-tools)), they are searched as text and the result carries `unscannedFiles` (`{ file, reason, textSearch }`, `textSearch` being `possible-use`, `no-match`, `unreadable` or `not-searched`). For one object, `textSearch` is about that object; project-wide, only the objects without a use the index found are searched for, so `textSearch` is about them only (`not-searched` when there are none), and used objects in `topConnected` get no `possiblyReferencedIn`. An object whose name (or, in layouts, SID) such a file holds, or every object when such a file cannot be read at all, gets `possiblyReferencedIn` (the files), which `referenceCount` does not count; project-wide, the objects without a use that such files possibly use are listed in `possiblyUsedObjects` (`{ name, files }`) instead of `orphanedObjects`. Without such files these fields are absent.
+
+An object whose own object type file could not be parsed gets `unanalysed` (`{ file, reason, unchecked }`): its SID is unknown, so references by SID (object properties of other instances) are not counted in `referenceCount`. Project-wide, such an object without a use the index found is listed in `unanalysedObjects` (as in [`find_orphaned_objects`](#find_orphaned_objects)) instead of `orphanedObjects` and `possiblyUsedObjects`; one with a use found counts in `totalReferenced`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -235,9 +207,14 @@ Find objects not used by any event and not placed in any layout. No parameters.
 An object counts as used when it is the object of a condition or action or the object a custom action block (`custom-ace-block`) defines its custom action for (the block's conditions, actions and sub-events count like any others), or through a family it belongs to (a family that events use), or when it has an instance on a layer or sub-layer (`layers[].subLayers`, nested to any depth) or among a layout's non-world instances (`nonworld-instances`, e.g. Array or Dictionary), or when an instance property of another object holds its SID (object properties such as the Particles *Object* property, which editor-saved projects store as the object type's SID). Events also use an object when (heuristics that rather find too many uses than too few):
 - a parameter's whole value is its name, as in object parameters (`"object": "Sprite2"`, `"object-to-create"`, `"pin-to"`, `"child"`, ...), function call arguments included. Not counted: keys that hold other names (`"audio-file"`, `"instance-variable"`, `"variable"`, `"layout"`), and a bare name that is also a declared event variable or function parameter, since in an expression parameter a bare name is a variable (Construct 3 lets variables share names with objects). Object parameter keys count even then;
 - a parameter expression uses it as `Name.` or `Name(` (`Sprite4.X`, `Sprite4(0).X`), outside `"..."` string literals and not as a member (`Label.Text` does not use an object named `Text`). An object parameter whose value is not a plain name (an expression written by hand) is scanned the same way;
-- a script action or script event reads `runtime.objects.Name` or `runtime.objects["Name"]` (also through `this.runtime` and the like).
+- a script action or script event reads `runtime.objects.Name` or `runtime.objects["Name"]` (also through `this.runtime` and the like);
+- System *Create object (by name)* creates it with a literal name (`"object-name": "\"Bullet\""`, surrounding spaces allowed), matched ignoring case as the runtime looks it up; a family created by name counts as a use of the family, and so of its members. This is the rule [`get_asset_usage`](#get_asset_usage) follows.
 
-Only names of existing object types and families are matched. Not detected: project script files, dynamic lookups (`runtime.objects[name]`, destructuring) and objects created by name at runtime. `validate_project`, `get_object_dependencies`, `analyze_performance` and the `delete_object` reference check use the same index: every object `delete_object` refuses because of a use is not an orphan, and every orphan is deleted without `force`, except an orphan that is a member of a family no event uses. Such orphans list that family in `families`; `delete_object` refuses them until they leave the family (`update_family` with `removeMembers`).
+Only names of existing object types and families are matched. Not detected: project script files, dynamic lookups (`runtime.objects[name]`, destructuring) and objects created by a name built at runtime (*Create object (by name)* with an expression such as `"Enemy" & Level`; [`get_asset_usage`](#get_asset_usage) reports the images of unused objects as `not-analysed` then). `validate_project`, `get_object_dependencies`, `analyze_performance` and the `delete_object` reference check use the same index: every object `delete_object` refuses because of a use is not an orphan, and every orphan is deleted without `force`, except an orphan that is a member of a family no event uses. Such orphans list that family in `families`; `delete_object` refuses them until they leave the family (`update_family` with `removeMembers`). Orphans that a container lists carry `containers`. Container membership is not a use: such an object is an orphan when nothing else uses it, and `delete_object` takes it out of its containers.
+
+Files the index could not parse (see [Files the server could not parse](#mutation-tools)): registered event sheets, layouts and families over the size limit (10MB by default) or with invalid JSON are searched as text for the names of the objects without a use (and, in layouts, their SIDs). Such an object is listed in `possiblyUsed` (`{ name, pluginId, isGlobal, files }`) instead of `orphanedObjects`, as is every object without a use while such a file cannot be read at all; `delete_object` refuses these objects without `force` too. `count` counts `orphanedObjects` only. `unscannedFiles` lists such files as for [`get_object_dependencies`](#get_object_dependencies) project-wide (`not-searched` when no object is without a use). Both fields are absent while every file could be parsed.
+
+An object type whose **own** file could not be parsed (over the size limit (10MB by default), not valid JSON, unreadable) has an unknown SID, so uses by its SID (object properties of other instances) cannot be looked up. When the index finds no other use of it, it is listed in `unanalysedObjects` (`{ name, file, reason, unchecked, files? }`: `file` is `objectTypes/<name>`, `unchecked` says what could not be checked, `files` the files above that possibly use it) instead of `orphanedObjects` or `possiblyUsed`: whether it is used cannot be told. `delete_object` refuses such an object without `force` for the same reason. `unanalysedObjects` is absent while every object type file could be parsed. `validate_project` (`orphaned-object`) and `analyze_performance` follow the same rules.
 
 ### `get_asset_usage`
 
@@ -250,7 +227,7 @@ Track asset usage across the project.
 
 Returns `{ summary, assets, notes }`. `summary` has `totalAssets`, `byType`, `usedCount`, `unusedCount`, `notAnalysedCount` and `mostReferenced`. Each asset has `name`, `type`, `status` (`used`, `unused` or `not-analysed`), `referencedIn` (`eventSheets`, `layouts`, and when found `objectTypes`, `scripts`, `flowcharts`, `timelines`, `projectFiles`), `via` (how it is referenced) and, when not used, a `reason`. `standard` detail lists 50 assets, unused and not-analysed first; `full` lists all.
 
-- **Images** are object types with animations (sprites) or a single image (Tiled Background, 9-patch, Particles, Sprite font and other plugins that save an `image`), one entry per object type. A sprite has its `animations` and `frames` counts; a single-image object type has `frames: 1` and no `animations`. Animations are read as the editor saves them (`animations.items`, and the animations in `animations.subfolders`). An image is used when its object type is used by the rule of [`find_orphaned_objects`](#find_orphaned_objects) (used in an event, directly or through one of its families; an instance in a layout, sub-layers and non-world instances included; or named by an object property of another instance), or when System "Create object (by name)" creates it with a literal name.
+- **Images** are object types with animations (sprites) or a single image (Tiled Background, 9-patch, Particles, Sprite font and other plugins that save an `image`), one entry per object type. A sprite has its `animations` and `frames` counts; a single-image object type has `frames: 1` and no `animations`. Animations are read as the editor saves them (`animations.items`, and the animations in `animations.subfolders`). An image is used when its object type is used by the rule of [`find_orphaned_objects`](#find_orphaned_objects): used in an event, directly or through one of its families (System "Create object (by name)" with a literal name included); an instance in a layout, sub-layers and non-world instances included; or named by an object property of another instance.
 - **Sounds and music** are used when an Audio file parameter names them (`"audio-file"`: the name without extension, saved as a string or as `{ "path": name }`), when a by-name Audio action (`"folder"` + `"audio-file-name"`) names them with a literal, or when a string in events, scripts, flowcharts, timelines, layout instance values or project files is their name. Tag, layer, animation and text parameters and properties, and instance variable definitions, are not file references.
 - **Project files, fonts and videos** are used when a parameter, a string literal, a script, a layout or object type property (for example Video sources, or plugin properties naming data files), a flowchart or timeline string, or the text of another used project file names them. A Text object's `font` property and a CSS font declaration (`font-family: 'Pixel Sans'`, in HTML content, scripts or project files) name a font without its extension.
 - **Not analysed** (never reported as unused):
@@ -271,97 +248,86 @@ Heuristic performance audit with categorized issues (info/warning/critical).
 
 The frame count check reports object types with more than 50 animation frames, counting every animation, including those in animation subfolders.
 
+The every-tick check (`info`, per event sheet) counts the event blocks that run every tick: blocks at the top level of the sheet or in groups whose conditions hold no trigger (a condition whose id starts with `on-`, as in the trigger placement rule of [`validate_project`](#validate_project)), so a block without conditions and one with only *Every tick* or a comparison both count. Not counted: sub-events (they run with their parent, and under a trigger, function or custom action only when it runs), else blocks (part of the block before them), disabled blocks, and blocks in a disabled group or a group that is not active on start. A third-party trigger whose id does not start with `on-` is counted as running every tick.
+
+The cleanup checks count unused objects by the rule of [`find_orphaned_objects`](#find_orphaned_objects): objects possibly used in files that could not be parsed are named apart, and objects whose own object type file could not be parsed get an issue of their own instead of counting as unused. An addon is reported as unused when no object type uses its plugin; while object type files could not be parsed, their text is searched for `"plugin-id": "<id>"`, and an addon found there (or every candidate, when such a file cannot be read at all) is named as possibly used instead, in an issue of its own whose suggestion is to repair those files rather than remove the addon.
+
 ### `validate_project`
 
-Run integrity checks over the whole project: 30 checks, from file existence, required fields, duplicate SIDs/UIDs and broken references to the editor load-time rules, conditions and actions against Construct's own definitions ([ACE validation](#ace-validation)) and the expressions inside their parameters ([expression checking](#expression-checking)). No parameters.
+Run integrity checks over the whole project. No parameters.
 
-**Result:**
+Returns `{ valid, complete, summary, errors, warnings, info, unscannedFiles }`; each issue has `check`, `entity`, `message` and an optional `suggestion`.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `valid` | boolean | No error-level issues were found in the files that were scanned |
-| `complete` | boolean | Every registered object type, event sheet and layout file was read. `false` when any was skipped for exceeding the 10MB read cap (listed in `unscannedFiles`); `valid` then only vouches for the files that were checked. Families are not covered |
-| `summary` | object | `{ errors, warnings, info, checksRun, entitiesScanned, unscanned }` |
-| `errors` / `warnings` / `info` | `IntegrityIssue[]` | `{ check, entity, message, suggestion? }` |
-| `unscannedFiles` | string[] | `category/name` entries the reader could not scan (over the 10MB read cap); each is also an `unscanned-file` warning |
+| Field | Description |
+|-------|-------------|
+| `valid` | No errors **and** every registered file was checked (`complete`). A project with a file that could not be checked is never `valid`: `summary.errors === 0` with `complete: false` means "no errors in the checked files, the rest unknown" |
+| `complete` | Every object type, family, event sheet, layout and timeline file that is registered in `project.c3proj` and exists on disk was read and checked. `false` when one of them was not; `valid` is then `false` too |
+| `unscannedFiles` | The files (`category/name`) that exist but were not checked. No check covered their contents, so duplicate UIDs and SIDs, broken references and load-time errors in them are not reported |
+| `summary` | `{ errors, warnings, info, checksRun, entitiesScanned, unscanned }`; `entitiesScanned` is the number of registered object types, event sheets and layouts (families not counted), unchecked ones included; `unscanned` is the number of `unscannedFiles` |
 
-- **Errors:** registered entities whose file is missing or not valid JSON (`file-existence`; a file that exists but exceeds the read cap is an `unscanned-file` warning instead), missing required fields in objects, sheets and layouts, internal `name` differing from the registered name, malformed subfolder entries (a subfolder without a name or `items`; the first unnamed subfolder directly under `timelines` is the editor's Transitions folder, see [`list_timelines`](#list_timelines), and is accepted), an image-backed object type without its `image` record (`object-image`), conditions/actions that name their behavior only under the legacy `"behavior-type"` key (`legacy-behavior-key`, see [`fix_legacy_behavior_keys`](#fix_legacy_behavior_keys)), and the editor load-time rules below
-- **Warnings:** registered files over the read cap (`unscanned-file`), image files an object type declares but `images/` lacks and sprites or animations without frames (`object-image`; the extension comes from each image's `fileType`), duplicate SIDs and UIDs (except the SID duplicates listed below as errors), broken object references (conditions/actions on a class that is no object type, family, `System` or the built-in Functions object, which is named by `functionsName` in `project.c3proj`, `"Functions"` by default), behaviors and instance variables that events use but their object type or family does not have (`missing-behavior-or-variable`), layer names repeated within a layout (`duplicate-layer-name`), layouts bound to missing event sheets, broken includes, plugins or behaviors missing from `usedAddons`, leftover `"behavior-type"` keys next to a valid `"behaviorType"`, event shapes that differ from what the current editor saves (`legacy-event-shape`, see [`fix_legacy_event_shapes`](#fix_legacy_event_shapes): block-level `isElse`, per-condition `isOr` and function calls with `id`/`objectClass` or keyed parameters, which older versions of this server wrote and Construct 3 never writes, and scripts stored as one string or without `language`, the shape older Construct 3 releases saved, which is harmless to convert), other keys Construct does not read (`event-legacy-key`, below), conditions and actions that do not match their definitions (`ace-*`, see [ACE validation](#ace-validation)), expressions whose names do not resolve (`expression-*`, see [expression checking](#expression-checking)), entity files whose name differs from the registered name only in letter case (`file-name-case-mismatch`), layout instances without an entry for a behavior of their object type or its families (`missing-behavior-entry`, one warning per layout and object type with the instance UIDs; the editor saves an entry for every behavior, see [`add_instance_to_layout`](#add_instance_to_layout), and older versions of these tools placed instances without them), and the partly verified load-time rules below
-- **Info:** JSON files in `objectTypes`, `eventSheets`, `layouts` and `families` (subfolders included) not registered in `project.c3proj`, leftover `.bak` files in `objectTypes`, `eventSheets`, `layouts`, `families`, `timelines` (subfolders included) and next to `project.c3proj`, used plugins and behaviors that are neither built in nor loaded with [`load_addon_definitions`](#load_addon_definitions) (`ace-definitions-unavailable`), and orphaned objects (see [`find_orphaned_objects`](#find_orphaned_objects))
+A file over the reader's size limit (10MB by default) is an `unscanned-file` warning: nothing in it was checked, but it is not known to be broken. A file that exists but cannot be read or parsed (invalid JSON, a folder in its place, no access) is a `file-existence` error with the reason, without the absolute project path, and is listed in `unscannedFiles` too. A registered name without a file is a `file-existence` error naming the path it is read from (`no file exists at layouts/Levels/Title.json`); it leaves `complete` true, since nothing on disk was missed.
 
-The orphan-file scan compares project-relative file paths with registrations. It does not follow symbolic links, skips absent or unreadable directories, and skips the editor's Layout View state files (`layouts/uistate/`).
+- **Errors:** registered object types, families, event sheets, layouts and timelines whose file is missing, cannot be read or is not valid JSON (`file-existence`), a timeline property track on a property its instance does not have (`timeline-property-track-type`, below), a template or replica block on a non-world instance (`template-on-non-world-instance`; Construct 3 r506-2, Free edition, refused to open such a project, and [`set_instance_template`](#set_instance_template) refuses to write one), missing required fields in objects, sheets and layouts, internal `name` differing from the registered name, malformed subfolder entries (a subfolder without a name or `items`; the first unnamed subfolder directly under `timelines` is the editor's Transitions folder, see [`list_timelines`](#list_timelines), and is accepted), conditions/actions that name their behavior only under the legacy `"behavior-type"` key (`legacy-behavior-key`, see [`fix_legacy_behavior_keys`](#fix_legacy_behavior_keys)), a container member in `project.c3proj` that is not an object type of the project (`container-member`; Construct 3 does not open such a project), a container with fewer than two members that are object types (`container-member`; a name listed twice counts once, and whether Construct 3 counts it that way was not checked live), and the editor load-time rules below
+- **Warnings:** registered files over the reader's size limit (10MB by default; `unscanned-file`, see above), duplicate SIDs and UIDs (except the SID duplicates listed below as errors), broken object references (conditions/actions on a class that is no object type, family, `System` or the built-in Functions object, which is named by `functionsName` in `project.c3proj`, `"Functions"` by default), behaviors and instance variables that events use but their object type or family does not have (`missing-behavior-or-variable`), layer names repeated within a layout (`duplicate-layer-name`), layouts bound to missing event sheets, broken includes, plugins or behaviors missing from `usedAddons`, leftover `"behavior-type"` keys next to a valid `"behaviorType"`, event keys Construct 3 does not read (`event-legacy-key`, below), the property tracks `timeline-property-track-type` (below) cannot hold as errors, event shapes that differ from what the current editor saves (`legacy-event-shape`, see [`fix_legacy_event_shapes`](#fix_legacy_event_shapes): block-level `isElse`, per-condition `isOr` and function calls with `id`/`objectClass` or keyed parameters, which older versions of this server wrote and Construct 3 never writes, and scripts stored as one string or without `language`, the shape older Construct 3 releases saved, which is harmless to convert), entity files whose name differs from the registered name only in letter case (`file-name-case-mismatch`), layout instances without an entry for a behavior of their object type or its families (`missing-behavior-entry`, one warning per layout and object type with the instance UIDs; the editor saves an entry for every behavior, see [`add_instance_to_layout`](#add_instance_to_layout), and older versions of these tools placed instances without them), hierarchy links that point at no instance of the layout or whose other side does not name the instance (`hierarchy-link`, below), Sprite animation frames without their image file (`frame-image`, below), function blocks whose names match ignoring case (`duplicate-function-name`, below), a container member that differs from an object type only in letter case (`container-member`), and the partly verified load-time rules below
+- **Info:** JSON files in `objectTypes`, `eventSheets` and `layouts` (subfolders included) not registered in `project.c3proj`, leftover `.bak` files in `objectTypes`, `eventSheets`, `layouts`, `families`, `timelines` (subfolders included), directly in `images/` (where [`add_frame_to_animation`](#add_frame_to_animation) and [`delete_frame_from_animation`](#delete_frame_from_animation) keep images) and next to `project.c3proj`, and in the same folders the files an interrupted write leaves (`.c3mcp-<16 hex digits>.tmp`, `.link` or `.old`), all as `backup-file`, orphaned objects (see [`find_orphaned_objects`](#find_orphaned_objects)), image files named like frames past an animation's last frame that no frame uses (`frame-image`, below), and image files named after no object type (`orphaned-image`, below)
 
-An `event-legacy-key` warning names a block, condition or action carrying a key Construct never writes and does not read, which no fix tool converts: `object-class` or `is-inverted` on a condition or action (Construct's keys are `objectClass` and `isInverted`; with the wrong key the editor reports the ACE as a missing action or condition id on load), or `isOr` on a block (an OR block is marked with `isOrBlock`). The legacy `behavior-type` key, a block-level `isElse` and a condition-level `isOr` are reported by `legacy-behavior-key` and `legacy-event-shape` instead, with the tools that convert them; the keys `event-legacy-key` names are fixed by hand: rename each to Construct's key in the sheet file with the project closed in Construct. `fix_legacy_event_shapes`, `fix_legacy_behavior_keys` and `update_event_block` leave these keys in place (`update_event_block` with `isOrBlock: true` adds `isOrBlock` to a block but keeps its `isOr`), so the warning's suggestion names no tool that converts them.
+`frame-image`: the editor loads a frame's image from `images/<object>-<animation>-NNN.<ext>`, all lowercase, NNN being the frame's index (3 digits) and ext `jpg` for a JPEG frame (`fileType` `"image/jpeg"`), `png` otherwise; for another `fileType`, any file with that name and a single extension counts (shown as `...-003.*`). `images/` is read once and names are compared ignoring case and Unicode normalization. A warning per animation (in any animation folder) lists the frames whose file is missing, with the name each one needs. Older versions of `add_frame_to_animation` left the frames after an insert index without their image; what Construct 3 does when a frame's image file is missing is not verified, so this is a warning. An info entry per animation lists files named like frames past its last frame that no frame of any animation uses, such as the file older versions of `delete_frame_from_animation` left behind (`.bak` files and the files an interrupted write leaves are listed as `backup-file` instead). The check is skipped when the project has no `images/` folder. Since names are compared ignoring case, a frame whose file exists only under another case (e.g. `Hero-Walk-000.PNG`) counts as having its image; that is right on Windows and macOS, but on a case-sensitive file system (Linux) the editor may not find the file, and the check does not report it.
 
 Entity files are checked against the path each registered entity is read from: `<category>/<project-bar folders>/<name>.json`, since Construct 3 mirrors its project-bar folders on disk. `file-name-case-mismatch`: a file whose path differs from that path only in letter case, such as `layouts/Layout1.json` for a layout `layout1` at the root, is the entity's file on case-insensitive file systems (Windows, macOS by default), where it loads, but may not be found on case-sensitive ones (Linux). The suggestion is to rename it to the expected path; it is never reported as orphaned. Any other file is `orphaned-file`, including a copy named like a registered entity in another folder; its message names the path that entity is read from. The editor's `*.uistate.json` view-state files are not entity files and are skipped.
 
+`orphaned-image`: files directly in `images/` whose name does not start with the name of an object type of the project followed by `-` (frames, `<object>-<animation>-NNN.<ext>`) or `.` (a single image, `<object>.<ext>`), compared ignoring case; registered object types whose file could not be parsed count. Such a file belongs to no object, for example an image of an object type that an older version of `delete_object` deleted (it left the images in place; it now keeps them as `.bak`). One info entry per name before the first `-` or `.`, listing the files. `.bak` files and the files an interrupted write leaves (`.c3mcp-<16 hex digits>.tmp`, `.link` or `.old`; the `.old` one holds the previous content of the file that was being replaced, and the entry says "a file left by an interrupted write; the .old one holds the file's previous content") are `backup-file` entries instead, and files named after an existing object type (e.g. images of a deleted animation) are not reported. Whether anything else loads such a file by path is not checked, so check before deleting it. Skipped when the project has no `images/` folder.
+
 `duplicate-uid`: instance UIDs (instances on layers and sub-layers, non-world instances, single-global instances) must be unique across the project; locations of sub-layer instances name the layer path (`layouts/Layout1/layer:Main/layer:HUD/inst:Sprite`). According to Scirra ([Construct-bugs #8725](https://github.com/Scirra/Construct-bugs/issues/8725)), Construct 3 tries to cope by reassigning duplicated UIDs, which can still break hierarchies, timelines and events that refer to a specific UID, so re-saving is no fix: give the duplicates new unused UIDs by hand. Duplicates usually come from merging branches; projects edited on several branches should set the "UID numbering" project property to Random.
 
-**Editor load-time rules.** The Construct 3 editor enforces these only when it opens a project, and breaking one can make the whole project fail to open. The rules come from [komabear/c3-skill](https://github.com/komabear/c3-skill) (MIT) and were checked against the Construct 3 manual, real editor-saved projects, and the error messages of the editor's project loader (release r495.2). Where only part of a rule could be verified, it is reported as a warning.
+`hierarchy-link`: the editor stores both sides of a hierarchy (scene graph) link on the world instances of a layout: the child's `sceneGraphData["parent-uid"]` and a `{ uid, flags }` entry in the parent's `sceneGraphData.children` (children can sit on another layer than their parent). Reported, one warning per link and from the side that has it, are a `"parent-uid"` or `children` entry that names no instance of the layout, a parent that does not list the child, and a child that names another parent or none. UIDs that several instances of the layout have are skipped, as instances and as link targets (which instance a link means cannot be told; `duplicate-uid` reports them). Older versions of `delete_instance_from_layout` and `delete_layer` left links to the deleted instances behind, and since a new instance can get the UID of a deleted one, such a link can point at an unrelated instance. What the editor does with these links when it opens the project is not verified, so they are warnings.
+
+**Editor load-time rules.** The Construct 3 editor enforces these only when it opens a project, and breaking one can make the whole project fail to open. The rules come from [komabear/c3-skill](https://github.com/komabear/c3-skill) (MIT) and were checked against the Construct 3 manual, real editor-saved projects, and the error messages of the editor's project loader (release r495.2). The exception is the `container-member` row, whose two refusals were seen in a live check of release r506-2 in a guest session of the editor. Where only part of a rule could be verified, it is reported as a warning.
 
 | Check | Severity | Rule |
 |-------|----------|------|
 | `expression-syntax` | error | A backslash outside a string literal, or an unterminated string literal, in any condition/action parameter (function and custom action call arguments included). C3 expressions have no escape sequences: a quote inside a string is written as two quotes (`"He said ""hi"""`), so `"{\"a\":1}"` fails with *Syntax error: Unknown character*. A backslash inside a string literal is fine. |
 | `empty-expression` | error | A parameter whose value is `""` fails with *Empty expression: You must enter an expression*. Write an empty string literal as `"\"\""`. |
-| `trigger-placement` | error / warning | Only one trigger per event, unless it is an OR block (`"isOrBlock": true` on the event), which may hold several. A branch holds one trigger: no trigger in a sub-event of a triggered event, of a function block or of a custom action block. Both fail with *cannot add another trigger to event branch*. Groups are transparent. A trigger that is not the first condition of its event is a warning: the editor moves it to the top when it opens the project. Triggers are conditions whose id starts with `on-`; the editor counts fake triggers (*On collision*, Timer *On timer*, Gamepad buttons) as triggers too. Problems involving third-party addon triggers are warnings, since those addons do not always follow the `on-` convention. |
-| `else-placement` | warning | An else block (System `else` first condition) must come after a block without a trigger, with at most comments between them, and must not hold a trigger itself. The manual: *Else can only follow normal (non-triggered) events*; every else block in editor-saved projects follows such a block, directly or after comments. A trigger after `else` would be moved before it when the editor opens the project (see `trigger-placement`), so for else blocks this rule reports it instead. A block whose `else` condition is disabled (`"disabled": true`, which the editor saves in place) is an ordinary block, because a disabled condition is ignored when the event runs: the rule does not apply to it, and a trigger after a disabled `else` is judged by `trigger-placement` like any other block. Whether the editor refuses to open a project that breaks the rule is not verified. |
+| `trigger-placement` | error / warning | Only one trigger per event, unless it is an OR block (`"isOrBlock": true` on the event), which may hold several. A branch holds one trigger: no trigger in a sub-event of a triggered event, of a function block or of a custom action block. Both fail with *cannot add another trigger to event branch*. Groups are transparent. A function block or custom action block standing in the branch of a trigger, of a function block or of a custom action block is the same error (it is reported on the function or custom action block), so adding a trigger condition to a block that holds one, at any depth, is refused by the tools that run the load-time gate. A trigger that is not the first condition of its event is a warning: the editor moves it to the top when it opens the project. Triggers are conditions whose id starts with `on-`; the editor counts fake triggers (*On collision*, Timer *On timer*, Gamepad buttons) as triggers too. Problems involving third-party addon triggers are warnings, since those addons do not always follow the `on-` convention. |
+| `else-placement` | warning | An else block (System `else` first condition) must come after a block without a trigger, with at most comments between them, and must not hold a trigger itself. The manual: *Else can only follow normal (non-triggered) events*; every else block in editor-saved projects follows such a block, directly or after comments. A trigger after `else` would be moved before it when the editor opens the project (see `trigger-placement`), so for else blocks this rule reports it instead. Whether the editor refuses to open a project that breaks the rule is not verified. |
 | `duplicate-object-name` | error | Object types and families share one name namespace that ignores case. A name listed twice in the `project.c3proj` objectTypes or families tree, two names that differ only in case, and a family named like an object type all fail with *object class name 'X' already used*. The editor also creates the built-in System object and the built-in Functions object (named by `functionsName` in `project.c3proj`, `"Functions"` without it) in the same namespace for every project, so an object type or family named like either, ignoring case, fails the same way. |
 | `family-plugin-mismatch` | error / warning | Every member of a family must use the same plugin; a mixed family fails with *wrong plugin* (error). Members that agree with each other but not with the family's `plugin-id` are a warning. |
+| `container-member` | error / warning | A container member in `project.c3proj` must name an existing object type: a name that is not one fails with *cannot find object type name* (error). A name that differs from an object type only in letter case is a warning, since whether the editor matches it that way was not checked. The editor refused a container with fewer than two types (*need at least 2 types in container*) on r506-2, so this server reports a container with fewer than two distinct object types as an error. Counting a name listed twice once is this server's rule; the editor's handling of a duplicate was not checked. |
 | `duplicate-sid` | error / warning | Two object types or families sharing a SID fail with *object class sid already in use* (error). A SID shared by behaviors or instance variables of object type or family files is a warning: SIDs should be unique, but no load failure is on record for this clash, and the editor's loader checks only object type and family SIDs. Animation and frame SIDs repeated across object types are warnings: a Scirra example project does this and opens. SIDs shared by events, conditions, actions or layout instances are warnings: editor-saved projects contain such duplicates and open, and the editor keeps them when it saves, so re-saving does not fix them. A clash involving a function or custom action parameter is a warning that may break loading, since the loader checks function parameter SIDs. Event sheet locations name the event path and the condition/action index (e.g. `eventSheets/Sheet1 > block (sid 12) > action 0 "wait" (System)`), and an event's own location ends with its JSON path (`eventSheets/Sheet1 > block (sid 12) at events[0].children[1]`), so events sharing a SID under the same parent can be told apart. When events in one sheet share a SID, whatever else also uses it, the suggestion adds that the SID-based event tools refuse it there unless `eventPath` names one of them (see [Events that share a SID](#mutation-tools)); a SID used more than five times lists the first five locations and a count per file, and the paths of the others come from the refused tool call or [`locate_event`](#locate_event). Layout `instanceFolderItem` SIDs legitimately repeat the instance SID and are not checked. |
 
 `broken-object-reference`: what `delete_object` and `delete_family` with `force: true` leave behind. Reported are a name that is no object type, family, `System` or the built-in Functions object, used as the object of a condition or action or as the whole value of an object parameter (`"object"`, `"object-to-create"`, `"pin-to"`, `"child"`); layout instances (on any layer or sub-layer, or non-world) of an object type that does not exist, one warning per layout and type with the instance UIDs; family members that are no object type (one warning per family); and object properties that hold the SID of no object type or family. The only object property known to hold a SID is the Particles `"object"` property (`-1` when no object is set), so only that one is checked. Not reported: uses of a deleted object or family in expressions and scripts, which are only recognised by the names of existing objects; the `force` warnings of `delete_object` and `delete_family` list them. Uses of a deleted family's instance variables and behaviors through its members are `missing-behavior-or-variable` (below). What Construct 3 does with these leftovers when it opens the project is not verified, so they are warnings.
 
 `missing-behavior-or-variable`: what `update_object_properties`, `update_family` and `delete_family` with `force: true` leave behind. Reported are conditions and actions whose `"instance-variable"` parameter or `behaviorType` names an instance variable or behavior their object type does not have, neither itself nor through one of its families, an `"instance-variable"` parameter of the form `{ name, objectClass }` (System actions such as *Sort Z order*) whose object type does not have the variable, and `Object.Behavior.Expression` or `Self.Behavior.Expression` in parameter expressions whose middle part names no behavior of that object type or its families. A family's conditions, actions and expressions reach only the family's own instance variables and behaviors, so for a family the family itself is checked. One warning per event sheet, object and name, with the locations (`block > action:0 at events[3]`: the event path, which sibling events share, and the JSON path of the event) and the names the object has. Names are compared ignoring case. Not reported: `Object.name` or `Self.name` whose name is neither an instance variable nor a behavior, since it can be one of the plugin's expressions (`Sprite.X`), conditions and actions on an object that does not exist (`broken-object-reference`), the legacy `"behavior-type"` key (`legacy-behavior-key`), scripts and timeline tracks. What Construct 3 does with such a use when it opens the project is not verified, so these are warnings. None of the editor-saved projects checked has one.
 
+`duplicate-function-name`: two or more function blocks anywhere in the project whose names are the same ignoring case, one warning per name with each block's sheet, JSON path and SID. The editor's Function dialog refuses such a name and renames a pasted function block, and calls resolve function names ignoring case, so a call to the name is ambiguous. The editor's loader reads function names without checking them, so this is a warning. Older versions of `add_event_to_sheet` and copies with `move_events_between_sheets` could create such duplicates; keep one and delete or rename the others.
+
 `duplicate-layer-name`: two or more layers of one layout, sub-layers included, whose names are the same ignoring case, one warning per layout and name with the layer paths. The editor's project loader (release r495.2) looks layer names up ignoring case over all layers of a layout and cannot load such a layout; this was not reproduced in the editor, so it is a warning. [`update_layer`](#update_layer) can rename one of them: it finds a sub-layer by its path, such as `"Main > HUD"`.
 
-### ACE validation
+`event-legacy-key`: keys Construct 3 does not read on an event, one warning each: kebab-case `object-class` and `is-inverted` on a condition or action, which Construct 3 reports as a missing action or condition id on load, and `isOr` on a block, which Construct 3 stores as `isOrBlock`. No tool converts these keys, so the suggestion says to rename them in the sheet file with the project closed. `behavior-type`, block-level `isElse` and condition-level `isOr` are reported as `legacy-behavior-key` and `legacy-event-shape` instead.
 
-Conditions and actions of Construct's built-in plugins and behaviors are checked against the definitions Construct r495.2 ships to its own editor. `add_event_block`, `update_event_block`, `update_event_block_action`, `replace_object_in_events` and `replace_in_expressions` warn about the conditions and actions they write or change, and `validate_project` reports the same problems across the whole project. A warning never blocks the write.
+`timeline-property-track-type`: a property track of a timeline whose property its instance does not have: none of the world properties (`offsetX`, `offsetY`, `offsetZElevation`, `offsetWidth`, `offsetHeight`, `offsetAngle`, `offsetOpacity`, `offsetColor`, `offsetScaleX`, `offsetScaleY`), instance variables or plugin properties of the instance the track names by UID. Construct 3 r506-2 (Free edition) refused to open a project with a property track named `angle` on a Text instance ("property track type 'undefined' is not valid"), while `offsetAngle` opened; that case had a `world-instance` source, so such a track is an error, and the same finding on an `instance-variable` or `plugin` source is a warning. A property track with no `source.type`, or one that is none of `world-instance`, `instance-variable`, `plugin`, `value` and `audio`, is a warning of the same check, since whether the editor accepts it was not checked. The world property names are the ten above; a world-instance track the editor saved with a world property outside them would be reported as an error. A track whose instance is in no layout of the project, or whose object type cannot be found, is not reported by this or any other check.
 
-| Problem | Warning or check | Example |
-|---------|------------------|---------|
-| The plugin or behavior defines no such condition or action | `ace-unknown-ace` | `on-start-of-layuot` on System |
-| A parameter the ACE does not define | `ace-unknown-parameter` | `z` on the Sprite action `set-position` |
-| A parameter the ACE defines is absent | `ace-missing-parameter` | `set-position` with only `x` |
-| A combo parameter holds something other than one of its choices | `ace-invalid-choice` | Platform `simulate-control` with `control: "fly"`; the choices are `left`, `right`, `jump` |
+**Conditions, actions and expressions against Construct's definitions.** `validate_project` also checks each standard condition and action against the definitions Construct defines for the release the project was saved with, and the expressions in their parameters. Every finding below is a warning, because the definitions may lag the editor that saved the project, and the `entity` of a finding is `eventSheets/<sheet>`, followed by `/sid:<SID>` when the condition or action has a SID. The checks count in `summary.checksRun`.
 
-What is checked and what is not:
+| Check | Finding |
+|-------|---------|
+| `ace-unknown-ace` | The object's plugin or behavior defines no condition or action with that ID |
+| `ace-unknown-parameter` | The call has a parameter the condition or action does not define |
+| `ace-missing-parameter` | A parameter the condition or action defines is not given (none are given at all, or some are left out) |
+| `ace-invalid-choice` | A combo parameter holds a value that is not one of its choices |
+| `expression-grammar` | An expression that does not parse as a Construct expression, or that nests parentheses, arguments, `?:` or signs more than 200 levels deep. A text that `expression-syntax` or `empty-expression` already reports is not reported again |
+| `expression-unknown-object` | A name before a dot is no object type or family of the project |
+| `expression-unknown-member` | The object has no expression, instance variable or behavior of that name, or a behavior is named without one of its expressions |
+| `expression-unknown-function` | A call that is no system expression, or a call through the Functions object to a function no event sheet defines |
+| `expression-unknown-name` | A bare name that is no system expression, event variable or object of the project |
+| `expression-argument-count` | A call with a number of arguments the expression or function does not take, or arguments given to an instance variable |
 
-- `objectClass` is resolved to its object type's or family's plugin, and `behaviorType` to the behavior of that name on the object, on a family it belongs to, or on a family's member. `System` is the System object.
-- The common ACEs Construct adds to plugin objects by capability (instance variables, position, size, angle, appearance, Z order, hierarchy, effects, picking, destroy) are accepted on any plugin object, not only those that have the capability.
-- A third-party addon is checked the same way once its definitions are loaded: set `C3_ADDON_DEFINITIONS` (paths separated by the platform's path delimiter, each an unpacked addon folder, a `.c3addon`, or a folder holding several) before starting the server, or call [`load_addon_definitions`](#load_addon_definitions). Until then its ACEs are skipped, and `validate_project` lists it as an `ace-definitions-unavailable` info entry.
-- Skipped: ACEs of addons with no definitions loaded, of objects the project does not declare, function and custom action calls, scripts, comments, and positional parameters.
-- Parameter values other than combo choices are checked only as expressions, below; a number or string value is not checked for its type.
+Only the parameters whose declared type holds an expression are parsed (a combo choice, an object name or a variable name is not), and every argument of a function call or custom action call is. Names are compared ignoring case. These are skipped, because nothing can know them: a condition or action of an addon whose definitions are neither built in nor loaded (`load_addon_definitions`; an info issue `ace-definitions-unavailable` per such addon says so), one on an object type or family the project does not declare (`broken-object-reference` reports those), one that names its behavior only under the legacy `"behavior-type"` key (`legacy-behavior-key`), function and custom action calls themselves (their arguments are still read as expressions), and events nested deeper than 64 levels. A common condition or action (instance variables, position, size and the like) is accepted on every plugin object except System, because the definitions record no applicability for them, so a common ACE that the object cannot use is not reported. Event variables and function and custom action parameters are resolved where they are written: a variable at the top level of any sheet is global, a parameter is visible in its block, and any other variable is visible to the events beside it and below them. In `Object.X.Y`, an `X` that is no expression, instance variable or behavior of the object is left to `missing-behavior-or-variable` and not reported again. While an object type, family or event sheet could not be read, the `expression-` findings that depend on what the project declares are left out, and an info issue `expression-names-unchecked` lists the files.
 
-### Expression checking
+Where the definitions come from. A folder named by `C3_ACE_SOURCE_DIR` is used when it is set (it holds `<release>/plugins/allAces.json`, `<release>/behaviors/allAces.json` and `<release>/main.js`); the server then reads only that folder, never the network, and writes no cache. Otherwise the first check that needs the definitions of a release in a server process looks for the release's cache file in the per-user cache folder (`C3_ACE_CACHE_DIR`, or the platform default), and when there is none fetches `plugins/allAces.json`, `behaviors/allAces.json` and `main.js` from `https://editor.construct.net/<release>/`, builds the catalogue from them and saves it to the cache. Each release is tried once per process, success or failure; nothing is requested when the server starts. The limits of a fetch: 20 seconds per request and 60 seconds for the three, 64MB per file, at most three redirects, and a redirect only to the same file of the same release on that host over HTTPS. A response that is too large, a data file that is not JSON, a redirect elsewhere, or a release of which only some files are served is refused. A catalogue is used only when every registration the build found could be read: a common-ACE registration it cannot read makes the catalogue unavailable rather than incomplete. A cache file is used only when its format, release and shape match and the digest it stores matches its catalogue; any other file is named on stderr and rebuilt. The digest detects a damaged or hand-edited file, not a deliberate edit by someone who also recomputes it. If the cache cannot be written, the catalogue is used from memory for that process and stderr says so.
 
-The value of every parameter whose declared type holds an expression (`number`, `string`, `any`, `layer`, `animation`, `keyb`, `functionname`, `flowchart-string`; a `layout`, `object`, variable or combo value is a bare name or choice and is not one), and every argument of a function or custom action call, is parsed as a Construct expression and its names are resolved against the project and the catalogue. The same tools report these as warnings, and `validate_project` reports them across the project under these checks:
+The release is the project's `savedWithRelease` (`49502` is r495.2). When that release is not served, or the project records none, the checks use the fallback release r495.2 and one info issue `ace-catalog-other-release` says which release was used and why; an event tool whose write changed an ACE carries the same sentence among its warnings. When the project was saved with a different release than the one whose definitions were used, a finding that rests on those definitions (every `ace-` finding, and the `expression-` findings that rest on the definitions' lists of expressions) ends with a sentence saying so: for a newer project release, that the editor that saved it may define what was reported; for an older one, that it may have defined it differently. The first call in a server process that checks a release's ACEs, `validate_project` or an event tool that writes a condition or action, may wait for the three files to be fetched (up to 60 seconds) before it answers. An event tool that adds or changes a condition or action fetches them before it reads the event sheet, so the wait never falls between its read and its write; a change made to the sheet file during the wait is read, not refused. A fault inside the ACE and expression step itself becomes one info issue `ace-check-failed` (its message names no path or error text), and every other check still runs.
 
-| Check | Meaning | Example |
-|---------|------------------|---------|
-| `expression-syntax` | The text does not parse: an unbalanced parenthesis or quote, a `?` without its `:`, or a character that is not part of an expression | `Player.X +` |
-| `expression-unknown-object` | The name before a dot is not an object type or family of the project | `Ghost.X` |
-| `expression-unknown-member` | The object has no expression, instance variable or behavior of that name (a family's instance variables count for its members), or a behavior is named without one of its expressions | `Player.Speeed`, `Player.Platform.Vector` |
-| `expression-unknown-function` | A call to a name that is not a system expression, or `Functions.Name(...)` naming no function of any sheet | `distanse(1, 2, 3, 4)` |
-| `expression-unknown-name` | A bare name that is not a system expression, an event variable, a function or custom action parameter, or an object | `Scor + 1` |
-| `expression-argument-count` | A system, plugin or behavior expression, or a function, called with the wrong number of arguments (a variadic one with too few) | `distance(1, 2)` |
-
-What is resolved: plugin and behavior expressions and the editor's common expressions (`X`, `UID`, `Count`, ...) by their written names, without case; instance variables of the object and of its families; behaviors by name, then their expressions; the functions namespace (`Functions`, or the project's `functionsName`) with each function's parameter count and `CallMapped`; `Self` as the object the condition or action belongs to; event variables and function or custom action parameters declared anywhere, without scope analysis; an instance index after an object name (`Player(2).X`). A third-party plugin or behavior without loaded definitions accepts any member. Checked against the 4,757 parameter values of one large game project: 0 problems.
-
-Not checked: the type a parameter expects against the type an expression yields, string contents, and which variables are in scope at a given event.
-
-The catalogue is `src/construct3/ace-catalog-data.ts`, generated by `scripts/build-ace-catalog.mjs` (see [DEVELOPMENT.md](DEVELOPMENT.md#ace-catalogue)).
-
-### `load_addon_definitions`
-
-Load a third-party addon's conditions and actions so the ACE checks cover it. Without `path`, list the definitions loaded so far.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | No | An unpacked addon folder (holding `addon.json` and `aces.json`), a `.c3addon` file, or a folder holding several of either |
-
-Returns `loaded` (id, type, name, version, source and the counts of conditions, actions and expressions read), `nowLoaded` (every definition held by this server process), and `warnings` naming each path that could not be read and why. Only plugins and behaviors define ACEs; an effect is skipped with that reason. Definitions stay loaded for the life of the server process and apply to every project it serves.
+When no definitions can be had, one info issue `ace-catalog-unavailable` says why, and no other check is affected. Its message gives one of three reasons: editor.construct.net could not be reached (offline; set `C3_ACE_SOURCE_DIR` to a local copy to check offline); the fetched files, the local copy or the cache folder were refused (too large, not JSON, not a whole catalogue, a redirect elsewhere, or a cache folder that is not an absolute path); or neither the project's release nor the fallback is served (or, with `C3_ACE_SOURCE_DIR`, the folder holds no copy of either).
 
 ### `get_group_settings`
 
@@ -415,8 +381,6 @@ Not verified:
 - How event types this server does not know are numbered. They are counted as events, and a warning says so.
 
 The walk stops at sub-events nested deeper than 50 levels, or after 100,000 rows, and says so in `warnings`. It does not skip them: that would give every later event a wrong number. Events after that point are reported as out of range.
-
-A block whose `else` condition is disabled is shown as an ordinary block (kind `block`, header `IF System.else() [disabled] AND ...`), since the disabled condition is ignored when the event runs; only an enabled `else` gives kind `else` and an `ELSE` header.
 
 `isElse` on a block and `isOr` on a condition are flags that the event tools of construct3-mcp 1.8.1 and earlier wrote. Construct 3 does not write them: real sheets mark an else block with a System `else` first condition, and OR a block's conditions with the block's `isOrBlock`. Both tools show such blocks as stored, marked `[non-standard isElse]` or `[non-standard isOr]`, with a warning that points to [`fix_legacy_event_shapes`](#fix_legacy_event_shapes). A condition or action that names its behavior only under the legacy `"behavior-type"` key (written by construct3-mcp 1.8.1 and earlier, which Construct 3 does not read) is shown with its behavior, marked `[legacy behavior-type]`, and a warning points to [`fix_legacy_behavior_keys`](#fix_legacy_behavior_keys).
 
@@ -501,38 +465,115 @@ Locations are paths of event types (`function:Name > block > action:3`); `action
 }
 ```
 
-### Usage queries
+---
 
-All read-only.
+## Usage Tools
 
-| Tool | Parameters | Returns |
-|------|------------|---------|
-| `get_project_properties` | none | `topLevel` (every top-level `project.c3proj` key except entity trees) and `properties` (the full settings bag) |
-| `search_project` | `query`, `regex?`, `caseSensitive?`, `wholeWord?`, `scopes?` (`events`, `scripts`, `layouts`; default events and scripts), `sheets?`, `maxResults?` (default 200, max 1000) | `hits[]` of `{ where, file, eventSid?, path, field, text }`, `totalHits`, `truncated`. Event hits cover every string in the sheet (parameters and expressions, comments, names, titles, script lines) except the `eventType`, `type` and `language` keys; script hits give the line number |
-| `find_behavior_usage` | `behaviorName?`, `behaviorId?` (at least one) | `declarations` on object types and families, `eventReferences` (conditions and actions with that `behaviorType` on the owner, a family member, or the family), `instanceSettings` (placed instances with their own behavior properties) |
-| `find_effect_usage` | `effectId?`, `effectName?` (at least one) | `uses` on object types, families, layouts and layers, and `instanceStates` (per-instance `effects` entries) |
-| `find_instance_variable_references` | `objectName` or `familyName`, `variableName` | `references` (`instance-variable` ACE parameters and `<Object>.<variable>` expressions, including positional call arguments) with the nearest event SID, and `storedValues` on placed instances. Uses the same rules as `update_instance_variable` |
-| `get_instance_counts` | `objectName?`, `layoutName?` | `objectTypes[]` of `{ objectType, total, byLayout }` sorted by count, `notPlaced`, `totalInstances` |
+Six read-only tools that answer "where is this used" and "what does the project hold". None writes a file, and none returns a `success` key or the editor reload note. Names given as arguments are compared ignoring letter case, and results carry the spelling the project registers.
 
-References inside script actions, script files, and names built by string concatenation are not detected by the usage tools; `search_project` finds them as text.
+### How complete an answer is
+
+Every tool except `get_project_properties` returns `complete`. It is `true` only when nothing the tool reads was left out. Otherwise it is `false` and the result says what was left out:
+
+| Field | Meaning |
+|-------|---------|
+| `unscannedFiles` | Registered files of a category the tool reads that could not be parsed. Each is `{ file, reason, textSearch }`, `file` being `category/name` as `validate_project` names it. `textSearch` is `possible-use` (the file's text holds the names the tool looks for), `no-match` (it does not), `unreadable` (the file cannot be read even as text) or `not-searched` (nothing was searched for). With `possible-use` the report may carry `names` (the searched names the file's text holds); with `no-match`, `searchedFor` (what was searched for). |
+| `partlyIndexedSheets` | `eventSheets/<name>` of event sheets the cross-reference index only partly walked (events nested deeper than 50 levels, or more than 100,000 nodes). References past the limit are not in the answer. |
+| `scriptsNotWalked` | `scripts/<folder>/` for script folders of the registry nested deeper than 50 levels; their scripts are not read. |
+| `unreadableScripts` | `scripts/<path>` for registered script files that could not be read. |
+
+Categories each tool reads: `get_instance_counts` layouts and object types; `search_project` event sheets when `scopes` has `events`, layouts when it has `layouts`; `find_behavior_usage`, `find_effect_usage` and `find_instance_variable_references` object types, families, event sheets and layouts. Fields per tool: `get_instance_counts` and `find_effect_usage` return `unscannedFiles`; `find_behavior_usage` returns `unscannedFiles` and `partlyIndexedSheets`; `search_project` returns `unscannedFiles`, `scriptsNotWalked` and `unreadableScripts`; `find_instance_variable_references` returns all four. Scripts are only the files the project registers (`rootFileFolders.script`); a script file that is not registered is not read.
+
+### `get_project_properties`
+
+No parameters. Returns `{ properties, topLevel }`: the `properties` bag of `project.c3proj` and its other top-level values that are not lists or objects (such as the name and the release it was saved with). Reads `project.c3proj` only.
+
+### `get_instance_counts`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | No | Only this object type |
+| `layoutName` | string | No | Only this layout |
+
+Counts the instances each object type has on the layouts, on every layer and sub-layer and among the non-world instances. Returns `{ totalInstances, objects, notPlaced, complete }`. `objects` is `{ name, total, byLayout: [{ layout, instances }] }`, most instances first, then by name. `notPlaced` lists the object types with no instance (with `layoutName` set: no instance on that layout). A layout or object type file that could not be parsed is not counted and is named in `unscannedFiles` (`textSearch` is `not-searched`); `notPlaced` is then replaced by `notPlacedOmitted`, a sentence saying the list would be unreliable. An unknown object or layout is refused, ending "Nothing was returned."
+
+### `search_project`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Text to find, or a regular expression when `regex` is true |
+| `regex` | boolean | No | Treat `query` as a JavaScript regular expression (default false) |
+| `caseSensitive` | boolean | No | Default false |
+| `wholeWord` | boolean | No | Default false. For a literal query a word edge is any character that is not a Unicode letter, digit or underscore, so a word that starts or ends with an accented letter matches as a whole word. For a regular expression the edges are `\b`, which counts only ASCII letters, digits and underscore as word characters |
+| `scopes` | array | No | Any of `events`, `scripts`, `layouts` (default `events` and `scripts`) |
+| `sheets` | string[] | No | Limit the event search to these sheets; an unknown one is refused |
+| `maxResults` | number | No | Hits returned, 1 to 1000 (default 200) |
+
+Searches the strings of event sheets (parameters and expressions, comments, names, titles, script lines), the lines of registered script files, and with `layouts` the instance property, instance variable and tag values. Returns `{ query, totalHits, returned, truncated, hits, complete }` and the incompleteness fields. A hit is `{ where, file, eventSid, path, field, text }`: `file` is the file's path in the project (`eventSheets/<name>.json`, `layouts/<name>.json`, `scripts/<path>`), `eventSid` the nearest enclosing event, `path` the place inside the file (`line N` in a script) and `text` the match with up to 60 characters on each side.
+
+Limits:
+- A literal query is matched directly. A regular expression runs under a time limit of 1 second per file searched.
+- At most 100 matches are counted per string, for either kind of query.
+- The whole search has 10 seconds, literal or regular expression. That covers matching, the walk of the strings and the last file.
+- Past a limit the call is refused and the message says which: "The regular expression took too long to run in <file>" or "The search ran past its time budget". Nothing is returned.
+- The walk of one file's strings stops at 2,000,000 values and the call is refused.
+- A string with more than 100 matches makes `truncated` true and `totalHits` a lower bound, flagged `totalHitsIsLowerBound: true`. `truncated` is also true when `totalHits` is more than `returned`.
+- The text search of files that could not be parsed is outside the budget.
+
+For an unparsable file, `textSearch` is searched only for a literal, whole-word query that starts and ends with a letter, digit or underscore; for any other query it is `not-searched`.
+
+### `find_behavior_usage`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `behaviorName` | string | No | Behavior name as declared |
+| `behaviorId` | string | No | Behavior addon id, matched exactly; matches every declaration of that addon |
+
+At least one is required, else the call is refused ("Specify behaviorName, behaviorId, or both. Nothing was returned."). Returns `declarations` (the object types and families that declare it), `eventReferences` (conditions, actions and expressions that use it through an owner, a member of a declaring family or the family itself, including `Sprite.Platform.Speed` written inside an expression), `eventReferenceCount`, `sheets`, `instanceSettings` (placed instances that hold settings for it), `complete` and the incompleteness fields `unscannedFiles` and `partlyIndexedSheets`. `scriptUsesNotSearched` states that script actions, script events and script files are not searched; use `search_project` for those.
+
+### `find_effect_usage`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `effectName` | string | No | Effect name as listed on the target |
+| `effectId` | string | No | Effect addon id, matched exactly |
+
+At least one is required, else the call is refused the same way. Returns `uses` (object type, family, layout and layer entries), `instanceStates` (instances with a state for it), `eventReferences` (conditions and actions whose `effect` parameter is a quoted name that the object, a declaring family or a family member declares), `unresolvedEventReferences` (an `effect` parameter that is not a quoted name, on such an object), `scriptUsesNotSearched`, `complete` and `unscannedFiles`. A use through a family member that declares an effect of the same name itself is marked `nameAlsoDeclaredBy`: it may refer to either. `notFollowed` appears when the result lists a layout or layer effect and says "Layer and layout effect uses in System actions are not listed." This tool reads every level of the event sheets and does not report `partlyIndexedSheets`.
+
+### `find_instance_variable_references`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | One of | Object type that owns the variable |
+| `familyName` | string | One of | Family that owns the variable |
+| `variableName` | string | Yes | Instance variable name |
+
+Exactly one of `objectName` and `familyName` is required. An unknown owner or an unknown variable is refused with the names that exist; a variable that a family gives an object type is asked with `familyName`. Returns `references` (instance-variable parameters, `Object.variable` expressions and call arguments through the owner, or for a family through the family and its members), `referenceCount`, `sheets`, `storedValues` (values placed instances store), `scriptReads` (script actions, script events and registered script files that read an instance variable of that name; possible uses, since a script's read cannot be tied to one object type), `complete` and the incompleteness fields `unscannedFiles` (searched as text for the variable name and the owner's name together), `partlyIndexedSheets`, `scriptsNotWalked` and `unreadableScripts`. When the owner's own file could not be parsed the variable cannot be confirmed: the tool answers from what the index holds with `variableUnconfirmed: true`.
 
 ---
 
 ## Mutation Tools
 
-Mutation tools that write through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate → backup → write → verify → invalidate caches. So do script and project file registration and the runtime bridge's registration in `project.c3proj`. The other write paths do less: the tools that write their own files (timelines and eases, flowcharts, containers, tilemap brushes, `register_addon` / `unregister_addon`, the rename and duplicate tools, the runtime bridge script and `scripts/main.js`) back each file up to `<file>.bak` once per call and write through a temp file and rename (the bridge script and `main.js` in place), but do not read the result back. A replaced image is backed up; a placeholder PNG is written without a backup, and the change journal reports it as not restorable. Mutation tools return a `WriteResult` object on success.
+Mutation tools that write entity files through the project writer (objects, families, event sheets, layouts, animations, project metadata, addon auto-registration) follow the safety pipeline: validate -> backup -> write -> verify -> invalidate caches. The other project-file writes go through the writer's `replaceFile`, `deleteFile`, `restoreForCall` and `updateProject` methods, under the file's one lock. `replaceFile`, `deleteFile` and `updateProject` back the file up once per call; `restoreForCall` takes no backup, since it puts back what the call wrote. A write goes through a temp file, and `replaceFile`, `restoreForCall` and `updateProject` read it back and compare the bytes; `deleteFile` does no read-back (it records the file as absent). Renaming image files makes no backup; every rename of image files runs under the animation lock, and each one also takes the lock of its target file (never two at once) and checks there that no other file has the name, so a write of that name through the writer that took the lock first is never renamed over. The JSON check (`validateJsonData`) and the re-parse run only for entity files and for `project.c3proj` updates made through `updateProject`. The file tools (`register_project_file`, `deregister_project_file`, `create_data_file`) update the registration in `project.c3proj` first and then write or delete the file. The entity delete tools (`delete_object`, `delete_family`, `delete_layout`, `delete_event_sheet`) likewise check the entity file, take the name out of `project.c3proj` and only then delete the file, and undo the call when a step fails. The differences: `register_addon` / `unregister_addon` back up `project.c3proj` once per call and merge a change the editor saved during the call; the timeline and flowchart tools back up their files once per call, and the flowchart tools refuse a flowchart file that changed on disk after the call read it; the runtime tools refuse a write step whose file changed since the tool read it (the delete of the bridge script by [`remove_runtime_bridge`](#remove_runtime_bridge) takes no such check); PNG images are backed up once per call under the first free `.bak` name (image backups therefore accumulate, one more for each call that writes the image, and nothing removes them). Updates of `project.c3proj` through the writer follow a fixed save shape and leave settings such as `zAxisScale` as saved. Mutation tools return a `WriteResult` object on success. Every result that is not an error, of a call that changed files, ends with a line naming them (`Changed N file(s): ...`), see [Change Journal Tools](#change-journal-tools).
 
-**Text style.** Writes through the project writer, the timeline and ease tools, `register_addon` / `unregister_addon`, and the flowchart, container, tilemap brush, rename and duplicate tools keep an overwritten file's line endings (LF or CRLF), exact trailing whitespace and BOM. A new file follows `project.c3proj`, then the first JSON file with line breaks in its target folder, then Construct 3's own style: tab-indented JSON with LF line endings, no trailing newline and no BOM. Only files already in that tab layout get line-level diffs; files indented another way are re-indented in full. A leading BOM does not stop these tools from reading a file. Tilemap brush files are the exception in layout: Construct 3 writes them as one line of compact JSON, so the tilemap brush tools write a new brush file that way and keep an existing file's layout (compact, or its own indent string) together with its line endings, trailing whitespace and BOM.
+**Text style.** An overwritten file keeps its line endings (LF or CRLF), exact trailing whitespace and BOM. A new file follows `project.c3proj`, then the first JSON file with line breaks in its target folder, then Construct 3's own style: tab-indented JSON with LF line endings, no trailing newline and no BOM. Only files already in that tab layout get line-level diffs; files indented another way are re-indented in full.
 
-**Names and file names.** Entity files are named after the entity (`<category>/<folders>/<name>.json`, folders mirroring the project bar), and on Windows and macOS names that differ only in case name the same file. Create and rename tools therefore compare names the way the Construct 3 editor does: event sheet and layout names project-wide ignoring case, object type and family names in one namespace ignoring case, layer names per layout ignoring case (sub-layers included; the editor cannot load a layout with two such layers), animation names per sprite ignoring case (in any animation folder), event variable names ignoring case within the variable's scope (see [Event variable names](#event-variable-names)), and sibling project-bar folders (`subfolder` segments) ignoring case — a case-only clash is refused with an error naming the existing entity or folder. Create tools also refuse to write an entity JSON file or a timeline file where one already exists, including one whose name differs only in case; nothing is backed up or replaced, and the error says to choose another name or, for a leftover of a deleted entity, to check and remove the file first. Placeholder PNGs are not covered: `create_object` and the animation tools write them over an image file of the same name in `images/`. Rewrites of an existing file keep its name on disk exactly, including case, and the `.bak` backup takes that name.
+**Parallel calls.** The animation tools, from [`add_animation_to_sprite`](#add_animation_to_sprite) to [`replace_sprite_image`](#replace_sprite_image), and [`replace_object_image`](#replace_object_image), run one at a time: a call waits until the one before it has finished and reads the object only then. They write an object file back (a Sprite's, or for `replace_object_image` that of the object type), and several rename or write its image files (for a Sprite the frame image files, whose names hold the frame index), so two of them in parallel could otherwise move each other's images or write the object without the other's frames. `delete_object`, which renames the object's frame images, takes the same lock around its renames, its delete and its rollback, and [`rename_object_type`](#rename_object_type), which renames them too, takes it around the whole call (`rename_family` renames no image and does not wait). Other tools that write an object file (e.g. `update_object_properties`) do not wait for them: run such a call on the same Sprite in parallel with an animation tool and one can overwrite the other's change, as for any two calls that change the same file. When [`add_frame_to_animation`](#add_frame_to_animation), [`delete_frame_from_animation`](#delete_frame_from_animation), [`reorder_frames`](#reorder_frames), [`reverse_frames`](#reverse_frames) or [`duplicate_frame`](#duplicate_frame) finds that another write replaced the object file during its own, it keeps the frames and image files together (see there). `replace_object_image` keeps its image and the object file together in the same way: if the other write kept the new image record, the new image stays and the call succeeds with a warning; if it did not, the image is put back (or removed) when the record is the one from before the call; otherwise the image stays and the error says recovery is unresolved (see there).
 
-**Editor reload note.** Every response that reports a completed write includes `editorNote`: *"If this project is open in Construct 3, close and reopen it there before saving, or the editor can overwrite these changes."* The editor keeps an open project in memory, so saving from a session opened before the edit can overwrite it; its Project Bar reload (F9) re-reads script files only. A `WriteResult` with `success: true` counts as a write unless it is a dry run. Tools whose success does not imply a write carry no note: the `already_registered` no-op of `register_addon`, `fix_legacy_behavior_keys` with `dryRun: false` when it found nothing to rename, `fix_legacy_event_shapes` with `dryRun: false` when it found nothing to convert, `replace_object_in_events` and `replace_in_expressions` when nothing matched, `set_main_script` when the script already was the main script, `clone_project`, `export_for_preview` / `pack_project` with `injectBridge: false`, the project session tools `get_open_project`, `open_project` and `reload_project` (which write nothing), and the runtime connection and preview tools (`connect_to_game` through `stop_preview`, which drive a running game, not the project files). `revert_last_change` carries the note, since it rewrites project files. Error responses never carry the note, even when a multi-step tool (e.g. `create_object`) failed after an earlier step had already written.
+**Names and file names.** Entity files are named after the entity (`<category>/<folders>/<name>.json`, folders mirroring the project bar), and on Windows and macOS names that differ only in case name the same file. Create and rename tools therefore compare names the way the Construct 3 editor does: event sheet and layout names project-wide ignoring case, object type and family names in one namespace ignoring case, layer names per layout ignoring case (sub-layers included; the editor cannot load a layout with two such layers), animation names per sprite ignoring case (in any animation folder), event variable names ignoring case within the variable's scope (see [Event variable names](#event-variable-names)), and sibling project-bar folders (`subfolder` segments) ignoring case; a case-only clash is refused with an error naming the existing entity or folder. Create tools also refuse to write an entity JSON file, a timeline file or a flowchart file where one already exists, including one whose name differs only in case; nothing is backed up or replaced, and the error says to choose another name or, for a leftover of a deleted entity, to check and remove the file first. Placeholder PNGs are not refused: `create_object` and `add_animation_to_sprite` write them over an image file of the same name in `images/`, e.g. one a deleted animation left behind, but first keep that image as `<file>.bak` (`<file>.1.bak`, ... when taken), so nothing is replaced without a backup (`delete_object` keeps the images of the object it deletes the same way; `add_frame_to_animation` renames such a file first). Rewrites of an existing file keep its name on disk exactly, including case, and the `.bak` backup takes that name. The event sheet tools that check a sheet together with the other event sheets (`add_event_to_sheet`, `delete_event_sheet`, `delete_event_from_sheet`, `update_event_variable`, `move_events_between_sheets`, `update_function`, `rename_event_sheet`) take a sheet name only as the project registers it: a name that differs only in letter case is refused as not found, with the registered name in the error, also on Windows and macOS, where the file would open (`rename_event_sheet` words it *is named "X" in the project. Use name "X".*). Their checks know the other sheets by their registered names, so they would see that sheet twice, once as saved; a move whose target was its source spelled in another case lost the moved events.
 
-**Events that share a SID.** Event SIDs are not guaranteed to be unique: editor-saved sheets can contain two events with the same SID, and they open in the editor. The tools that find an event by SID (`delete_event_from_sheet`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `update_event_group`, `update_comment`, `update_function`, `move_event_block`, `move_event_block_items`, and `move_events_between_sheets` for top-level events) refuse a SID that matches more than one event in the sheet, dry runs included, and write nothing. The error lists the matches in document order (the first 20, then a count of the rest): each one's JSON path (e.g. `events[3].children[1]`, the format [`locate_event`](#locate_event) returns), editor event number, enclosing group and function or parent event, and a one-line summary. Pass the path of the event you mean as `eventPath` (`eventPaths` for `move_events_between_sheets`, `sourceEventPath` and `targetEventPath` for `move_event_block_items`) to act on it; the path must point at an event with that SID, or the call is refused. A `parentSid` or `siblingSid` that places an event (`add_event_block`, `add_event_to_sheet`, `add_custom_action`, `move_event_block`) is refused the same way when several events share it. A unique SID works without `eventPath`, as before. The results of the single-event tools include the `eventPath` of the event they acted on. [`validate_project`](#validate_project) reports such SIDs as `duplicate-sid` warnings that name the same paths.
+**Editor reload note.** Every response that reports a completed write includes `editorNote`: *"If this project is open in Construct 3, close and reopen it there before saving, or the editor can overwrite these changes."* The editor keeps an open project in memory, so saving from a session opened before the edit can overwrite it; its Project Bar reload (F9) re-reads script files only. A `WriteResult` with `success: true` counts as a write unless it is a dry run. Tools whose success does not imply a write carry no note: the `already_registered` no-op of `register_addon`, `register_script_file` and `register_project_file`, `set_main_script` when the script already was the main script, `fix_legacy_behavior_keys` with `dryRun: false` when it found nothing to rename, `fix_legacy_event_shapes` with `dryRun: false` when it found nothing to convert, `clone_project`, and `export_for_preview` / `pack_project` with `injectBridge: false`. Error responses never carry the note, even when a multi-step tool (e.g. `create_object`) failed after an earlier step had already written.
 
-For a write through the project writer or a rename tool, the file's size and modification time must still match what the server last saw before it is backed up, so such a write never overwrites a save Construct made meanwhile (see [File stamps and the change journal](#file-stamps-and-the-change-journal)). Tools that read and write their own files (timelines, eases, flowcharts, containers, tilemap brushes, addon registration, script and project files) read the file fresh instead. Every result ends with the files the call changed.
+**Files the server could not parse.** The reference checks work from the cross-reference index, which holds only the files the reader could parse. A registered layout, event sheet or family file over the size limit (10MB by default), not valid JSON or unreadable is left out (`validate_project` lists it in `unscannedFiles`). The checks of `delete_object`, `delete_family`, `delete_layout`, `delete_event_sheet`, `delete_event_from_sheet`, `move_events_between_sheets`, `update_event_variable` (for a rename), `update_object_properties`, `update_family`, `update_instance_variable`, `update_function`, `update_event_group`, `add_custom_action`, `rename_animation`, `rename_object_type`, `rename_family`, `rename_event_sheet` and `rename_layout` therefore search such files as text for the names they look for (the tool sections say which): whole words ignoring case (`Enemy` matches `"Enemy"`, `Enemy.X`, `enemy(0)` and `runtime.objects.Enemy`, not `EnemyBullet`), as JSON writes them inside a string, and whole numbers for SIDs. Names outside ASCII are also searched as `\u` escapes (Python's `json.dump` writes them so), a `\uXXXX` escape next to a name counts as the character it stands for, and a file with a UTF-16LE byte order mark is read as UTF-16LE; a file in another encoding (UTF-16BE, NUL characters) cannot be searched. The file is streamed without a size limit (about 0.1 seconds for 50MB while the names are rare in the text, up to about 0.3 seconds when a name is common inside other words, and about 2 seconds in a constructed worst case of 200 very common short names) and only while there are such files. Each searched file is listed in `unscannedFiles` as `{ file, reason, textSearch, names?, searchedFor?, unchecked? }`: `file` is `category/name` as in `validate_project`, `reason` is `over the 10MB size limit` (the megabytes of the setting in effect), `not valid JSON` or `could not be read`, and `textSearch` is:
+- `possible-use`: the text holds what the check looks for (`names` lists what it found). This is a possible use, not a confirmed one: the search cannot tell a use from the same name in another string (a comment, a text property). It refuses like a use (`delete_blocked` / `move_blocked` / `update_blocked` / `rename_blocked`, message *There are possible uses in files that could not be parsed: ...*); with `force=true` the tool goes ahead and names the files in a warning, without changing them;
+- `unreadable`: the file exists but cannot be read even as text (a folder in its place, no read access). It refuses the same way, since uses in it cannot be ruled out;
+- `no-match`: nothing found. The tool goes ahead as before and warns that the file was only searched as text, and for what (`searchedFor`);
+- `not-searched`: the file was not searched. With `unchecked`, it is the own file of what `delete_object`, `delete_family` or `delete_event_sheet` deletes: its SID (and a family's members, instance variables and behaviors) or, for an event sheet, the functions and global variables it defines are unknown, so `unchecked` says what could not be checked, and it refuses the same way (message *Its own file could not be parsed: ...*). In `get_object_dependencies` and `find_orphaned_objects` it means that no object was left to search the file for.
+A registered name whose file does not exist (also one deleted since the index was built) holds no uses: it is not listed and does not block. Names built at runtime, and ASCII letters a file writes with `\u` escapes, are not found.
 
-Every tool that writes `project.c3proj` leaves it in the shape Construct r495.2 saves, so the editor's next save shows only its own changes. Script entries carry `script-info` instead of `file-info`, and an empty `models3d` folder is added after `flowcharts`. For a project an older release saved, `uidAllocationMode` is placed after `preloadSounds` and `scriptsType` last in `properties`, and a release-44903-or-older project's `zAxisScale` "normalized" is written as "regular", which r495.2 itself shows and saves for such a project. A project saved by r495.2 or later keeps its own order. `savedWithRelease` is never changed and `usedAddons` is never pruned.
+An object type whose own file could not be parsed still counts as a member of its families: `delete_family` and `update_family` find uses of the family's instance variables and behaviors through it in parsed event sheets (its own names are unknown, and `validate_project` does not report uses of them as missing). `update_object_properties`, `update_family` and `delete_family` update the behavior entries of instances in the layouts they can parse; layouts they could not parse are searched for the object types concerned, and a warning names those that possibly hold such instances (left unchanged) or cannot be read (listed in `unscannedFiles`), as well as a member whose object type file could not be parsed.
+
+**Events that share a SID.** Event SIDs are not guaranteed to be unique: editor-saved sheets can contain two events with the same SID, and they open in the editor. The tools that find an event by SID (`delete_event_from_sheet`, `update_event_block`, `update_event_block_action`, `update_event_variable`, `update_function`, and `move_events_between_sheets` for top-level events) refuse a SID that matches more than one event in the sheet, dry runs included, and write nothing. The error lists the matches in document order (the first 20, then a count of the rest): each one's JSON path (e.g. `events[3].children[1]`, the format [`locate_event`](#locate_event) returns), editor event number, enclosing group and function or parent event, and a one-line summary. Pass the path of the event you mean as `eventPath` (`eventPaths` for `move_events_between_sheets`) to act on it; the path must point at an event with that SID, or the call is refused. A unique SID works without `eventPath`, as before. The results of the single-event tools, apart from `update_function`, include the `eventPath` of the event they acted on. [`validate_project`](#validate_project) reports such SIDs as `duplicate-sid` warnings that name the same paths.
 
 ### `create_object`
 
@@ -548,7 +589,7 @@ Create a new object type in the project.
 **What it does:**
 1. Validates name (uniqueness, reserved names, format). A name equal to an existing object type or family name, or to `"System"` or the name of the built-in Functions object (`functionsName`), ignoring case, is refused: the editor would fail to open the project (load-time rule `duplicate-object-name`, see [`validate_project`](#validate_project)).
 2. Ensures plugin is registered in `usedAddons` (auto-adds known Scirra plugins)
-3. Generates SID (+ UID for global plugins, + animation SID for Sprite)
+3. Generates SID (+ UID for global plugins, + animation SID for Sprite). The UID follows the same rules as in [`add_instance_to_layout`](#add_instance_to_layout): files over the size limit (10MB by default) count, and a layout or object type that exists but cannot be read refuses the global plugin. The UID is generated before step 2, so such a refusal writes nothing, `usedAddons` included
 4. Builds from plugin-specific template
 5. Writes `objectTypes/<name>.json`
 6. Adds name to `project.c3proj` objectTypes container
@@ -561,131 +602,27 @@ Update an existing object's instance variables and behaviors.
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Existing object name, as registered: a name that differs only in letter case is refused as not found, naming the registered one |
 | `isGlobal` | boolean | No | Change global status |
-| `addVariables` | array | No | `[{ name, type: "number"\|"string"\|"boolean", description?, showInPropertiesBar? }]` |
+| `addVariables` | array | No | `[{ name, type: "number"\|"string"\|"boolean" }]` |
 | `removeVariables` | string[] | No | Variable names to remove |
 | `addBehaviors` | array | No | `[{ behaviorId: "Tween"\|"Sin"\|etc., name }]` |
 | `removeBehaviors` | string[] | No | Behavior names to remove |
 | `force` | boolean | No | Remove instance variables and behaviors even if events use them (default: false) |
-| `globalInstanceProperties` | object | No | Settings of a single-global object (Keyboard, Touch, Audio, Gamepad, LocalStorage...) merged into `singleglobal-inst.properties` |
-| `globalInstanceTags` | string | No | Tags of the single-global instance |
 
 **Removing what events use:** before anything is changed, the instance variables and behaviors to remove are checked against the events. A use is the `"instance-variable"` parameter or the `behaviorType` of a condition or action on the object, an `"instance-variable"` parameter that names the object itself as `{ "name": "hp", "objectClass": "Sprite" }` (the shape editor-saved System actions such as *Sort Z order* use, next to `"object": "Sprite"`), `Object.name`, `Object(0).name` or `Object.Behavior.Expression` in any parameter expression (function call arguments included), and `Self.name` or `Self.Behavior.Expression` in a parameter expression of a condition or action on the object. All these names are matched ignoring case: editor-saved projects spell object, instance variable and expression names in expressions in other case and open, and the `"instance-variable"` parameter and `behaviorType` are compared the same way, so a use that differs from the name only in letter case blocks the removal too (and `validate_project` does not report it). `Object.name` counts only when `name` is an instance variable or behavior of the object, since anything else there is one of the plugin's expressions (`Sprite.X`). A use that a family of the object still resolves after the removal (a family instance variable or behavior of the same name) does not count.
 - If used and `force=false`: nothing is changed (`success: false`, `action: "update_blocked"`), also none of the other changes the call asks for. `message` sums up the uses; `references` holds `eventSheets` (names) and `uses` (`{ eventSheet, path, eventPath, sid, objectClass, kind, name, context, form }`), capped at 50 entries with `usesNotListed` counting the rest. `path` is the event path with the condition or action index (`block > action:0`), which sibling events share; `eventPath` is the JSON path of the event (`events[3].children[1]`), as [`locate_event`](#locate_event) returns it and the SID-based event tools take it; `sid` is the condition's or action's SID, when it has one. `kind` is `instance variable` or `behavior`, `context` is `condition`, `action` or `expression`, `form` is `instance-variable`, `behaviorType`, `legacy-behavior-type`, `behavior-expression` or `member-expression`
 - If used and `force=true`: removes them with a warning that names the uses (they are NOT changed). [`validate_project`](#validate_project) then reports them as `missing-behavior-or-variable` (a behavior named under the legacy `"behavior-type"` key as `legacy-behavior-key`), except the uses written as `Object.name` or `Self.name` in expressions (form `member-expression`), which it cannot tell apart from the plugin's own expressions: a second warning lists those (`"Sheet1" block > action:0 at events[3]`)
+- Event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched for each removed name together with the object's name: a sheet whose text holds both, or that cannot be read at all, refuses without `force` as well (`unscannedFiles`)
 - Scripts (script actions, script blocks and project script files) are not checked, since which object's instances they read cannot be told, and never block a removal. When a script reads a removed instance variable or behavior by name (`instVars.hp`, `instVars["hp"]`, `behaviors.Fade`, compared with their letter case, as in JavaScript) and the object no longer has one of that name, the result warns and says where, so the scripts can be reviewed
 - Not checked: timeline tracks
 
 **Notes:**
 - Reads the full existing object and preserves all fields not being modified
-- Removing an instance variable or behavior that events still use is refused as described under *Removing what events use* above; placed instances (every layer depth and non-world) lose their entries for removed behaviors
-- `globalInstanceProperties` and `globalInstanceTags` are refused for objects without `singleglobal-inst`; property keys not already stored produce a warning
-- A new behavior is refused when a family already gives the object a behavior of that name, or when its addon is neither in `usedAddons` nor a known Scirra behavior (checked before anything is registered)
-- If placed instances cannot be updated after the object file is written, the result is `success: false`, `action: "partially_updated"`, with `backupFile` and `writtenLayouts`
 - Validates behavior addon registration (auto-adds known Scirra behaviors)
 - Generates unique SIDs for each new variable and behavior
 - Warns on duplicate variable/behavior names (skips them)
 - Updates the object's layout instances (all layers, sub-layers and `nonworld-instances`): each gets a default entry for an added behavior (see [`add_instance_to_layout`](#add_instance_to_layout)) and loses the entry of a removed one; existing entries keep their values and their order (a new entry goes next to the entries it follows in the editor's order)
-- On any behavior or instance variable change, an instance that has no entry for another behavior of the object or its families (older versions of these tools placed instances without them) gets a default entry for it too, and a warning names these behaviors and counts the instances
-- `description` sets C3's `desc` field and `showInPropertiesBar` sets `show` (defaults `""` and `true`). `update_family`'s `addVariables` accepts the same two options
-- There is no `initialValue` parameter: a C3 instance-variable definition has no default-value field. A placed instance's starting value lives in that instance's own `instanceVariables` dict, set with `add_instance_to_layout` / `update_instance`
-- To rename, retype or re-describe an existing variable, use `update_instance_variable`
-
-### `reorder_behaviors`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` or `familyName` | string | One of them | Owner of the behaviors |
-| `order` | string[] | Yes | Every behavior name exactly once, in the new order |
-
-Returns `action: "unchanged"` when the order already matches.
-
-### `update_instance_variable`
-
-Edit an existing instance variable *definition* on an object type or a family, and keep placed instances and event-sheet references in sync.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | One of | Object type that owns the variable |
-| `familyName` | string | One of | Family that owns the variable |
-| `variableName` | string | Yes | Current variable name |
-| `newName` | string | No | New variable name |
-| `newType` | string | No | `"number"`, `"string"` or `"boolean"` — stored values are coerced |
-| `description` | string | No | New description (C3 `desc`) |
-| `showInPropertiesBar` | boolean | No | Show in the properties bar (C3 `show`) |
-| `renameReferences` | boolean | No | Rewrite event-sheet references on a rename (default: false) |
-
-Exactly one of `objectName` / `familyName` is required, and at least one of `newName`, `newType`, `description`, `showInPropertiesBar`.
-
-**What it does:**
-1. Reads the owning object type or family and locates the variable by name
-2. On a rename: validates the new name and rejects a collision with another variable on the same owner, or — for a family — with a variable a member object type defines itself
-3. On a rename: scans every event sheet for references (see below) and refuses the whole operation unless there are none or `renameReferences=true`
-4. Writes the updated definition (`name` / `type` / `desc` / `show`), preserving every other field and the variable's `sid`
-5. Renames the stored key and/or coerces the stored value on every placed instance of the affected object types, in all layers, nested sub-layers and non-world instances, across all layouts
-
-**Affected object types:** for `objectName`, that object type. For `familyName`, every family member — C3 stores a family instance variable flat in each member instance's own `instanceVariables` dict.
-
-**Event-sheet references** (both shapes confirmed against a production project):
-- an ACE parameter keyed `instance-variable` whose value is the bare variable name, on an action/condition whose `objectClass` is the owner (or, for a family variable, the family or one of its members)
-- expression text naming it as `<ReferringName>.<variableName>` in any other parameter value
-
-Both are rewritten when `renameReferences=true`. A reference built by string concatenation, or written inside a JavaScript script action or a script file, is **not** rewritten; the result warns about this. An identically named variable on a different object type is left alone.
-
-**Value coercion on `newType`:**
-
-| To | Rule |
-|-----|------|
-| `string` | `String(value)`; `null`/`undefined` become `""` |
-| `number` | `Number(value)`, falling back to `0` when not finite; `true`/`false` become `1`/`0` |
-| `boolean` | JavaScript truthiness (`0` and `""` are false) |
-
-### `list_containers`
-
-List the project's object containers. A container makes C3 create, pick and destroy a set of object types together.
-
-No parameters. Returns `{ containers: [{ members }], count }`.
-
-Containers have no name and no file of their own: the whole set lives in a flat `containers: [{ "members": [...] }]` array at the root of `project.c3proj`, so a container is identified by any one of its members.
-
-### `create_container`
-
-Create an object container from existing object types.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `members` | string[] | Yes | Object type names (1-100; 2 or more for a meaningful container) |
-
-**Behavior:**
-- Every member must exist as an object type; a family is rejected with an explicit message (containers hold object types only)
-- An object type may belong to at most one container; a member already held by another container is rejected and nothing is written
-- A member listed twice in one request is rejected
-- A single-member container is accepted with a warning: C3 containers are only meaningful with 2 or more members
-- Backs up `project.c3proj`, writes it through a temp file and rename, then reloads the project
-
-### `update_container`
-
-Add or remove object types in an existing container.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `member` | string | Yes | Any object type currently in the container to update |
-| `addMembers` | string[] | No | Object type names to add |
-| `removeMembers` | string[] | No | Object type names to remove |
-
-**Behavior:**
-- `member` identifies the container; an object type in no container is an error
-- `addMembers` runs the same validations as `create_container`
-- A duplicate add or an absent remove warns and is skipped; it is not an error
-- Removing the last member deletes the container and reports `action: "deleted"`
-- When the last container in the project is removed, the `containers` key is dropped from `project.c3proj`
-
-### `delete_container`
-
-Delete the container that includes the named object type. The object types themselves are not deleted.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `member` | string | Yes | Any object type currently in the container to delete |
+- Keeps the instances' instance variable values in step, as the editor saves them: each instance gets the default value of an added variable (`0`, `""` or `false` by its type) and loses the value of a removed one, unless a family of the object still has a variable of that name; existing values keep their value and order. A warning names the removed values other than the default and the removed effect entries (layout, UID, name and value, the first ten), since only the layout's `.bak` keeps them, until the layout is written again.
+- On any behavior or instance variable change, an instance that has no entry for another behavior of the object or its families, or no value for another of their instance variables (older versions of these tools placed instances without them), gets a default entry or value too, and a warning names them and counts the instances
 
 ### `delete_object`
 
@@ -698,9 +635,75 @@ Delete an object type from the project.
 
 **Behavior:**
 - Checks for references in event sheets, layouts, and families (what counts as a reference: see [`find_orphaned_objects`](#find_orphaned_objects); project script files are not scanned): uses in events, instances on any layer or sub-layer and non-world instances, object properties of other instances that hold its SID, and membership in any family
-- If referenced and `force=false`: blocks (`action: "delete_blocked"`) and lists where the object is used. `message` sums it up; `references` holds `eventSheets`, `layouts` and `families` (names), `events` (`{ eventSheet, path, context }` with `context` `condition`, `action`, `parameter`, `expression`, `script` or `custom-action`), `instances` (`{ layout, layer, instances }` per layout and layer, `layer` being a path such as `"Main > HUD"` for a sub-layer and absent for non-world instances) and `instanceProperties` (`{ layout, layer, objectType, uid, property }`). Each list is capped at 50 entries; `eventsNotListed`, `instancesNotListed` and `instancePropertiesNotListed` count the rest
-- If referenced and `force=true`: deletes with a warning that names the remaining uses (references NOT cleaned up). [`validate_project`](#validate_project) then reports the dangling instances, object parameters, family memberships and Particles object properties as `broken-object-reference`, but not the uses in expressions and scripts: a second warning lists those
-- Removes the name from c3proj first, then backs up and deletes the JSON file. A failure between the two steps leaves an orphaned file (reported by `validate_project` as info at any subfolder depth if its directory is readable), never a registration that points at nothing; the error names the file to clean up
+- If referenced and `force=false`: blocks (`action: "delete_blocked"`) and lists where the object is used. `message` sums it up; `references` holds `eventSheets`, `layouts` and `families` (names), `events` (`{ eventSheet, path, context }` with `context` `condition`, `action`, `parameter`, `expression`, `script`, `custom-action` or `create-by-name`), `instances` (`{ layout, layer, instances }` per layout and layer, `layer` being a path such as `"Main > HUD"` for a sub-layer and absent for non-world instances) and `instanceProperties` (`{ layout, layer, objectType, uid, property }`). Each list is capped at 50 entries; `eventsNotListed`, `instancesNotListed` and `instancePropertiesNotListed` count the rest
+- If referenced and `force=true`: deletes with a warning that names the remaining uses (references NOT cleaned up). [`validate_project`](#validate_project) then reports the dangling instances, object parameters, family memberships and Particles object properties as `broken-object-reference`, but not the uses in expressions, scripts and *Create object (by name)*: a second warning lists those
+- Event sheets, layouts and families that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched for the object's name, and layouts also for its SID (object properties): a match, or such a file that cannot be read at all, blocks as well, with `unscannedFiles` next to `references`
+- Refuses when the JSON file changed on disk since it was read; then removes the name from `project.c3proj` and deletes the file (kept as `.bak`). When either step fails, the call is undone; when `project.c3proj` was saved again meanwhile and cannot be put back, the error says what is on disk: if it no longer lists the name, the file is left on disk unregistered. If `project.c3proj` lists the name again after the file was deleted, the call is an error
+- `delete_object` also takes the object type out of every container in `project.c3proj` that lists it (ignoring case), in the same update of `project.c3proj` that removes its registration. Construct 3 does not open a project whose container lists a missing object type. The update is built from the file as it is right before the write, so a save in the editor during the call is merged, not lost. The result lists the changed containers in `containersUpdated` (`{ index, members }`, members after the change; `index` is the position before the call). A container left with fewer than two members is removed and listed in `containersRemoved` (members before the change). A failure of the update rolls the call back.
+- Keeps the object's image files as `<file>.bak` (`<file>.1.bak`, … when that name is taken), as `delete_frame_from_animation` keeps the image of a deleted frame: every frame image of every animation (animation folders included), `images/<object>-<animation>-NNN.<ext>` with the extension of the frame's `fileType`, or the single image `images/<object>.<ext>` of a Tiled Background, 9-patch and other plugins that save one `image`; names are compared ignoring case and Unicode normalization. A warning names them. A file that another object type's frames also use (the same name) is left in place, as is one named after an object type whose file could not be parsed. The image files are renamed first; if `project.c3proj` cannot be updated or the object file cannot be deleted, the call is undone and the images are renamed back, but only when the undo left `project.c3proj` listing the object and its file on disk. When the object is gone from `project.c3proj` but its file is still on disk, or the object file was deleted and `project.c3proj` lists the name again, the images stay as `.bak` and the error names them, since images under their live names with no object would be overwritten without a backup by a later `create_object` or `add_animation_to_sprite` (the error names any file that could not be put back; an object file or `project.c3proj` saved again in the editor meanwhile is left as it is, see [Error Response](#error-response)). When the object's own file could not be parsed (deleted with `force`), its images are unknown and left as they are, with a warning
+
+### `rename_object_type`
+
+Rename an object type and update what names it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Current object type name, as registered (letter case included) |
+| `newName` | string | Yes | New object type name: letters, digits and underscores, starting with a letter or underscore, with no space (expressions name the object as `Name.X`); not a name an object type or family has (ignoring case), `System` or the name of the built-in Functions object |
+| `dryRun` | boolean | No | Report the references and files the rename would change, and write nothing (default: false) |
+| `force` | boolean | No | Rename even when event sheets, layouts or families that could not be parsed possibly name the object type, or a timeline could not be read (whatever it names; they are NOT updated), or, for a Tilemap, the search for its brush file was not complete while its own folder holds none (that file is NOT renamed). Default: false |
+
+The rename updates what names the object type, matching names ignoring case as the editor compares object type names (in Construct 3 r506-2, Free edition, renaming an object type in the Project Bar changed the condition and action objects, the object parameters, the object of an instance variable parameter, the expressions, the family members, the container entry and the layout instances, also on a sub-layer, together with its image file names, and left the strings and script lines that held the name):
+- **Event sheets**: the object of conditions and actions (`objectClass`); the owner of custom action blocks; a parameter whose whole value is the name exactly as registered, where the reference index counts it as the object (the `object`, `object-to-create`, `pin-to` and `child` parameters always; `layout`, `audio-file`, `instance-variable` and `variable` never; any other parameter and the arguments of a call unless an event variable or function parameter has the name, in which case it is listed); the `objectClass` of an object-valued `instance-variable` parameter (`{ name, objectClass }`, as System *Sort Z order* saves it); and expressions that use it as an object (`Name.X`, `Name(0).X`) under every parameter, `layout`, `audio-file`, `instance-variable` and `variable` included: a layout, sound, event variable or instance variable name cannot hold a dot, so `Name.X` there is an expression (in r506-2 the editor rewrote `Alpha.X & ""` in the layout parameter of System *Go to layout (by name)*, and a project that still named the old object type there did not open). A name that starts with a digit is found in expressions too; a name made only of digits is not matched in expressions, since `12.5` is a number, and `12.x`, `12(0).x` and a whole value equal to it are listed. Where the editor's own rename changes the `child`, `parent`, `obstacle` and `array` parameters was not observed; they are found in editor-saved projects and rewritten by the rule above.
+- **Layouts**: the `type` of its instances on every layer and sub-layer and among the non-world instances (where the editor's own rename changes the non-world instances was not observed).
+- **Its own file**: the `type` of its single-global instance, when that names it (not observed in the editor).
+- **Families** that list it as a member.
+- **`project.c3proj`**: its entry in the project bar gets the new name and keeps its folder and its position. The containers that list it (ignoring case) get the new name in the same write of `project.c3proj` as its entry.
+- **Timelines**: the `objectType` of its instance tracks (`type` `instance-track`), in `tracks` and in track folders at any depth, gets the new name (`references` `kind` `timeline track`, with `tracks`, the number of tracks, and `in` the timeline file); the file keeps its text style. In Construct 3 r506-2, Free edition, renaming an object type rewrote the `objectType` of a root-level instance track; the tracks inside track folders are rewritten too, so that no track keeps a name that no longer exists. Untyped (older) tracks hold no object name and are left. A timeline that still holds the name as another value (such as the property track of an instance variable of that name, or a track name) is also listed in `possibleReferences` (`kind` `timeline value`), and that value is never changed.
+- **Images**: its frame image files (`<name>-<animation>-NNN.<ext>`, or `<name>.<ext>` for a single image, in lower case as the editor names them) are renamed with it (`imageRenames`); the editor renamed them the same way. The rename is refused, changing nothing, when one of these files is also another object type's file, when one is named after an object type whose file could not be parsed (that object type may use it), or when a file at a new name exists.
+- **Tilemap brush**: a brush file named after the object type (`tilemapBrushes/objectTypes/<folders>/<name>.brush.json`) is moved with it to `<new name>.brush.json` in the folder it is in (`brushMoved`). It is found by name anywhere below `tilemapBrushes/`, the object type's own folder first, by the same search as the brush tools: it stops at 20,000 entries and 8 folder levels or when a folder cannot be read. When the search is incomplete and the object type's own folder holds its brush file, that file is moved and a warning says another one may have been missed; when the own folder holds none and the object type is a Tilemap, the rename is blocked without `force` (`rename_blocked`), since its brush file may be among the files not searched, and with `force` it goes on with a warning and that file is not renamed. The rename is refused when two folders hold one, when a brush file at the new name exists with other content, or when one exists and the object type has none of its own; a Tilemap object type with no brush file gets `brushFileFound: false` and a warning. In the editor-saved projects checked (an r495.2 editor-saved project and three editor-saved archives), 3 brush files are named after an object type, all of them Tilemap object types; whether the editor renames a brush file with its object type was not observed.
+- **The file** is written as `<new name>.json` in the same folder, with its `"name"` changed and its SID kept; the old file is deleted and kept as `.bak` (`backupFile`).
+- **The editor's view state**: the entry of the object type in `objecttypes.uistate.json`, when the file has one, gets the new name in the file's own text style (`viewStateMoved`). In Construct 3 r506-2, Free edition, the file held no entry for the object type, so what the editor does with an entry was not observed. It holds view settings only, so it is changed last and a failure is a warning: a file that names the object type but cannot be read as a list of entries is left as it is.
+
+Other places may name the object type or something else of that name, so they are never changed. A warning lists them and `possibleReferences` holds each one: a string literal (System *Create object (by name)*; `kind` `string literal`), a script line of an event (`script`), a line of a project script file that reads it as `runtime.objects.Name` (`script`, `in` the script's path; a script file that cannot be read is named in a warning), a bare name or `Name(...)` without a member in an expression, a parameter whose key is the name, a whole parameter value that differs from the name only in letter case, and for a name made only of digits its `Name.x` and `Name(...).x` uses and a whole value equal to it (`possible expression`), the initial value of an event variable or function parameter that is the name (`variable value`), the `c` value of a flowchart node that is the name (`flowchart node`; a flowchart file that cannot be read or parsed is named in a warning), and the timeline values above.
+
+Refused, changing nothing (the message ends "Nothing was changed."): an object type that is not registered or is given in another letter case than registered (the error gives the registered name); an object type whose own file does not exist or could not be parsed (in the second case, rename it in the Construct 3 editor); a `newName` that is not a valid name, has a space or starts or ends with one, is the object type's own name, differs from it only in letter case (on Windows and macOS both names are the same file: rename it to another name first), is the name of another object type or of a family ignoring case, is `System` or is the name of the built-in Functions object; a file for the new name that exists in the object type's folder and is not one a stopped rename of this object type left (below); and the image and brush cases above. The editor does not refuse a name with a space or with `.`, `-` or `$` typed in the Project Bar: in Construct 3 r506-2, Free edition, it removed those characters, so the tool refuses such a name and its message gives the form the editor would produce.
+
+Event sheets, layouts and families that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched as text for the object type's name: a match, or such a file that cannot be read at all, refuses the rename (`"success": false`, `"action": "rename_blocked"`, `message`, `references` and `unscannedFiles`; nothing changed). So does any timeline file that cannot be read or parsed, or that holds more than 200,000 values (it is not searched to the end), whatever it names: the call cannot tell what such a file holds. With `force: true` it goes ahead, and a warning names those files, which are NOT updated.
+
+The event sheets, layouts and families that name the object type are written first, then the object type under its new name, then `project.c3proj` (its entry and the containers in one write), then the image files are renamed, then the brush file is moved, then the old file is deleted (the last write the rollback covers), then the view state is changed. When a write fails, what the call wrote is put back (the image files are renamed back and the brush file is restored); a file another write changed after the call wrote it (a save in the editor) is left as it is and named with its `.bak`, and a new file whose own write could not be confirmed is left and named. When a file the call is about to write changed on disk during the call, the write is refused, the file keeps that change, and what the call wrote before is put back. Messages name every file by its path in the project. The call runs one at a time with the animation tools (`rename_animation`, `add_frame_to_animation`, ...), since it renames frame image files.
+
+Running the same call again finishes a rename that stopped midway (the server process ended): a file for the new name that holds the object type's SID and the new name, and is not registered, is written over; and when the project registers the new name already while the old file itself is still there with the same SID, the call does what is left (renames the image files and moves the brush file that still have the old name, deletes the old file, changes the view state; when the brush file was moved already but the old one is still there, it deletes the old brush file and reports it as `brushFileDeleted`, leaving it out of `filesWritten`) and says so with `"stoppedRun": true` and a warning. The old file is deleted as the last write, so a finished rename leaves only its `.bak`: the same call after a finished rename answers that the object type is not found and changes nothing.
+
+Returns `{ success, entity (the new name), category: "object", action: "renamed", previousName, references, possibleReferences?, imageRenames?, filesWritten, fileDeleted, backupFile?, brushMoved?, brushFileDeleted?, brushFileFound?, viewStateMoved?, stoppedRun?, warnings?, unscannedFiles? }`. `references` has one entry per place that was updated: `in` (the file, project-relative, e.g. `eventSheets/Menu.json`, `layouts/Level 1.json`, `project.c3proj`), `kind` (`objectClass`, `custom action owner`, `object parameter`, `instance-variable object`, `expression`, `instance type`, `family member`, `single-global instance type`, `container member` or `timeline track`), `path` (the event's JSON path, or `containers[n]` for a container), `ace`, `parameter`, `uid` (a layout instance), `tracks` (a timeline's instance tracks) and `value` (the name as saved); `imageRenames` and `brushMoved` list `{ from, to }`; `filesWritten` lists project-relative paths. `possibleReferences` has the same fields, with `kind` `possible expression`, `string literal`, `script`, `variable value`, `flowchart node` or `timeline value`. With `dryRun: true` nothing is written: `action: "would_rename"`, `newName`, `references`, `possibleReferences?`, `imageRenames?`, `filesToWrite`, `fileToDelete`, `brushFileToDelete?`, `stoppedRun?`, and the same warnings worded as what would happen.
+
+### `rename_family`
+
+Rename a family and update what names it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Current family name, as registered (letter case included) |
+| `newName` | string | Yes | New family name: letters, digits and underscores, starting with a letter or underscore, with no space (expressions name the family as `Name.X`); not a name an object type or family has (ignoring case), `System` or the name of the built-in Functions object |
+| `dryRun` | boolean | No | Report the references and files the rename would change, and write nothing (default: false) |
+| `force` | boolean | No | Rename even when event sheets that could not be parsed possibly name the family (they are NOT updated). Default: false |
+
+The rename updates what names the family, matching names ignoring case as the editor compares family names (in Construct 3 r506-2, Free edition, renaming a family in the Project Bar changed the condition and action objects, the owner of a custom action block, the family of a custom action call and the expressions that held the name):
+- **Event sheets**: the object of conditions and actions (`objectClass`); the owner of custom action blocks; the family of a custom action call (`customActionObjectClass`); a parameter whose whole value is the name exactly as registered, the `objectClass` of an object-valued `instance-variable` parameter and expressions that use it as an object (`Fam.X`, `Fam(0).X`), under the rules of [`rename_object_type`](#rename_object_type).
+- **`project.c3proj`**: its entry in the project bar gets the new name and keeps its folder and its position.
+- **The file** is written as `<new name>.json` in the same folder, with its `"name"` changed, its SID and its members kept; the old file is deleted and kept as `.bak` (`backupFile`).
+
+No layout, container, object type file, image or view state file is changed (a family has no instances or images of its own). Strings, script lines, project script file lines, flowchart nodes, variable values and the other names that may name the family are listed in `possibleReferences` and in a warning, never changed, as for `rename_object_type`.
+
+Refused, changing nothing (the message ends "Nothing was changed."): a family that is not registered or is given in another letter case than registered (the error gives the registered name); a family whose own file does not exist or could not be parsed (in the second case, rename it in the Construct 3 editor); a `newName` that is not a valid name, has a space or starts or ends with one, is the family's own name, differs from it only in letter case, is the name of another family or of an object type ignoring case, is `System` or is the name of the built-in Functions object; a file for the new name that exists in the family's folder and is not one a stopped rename of this family left.
+
+Event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched as text for the family's name: a match, or such a sheet that cannot be read at all, refuses the rename (`"success": false`, `"action": "rename_blocked"`, `message`, `references` and `unscannedFiles`; nothing changed). With `force: true` it goes ahead, and a warning names those sheets, which are NOT updated. Layouts and families that could not be parsed do not refuse it, since neither names a family.
+
+The event sheets that name the family are written first, then the family under its new name, then `project.c3proj`, then the old file is deleted (the last write the rollback covers). When a write fails, what the call wrote is put back; a file another write changed after the call wrote it (a save in the editor) is left as it is and named with its `.bak`, and a new file whose own write could not be confirmed is left and named. Messages name every file by its path in the project. Unlike `rename_object_type` it renames no image file, so it does not wait for the animation tools.
+
+Running the same call again finishes a rename that stopped midway (the server process ended): a file for the new name that holds the family's SID and the new name, and is not registered, is written over; and when the project registers the new name already while the old file itself is still there with the same SID, the call deletes the old file and says so with `"stoppedRun": true` and a warning. The old file is deleted as the last write, so the same call after a finished rename answers that the family is not found and changes nothing.
+
+Returns `{ success, entity (the new name), category: "family", action: "renamed", previousName, references, possibleReferences?, filesWritten, fileDeleted, backupFile?, stoppedRun?, warnings?, unscannedFiles? }`. `references` and `possibleReferences` are as for `rename_object_type`; the kinds of `references` are `objectClass`, `custom action owner`, `custom action family`, `object parameter`, `instance-variable object` and `expression`. With `dryRun: true` nothing is written: `action: "would_rename"`, `newName`, `references`, `possibleReferences?`, `filesToWrite`, `fileToDelete`, `stoppedRun?`, and the same warnings worded as what would happen.
 
 ### `create_family`
 
@@ -717,39 +720,49 @@ Create a new family. Families group object types of one plugin and share instanc
 
 ### `update_family`
 
-Add or remove family members, shared instance variables and shared behaviors.
+Add or remove family members and shared instance variables.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Family name, as registered: a name that differs only in letter case is refused as not found, naming the registered one |
 | `addMembers` | string[] | No | Object names to add |
 | `removeMembers` | string[] | No | Object names to remove |
-| `addVariables` | array | No | `[{ name, type: "number"\|"string"\|"boolean", description?, showInPropertiesBar? }]` |
+| `addVariables` | array | No | `[{ name, type: "number"\|"string"\|"boolean" }]` |
 | `removeVariables` | string[] | No | Variable names to remove |
-| `addBehaviors` | array | No | `[{ behaviorId, name }]` added to the family's `behaviorTypes`; the addon is registered if needed |
-| `removeBehaviors` | string[] | No | Family behavior names to remove |
-| `force` | boolean | No | Remove instance variables, behaviors and members even if events use them (default: false) |
+| `force` | boolean | No | Remove instance variables and members even if events use them (default: false) |
 
 At least one parameter besides `name` must be provided. Duplicates and missing entries are skipped with a warning.
 
 **Removing what events use:** before anything is changed, the removal is checked against the events, with the uses and matching rules of [`update_object_properties`](#update_object_properties). A family's conditions, actions and expressions (`Family.name`, `Self.name` on the family) reach only its own instance variables and behaviors; a member object type reaches its own and those of all its families.
-- `removeVariables` and `removeBehaviors`: uses on the family itself, and uses through a member that gets the variable or behavior from this family only (not one it declares itself or also gets from another family)
-- `removeMembers`: uses through a leaving member of the family's instance variables and behaviors that it gets from this family only. Whether events that use the family itself rely on the member being in it (they no longer pick or affect its instances) cannot be checked: removing a member while events use the family succeeds with a warning that counts those uses
+- `removeVariables`: uses on the family itself, and uses through a member that gets the variable from this family only (not one it declares itself or also gets from another family)
+- `removeMembers`: uses through a leaving member of the family's instance variables and behaviors that it gets from this family only, and of the family's effects (as for [`delete_family`](#delete_family); listed as `references.effectUses`, `{ eventSheet, eventPath, ace, sid, member, effect }`). Whether events that use the family itself rely on the member being in it (they no longer pick or affect its instances) cannot be checked: removing a member while events use the family succeeds with a warning that counts those uses
 - If used and `force=false`: nothing is changed (`success: false`, `action: "update_blocked"`, `references` as for `update_object_properties`, where `objectClass` is the family or the member the use goes through). With `force=true` the change goes ahead with the same warnings as in `update_object_properties`
+- Event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)): for `removeVariables`, a sheet whose text holds a removed name together with the family's or a member's name; for `removeMembers`, one whose text holds one of the family's instance variables or behaviors together with a leaving member's name. Such a sheet, or one that cannot be read at all, blocks as well (`unscannedFiles`)
 - Scripts: as in `update_object_properties`, a warning when scripts read by name an instance variable or behavior that a member loses (a removed variable, or for a leaving member each of the family's instance variables and behaviors that it does not declare itself or get from another family)
 
-When the family has behaviors, the layout instances of members that join get default entries for them, those of members that leave lose them, and those of members that stay get entries for added behaviors and lose the entries of removed ones. Entries these instances lack for the other behaviors of their object and its families are added too, as in [`update_object_properties`](#update_object_properties).
+The layout instances of the members follow the change: members that join get default entries for the family's behaviors and the default value of each of its instance variables; members that leave lose them and the entries for the family's effects, unless the member still has a behavior, variable or effect of that name itself or through another family; the other members get the default value of an added variable and lose the value of a removed one. Entries and values these instances lack for the other behaviors and instance variables of their object and its families are added too, as in [`update_object_properties`](#update_object_properties). Effect entries of a joining member are not added: the default parameter values of effects are not known (Construct 3 is expected to add them when it opens the project; not verified). A warning names the removed values other than the default and the removed effect entries (layout, UID, name and value, the first ten), since only the layout's `.bak` keeps them, until the layout is written again.
 
 **Load-time check:** a member change that makes the family mix plugins is refused and nothing is written (`family-plugin-mismatch`, *wrong plugin*). A mix that was already there does not block other updates, and removing the odd member is allowed.
 
-**Behaviors:**
-- Behavior names may use letters, digits (including a leading digit, as in `8Direction`), underscores and spaces
-- Every member must be able to carry every family behavior name: a new behavior may not match a behavior of any member or of another family of a member, and a new member may not bring a behavior whose name the family already uses. All checks run before any addon is registered or file written
-- A failed layout update after the family file is written returns `success: false`, `action: "partially_updated"` with `backupFile` and `writtenLayouts`
+### `update_instance_variable`
+
+Rename an instance variable of an object type or family, or change its type or description, and keep the values placed instances hold for it in step. Give exactly one of `objectName` and `familyName`, as registered, and the variable's name with its letter case.
+
+- **Rename** (`newName`): every placed instance of the object type, or of each member of the family, keeps its value under the new name, in the same place among its values. The new name must not match another instance variable those instances hold a value for (their own, or a family's), ignoring case, since events match these names ignoring case. A rename that events use is refused without `force`, with the uses listed, by the same rules as removing the variable with [`update_object_properties`](#update_object_properties) (the `"instance-variable"` parameter, `Object.name`, `Self.name`, ...), and event sheets that could not be parsed are searched as text for the old name and the object type, family or a member: a match, or a sheet that cannot be read at all, refuses too. Uses are never rewritten; with `force: true` they keep naming the old name (`validate_project` reports them as `missing-behavior-or-variable`, except `Name.member` in expressions). A rename that changes only the letter case breaks no event use (events match names ignoring case) and is not refused; scripts read instance variables by name with their case (`instVars.hp`), so a warning lists the scripts that read the old spelling. The check covers events and scripts only: timelines, flowcharts and files the server cannot list are not searched.
+- **Type** (`newType`): a value that does not fit the new type gets the type's default (0, `""` or `false`); the values other than the default it replaced are listed in a warning ("Replaced ..."), and only the layouts' `.bak` files hold them. Events that use the variable are listed in a warning; whether they work with the new type is not checked.
+- **Description** (`description`): saved as `desc`; no layout is written.
+
+Layouts the server could not parse (over the size limit, 10MB by default, or not valid JSON) are not updated: `unscannedFiles` lists every layout the server could not parse when the call writes layouts, and a warning names those whose text holds the name of an object type updated here, and those that cannot be read at all, since their instances may still hold the old values.
+
+A call that changes nothing (the same name, type and description) returns `action: "unchanged"` and writes nothing. Writes each layout with instances to update first, and the object type or family file last, so a call stopped between them leaves the definition under its old name and running it again finishes the values; when a write fails, the files the call wrote are put back, except one another write changed since, which is named with its `.bak`. This is a rollback of the failed call, not an undo a user can run later; a process that stops mid-call rolls nothing back: restore from their `.bak` only the layouts that already hold the new name, or run the call again. Returns `{ success, entity, category: "object" | "family", action: "updated", variable, previousName?, type, warnings?, backupFile, unscannedFiles? }`; a refusal for uses returns `{ success: false, action: "update_blocked", message, references, unscannedFiles? }`.
+
+### `reorder_behaviors`
+
+Put the behaviors of an object type or family in a new order: `order` lists every behavior once, with its exact name; an owner whose behaviors share a name is refused. On placed instances (of the object type, or of each member of the family), the entries of these behaviors are put in the new order among the places they hold, since each owner's entries are saved in its behavior order (Scirra's example projects: 13,461 of 13,461 instances of objects with behaviors carry an entry for each one); entries of other families and for other names stay where they are, since how the editor orders several families' entries is not verified. An instance holds one entry per behavior name: when another owner has a behavior of the same name (the object's own and a family's, say), that one entry moves along with the new order of this owner. The layouts are written first and the owner file last; a failure rolls back what the call wrote, and a process that stops mid-call rolls nothing back (run the call again). Returns `{ success, entity, category, action: "updated", order, backupFile, warnings?, unscannedFiles? }`; the order it has already returns `action: "unchanged"` and writes nothing.
 
 ### `delete_family`
 
-Delete a family. The member object types are kept. The layout instances of its members lose the entries for the family's behaviors, and get the entries they lack for their other behaviors (see [`update_object_properties`](#update_object_properties)).
+Delete a family. The member object types are kept. The layout instances of its members lose the entries for the family's behaviors and effects and the values of its instance variables (unless the member still has one of that name itself or through another family), and get the entries and values they lack for their other behaviors and instance variables (see [`update_object_properties`](#update_object_properties)).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -757,11 +770,73 @@ Delete a family. The member object types are kept. The layout instances of its m
 | `force` | boolean | No | Delete even if referenced (default: false) |
 
 **Behavior:**
-- Checks for references first. Uses of the family's name count as for [`delete_object`](#delete_object): the family as the object of a condition or action or of a custom action, in object parameters, expressions and script actions (`runtime.objects.Family`), and object properties of instances that hold its SID. Uses through a member count too: the `"instance-variable"` parameter or the `behaviorType` of a condition or action whose object is a member, an `"instance-variable"` parameter `{ name, objectClass }` that names a member (System *Sort Z order*), `Member.name`, `Member(0).name` or `Member.Behavior.Expression` in a parameter expression, and `Self.name` or `Self.Behavior.Expression` in a parameter expression of a condition or action whose object is a member, where `name` is an instance variable or behavior the member gets from this family only (not one it declares itself or also gets from another family). Names are matched ignoring case, as in [`update_object_properties`](#update_object_properties). Not detected: project script files and script access to instance variables and behaviors of member instances (`instVars`, `behaviors`)
-- If referenced and `force=false`: blocks (`action: "delete_blocked"`) and lists where the family is used. `message` sums it up; `references` holds `eventSheets` and `layouts` (names), `events` and `instanceProperties` (as for `delete_object`) and `memberUses` (`{ eventSheet, path, eventPath, sid, member, kind, name, context }`, `eventPath` and `sid` as for the `uses` of [`update_object_properties`](#update_object_properties), `kind` being `instance variable` or `behavior` and `context` `condition`, `action` or `expression`). Each list is capped at 50 entries; `eventsNotListed`, `instancePropertiesNotListed` and `memberUsesNotListed` count the rest
+- Checks for references first. Uses of the family's name count as for [`delete_object`](#delete_object): the family as the object of a condition or action or of a custom action, in object parameters, expressions and script actions (`runtime.objects.Family`), and object properties of instances that hold its SID. Uses through a member count too: the `"instance-variable"` parameter or the `behaviorType` of a condition or action whose object is a member, an `"instance-variable"` parameter `{ name, objectClass }` that names a member (System *Sort Z order*), `Member.name`, `Member(0).name` or `Member.Behavior.Expression` in a parameter expression, and `Self.name` or `Self.Behavior.Expression` in a parameter expression of a condition or action whose object is a member, where `name` is an instance variable or behavior the member gets from this family only (not one it declares itself or also gets from another family). Names are matched ignoring case, as in [`update_object_properties`](#update_object_properties). A family's effects count as used through a member when a condition or action on the member names one in its `"effect"` parameter (Set effect enabled, Set effect parameter), which the editor saves as a quoted name (`"effect": "\"AdjustHSL\""`, checked on Scirra's example projects, where actions on a member name its family's effect this way), matched ignoring case, and the member has no effect of that name itself or through another family. System conditions and actions name layer and layout effects and do not count. An effect parameter that is another expression than a quoted name cannot be checked and gets a warning. Not detected: project script files and script access to instance variables and behaviors of member instances (`instVars`, `behaviors`)
+- If referenced and `force=false`: blocks (`action: "delete_blocked"`) and lists where the family is used. `message` sums it up; `references` holds `eventSheets` and `layouts` (names), `events` and `instanceProperties` (as for `delete_object`), `effectUses` (`{ eventSheet, eventPath, ace, sid, member, effect }`, only when there are any) and `memberUses` (`{ eventSheet, path, eventPath, sid, member, kind, name, context }`, `eventPath` and `sid` as for the `uses` of [`update_object_properties`](#update_object_properties), `kind` being `instance variable` or `behavior` and `context` `condition`, `action` or `expression`). Each list is capped at 50 entries; `eventsNotListed`, `instancePropertiesNotListed` and `memberUsesNotListed` count the rest
 - If referenced and `force=true`: deletes with a warning that names the remaining uses (references NOT cleaned up). [`validate_project`](#validate_project) then reports the conditions, actions and object parameters that name the family and the Particles object properties that hold its SID as `broken-object-reference`, and the uses through members as `missing-behavior-or-variable`, but not the uses of the family's name in expressions and scripts, nor the uses through members written as `Member.name` or `Self.name` in expressions: a second warning lists those
-- Values that member instances in layouts hold for the family's instance variables are left as they are; their entries for the family's behaviors are removed, and entries they lack for their other behaviors are added
-- Removes the name from c3proj first, then backs up and deletes the JSON file. A failure between the two steps leaves an orphaned file (reported by `validate_project` as info at any subfolder depth if its directory is readable), never a registration that points at nothing; the error names the file to clean up
+- Event sheets and layouts that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched for the family's name, layouts also for its SID, and event sheets for its instance variables, behaviors and effects together with a member's name: a match, or such a file that cannot be read at all, blocks as well (`unscannedFiles`)
+- Member instances in layouts lose the values of the family's instance variables and the entries for its behaviors and effects; entries and values they lack for their other behaviors and instance variables are added. A warning names the removed values other than the default and the removed effect entries (layout, UID, name and value, the first ten), since only the layout's `.bak` keeps them, until the layout is written again.
+- Refuses when the JSON file changed on disk since it was read; then removes the name from `project.c3proj` and deletes the file (kept as `.bak`). When either step fails, the call is undone; when `project.c3proj` was saved again meanwhile and cannot be put back, the error says what is on disk: if it no longer lists the name, the file is left on disk unregistered. If `project.c3proj` lists the name again after the file was deleted, the call is an error
+
+### `list_containers`
+
+List the containers of `project.c3proj`, in the order of their `containers` list. A container makes object types be created, picked and destroyed together. It has no name, so each container is identified by its `index` (its position in the list) and its `members`. Read-only.
+
+**Returns:** `{ containers: [{ index, members, notObjectTypes? }], count }`. `notObjectTypes` is listed when a member is no object type of the project: Construct 3 r506-2 does not open a project with such a member. A member that differs from an object type only in letter case is listed too, because the tools refuse it; whether Construct 3 accepts it was not checked. [`validate_project`](#validate_project) reports both (the `container-member` row of its load-time rules).
+
+### `create_container`
+
+Create a container of two or more object types in `project.c3proj`, appended to its `containers` list, so the object types are created, picked and destroyed together. The object types themselves are not changed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `members` | string[] | Yes | Object type names to group, 2 to 100, spelled as registered and listed once (e.g. `["Player", "PlayerHitbox"]`) |
+
+**Behavior:**
+- Every member must be an object type of the project. Refused, and nothing is written: a name that is no object type; a name that differs from an object type only in letter case (names are matched with their letter case, so the registered spelling is named); a name listed twice (ignoring letter case); and a family (a container holds object types).
+- The container needs two or more distinct object types. Construct 3 r506-2 refuses to open a project with a container of fewer than two object types, or one that names a missing object type; these are the `container-member` rules of [`validate_project`](#validate_project).
+- A member that another container already lists is refused, naming that container's index and members. Construct 3 r506-2 refuses to open a project in which an object type is in two containers (it reports "already in a container"), so the tools keep each object type in one container. A hand edit can still put one there; the update tools then refuse it (see [`update_container`](#update_container)).
+- A refusal says "Nothing was changed." and leaves `project.c3proj` as it was. The checks run before the write, and again on the file as it is just before the write; a refusal found in that second check, after a save made during the call, can leave a `project.c3proj.bak` from an earlier round of the same call behind (see [`update_container`](#update_container)).
+- Backs up `project.c3proj` to `project.c3proj.bak`. When the write fails, the error says what is on disk: `project.c3proj` is put back unless another write changed it since, and the error then names it with its `.bak`.
+
+**Returns:** `{ success, entity: "containers/<index>", category: "container", action: "created", index, members, backupFile }`.
+
+### `update_container`
+
+Add object types to a container, or take some out. The container is found by one of its members (ignoring letter case). Give `index` when the member is in several containers.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `member` | string | Yes | An object type in the container to change |
+| `index` | integer | No | Index of the container (from [`list_containers`](#list_containers)); needed when `member` is in several containers |
+| `addMembers` | string[] | No | Object type names to add (up to 100) |
+| `removeMembers` | string[] | No | Object type names to take out (up to 100) |
+
+**Behavior:**
+- A `member` that several containers list is refused, and the error names each container's index and members ("give index to pick one"). With `index`, the container at that position must list `member`, else the call is refused: the containers may have changed during the call. Each update round looks the container up again in the file it reads, so an editor save that reorders the containers during the call never edits another one.
+- A name in both `addMembers` and `removeMembers` is refused.
+- A name already in the container (to add) or not in it (to remove) gives a warning in `warnings` and is skipped.
+- The result is checked with the rules of [`create_container`](#create_container), except that the container itself is not counted as "another container" for the one-container rule: every member is an object type spelled as registered, listed once, not a family, and no other container lists it. Added members are appended after the existing ones; the others keep their order.
+- A container left with fewer than two object types is refused, and the error names [`delete_container`](#delete_container).
+- When nothing changes, the result is `action: "unchanged"`, nothing is written, and there is no `backupFile`. This also happens when a save of `project.c3proj` in the editor during the call already holds the change: `project.c3proj` stays as saved, and a `project.c3proj.bak` from an earlier round of the same call can remain.
+- A save of `project.c3proj` in the editor during the call is merged, not replaced: the update runs again on the saved file. A save that makes the change invalid (for example one that puts the object type in another container) is refused inside the update, before the write, and says "Nothing was changed." A `project.c3proj.bak` from an earlier round of the same call can remain in that case; `project.c3proj` itself is unchanged.
+- Backs up `project.c3proj` to `project.c3proj.bak` when it changes. When the write fails, the error says what is on disk, as for [`create_container`](#create_container).
+
+**Returns:** `{ success, entity: "containers/<index>", category: "container", action: "updated" | "unchanged", index, members, warnings?, backupFile? }`. `index` is the container's position in the file the update wrote, which can differ from the one given when an editor save inserted a container before it during the call.
+
+### `delete_container`
+
+Delete the container that lists a member (found ignoring letter case). Give `index` when the member is in several containers, as for [`update_container`](#update_container). The object types stay. When the last container is deleted, `containers` stays as `[]`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `member` | string | Yes | An object type in the container to delete |
+| `index` | integer | No | Index of the container (from [`list_containers`](#list_containers)); needed when `member` is in several containers |
+
+**Behavior:**
+- A `member` that no container lists is refused ("Use list_containers to see the containers"); several containers listing it are refused unless `index` picks one, as for `update_container`. Nothing is written in either case. A refusal found in a later round of the update, after a save of `project.c3proj` during the call, leaves a `project.c3proj.bak` from the earlier round, and `project.c3proj` is unchanged.
+- Backs up `project.c3proj` to `project.c3proj.bak`. When the write fails, the error says what is on disk, as for `create_container`.
+
+**Returns:** `{ success, entity: "containers/<index>", category: "container", action: "deleted", index, members, backupFile }`, where `members` are the container's members before the deletion.
 
 ### `create_event_sheet`
 
@@ -781,33 +856,67 @@ Add a structural event to an existing event sheet.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Target event sheet |
+| `sheetName` | string | Yes | Target event sheet, as registered (letter case included) |
 | `eventType` | enum | Yes | `"group"` \| `"function"` \| `"variable"` \| `"include"` \| `"comment"` \| `"script"` |
 | `title` | string | For groups | Group title |
-| `functionName` | string | For functions | Function name |
+| `functionName` | string | For functions | Function name (checked, see [Function names](#function-names)) |
 | `functionParams` | array | For functions | `[{ name, type }]` (names checked, see below) |
-| `functionReturnType` | enum | For functions | `"none"` \| `"number"` \| `"string"` \| `"any"` (default: none) |
-| `functionIsAsync` | boolean | For functions | Mark the function async (default: false) |
-| `functionCopyPicked` | boolean | For functions | Copy picked instances into the function (default: false) |
+| `functionReturnType` | enum | No | For functions: `"none"` \| `"number"` \| `"string"` \| `"any"`, the editor's *Return type* (default: `"none"`). The function sets its value with the Functions *Set return value* action |
+| `functionIsAsync` | boolean | No | For functions: the editor's *Asynchronous* option, so a call can be waited for with *Wait for previous actions to complete* (default: false) |
+| `functionCopyPicked` | boolean | No | For functions: the editor's *Copy picked* option, which passes the instances picked where the function is called into the function (default: false) |
 | `variableName` | string | For variables | Variable name (checked, see below) |
 | `variableType` | enum | For variables | `"number"` \| `"string"` \| `"boolean"` |
 | `initialValue` | string | For variables | Initial value |
-| `variableComment` | string | For variables | Declaration comment |
-| `variableIsStatic` / `variableIsConstant` | boolean | For variables | Static and constant flags |
-| `script` | string \| string[] | For script blocks | JavaScript; stored as `{ eventType: "script", language: "javascript", script: [lines] }` with no SID, as r495 does |
+| `variableComment`, `variableIsStatic`, `variableIsConstant` | string, boolean, boolean | No | For variables: the declaration comment and the editor's *Static* and *Constant* options |
 | `includeSheet` | string | For includes | Sheet to include (validated) |
 | `commentText` | string | For comments | Comment text |
-| `groupPath` | string | No | Insert inside a group by title path (e.g., `"Movement > Collision"`) |
-| `parentSid` | number | No | Insert inside this group, block, or function-block SID |
-| `position` | enum | No | `"start"` \| `"end"` (default: end) |
+| `commentTextColor` | number[] | No | For comments: the text colour, written as `"text-color"`: `[red, green, blue, alpha]`, each 0-1, as the editor saves it |
+| `commentBackgroundColor` | number[] | No | For comments: the background colour, written as `"background-color"` in the same form |
+| `script` | string \| string[] | For scripts | JavaScript, split into lines |
+| `groupPath` | string | No | Into a group by title path |
+| `parentSid` / `parentEventPath` | number / string | No | Among the sub-events of this group, block or function block; the path picks one of several events that share the SID |
+| `siblingSid` / `siblingEventPath` | number / string | No | Beside this event; needs `position` `"before"` or `"after"` |
+| `position` | enum | No | `"start"` \| `"end"` (default) \| `"before"` \| `"after"` |
 
-Use at most one of `groupPath` or `parentSid`; with neither, the event is added at the event-sheet root. A nested `include` is rejected, because Construct only serializes includes at the sheet root. A `parentSid` that several events of the sheet share is refused (see [Events that share a SID](#mutation-tools)).
+Runs the same load-time gate as `add_event_block` before writing. Unknown top-level arguments are refused and nothing is written. A top-level `sid` is refused here, unlike `add_event_block`, which ignores it. Keys inside a `functionParams` entry other than `name` and `type` (such as the `sid` of an entry copied from a sheet) are still dropped, as before. A step that fails after the event is placed in memory and before anything is written is refused with a message that begins "The change was stopped before anything was written" and ends "Nothing was changed."; a failed write keeps its own message.
 
-Runs the same load-time gate as `add_event_block` before writing.
+Returns `generatedSid` (the SID of a new group, function or variable; includes and comments have none), `functionParameterSids` (for a function with parameters: `[{ name, sid }]` in parameter order), `eventPath` (the new event's path, e.g. `"events[3]"`, which the SID-based tools accept as `eventPath`) and `backupFile`.
+
+**Where events go:** the destination arguments place an event at the top level, in a group (`groupPath`), among the sub-events of an event (`parentSid`) or beside one (`siblingSid`). Each kind of event is placed only where this table says. Editor-backed cells are listed with their evidence below the table.
+
+| Kind | Top level | Group | Block | Function block | Custom action block |
+|------|-----------|-------|-------|----------------|---------------------|
+| Block | yes | yes | yes | yes | no |
+| Comment | yes | yes | yes | no | no |
+| Script | yes | yes | yes | yes | no |
+| Variable | yes | yes | yes | yes | no |
+| Group | yes | yes | yes | no | no |
+| Function block | yes | yes | yes (not under a block with a trigger) | no | no |
+| Custom action block | yes | yes (only with groups above it) | no | no | no |
+| Include | yes | no | no | no | no |
+
+- A custom action block is not a destination: its sub-events accept no kind of event, so the last column is all no, and a parent given as a custom action block is refused.
+- A function block in a group: Construct 3 r506-2 (Free edition) opened and kept one.
+- A function block in a block with no trigger: r506-2 opened and kept one under an ordinary block. A function block under a block with a trigger is refused, as below.
+- A variable in a group: an r495.2 editor-saved project has 2 such variables.
+- A variable in a block: an r495.2 editor-saved project has 1, and r506-2 opened and kept one under a block with a trigger and one under a block without.
+- A variable in a function block: r506-2 opened and kept one.
+- A group in a block: r506-2 opened and kept one under a block with a trigger and one under a block without.
+- A group in a group: r506-2 opened and kept a group nested in another group.
+- A script at the top level, in a group and in a function block: r506-2 opened and kept each.
+- A comment in a group: an r495.2 editor-saved project has 16.
+- A custom action block at the top level and in a top-level group: r506-2 opened and kept each. A group below a block, a function block or a custom action block was not tried: the tools refuse a custom action block (and a group or block that holds one) unless only groups stand above it, which is their own rule, since the load-time check treats a custom action block as a trigger root.
+- A block in a function block: no editor-saved project on record and no editor case covers it; it is not verified in the editor.
+- A function block under a block with a trigger (for example an *On start* block) is refused: Construct 3 r506-2 (Free edition) refused to open a project with a function block there: the editor showed "Failed to open project" and logged "cannot add another trigger to event branch". The other arrangements of a function block under a trigger, a function block or a custom action block follow upstream's load-time check, which counts a function block and a custom action block as a trigger; they were not tried in the editor.
+- The other "no" cells have no editor case on record; the table refuses them, and they were not tried in the editor.
+
+Everything else is refused, with the places that kind of event can go. Includes are placed only at the top level.
+
+A global variable's *Static* option (`variableIsStatic`) is written as given: r506-2 opened and kept `isStatic: true` on a global variable.
 
 #### Event variable names
 
-A variable added with `add_event_to_sheet` at the top level of the sheet is a global variable; one added inside a group, block or function (`groupPath`, `parentSid`) is a local variable of that event. The variable's name, the names in `functionParams` and a new name given to `update_event_variable` are refused where the Construct 3 editor's event variable and function parameter dialogs refuse them (checked against the editor code of releases r449 and r495.2, which agree; both dialogs run the same checks):
+A variable added at the top level of a sheet is a global variable; in a group, a block or a function block it is a local variable. The variable's name, the names in `functionParams` and a new name given to `update_event_variable` are refused where the Construct 3 editor's event variable and function parameter dialogs refuse them (checked against the editor code of releases r449 and r495.2, which agree; both dialogs run the same checks):
 
 - **In use in the scope, ignoring case.** A global variable's name must differ from every event variable (global, local, static) and function parameter in every event sheet of the project. A local variable's name must differ from every global variable, from the variables and parameters of each event enclosing it, and from every variable and parameter below its parent event; locals in other branches or other sheets do not count. A function parameter has the scope of a local variable declared directly in its function: for a new function, its name must differ from every global variable and from the function's other parameters, while parameters of other functions and locals elsewhere do not count. Changing only the case of a variable's own name is allowed.
 - **A System expression name, ignoring case** — e.g. `time`, `dt`, `random`, `max`, `LayoutName` (all 136 System expressions of r495.2, deprecated ones included). Five of them (`ColorToHexString`, `distance3d`, `HexColor`, `ProjectFileCount`, `ProjectFileNameAt`) are not in r449, whose editor accepts these names; they are refused anyway, since the r495.2 editor refuses them, and the error says so.
@@ -817,11 +926,19 @@ Names of object types and families are not compared: the editor accepts an event
 
 `move_events_between_sheets` applies the scope rule to the variables and parameters it copies or moves, in their new place: see [`move_events_between_sheets`](#move_events_between_sheets).
 
+#### Function names
+
+`functionName` is refused where the editor's Function dialog refuses it (editor code of releases r449 and r495.2, which agree):
+
+- **In use, ignoring case.** A function name must differ from the name of every other function block in the project, in any sheet and group: `DoIt` next to `DoIt` or `doit` is refused. The editor looks functions up ignoring case, so a call could not tell them apart.
+- **A System expression name, ignoring case** — e.g. `random`, `max`, `lerp`. The editor reserves the System expressions it treats as built-in functions; its code names them by a set of ids that could not be read out, so this check refuses every System expression name (the list of [Event variable names](#event-variable-names)), which may be more than the editor refuses.
+- **Characters, with a return type only.** A function with a return type (`number`, `string`, `any`) is used in expressions (`Functions.Name(...)`), so its name follows the character rules of event variable names (no whitespace, no punctuation such as `-` `.` `:`, no leading underscore, not only digits). A function without one (`none`, the default) may have such a name, as in the editor: `Do It` and `a.b` are accepted.
+
+Names of object types and families are not compared (the editor accepts a function named like an object). The editor renames a pasted function block whose name is in use; `move_events_between_sheets` refuses to copy a function block instead (see there). Event sheets that could not be parsed are not searched for function names. `validate_project` reports function blocks that share a name (`duplicate-function-name`).
+
 ### `add_event_block`
 
-Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Supports sub-events (blocks, comments and scripts), events without conditions, else and else-if blocks, OR blocks, function and custom action calls, script actions, comment rows, and disabling single conditions and actions. Everything is written in the shapes the Construct 3 editor saves (see **Written shapes** below). Arguments and keys the tool does not know are refused, never dropped (see **Unknown keys** below). Every built-in condition and action, sub-events included, is checked as described in [ACE validation](#ace-validation) and [expression checking](#expression-checking), and each problem is returned as a warning.
-
-An `ease` parameter that names a registered custom ease is stored as Construct r495.2 saves it, `{ "name": "<ease>", "json": [{ "folders": [], "json": <ease file> }] }`, here and in `update_event_block` and `update_event_block_action`. Built-in ease names and other values stay strings (see [Custom eases](#custom-eases)).
+Add a block event (conditions + actions) to an event sheet — the core of gameplay logic. Supports sub-events (blocks, comments and scripts), events without conditions, else and else-if blocks, OR blocks, function calls, script actions, comment rows, and disabling single conditions and actions. Everything is written in the shapes the Construct 3 editor saves (see **Written shapes** below). Arguments and keys the tool does not know are refused, never dropped (see **Unknown keys** below).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -829,19 +946,19 @@ An `ease` parameter that names a registered custom ease is stored as Construct r
 | `eventType` | `"block"` | No | Optional; only `"block"` is accepted. Any other value (e.g. `"comment"`) is refused: comments, groups, variables, functions and includes are added with `add_event_to_sheet`, and a comment or script can also be a sub-event in `children`. |
 | `sid` | number | No | Ignored: a block copied from `get_eventsheet_details` may carry its SID, but the new block always gets a new one. |
 | `conditions` | array | No | Conditions (default: `[]`). Each: `{ id, objectClass, behaviorType?, parameters?, isInverted?, disabled? }`. AND-combined, or OR-combined in an OR block. `[]` makes an event without conditions: at the top level (or in a group) it runs every tick, as a sub-event whenever its parent runs. |
-| `actions` | array | No | Actions (default: `[]`); see **Action kinds** below |
+| `actions` | array | No | Actions (default: `[]`). Plugin/behavior/System action: `{ id, objectClass, behaviorType?, parameters?, disabled?, breakpoint? }`. Function call: `{ callFunction, parameters?: [...], disabled? }`. Script: `{ type: "script", script, language?, disabled? }`. Comment row: `{ type: "comment", text, "text-color"?, "background-color"? }`. Custom action call: `{ customAction, objectClass, customActionObjectClass?, parameters?: [...], disabled? }` (see **Calling a custom action** under [`add_custom_action`](#add_custom_action)) |
 | `groupPath` | string | No | Insert inside group by title path (e.g., `"Movement > Collision"`). Segments are split at `>`. A segment first matches a group title exactly as typed, one space on each side of `>` counting as part of the separator (`"HUD "` and `"Parent > HUD "` name the title `"HUD "`, `"HUD"` and `"Parent > HUD"` the title `"HUD"`), so each of two sibling groups titled `"HUD"` and `"HUD "` can be reached. The editor also saves titles with leading or trailing whitespace, so a segment without such a match then matches the one group whose trimmed title equals the trimmed segment (`"HUD"` finds a lone `"HUD "`). When several do (e.g. `"HUD"` next to `"HUD "` and `" HUD"`), the call is refused with the candidate titles. |
-| `parentSid` | number | No | Insert as a sub-event of this group, block, function-block or custom action block SID |
-| `siblingSid` | number | No | Insert beside this event SID; requires `position` `"before"` or `"after"` |
-| `position` | enum | No | `"start"` \| `"end"` for root/group/parent insertion; `"before"` \| `"after"` with `siblingSid` (default: end) |
+| `parentSid` / `parentEventPath` | number / string | No | Among the sub-events of this group, block or function block; the path picks one of several events that share the SID |
+| `siblingSid` / `siblingEventPath` | number / string | No | Beside this event; needs `position` `"before"` or `"after"` |
+| `position` | enum | No | `"start"` \| `"end"` (default) \| `"before"` \| `"after"` |
 | `disabled` | boolean | No | Create the block disabled (default: false) |
-| `isElse` | boolean | No | Make it an else block (default: false): a System `else` condition is written first. Conditions given in `conditions` follow it and make an else-if. When the first condition is an `else` given with `disabled: true`, `isElse: true` enables it instead of adding a second one; without `isElse` the block stays ordinary. |
+| `isElse` | boolean | No | Make it an else block (default: false): a System `else` condition is written first. Conditions given in `conditions` follow it and make an else-if. |
 | `isOrBlock` | boolean | No | Make it an OR block: the event runs when any of its conditions is true (Construct 3 *Make 'Or' block*). An OR block may hold several triggers. |
 | `children` | array | No | Sub-events nested inside this block (recursive), each one of: a block `{ eventType?: "block", conditions?, actions?, disabled?, isElse?, isOrBlock?, children? }`, a comment `{ eventType: "comment", text, "text-color"?, "background-color"? }` or a script `{ eventType: "script", script, language?, disabled? }`. Other event types are refused (see **Sub-events** below). |
 
-Use at most one insertion locator: `groupPath`, `parentSid`, or `siblingSid`. Without a locator, the block is inserted at the event-sheet root. A `parentSid` or `siblingSid` that several events of the sheet share is refused with the candidates (see [Events that share a SID](#mutation-tools)).
+A block goes where the placement rules of `add_event_to_sheet` allow a block (see **Where events go** there); the warning for `Set return value` (`set-function-return-value`) outside a function block is checked against its destination (inside a function block, at any depth, it gives none).
 
-An else block (`isElse`) must come after an event block in the same container, as Construct's editor only offers "else" there, with at most comments between them: an else with no block before it, or whose previous event (comments aside) is a group, variable or include, is refused. An else after a triggered block gets the `else-placement` warning of the load-time gate (below).
+Returns `generatedSid` (the SID of the new block), `eventPath` (its path, e.g. `"events[3].children[1]"`, which the SID-based tools accept as `eventPath`), `warnings` when there are any, and `backupFile`. A step that fails after the block is placed in memory and before anything is written is refused with a message that begins "The change was stopped before anything was written" and ends "Nothing was changed."; a failed write keeps its own message.
 
 **Condition fields:**
 - `behaviorType` — For behavior conditions/actions: the behavior's *name* as defined on the object type or one of its families (e.g. `"Platform"`, `"8Direction"` — not the behaviorId `"EightDir"`). Omit for plugin and System ACEs. Written to the event sheet as `"behaviorType"`, the key Construct 3 reads.
@@ -850,64 +967,56 @@ An else block (`isElse`) must come after an event block in the same container, a
 - `disabled` — Disable an individual condition.
 - `isOr` — **Deprecated**, never written: Construct 3 ORs a whole event, never single conditions. When every condition after the first carries `isOr: true`, the block is written as an OR block (`isOrBlock`), with a warning. `isOr` on the first condition only has no effect and is dropped. `isOr` on only some of the later conditions is refused, since one event cannot express it: use `isOrBlock`, or move the alternatives into sub-events.
 
-**Action kinds** (each may carry `disabled` except comment rows):
-
-| Kind | Input | Written as |
-|------|-------|------------|
-| Plugin, behavior or System action | `{ id, objectClass, behaviorType?, parameters?, breakpoint? }` | `{ id, objectClass, sid, disabled?, breakpoint?, behaviorType?, parameters? }` |
-| Function call | `{ callFunction, parameters?: [args] }` | `{ callFunction, sid, disabled?, parameters?: [args] }` |
-| Custom action call | `{ customAction, objectClass, customActionObjectClass?, parameters?: [args] }` | `{ customAction, objectClass, customActionObjectClass?, sid, disabled?, parameters? }`. `customActionObjectClass` names the family that defines the action when it is called on a member object type |
-| Comment row | `{ type: "comment", text, "text-color"?, "background-color"? }` (`textColor` and `backgroundColor` are accepted as aliases) | `{ type: "comment", text, "text-color"?, "background-color"? }` with no SID |
-| Script | `{ type: "script", script, language? }` (string split on newlines, or lines) | `{ type: "script", language: "javascript", script: [lines], disabled? }` with no SID |
-
 **Action fields:**
 - `behaviorType` / deprecated `"behavior-type"` — same as for conditions.
 - `disabled` — Disable an individual action (the action exists but won't run).
 - `breakpoint` — A debugger breakpoint on a plugin/behavior/System action, as the editor saves it; written only when `true`.
-- Comment rows — `text`, plus the optional colours `"text-color"` and `"background-color"` (or `textColor` and `backgroundColor`; both spellings with different values are refused), each `[red, green, blue, alpha]` with values from 0 to 1 as the editor saves them. Other colour forms (e.g. `"#ffcc00"`) are refused.
+- Comment rows — `text`, plus the optional colours `"text-color"` and `"background-color"`, each `[red, green, blue, alpha]` with values from 0 to 1 as the editor saves them. Other colour forms (e.g. `"#ffcc00"`) are refused.
 - Function calls — `callFunction` names an event function, `parameters` is the argument list in the order of the function's parameters: expressions as strings (`"1"`, `"\"text\""`, `"Player.X"`; numbers are written as strings), `true`/`false` for boolean parameters. The older form `{ id, objectClass, callFunction, parameters: { ... } }` is still accepted: its `id`, `objectClass`, `behaviorType` and `"behavior-type"` are dropped with a warning, also next to positional parameters, and parameters keyed `"0"`, `"1"`, … or by the function's parameter names become the positional array (with a warning); other keys are refused. A `breakpoint` on a function call is refused in either form, since no editor-saved function call on record has one. A call to a function that no event sheet defines, a different number of arguments than the function has parameters, and a boolean parameter given an expression (or the reverse) are warnings. A name that differs from the function's only in case is written with the function's spelling, as editor saves always spell calls, with a warning.
-- Custom action calls — `customAction` is the name (`aceName`) of a custom action block of `objectClass` or of one of its families; arguments are positional expression strings. An `objectClass` that is no object type or family is refused.
 - Script actions — `script` is an array of lines, as the editor saves it, or one string that is split into lines. `language` is `"javascript"` (the default and only value).
-- The built-in Functions object — the editor saves *Set return value* and the function map actions on it, not on System: `{ "id": "set-function-return-value", "objectClass": "Functions", "parameters": { "value": "..." } }`, and likewise `map-function`, `map-function-default` and `call-mapped-function`. Its name is `functionsName` in `project.c3proj` (`"Functions"` in every project on record). Conditions, other action ids and `behaviorType` on it, and these actions given on `System`, are written with a warning, since no editor save on record has them. *Set return value* outside a function block gets a warning too: it sets the return value of the function its event runs in. The `function` parameter of `map-function` / `map-function-default` names an event function: a name that differs from the function's only in case is written with the function's spelling (editor saves pick it from a list), with a warning, and a name no function block has gets a warning, since the editor's loader throws *cannot find function* for it. The same applies when `update_event_block` or `update_event_block_action` changes the parameters of a function map.
+- The built-in Functions object: the editor saves *Set return value* and the function map actions on it, not on System: `{ "id": "set-function-return-value", "objectClass": "Functions", "parameters": { "value": "..." } }`, and likewise `map-function`, `map-function-default` and `call-mapped-function`. Its name is `functionsName` in `project.c3proj` (`"Functions"` in every project on record). Conditions, other action ids and `behaviorType` on it, and these actions given on `System`, are written with a warning, since no editor save on record has them. *Set return value* outside a function block gets a warning too: it sets the return value of the function its event runs in, so the check looks at where the block is placed (see the paragraph after the parameter table of `add_event_block`). The `function` parameter of `map-function` / `map-function-default` names an event function: a name that differs from the function's only in case is written with the function's spelling (editor saves pick it from a list), with a warning, and a name no function block has gets a warning, since the editor's loader throws *cannot find function* for it. The same applies when `update_event_block` or `update_event_block_action` changes the parameters of a function map.
+- The `ease` parameter of an action (a Tween action) or of a condition: a custom ease named by its plain string (one registered under the project's timelines, see [`create_ease`](#create_ease)) is written as the editor saves it, an object `{ name, json: [{ folders: [], json: <ease file> }] }` in the parameter's place; built-in ease names and names no custom ease has stay strings. `add_event_block`, `update_event_block` (its `updateActions`, `updateConditions`, `addConditions`, `insertConditions` and `replaceConditions`) and `update_event_block_action` do this.
 
 **Sub-events (`children`):**
 - A child is a block, a comment or a script — the kinds of sub-events editor-saved sheets hold under blocks — told apart by `eventType`. A block may leave `eventType` out.
 - A block child is a full block event with its own conditions, actions, and children.
 - A comment child `{ eventType: "comment", text, "text-color"?, "background-color"? }` and a script child `{ eventType: "script", script, language?, disabled? }` are written as the editor saves them (see **Written shapes**). Like script actions, `script` is an array of lines or one string that is split into lines, and `language` is `"javascript"`.
-- Other event types are refused with an error that names the sub-event's path, and nothing is written: event variables, groups, function blocks and includes cannot be added as sub-events with this tool, and an unknown `eventType` is refused too. Groups, functions, includes and local variables are added with `add_event_to_sheet` (`parentSid` or `groupPath`).
+- Other event types are refused with an error that names the sub-event's path, and nothing is written: event variables, groups, function blocks and includes cannot be added as sub-events with this tool, and an unknown `eventType` is refused too. Groups, functions and includes are added with `add_event_to_sheet`. An event variable inside an event is a local variable, which this tool does not add; `add_event_to_sheet` adds one at the top level (a global variable) or, with its destination arguments, in a group, a block or a function block (a local variable).
 - Children without conditions are normal sub-events: they run whenever their parent runs.
-- Children with `isElse: true` are else (or else-if) branches of the sub-event before them. An else block needs a block without a trigger before it, with at most comments between (manual: *Else can only follow normal (non-triggered) events*), so an else sub-event that is the first sub-event (comments aside), follows a triggered block or holds a trigger itself gets an `else-placement` warning from the load-time gate. To branch inside a trigger, put a block with the condition and then the else block as sub-events of the triggered event.
+- Children with `isElse: true` are else (or else-if) branches of the sub-event before them. An else block needs a block without a trigger before it, with at most comments between (manual: *Else can only follow normal (non-triggered) events*), so an else block that is the first sub-event (comments aside), is inserted with no block before it, follows a triggered block or holds a trigger itself gets an `else-placement` warning from the load-time gate. To branch inside a trigger, put a block with the condition and then the else block as sub-events of the triggered event.
 - With `isElse: true` (or a System `else` first condition), a further System `else` condition in `conditions` is a duplicate and is dropped, with a warning.
 - Max nesting depth: 10 levels. Max total events (parent + all descendants, comments and scripts included): 200.
 
 **Unknown keys.** Conditions, actions and sub-events accept only the keys listed here (and the entries of `update_event_block` only theirs). Any other key is refused with an error that names it and its path, and nothing is written — it would otherwise be dropped with its content (a mistyped `params`, a comment's `text` on a child without `eventType: "comment"`). The one exception is `sid`, which conditions, actions and sub-events copied from `get_eventsheet_details` carry: it is ignored, since everything written gets a new SID. The arguments of `add_event_block` and `update_event_block` are checked the same way: an argument the tool does not take (a mistyped `actons`, `subEvents` for `children`, `children` on `update_event_block`) is refused, and nothing is written. `add_event_block` ignores a `sid` argument, as on a block copied from `get_eventsheet_details`, and refuses an `eventType` other than `"block"`.
 
-**Written shapes.** These match editor-saved projects (Construct 3 r449 and r495.2):
+**Written shapes.** These match editor-saved projects (Construct 3 r449):
 - Blocks: `eventType, conditions, actions, sid, disabled?, children?, isOrBlock?`. `children` is left out when there are none, and false flags are not written.
-- Else: the System condition `{ "id": "else", "objectClass": "System", "sid" }` at index 0. There is no block-level `isElse` key. Saved with `"disabled": true` the condition is ignored when the event runs, so the block is an ordinary block: it needs no block before it and is not an else block for any check here.
+- Else: the System condition `{ "id": "else", "objectClass": "System", "sid" }` at index 0. There is no block-level `isElse` key.
 - Conditions: `id, objectClass, sid, disabled?, behaviorType?, parameters?, isInverted?`; `isInverted` comes last, after `parameters`, in every inverted condition the editor wrote in the projects on record. Actions: `id, objectClass, sid, disabled?, breakpoint?, behaviorType?, parameters?`.
-- Function calls: `{ "callFunction", "sid", "disabled"?, "parameters"?: [...] }` without `id`/`objectClass`. Custom action calls: `{ "customAction", "objectClass", "customActionObjectClass"?, "sid", "disabled"?, "parameters"? }`.
+- Function calls: `{ "callFunction", "sid", "disabled"?, "parameters"?: [...] }` without `id`/`objectClass`.
 - Script actions: `{ "type": "script", "language": "javascript", "script": [lines], "disabled"? }`. Comment rows: `{ "type": "comment", "text", "text-color"?, "background-color"? }`. Neither has a SID.
 - Comment sub-events: `{ "eventType": "comment", "text", "text-color"?, "background-color"? }`. Script sub-events: `{ "eventType": "script", "language": "javascript", "script": [lines], "disabled"? }`. Neither has a SID.
 
 **Validation:**
 - `objectClass` is hard-validated against project objects, families, `"System"` and the built-in Functions object — across the entire tree (parent + all descendants)
 - `behaviorType` is soft-validated (warning only, never blocks the write): it must name a behavior on the object type or on a family the object belongs to (for a family `objectClass`: on the family). The warning lists the available behavior names and hints when a behaviorId was passed instead of the name. When the object type or a family file cannot be read, the warning says the behavior could not be verified instead.
-- `id` (ACE identifier), parameters and expressions are checked against Construct's definitions as warnings (see [ACE validation](#ace-validation) and [expression checking](#expression-checking)); they never block the write
+- `id` (ACE identifier) is never a reason to refuse the write: it is checked against Construct's definitions, and a finding comes back as a warning (see **ACE and expression warnings** below)
 - Script actions, comment rows, function calls and comment/script sub-events skip objectClass validation; script actions, comment rows and comment/script sub-events get no SID
 
-**Load-time gate:** before writing, the sheet is checked against the editor load-time rules `expression-syntax`, `empty-expression`, `trigger-placement` and `else-placement` (see [`validate_project`](#validate_project)). The check covers the whole sheet, so the new block's position counts, and it compares the sheet before and after the change. A new error blocks the write with an explanation and nothing is written. New warnings are returned in `warnings`. Problems that were already in the sheet do not block the write, unless the change makes one of them worse (a warning that becomes an error); fixing part of an existing problem is allowed. The same gate runs in `add_event_to_sheet`, `update_event_block`, `update_event_block_action`, `move_event_block` and `move_event_block_items`. `move_events_between_sheets` runs it over the source and target sheets together: moving an event that already breaks a rule (`deleteSource: true`) is allowed, while copying it is refused, since the copy adds the problem to a second sheet.
+**Load-time gate:** before writing, the sheet is checked against the editor load-time rules `expression-syntax`, `empty-expression`, `trigger-placement` and `else-placement` (see [`validate_project`](#validate_project)). The check covers the whole sheet, so the new block's position counts, and it compares the sheet before and after the change. A new error blocks the write with an explanation and nothing is written. New warnings are returned in `warnings`. Problems that were already in the sheet do not block the write, unless the change makes one of them worse (a warning that becomes an error); fixing part of an existing problem is allowed. The same gate runs in `add_event_to_sheet`, `update_event_block` and `update_event_block_action`. `move_events_between_sheets` runs it over the source and target sheets together: moving an event that already breaks a rule (`deleteSource: true`) is allowed, while copying it is refused, since the copy adds the problem to a second sheet.
 
 Two triggers in one AND block are rejected. For "Space OR Up pressed", make it an OR block (`isOrBlock: true`) or add one event per trigger.
+
+**ACE and expression warnings:** `add_event_block`, `update_event_block_action` and `update_event_block` also check the conditions and actions the call added or changed (a condition or action whose SID is new or whose content changed; the others are not checked) and the expressions in their parameters, the way [`validate_project`](#validate_project) does, and return what they find in `warnings`, among the load-time warnings and after them. A finding never refuses a write. Names in the expressions are resolved against the sheet as it will be written, so a variable or function added in the same call counts. When no definitions can be had, one warning says why and nothing else is checked. When the check itself fails, one warning with a fixed text says `The ACE and expression checks could not run for this change; run validate_project to check the sheet.` and the detail goes to stderr. `add_event_to_sheet` runs no such check, since the events it adds hold no conditions or actions.
 
 **What it does:**
 1. Reads the target event sheet
 2. Validates all `objectClass` references across the entire event tree
-3. Recursively generates SIDs for each block, condition, action, function call and custom action call
+3. Recursively generates SIDs for each block, condition, action and function call
 4. Builds conditions and actions in the editor's shapes and key order (see **Written shapes**)
 5. Recursively builds child sub-events (blocks, comments, scripts), else branches and OR blocks
-6. Resolves the optional group, parent SID, or sibling SID destination before changing the event tree (a group path miss names the groups at the level that did not match, titles quoted so outer whitespace shows)
-7. Inserts at the requested start/end or before/after position
+6. If `groupPath`: resolves nested group path (error with the groups at the level that did not match, titles quoted so outer whitespace shows)
+7. Inserts at position (`start`/`end`)
 8. Runs the load-time gate (blocks on new errors)
 9. Writes sheet back with backup
 
@@ -921,10 +1030,39 @@ Delete an event sheet from the project.
 | `force` | boolean | No | Delete even if referenced (default: false) |
 
 **Behavior:**
-- Checks for references: sheets that include this one, layouts bound to it
-- If referenced and `force=false`: returns the reference list and blocks
-- If referenced and `force=true`: deletes with warning (references NOT cleaned up)
-- Removes the name from c3proj first, then backs up and deletes the JSON file. A failure between the two steps leaves an orphaned file (reported by `validate_project` as info at any subfolder depth if its directory is readable), never a registration that points at nothing; the error names the file to clean up
+- Checks for references: sheets that include this one, layouts bound to it, and uses in other event sheets of the functions and global variables the sheet defines (its function blocks, also in groups, and the variables at its top level). The uses are those [`delete_event_from_sheet`](#delete_event_from_sheet) checks, with the same scope rules: *Call function* actions, function map registrations and `Functions.Name(...)` calls (listed in `references.callers`), and the System conditions/actions on a variable and expressions that use it by name (`references.variableReferences`). A use that another sheet's function or global of the same name still resolves does not count, uses inside the deleted sheet do not count, and local variables (in groups, blocks and function blocks) are not visible to other sheets. Scripts are not scanned.
+- Event sheets and layouts that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched for the sheet's name, and event sheets also for the names of its functions and global variables: a match, or such a file that cannot be read at all, blocks as well (`unscannedFiles`). When the sheet to delete could not be parsed itself, the functions and globals it defines are unknown, so the delete is refused too (`textSearch: "not-searched"` with what was `unchecked`). The check for uses of its functions and globals stops at its traversal limit, 100,000 events (sub-events included) across all event sheets, which only very large projects reach; the delete is then refused without `force` too, since the uses beyond the limit are unknown (a sheet that defines neither needs no such check), and with `force` a warning says so.
+- If referenced and `force=false`: returns the reference list (`references`: `includedBy`, `boundLayouts`, and `callers` / `variableReferences` when there are any) and blocks
+- If referenced and `force=true`: deletes with warning (references NOT cleaned up); the uses of its functions and global variables left behind are listed in `references` and named in a warning, since the editor's loader throws *invalid function name*, *cannot find function* or *cannot find event variable* for them (see [`delete_event_from_sheet`](#delete_event_from_sheet))
+- Refuses when the JSON file changed on disk since it was read; then removes the name from `project.c3proj` and deletes the file (kept as `.bak`). When either step fails, the call is undone; when `project.c3proj` was saved again meanwhile and cannot be put back, the error says what is on disk: if it no longer lists the name, the file is left on disk unregistered. If `project.c3proj` lists the name again after the file was deleted, the call is an error
+
+### `rename_event_sheet`
+
+Rename an event sheet and update what names it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Current event sheet name, as registered (letter case included) |
+| `newName` | string | Yes | New event sheet name (the rules of [`create_event_sheet`](#create_event_sheet)) |
+| `dryRun` | boolean | No | Report the references the rename would update and the files it would write, and write nothing (default: false) |
+| `force` | boolean | No | Rename even when event sheets or layouts that could not be parsed possibly name the sheet (they are NOT updated). Default: false |
+
+The rename updates what names the sheet, matching names ignoring case as the editor compares sheet names (in Construct 3 r506-2, Free edition, renaming a sheet in the Project Bar changed the same references):
+- **Include events** in event sheets (`includeSheet`, at any depth, for example inside a group) get the new name.
+- **Layouts** whose `eventSheet` binding is the sheet are bound to the new name.
+- **`project.c3proj`**: the sheet's entry in the project bar gets the new name and keeps its folder and its position.
+- **The file** is written as `<new name>.json` in the same folder, with its `"name"` changed and its SID kept; the old file is deleted and kept as `.bak` (`backupFile`).
+- **The editor's view state** of the sheet, `<name>.uistate.json` beside its file, is moved to the new name (`viewStateMoved`), with the `"name"` it holds set to the new name. It holds view settings only, so it is moved last and a failure is a warning: a file whose new name holds other content is left as it is, and a warning says when the `"name"` it holds could not be changed.
+
+Refused, changing nothing (the message ends "Nothing was changed."): a sheet that is not registered or is given in another letter case than registered (the error gives the registered name); a sheet whose own file does not exist or could not be parsed (rename it in the Construct 3 editor); a `newName` that is not a valid name, starts or ends with a space, is the sheet's own name, differs from it only in letter case (on Windows and macOS both names are the same file: rename it to another name first) or is another event sheet's name ignoring case; a file for the new name that already exists in the sheet's folder and is not one a stopped rename of this sheet left (below).
+
+Event sheets and layouts that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched as text for the sheet's name: a match, or such a file that cannot be read at all, refuses the rename (`"success": false`, `"action": "rename_blocked"`, `message`, `references` and `unscannedFiles`; nothing changed). With `force: true` it goes ahead, and a warning names those files, which are NOT updated.
+
+The event sheets and layouts that name the sheet are written first, then the sheet under its new name, then `project.c3proj`, then the old file is deleted (the last write the rollback covers), then the view state is moved. When a write fails, what the call wrote is put back; a file another write changed after the call wrote it (a save in the editor) is left as it is and named with its `.bak`, and a new file whose own write could not be confirmed is left and named. When a file the call is about to write changed on disk during the call, the write is refused, the file keeps that change, and what the call wrote before is put back.
+
+Running the same call again finishes a rename that stopped midway (the server process ended): references already pointed at the new name are not found again; a file for the new name that holds the sheet's SID and the new name, and is not registered, is written over; and when the project registers the new name already while the old file itself is still there with the same SID, the call does what is left (points the references that still name the old name at the new one, deletes the old file, moves the view state) and says so with `"stoppedRun": true` and a warning. The old file is deleted as the last write, so a finished rename leaves only its `.bak`: the same call after a finished rename answers that the name is not found and changes nothing. Lines of project script files that hold the sheet's name as a string are listed in `possibleReferences` (`kind` `script file`, `in` the script's path) and never changed; a script file that cannot be read is named in a warning.
+
+Returns `{ success, entity (the new name), category: "eventsheet", action: "renamed", previousName, references, filesWritten, fileDeleted, backupFile?, viewStateMoved?, possibleReferences?, stoppedRun?, warnings?, unscannedFiles? }`. `references` has one entry per place that was updated: `in` (the file, project-relative, e.g. `eventSheets/Menu.json`, `layouts/Level 1.json`), `kind` (`include` or `eventSheet binding`), `path` for an include (its JSON path) and `value` (the name as saved); `filesWritten` lists project-relative paths; `viewStateMoved` lists `{ from, to }`. With `dryRun: true` nothing is written: `action: "would_rename"`, `newName`, `references`, `possibleReferences?`, `filesToWrite`, `fileToDelete`, `stoppedRun?`, and the same warnings worded as what would happen.
 
 ### `delete_event_from_sheet`
 
@@ -932,7 +1070,7 @@ Delete an event from an event sheet by SID or include name.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Target event sheet |
+| `sheetName` | string | Yes | Target event sheet, as registered (letter case included) |
 | `sid` | number | No* | SID of the event to delete (block, group, variable, function) |
 | `eventPath` | string | No | With `sid`: picks one of several events that share the SID, e.g. `"events[3].children[1]"` (see [Events that share a SID](#mutation-tools)) |
 | `includeSheet` | string | No* | For removing includes: the included sheet name |
@@ -950,275 +1088,106 @@ Delete an event from an event sheet by SID or include name.
   - event variables: the `variable` parameter of the System conditions and actions that compare, set, add to, subtract from, toggle or reset an event variable, and expressions that use the variable by name, such as `Score * 2` or a function call argument `Score` (listed in `references.variableReferences` with `variable`, `via`, `sheet`, `path` and `sid`; `via` is `event-variable` or `expression`). In expressions, names inside string literals, after a `.` (`Sprite.Score`) or before a `.` or `(` are not uses, and parameters that hold a name instead of an expression (object, instance variable, layout and audio file parameters) are not read; a combo value spelled like the variable is counted, so check the listed references and use `force=true` if none is a real use. Scope counts: a global variable (top level of a sheet) is visible in every sheet, any other variable to the events beside it and below them, and inside a function block a function parameter of the same name resolves the reference too.
 
   Names are compared ignoring case. A reference that another function or variable of the same name still resolves after the delete (e.g. a global of that name in another sheet) is not counted, and neither is one that was already dangling. After loading a project, the editor resolves these names and throws *invalid function name* (Call function), *cannot find function* (function maps) or *cannot find event variable* when one is missing (editor loader code, r495.2); whether the project then fails to open has not been confirmed in the editor. A `Functions.Name(...)` expression would call a function that no longer exists, and an expression that uses a deleted variable by name would name a variable that no longer exists. With `force=true` the delete goes ahead, and the references are named in a warning and listed in `references`. Scripts are not scanned, and `validate_project` does not report such references.
+
+  Other event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched for the names of the functions the delete removes and, when the deleted event is a variable at the top level of its sheet, for that global variable (local variables are not visible to other sheets). A match, or such a sheet that cannot be read at all, is refused the same way, also on a dry run, and listed in `unscannedFiles`.
+
+  The check stops at its traversal limit, 100,000 events (sub-events included) across all event sheets, which only very large projects reach. The uses beyond it are unknown, so the delete of a function or variable is then refused without `force` as well, also on a dry run; with `force` a warning says that the check stopped.
 - **Load-time rules**: A delete takes an event out together with all its sub-events. The `expression-syntax`, `empty-expression` and `trigger-placement` rules look only at an event's own conditions and actions and at its ancestors, and no remaining event gains an ancestor or a condition, so a delete cannot introduce an issue of these rules; the names it leaves dangling are covered by the reference safety above. It can leave an else block without the block it belonged to (after a triggered block, after a non-block event or first in its list, comments aside): that `else-placement` warning is returned in `warnings`, also on a dry run. Include deletion is not checked (includes are not part of these rules).
 - Error messages include a navigable summary of top-level events with their types and SIDs.
 
-### `remove_event_from_sheet`
-
-Remove an include from an event sheet, named by the sheet it includes. Other event types are removed by SID with `delete_event_from_sheet`.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet to modify |
-| `includeSheet` | string | Yes | Name of the included sheet whose include is removed |
-
 ### `update_event_block`
 
-Update an existing block, function-block or custom action body — modify action parameters, call arguments and comment rows, add, insert, replace or remove actions or conditions, toggle disabled state, make it an else or OR block. The conditions and actions the call adds or changes are checked as described in [ACE validation](#ace-validation) and [expression checking](#expression-checking); the ones it leaves alone are not.
+Update an existing block event — modify action parameters, add/remove actions or conditions, toggle disabled state, make it an else or OR block.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet |
-| `sid` | number | Yes | SID of the `block`, `function-block` or `custom-ace-block` to update |
+| `sid` | number | Yes | SID of the block event to update |
 | `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
 | `disabled` | boolean | No | Enable or disable the entire block |
-| `isElse` | boolean | No | `true`: put the System `else` condition first (existing conditions then make an else-if); `false`: remove a leading `else` condition, enabled or disabled. When the leading `else` is disabled, `true` enables it (the `disabled` key is removed, with a warning) instead of adding a second one. Blocks only. A block-level `isElse` key left by older versions is dropped either way. |
+| `isElse` | boolean | No | `true`: put the System `else` condition first (existing conditions then make an else-if); `false`: remove a leading `else` condition. Blocks only. A block-level `isElse` key left by older versions is dropped either way. |
 | `isOrBlock` | boolean | No | `true`: make it an OR block; `false`: AND-combine its conditions again |
-| `updateActions` | array | No | `[{ index, parameters?, arguments?, text?, textColor?, backgroundColor?, disabled? }]` — update actions by index. `parameters` merges into a plugin, behavior or System action; for a function call it is an argument array that replaces all arguments, or an object keyed by position (`"0"`, `"1"`, …) or parameter name that replaces single ones. `arguments` replaces a custom action call's positional arguments; `text` and the colours edit a comment row. A field that does not fit the action kind, and any other key, is refused. |
+| `updateActions` | array | No | `[{ index, parameters?, disabled? }]` — update actions by index (merge semantics). For a function call, `parameters` is an argument array that replaces all arguments, or an object keyed by position (`"0"`, `"1"`, …) or parameter name that replaces single ones. For a custom action call, `parameters` is an array in parameter order that replaces all arguments, and an object is refused. A comment row takes `text`, `"text-color"` and `"background-color"` instead (colours as `[red, green, blue, alpha]`, each 0-1; `null` removes one): it is edited in place, so it keeps its position among the actions and the keys it has, and a new colour goes where the editor writes it. Other keys are refused. |
 | `updateConditions` | array | No | `[{ index, parameters?, isInverted?, disabled? }]` — update conditions by index. Other keys (e.g. `behaviorType`) are refused: remove the condition and add a new one instead. |
-| `insertActions` | array | No | `[{ index, action }]` — insert at unique indexes measured after removals |
-| `insertConditions` | array | No | `[{ index, condition }]` — insert at unique indexes measured after removals |
-| `replaceConditions` | array | No | `[{ index, condition }]` — replace a condition in place and mint a fresh SID |
 | `addActions` | array | No | Append new actions (same shapes as in `add_event_block`) |
 | `addConditions` | array | No | Append new conditions |
 | `removeActionIndices` | number[] | No | Remove actions by 0-based index |
 | `removeConditionIndices` | number[] | No | Remove conditions by 0-based index |
+| `insertActions` | array | No | `[{ index, action }]`: insert actions, in the shapes of `addActions`, at indexes. `index` counts the actions after `removeActionIndices`, before this call's other inserts and `addActions`; it may equal that count, which appends. Two inserts at one index are refused. |
+| `insertConditions` | array | No | `[{ index, condition }]`: insert conditions at indexes, counted as `insertActions` counts actions. A System `else` condition inserted at index 0 stays first; one inserted anywhere else gets a warning (use `isElse: true`; when the block already starts with an else condition, or gets one through `isElse: true`, the warning says Else is saved once, first). |
+| `replaceConditions` | array | No | `[{ index, condition }]`: replace conditions in place. `index` is the condition's index before this call; the new condition gets a new SID. A condition cannot be replaced and also removed or updated by the same call. |
 
 At least one update parameter must be provided.
 
-**Operation ordering:**
+**Operation ordering** (indexes are the ORIGINAL array positions, except for inserts):
 1. Block toggles (`disabled`, `isOrBlock`)
-2. Updates and condition replacements use original array positions (non-length-mutating); replacements mint fresh SIDs
-3. Removals use original positions and are applied in descending order, deduped
-4. Indexed insertions use the post-removal array and are applied in descending order; duplicate insertion indexes are rejected
-5. Additions append
-6. `isElse` — adds or removes the leading `else` condition
-7. Final state checks — warn if this call removed the last condition, and when an OR block has fewer than two conditions
+2. Condition updates (`updateConditions`): merge parameters, toggle flags
+3. Action updates (`updateActions`)
+4. Replacements (`replaceConditions`), indexes before the call
+5. Removals (descending order, deduped): shrink arrays
+6. Inserts (`insertConditions`, `insertActions`), indexes after the removals; two at one index are refused
+7. Additions (`addConditions`, `addActions`): append
+8. `isElse`: adds or removes the leading `else` condition
+
+A call refuses, changing nothing, each of these; the message ends "Nothing was changed.": a removal index past the end of the block's conditions or actions (named before the inserts are counted); an insert index past the list after the removals; two inserts at one index; a replacement index past the block's conditions; a condition replaced twice, or replaced and also removed or updated; an insert at index 0 when the block's first condition, after this call's replacements and removals, is a System `else` condition (it stays first, also when disabled), unless the same call sets `isElse: false`, which takes that condition out; and a call that adds conditions or actions (through `addConditions`, `addActions`, `insertConditions` or `insertActions`) when the block would then hold more than 100 of them, the else condition `isElse: true` adds included. A call that adds none edits a block of any size. A trigger condition put into a block that holds a function block or a custom action block, at any depth below it, is refused by the load-time gate whichever of `addConditions`, `insertConditions` and `replaceConditions` brings it. Each of these is checked before the block changes. If a step throws after the block has changed, the block is put back as it was read and the error reads "The change was stopped before anything was written: ... Nothing was changed."; a failed write keeps its own message.
 
 **Notes:**
-- Works on `block`, `function-block` and `custom-ace-block` events (not groups, variables, etc.)
-- New conditions, plugin/behavior/System actions and calls get fresh SIDs via the ID generator (script actions and comment rows carry no SID, matching C3)
-- `objectClass` and `customActionObjectClass` are validated on new conditions and actions; `behaviorType` is soft-validated and the deprecated `"behavior-type"` alias is normalized, as in `add_event_block`. All additions are validated in one pass before anything changes, so each warning appears once and a conflicting key aborts the call without writing.
+- Only works on `block`, `function-block` and `custom-ace-block` (custom action block) events, not on groups, variables, etc.
+- New actions/conditions get fresh SIDs via the ID generator
+- `objectClass` is validated on new conditions/actions; `behaviorType` is soft-validated and the deprecated `"behavior-type"` alias is normalized, as in `add_event_block`. All additions are validated in one pass before anything changes, so each warning appears once and a conflicting key aborts the call without writing.
 - Existing conditions/actions edited through `updateConditions`/`updateActions` that still carry the legacy `"behavior-type"` key are normalized to `"behaviorType"` with the same rules as `fix_legacy_behavior_keys`, and each one is reported in `warnings`. `update_event_block_action` does the same for the action it edits.
+- `insertActions`, `insertConditions` and `replaceConditions` are checked like additions: object classes, the deprecated `isOr` flag, the load-time gate and the *Set return value* warning. Replacing or inserting a condition with a System `else` condition in the wrong place gets a warning.
 - Duplicate removal indices are automatically deduplicated
-- The `else` condition stays first in a block that starts with one: inserting at index 0 is rejected (before an enabled or a disabled `else`), and replacing or removing an enabled one warns that the block becomes an ordinary block (removing a disabled one changes nothing about how the block runs, so it does not warn). Conditions after it (else-if) are allowed
-- A block written by an older version with a block-level `isElse` key or condition-level `isOr` flags is rewritten to the editor's shape, with a warning. `isOr` on only some of the later conditions is ambiguous and is refused (see [`fix_legacy_event_shapes`](#fix_legacy_event_shapes))
-- Warns only when this call removed the last condition (the block then runs whenever its parent runs; a function body on every call). Blocks that never had conditions, such as function blocks and condition-less sub-events, get no warning.
+- Warns only when this call removed the last condition (the block then runs whenever its parent runs; a function body or a custom action body on every call). Blocks that never had conditions, such as function blocks and condition-less sub-events, get no warning.
 - `disabled` on the block, an action or a condition is written right after its `sid`, as the editor does. Parameters added to a condition that has `isInverted` but no `parameters` go before `isInverted`, and a new `isInverted` goes last, where the editor writes them.
 - Added actions on the built-in Functions object are checked as in `add_event_block`; *Set return value* gets no warning when the block is a function block or one of its sub-events.
-- An added condition with the deprecated `isOr` flag is refused unless the block is (or becomes) an OR block. An added System `else` condition is appended: on a block without conditions it becomes the first condition; on a block that already starts with an `else` condition (enabled or disabled), or with `isElse: true`, it is a duplicate and is dropped; otherwise it lands after the existing conditions with a warning (use `isElse: true` instead).
-- Comment rows and script actions have no parameters: `parameters` on them is refused, and so is `disabled` on a comment row (editor-saved comment rows are `{ type, text }` with the optional colours `"text-color"` and `"background-color"`; none on record carries `disabled`).
+- An added condition with the deprecated `isOr` flag is refused unless the block is (or becomes) an OR block. An added System `else` condition is appended: on a block without conditions it becomes the first condition; in an else block, or with `isElse: true`, it is a duplicate and is dropped; otherwise it lands after the existing conditions with a warning (use `isElse: true` instead).
+- Comment rows and script actions have no parameters: `parameters` on them is refused, and so is `disabled` on a comment row (editor-saved comment rows are `{ type, text }` with the optional colours `"text-color"` and `"background-color"`; none on record carries `disabled`). A comment row's text and colours are changed with `text`, `"text-color"` and `"background-color"` in its `updateActions` entry; these keys on any other action are refused.
+- A function call already in the editor's shape keeps its keys where they are when its arguments change: only `parameters` is replaced, so an update with the same arguments leaves the call as it was (also a disabled call saved with `disabled` after `parameters`).
 - Arguments the tool does not take are refused, and nothing changes: `update_event_block` does not add sub-events, so `children` is refused too. Added conditions and actions, and the entries of `updateConditions` / `updateActions`, refuse keys they do not know, as in `add_event_block` (see **Unknown keys** there); a `sid` on an added condition or action is ignored.
 - A function call stored in an older shape (with `id`/`objectClass` or keyed parameters) whose arguments are edited is rewritten in the editor's shape, with a warning. A call whose name differs from its function's only in case is written with the function's spelling, with a warning.
 - Runs the load-time gate (see `add_event_block`) on the whole sheet, so a trigger added to a sub-event of a triggered event, of a function block or of a custom action block is rejected, as is a second trigger in one event. New conditions are appended, so a trigger added to a block that already has conditions ends up after them; that only warns, since the editor moves it to the top when it opens the project. A block made an else block where Else cannot stand (no block before it, comments aside, or a block with a trigger) gets an `else-placement` warning.
 
 ### `update_event_block_action`
 
-Replace the parameters of a single action. The block is found by SID anywhere in the sheet; the action by its 0-based index; `get_eventsheet_details` shows both.
+Replace the parameters of a single action. The block is found by SID anywhere in the sheet; the action by its 0-based index.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sheetName` | string | Yes | Target event sheet |
-| `blockSid` | number | Yes | SID of the `block`, `function-block` or `custom-ace-block` holding the action |
+| `blockSid` | number | Yes | SID of the `block`, `function-block` or custom action block holding the action |
 | `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
 | `actionIndex` | number | Yes | 0-based action index |
-| `parameters` | object \| array | Yes | New parameter values; replaces the existing `parameters` entirely (max 100 keys, depth 6). For a function call: the arguments in parameter order as an array; an object keyed `"0"`, `"1"`, … or by the function's parameter names is converted to that array. An array for any other action is refused. |
+| `parameters` | object \| array | Yes | New parameter values; replaces the existing `parameters` entirely (max 100 keys, depth 6). For a function call: the arguments in parameter order as an array; an object keyed `"0"`, `"1"`, … or by the function's parameter names is converted to that array. For a custom action call: an array in parameter order, and an object is refused. An array for any other action is refused. |
 
-Runs the load-time gate (see [`add_event_block`](#add_event_block)): parameters that break `expression-syntax` or `empty-expression` are refused and nothing is written; function call arguments are checked position by position. The new parameters are also checked as described in [ACE validation](#ace-validation), as warnings. A legacy `"behavior-type"` key on the edited action is normalized as in `update_event_block` and reported in `warnings`, and a function call stored in an older shape is rewritten in the editor's shape (with the function's spelling of its name). Comment rows and script actions have no parameters and are refused; a custom action call's arguments are changed with `update_event_block` (`updateActions[].arguments`). The result names the action by `actionId`, or by `callFunction` for a function call.
-
-### `move_event_block_items`
-
-Move or reorder existing actions or conditions within one block or between two blocks. Existing SIDs are preserved. With `copy: true` the source block is left unchanged and the selected items are inserted as copies with fresh SIDs (nested `sid` keys included).
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Target event sheet |
-| `sourceBlockSid` | number | Yes | Source block or function-block SID |
-| `sourceEventPath` | string | No | Picks one of several events that share `sourceBlockSid` (see [Events that share a SID](#mutation-tools)) |
-| `targetBlockSid` | number | Yes | Target block or function-block SID |
-| `targetEventPath` | string | No | Picks one of several events that share `targetBlockSid` |
-| `itemType` | enum | Yes | `"actions"` or `"conditions"` |
-| `indices` | number[] | Yes | Unique source indexes; selected items retain their source order |
-| `targetIndex` | number | Yes | Destination index; for same-block reorder this is measured after selected items are removed (a copy removes nothing) |
-| `copy` | boolean | No | Copy instead of move (default `false`). The result lists `reassignedSids` instead of `movedSids` |
-
-Cross-block moves and all copies enforce the 100-item block limit. Conditions cannot move into first place of a block whose first condition is an `else` (enabled or disabled), and an else condition can be neither moved nor copied. Moving the last condition out of a non-else source succeeds with an unconditional-block warning. Runs the load-time gate (see [`add_event_block`](#add_event_block)) before writing.
+Runs the load-time gate (see [`add_event_block`](#add_event_block)): parameters that break `expression-syntax` or `empty-expression` are refused and nothing is written; function call arguments are checked position by position. A legacy `"behavior-type"` key on the edited action is normalized as in `update_event_block` and reported in `warnings`, and a function call stored in an older shape is rewritten in the editor's shape (with the function's spelling of its name). Comment rows and script actions have no parameters and are refused; the error for a comment row points to `update_event_block`, whose `updateActions` change its text and colours in place. The result names the action by `actionId`, or by `callFunction` for a function call. A custom action call takes its arguments as an array in parameter order, which replaces the stored ones (an empty array removes them).
 
 ### `move_event_block`
 
-Move an existing event to another container in the same event sheet. The event keeps its SID, its conditions and actions with their SIDs, and every descendant.
+Move an event, with its sub-events, to another place in the same event sheet: the top level, a group (`groupPath`), the sub-events of an event (`parentSid`) or beside one (`siblingSid` with `position` `"before"` or `"after"`). Blocks, groups, variables, function blocks and custom action blocks are moved by SID. The event keeps its SID and everything in it. Use `move_events_between_sheets` to move top-level events to another sheet.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet containing the event |
-| `sid` | number | Yes | SID of the event to move |
-| `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
-| `groupPath` | string | No | Move inside a group by title path (e.g., `"Movement > Collision"`) |
-| `parentSid` | number | No | Move inside this group, block, or function-block SID |
-| `siblingSid` | number | No | Move beside this event SID; requires `position` `"before"` or `"after"` |
-| `position` | enum | No | `"start"` \| `"end"` for root/group/parent destinations; `"before"` \| `"after"` with `siblingSid` (default: end) |
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `sid` / `eventPath` | number / string | Yes / No | The event to move; the path picks one of several events that share the SID |
+| `groupPath`, `parentSid` / `parentEventPath`, `siblingSid` / `siblingEventPath` | string, number / string, number / string | No | The destination, as in `add_event_to_sheet`; none: the top level |
+| `position` | enum | No | `"start"`, `"end"` (default), `"before"`, `"after"` |
+| `force` | boolean | No | Move even when events then use a variable or parameter outside its scope |
 
-Use at most one destination locator. Without a locator the event moves to the event-sheet root.
+Refused, changing nothing (the message ends "Nothing was changed."): a SID that matches no event or several without `eventPath`; a destination inside the moved event or beside itself; a place the placement rules of `add_event_to_sheet` do not allow for that kind of event; a function block, or an event holding one, under or below a block with a trigger or below a function block or a custom action block (the rule of `add_event_to_sheet`); a variable or parameter whose name would clash in its new scope (the editor's rule, see [Event variable names](#event-variable-names)); a new error of the load-time gate; an event of a type the tool does not move (the refusal names the type); a comment, an include or a script event has no SID and is refused as not found. If checking a very deeply nested sheet fails after the event is placed in memory and before the write, the sheet is put back and the call is refused with a message that begins "The change was stopped before anything was written" and ends "Nothing was changed."; a failed write keeps its own message.
 
-**Behavior:**
-- Works on any event the SID index can find: `block`, `group`, `variable`, `function-block`, `custom-ace-block`. Construct does not write a `sid` on `comment` or `include` events, so those cannot be addressed here — the not-found error says so.
-- An else block (an enabled `else` first condition; a block whose `else` is disabled is an ordinary block and moves freely) keeps needing an event block before it where it lands, with at most comments between them, so a move that would make it first, or put it after a group, variable or include (comments aside), is refused. Moving a block away from in front of an else succeeds with a warning that the else no longer follows a block.
-- Refuses a destination inside the moved event's own subtree (`parentSid`, `groupPath` or `siblingSid` resolving to the event itself or one of its descendants), which would detach the branch from the sheet.
-- Refuses `siblingSid` or `parentSid` equal to `sid`.
-- The destination is resolved before anything is detached, so a rejected move leaves the file untouched.
-- A move within one container is correct for `before`/`after`: the sibling's index is read after the event has been detached.
-- A destination container with no `children` array gets one only after every check has passed.
-- Runs the load-time gate (see [`add_event_block`](#add_event_block)) before writing, so a move that puts a trigger under a triggered event is refused.
-- Cross-sheet moves are **not** supported here; use `move_events_between_sheets`, which copies or moves top-level events between two sheets.
+Without `force`, the move is refused, changing nothing, and the result is `{ success: false, entity, category: "eventsheet", action: "move_blocked", message, references, reboundReferences?, unscannedFiles? }` when any of these holds:
 
-### `move_events_between_sheets`
+- a use of an event variable or a function parameter would no longer find its declaration in the new scope (a local variable moved away from its users, a block moved out of the function whose parameter it uses, a global variable moved into a group while other sheets use it). These uses are listed in `references`;
+- a use would find another event variable or function parameter of the same name after the move, so it would bind to a different declaration. These uses are listed in `reboundReferences`;
+- event sheets that could not be parsed may hold a use of a global variable the move makes local (a text match, listed in `unscannedFiles`);
+- the check of the uses stopped at its traversal limit (100,000 events across all event sheets) or at its nesting-depth limit (events nested more than 50 deep), so the uses further on are unknown.
 
-Copy top-level events from one sheet to another by SID; with `deleteSource` they are moved. A move keeps every SID and every nested child; a copy gets fresh SIDs throughout, because a SID must be unique in the project. To move an event within one sheet, use `move_event_block`.
+With `force`, the move is written, the uses are listed in `references` (out of scope) or `reboundReferences` (another declaration), and each is named in a warning; the unparsed sheets and the limit are named in warnings as well. A move that makes an else block continue another event is reported in a warning, and other new warnings of the load-time gate are returned as well.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sourceSheet` | string | Yes | Sheet to copy/move from |
-| `targetSheet` | string | Yes | Sheet to copy/move into (must differ from the source) |
-| `sids` | number[] | Yes | SIDs of top-level events in the source sheet (min 1, each SID once) |
-| `eventPaths` | string[] | No | Paths of top-level events (`"events[4]"`) that pick one of several top-level events sharing a SID in `sids`, one per such SID (see [Events that share a SID](#mutation-tools)) |
-| `deleteSource` | boolean | No | Remove the events from the source after copying (default: false) |
-| `targetGroupPath` | string | No | Insert into a group by title path (e.g. `"Movement > Collision"`), matched as `groupPath` in `add_event_block` (titles with leading/trailing whitespace included) |
-| `position` | `"start"` \| `"end"` | No | Insert position (default: end) |
+Each reference names the use's location in `path`, built like the paths of the other reference checks: the enclosing events as `function:<name>`, `group:<title>`, `block` or `custom-action:<object class>.<action name>` (a use inside a custom action body), then `condition:N` or `action:N` (0-based index).
 
-Copied and moved events keep their event variable and function parameter names. A copy or move that would give one of them a name that is in use, ignoring case, in its new scope (see [Event variable names](#event-variable-names)) is refused and nothing is written; the error lists the clashing names. The most common case is a copy of a global variable (`deleteSource: false`), since its original keeps the name; moving it is fine. A local variable or parameter moved into a group (`targetGroupPath`) can also clash with the group's variables. The editor renames a pasted variable in this case instead; rename it first with `update_event_variable`. Clashes that the events already had in their old place are not counted.
-
-Runs the load-time gate (see [`add_event_block`](#add_event_block)) over the source and target sheets together, before anything is written. Moving an event that already breaks a load-time rule only relocates the problem and is allowed; copying it (`deleteSource: false`) adds the problem to a second sheet, so a copied error is refused and a copied warning is returned in `warnings`.
-
-Only top-level events count: a SID shared by two top-level events of the source is refused unless `eventPaths` picks one, while a nested event with the same SID does not make it ambiguous. `deleteSource` removes exactly the copied events. A SID listed twice in `sids` is refused; top-level events that share a SID are moved one per call.
-
-When a moved event, or one of its sub-events, has a SID that another event of the target sheet already has, the event is still written, since the editor opens such sheets, and `warnings` names each such SID with the paths of its events there: the SID-based event tools then refuse it in the target sheet unless `eventPath` picks one. A copy cannot cause this, since it gets fresh SIDs.
-
-Returns `movedSids`, `movedCount`, `backupFiles` (target first, then source when modified), for a copy `copiedTopLevelSids` (the new top-level SIDs) and `reassignedSids`, and `warnings`, if any: new load-time warnings and the shared-SID warning.
-
-### `add_custom_action`
-
-Add a custom action definition — the `custom-ace-block` event Construct writes for an object type's or family's custom action.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Target event sheet |
-| `objectClass` | string | Yes | Object type or family that owns the custom action |
-| `aceName` | string | Yes | Name as it appears in the editor; spaces and punctuation are allowed |
-| `description` | string | No | `functionDescription` |
-| `category` | string | No | `functionCategory` — the editor grouping, e.g. `"_Validate Behavior"` |
-| `returnType` | enum | No | `"none"` \| `"number"` \| `"string"` \| `"any"` (default: none) |
-| `isAsync` | boolean | No | `functionIsAsync` (default: false) |
-| `copyPicked` | boolean | No | `functionCopyPicked` (default: false) |
-| `parameters` | array | No | `[{ name, type, initialValue?, comment? }]` in call order; each gets a fresh SID |
-| `groupPath` | string | No | Insert inside a group by title path |
-| `parentSid` | number | No | Insert inside this group, block, or function-block SID |
-| `siblingSid` | number | No | Insert beside this event SID; requires `position` `"before"` or `"after"` |
-| `position` | enum | No | `"start"` \| `"end"` \| `"before"` \| `"after"` (default: end) |
-
-**Format:** the emitted event matches a real project's definitions — `aceType`, `aceName`, `objectClass`, `functionDescription`, `functionCategory`, `functionReturnType`, `functionCopyPicked`, `functionIsAsync`, `functionParameters`, `eventType: "custom-ace-block"`, `conditions`, `actions`, `sid`, `children`. Every definition observed in that project uses `aceType: "action"`, so that is the only form written; the condition and expression forms are deliberately not invented.
-
-**Notes:**
-- `objectClass` must be an existing object type or family. `System` is rejected — it has no custom ACEs.
-- A duplicate `objectClass` plus `aceName` anywhere in the project is rejected.
-- A `parentSid` or `siblingSid` that several events of the sheet share is refused (see [Events that share a SID](#mutation-tools)).
-- The definition is created empty. Add its conditions and actions with `update_event_block` using the returned `generatedSid`, and nest sub-events with `add_event_block` and `parentSid`.
-
-### `update_event_group`
-
-Update a group event in place. Children are untouched.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet containing the group |
-| `sid` | number | Yes | SID of the group event |
-| `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
-| `title` | string | No | New group title |
-| `description` | string | No | New group description |
-| `isActiveOnStart` | boolean | No | Whether the group is active when the layout starts |
-| `disabled` | boolean | No | Disable or enable the group |
-| `backgroundColor` | number[4] | No | Written as the `background-color` key; RGBA as four 0-1 numbers |
-| `textColor` | number[4] | No | Written as the `text-color` key; RGBA as four 0-1 numbers |
-
-At least one update parameter must be provided.
-
-**Notes:**
-- `background-color` and `text-color` are the only color keys Construct serializes on a group; both are optional and are written only when supplied.
-- A new `title` is rejected when a sibling group in the same container already uses it, because group paths resolve one title per container. A duplicate title in a *different* container is allowed and reported as a warning.
-
-### `update_comment`
-
-Update a comment event. Construct does not write a `sid` on comments, so a comment is normally addressed by its position.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet containing the comment |
-| `sid` | number | No* | SID of the comment, for the rare comment that carries one |
-| `eventPath` | string | No | With `sid`: picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
-| `index` | number | No* | 0-based index of the comment among its container's events |
-| `groupPath` | string | No | With `index`: the container group by title path |
-| `parentSid` | number | No | With `index`: the container group, block, or function-block SID |
-| `text` | string | No | New comment text |
-| `backgroundColor` | number[4] | No | Written as the `background-color` key |
-| `textColor` | number[4] | No | Written as the `text-color` key |
-
-*Exactly one of `sid` or `index` must be provided. `groupPath` and `parentSid` apply to `index` addressing only; with neither, `index` counts the event-sheet root.
-
-**Notes:**
-- `index` counts **every** event in the container, not only the comments. Addressing a non-comment is rejected and names the event type found.
-- At least one of `text`, `backgroundColor`, `textColor` must be provided.
-
-### `update_script_event`
-
-Replace the JavaScript of a standalone script block, or remove it. Script blocks carry no SID, so they are addressed like comments.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet containing the script block |
-| `index` | number | Yes | 0-based index among the container's events |
-| `groupPath` / `parentSid` | string / number | No | The container (default: the sheet root) |
-| `script` | string \| string[] | No* | New JavaScript |
-| `remove` | boolean | No* | Remove the block |
-
-*Exactly one of `script` or `remove: true`. An index that points at another event type is rejected.
-
-### `update_function`
-
-Update a function-block or a custom action definition (`custom-ace-block`) and, on request, every action that calls it.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet containing the definition |
-| `sid` | number | Yes | SID of the function-block or custom-ace-block |
-| `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
-| `functionName` | string | No | New name (the `aceName` for a custom action) |
-| `renameCallers` | boolean | No | Rewrite every call targeting the old name (default: false) |
-| `dryRun` | boolean | No | Report the definition's call sites (and, with other parameters, what would change) without writing |
-| `description` | string | No | New `functionDescription` |
-| `category` | string | No | New `functionCategory` |
-| `returnType` | enum | No | `"none"` \| `"number"` \| `"string"` \| `"any"` |
-| `isAsync` | boolean | No | New `functionIsAsync` |
-| `copyPicked` | boolean | No | New `functionCopyPicked` |
-| `addParameters` | array | No | `[{ name, type, initialValue?, comment? }]` appended to the end of the list; each gets a fresh SID |
-| `removeParameters` | string[] | No | Parameter names to remove |
-| `renameParameters` | array | No | `[{ from, to }]` — rename in place, keeping the position and SID |
-
-Caller sheets are written first and the sheet holding the definition last. If a write fails part way, the error names the sheets already written and those not written; the definition still carries the old name, so re-running the same call finishes the rename and skips the callers already done.
-
-At least one update parameter must be provided, unless `dryRun` is set.
-
-**Custom actions:** a call resolves to a custom action definition on `owner` when its `customActionObjectClass` is the owner, or it has none and its `objectClass` is the owner, or the owner is a family, the call is on a member, and that member does not define its own action of the same name. Only those calls are renamed; member overrides are reported and left unchanged. A duplicate name on the same owner is rejected.
-
-**Caller handling:**
-- A call site is a non-script action carrying `callFunction`, the same rule `get_function_map` and the project index use. All sheets are scanned.
-- Renaming with callers present is **refused** unless `renameCallers=true`; the error names the caller count and the sheets. With `renameCallers=true` every matching `callFunction` is rewritten and each affected sheet is written with its own backup.
-- Expression references of the form `Functions.<oldName>` are **not** rewritten; matches are counted and reported as a warning.
-- `removeParameters` is **refused** while any caller exists: a `callFunction` action stores its arguments as a positional `parameters` array, so dropping a parameter would silently shift every later argument. Update or delete the callers first.
-- `renameParameters` keeps each parameter's position, so callers keep working. A parameter is referenced by bare name inside the function body; those references are counted and reported as a warning rather than rewritten.
-- `addParameters` appends, which leaves existing callers valid — they fall back to the declared `initialValue`. A warning reports how many callers do not pass the new parameter.
-
-**Notes:**
-- A new `functionName` is validated as a C3 identifier and rejected if another function in the project already uses it.
-- Renaming, adding, removing and renaming parameters are all preflighted before anything is written, so a rejected call leaves every file untouched.
+Returns `{ success, entity, category: "eventsheet", action: "updated", movedSid, movedType, from, to, childrenMoved, warnings?, references?, reboundReferences?, unscannedFiles?, backupFile }`; `from` and `to` are event paths. A move to where the event already is returns `action: "unchanged"` and writes nothing. When the write fails, the sheet is put back, unless another write changed it since; the error then names it with its `.bak`.
 
 ### `update_event_variable`
 
@@ -1226,7 +1195,7 @@ Update an event variable declaration found by SID.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet containing the variable |
+| `sheetName` | string | Yes | Event sheet containing the variable, as registered (letter case included) |
 | `sid` | number | Yes | SID of the `variable` event |
 | `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
 | `newName` | string | No | New name (checked, see [Event variable names](#event-variable-names)) |
@@ -1234,9 +1203,190 @@ Update an event variable declaration found by SID.
 | `newInitialValue` | string | No | New initial value, as a string |
 | `isStatic` | boolean | No | Value persists between calls |
 | `isConstant` | boolean | No | Value cannot change at runtime |
-| `comment` | string | No | New declaration comment |
+| `dryRun` | boolean | No | Report what the update would change, the uses a rename points at the new name included, and write nothing (default: false) |
+| `force` | boolean | No | Rename even when uses would keep the old name: parameters the server cannot update, script lines, event sheets that could not be parsed and possibly use a renamed global or declare the new name, uses past the limit of the search; those uses are NOT updated, and expressions left with the old name made Construct 3 r506-2 show an *Invalid expressions* dialog naming them, offering only to close the project (default: false) |
 
-At least one change must be provided. References to the old name are not updated; `rename_event_variable` renames the variable together with every reference in its scope. A new name is refused where the editor refuses it (see [Event variable names](#event-variable-names)): for a global variable it must differ, ignoring case, from every event variable and function parameter in the project, for a local one from those in its scope; changing only the case of the variable's own name is allowed.
+At least one change must be provided. A new name is refused where the editor refuses it (see [Event variable names](#event-variable-names)): for a global variable it must differ, ignoring case, from every event variable and function parameter in the project, for a local one from those in its scope; changing only the case of the variable's own name is allowed.
+
+**Renames and the events that use the variable.** A rename points uses of the variable at the new name where the server can tell what the parameter holds: the `variable` parameter of System variable conditions and actions (*Compare variable*, *Set value*, *Add to* ...) and the arguments of function and custom action calls (`F(Score * 2)`), matched ignoring case, as the editor looks variables up, including names with letters outside ASCII. Which events use it follows the editor's scope: a variable at the top level of a sheet is global and seen by every sheet; any other is local, seen by the events beside it and below them. A use finds the innermost local of its name, then a parameter of its enclosing function or custom action, then the global. A use of the same name that finds another variable (a local of that name in another group, one that hides a global, a function parameter) is left as it is. With the ACE catalogue of the project's release (the one the event tools check conditions and actions against), a rename also reads the type of each parameter of the conditions and actions the catalogue defines: a `number`, `string` or `any` parameter holds an expression and is rewritten like a call argument (the same tokenizer; text inside string literals is left), an `eventvar`, `eventvarbool` or `eventvarany` parameter holds the variable's name and is pointed at the new name, and a `combo`, `groupname`, `timeline` or `object` parameter holds a name that is never a use: it is listed in `usesNotUpdated` when it names the variable (reason `name-parameter` on a plugin or behavior, nothing on System) and never changed. Without the catalogue (it could not be obtained, so the event tools say the ACE checks did not run), for an ACE the catalogue and the loaded addon definitions do not define (an addon with no definitions loaded, an object the project does not declare), and for a parameter of any other type (`layer`, `animation` and `keyb` among them), the server cannot tell an expression from a choice or another kind of name (*Set group active* names a group in `group-name` and holds a choice in `state`): such a parameter that names the variable is listed with reason `parameter-type-unknown` and never changed. A call argument with a backtick, and a script line that reads the variable (`runtime.globalVars.Score`, `localVars.Count`) are listed in `usesNotUpdated` and never changed. Names held by the object, instance variable, layout and audio file parameters of System conditions and actions, member names (`Sprite.Score`), calls (`Score(1)`) and string literals are not uses. The `layout` of System *Go to layout (by name)* and *Load layout images (by name)* holds a string expression: with the catalogue it is rewritten like any expression parameter, and without it, it is listed (reason `parameter-type-unknown`) when it names the variable. So is a plugin's or behavior's parameter of those kinds whose value names the variable (an addon's parameter there may be an expression; with `force` it is left as it is). Call arguments are not rewritten to a new name that starts with a digit, since an expression would read it as a number; they are listed. Script text that reads the variable is found even when the access is split over lines; scripts outside event sheets (`scripts/*.js` files) are not searched. An event sheet that could not be parsed whose text names the new name refuses a rename without `force`, a local's rename too (it may declare a variable of that name), and so does one whose text names the old name of a renamed global. Construct 3 r506-2 (Free edition) rewrites expression uses too when a variable is renamed in the editor; this server does so for call arguments and, with the catalogue, for the parameters it types as expressions. The editor leaves script lines as they are too. In that editor a renamed global that a *Set group active* action spelled in `group-name` was rewritten there as well; the server never writes `group-name`: a System group name that the catalogue types `groupname` is neither rewritten nor listed, and without the catalogue it is listed as a parameter of unknown type. Construct 3 r506-2 (Free edition) renames a global the same way: a local that hides it keeps its uses. Construct 3 r506-2 (Free edition) does not accept a backtick in an expression: it lists it as an invalid expression and offers only to close the project. Uses of the new name that found no variable before and find this one after the rename are listed in `captured` and a warning. The other event sheets it changes are written first, in registration order, the variable's own sheet last; when a write fails, what the call wrote is put back, and a file another write changed since is left and named with its `.bak`.
+
+**When a rename refuses.** A rename refuses (`success: false`, `action: "rename_blocked"`, `uses`, `usesNotUpdated`, `unscannedFiles`; nothing changed) while any use would keep the old name: a use in `usesNotUpdated`, an event sheet that could not be parsed whose text names a renamed global or the new name (or that cannot be read at all), or a search for the uses that stops at its traversal limit (for a local variable too). With `force: true` it goes ahead and a warning names what still names the old name. Expressions left naming the old name made Construct 3 r506-2 (Free edition) show an *Invalid expressions* dialog naming them when the project was opened, offering only to close the project; script lines left unchanged were not reported there. Correct the parameters of an action with `update_event_block_action` and those of a condition with `update_event_block` (`updateConditions`) before opening the project; script lines are edited in the editor. A registered event sheet with no file holds no uses. In a project where most uses of a variable are in parameters the catalogue does not type (no catalogue, addon ACEs without definitions), expect the refusal and use `dryRun` to list them. A dry run of a rename that would refuse returns the refusal.
+
+The result of a rename that goes ahead holds `sheetsWritten`, `uses` (`sheet`, `path`, `kind` `event-variable` or `variable-expression`, `parameter`, `sid`, `value`) and, when there are any, `usesNotUpdated` (`sheet`, `path`, `parameter`, `sid`, `reason`: `parameter-type-unknown`, `name-parameter`, `template-text`, `number-like-name`, `number-like-new-name` or `script`, `value`) and `captured`; with `dryRun` it returns `action: "would_update"` and `sheetsToWrite` instead of writing.
+
+### `move_events_between_sheets`
+
+Copy top-level events from one sheet to another by SID; with `deleteSource` they are moved. SIDs and nested children are kept as they are.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sourceSheet` | string | Yes | Sheet to copy/move from, as registered (letter case included) |
+| `targetSheet` | string | Yes | Sheet to copy/move into (must differ from the source), as registered |
+| `sids` | number[] | Yes | SIDs of top-level events in the source sheet (min 1, each SID once) |
+| `eventPaths` | string[] | No | Paths of top-level events (`"events[4]"`) that pick one of several top-level events sharing a SID in `sids`, one per such SID (see [Events that share a SID](#mutation-tools)) |
+| `deleteSource` | boolean | No | Remove the events from the source after copying (default: false) |
+| `targetGroupPath` | string | No | Insert into a group by title path (e.g. `"Movement > Collision"`), matched as `groupPath` in `add_event_block` (titles with leading/trailing whitespace included) |
+| `position` | `"start"` \| `"end"` | No | Insert position (default: end) |
+| `force` | boolean | No | Move even when events still use an event variable the move takes out of their scope (default: false); the uses are listed in `references` and in a warning, and left dangling |
+
+Copied and moved events keep their function names: a copy of a function block (`deleteSource: false`, also inside a copied group) would leave two function blocks with one name, which the editor refuses (see [Function names](#function-names)), so it is refused and nothing is written; moving it is fine. They also keep their event variable and function parameter names. A copy or move that would give one of them a name that is in use, ignoring case, in its new scope (see [Event variable names](#event-variable-names)) is refused and nothing is written; the error lists the clashing names. The most common case is a copy of a global variable (`deleteSource: false`), since its original keeps the name; moving it to the top level of another sheet keeps it a global variable (see the next paragraph for moves into a group). A local variable or parameter moved into a group (`targetGroupPath`) can also clash with the group's variables. The editor renames a pasted variable in this case instead; rename it first with `update_event_variable`. Clashes that the events already had in their old place are not counted.
+
+**Custom actions.** A copy (`deleteSource: false`) that would leave two custom actions of one name on one object type or family is refused, and nothing is written; the error lists up to ten of the duplicates and says to move the custom action instead (`deleteSource: true`). Construct 3 r506-2 (Free edition) renamed the second of two such definitions when it saved. A copy is also refused, `force` or not, while the check for custom actions stops at its limit, since the duplicates beyond it are unknown, whatever the copied events hold. A move is not refused by either rule.
+
+**Scope of moved variables.** A variable at the top level of a sheet is a global variable, visible in every sheet; any other variable is local, visible only to the events beside it and below them. So a global variable moved into a group (`targetGroupPath`) becomes a local variable of that group, and the events elsewhere that use it no longer find it: the editor's loader throws *cannot find event variable* for them (whether the project then fails to open has not been confirmed in the editor). Unless `force=true`, such a move is refused (`success: false`, `action: "move_blocked"`) and nothing is written; `references.variableReferences` lists the uses that would lose the variable, with `variable`, `via` (`event-variable` or `expression`), `sheet`, `path` and `sid`, where they are after the move. The uses are those [`delete_event_from_sheet`](#delete_event_from_sheet) checks (System conditions and actions on the variable, expressions that use it by name; scripts are not scanned), with the same scope rules; a use that still resolves after the move (in the same group, moved along, or through another variable of that name) does not count. Move the events that use it along, keep it at the top level of a sheet, or pass `force=true`, which moves it and returns the uses in `references` and a warning. Other event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched as text for a global variable the move makes local: a match, or such a sheet that cannot be read at all, is refused the same way (`unscannedFiles`). The check stops at its traversal limit, 100,000 events (sub-events included) across all event sheets, which only very large projects reach; a move of events that declare an event variable is then refused without `force` as well, since the uses beyond the limit are unknown. Functions stay visible in every sheet wherever they are moved.
+
+Runs the load-time gate (see [`add_event_block`](#add_event_block)) over the source and target sheets together, before anything is written. Moving an event that already breaks a load-time rule only relocates the problem and is allowed; copying it (`deleteSource: false`) adds the problem to a second sheet, so a copied error is refused and a copied warning is returned in `warnings`.
+
+Only top-level events count: a SID shared by two top-level events of the source is refused unless `eventPaths` picks one, while a nested event with the same SID does not make it ambiguous. `deleteSource` removes exactly the copied events. A SID listed twice in `sids` is refused; top-level events that share a SID are moved one per call.
+
+Moved events keep their SIDs; when a moved event, or one of its sub-events, has a SID that another event of the target sheet already has, the move is still written, since the editor opens such sheets, and `warnings` names each such SID with the paths of its events there: the SID-based event tools then refuse it in the target sheet unless `eventPath` picks one. Copied events get new SIDs, the copied conditions, actions and parameters too (`reassignedSids` counts them), so a copy never shares a SID with its original.
+
+Returns `movedSids`, `movedCount`, `backupFiles` (target first, then source when modified) and `warnings`, if any: new load-time warnings, the shared-SID warning and, with `force`, the uses left out of scope (also in `references`). A copy (`deleteSource: false`) also returns `reassignedSids`, the number of SIDs it gave new values.
+
+### `move_event_block_items`
+
+Move, reorder or copy conditions or actions within a block, function block or custom action block of an event sheet, or into another such block of the same sheet. A moved item keeps its SID. A copy (`copy: true`) gets a new SID and the source keeps its items; an item without a SID is copied without one. This tool moves conditions and actions only, never events.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `sourceBlockSid` / `sourceEventPath` | number / string | Yes / No | The block, function block or custom action block the items are in; the path picks one of several events that share the SID |
+| `targetBlockSid` / `targetEventPath` | number / string | Yes / No | The block the items go to (the same SID to reorder); the path picks one of several events that share the SID |
+| `itemType` | `"actions"` \| `"conditions"` | Yes | Which list the items are in |
+| `indices` | number[] | Yes | Indexes of the items in the source, 1 to 100 of them, each once; they keep their order whatever order they are given in |
+| `targetIndex` | number | Yes | Where the items go in the target. A move within one block counts it after the items are taken out; otherwise it counts the target as it is, and it ranges from 0 to the number of items there |
+| `copy` | boolean | No | Copy instead of move (default: false) |
+| `force` | boolean | No | Move even when an item then uses an event variable or function parameter outside its scope (default: false); the uses are listed in `references` and in a warning |
+
+Refused, changing nothing (each message ends "Nothing was changed."): an index listed twice or past the end of the source; a `targetIndex` past the place the items can go; a move between blocks or a copy that would give the target more than 100 items of the kind (a reorder is not capped); a source or target SID that matches no event, or several without its path argument (the candidates are listed), or an event that is not a block, function block or custom action block; moving or copying an else condition, which stays first in its own block; an item put at index 0 in front of the target's else condition, enabled or disabled (use index 1 or later); an object class that is no object type, family, System or the Functions object, checked against the target as `add_event_block` checks it; a new load-time error of the sheet.
+
+Without `force`, a move or copy after which an item uses an event variable or function parameter (a custom action parameter included) outside its scope, or where a use finds another declaration of the same name, returns `{ success: false, action: "move_blocked", message, references }` (with `reboundReferences` for a name that then finds another declaration) and changes nothing. The check stops at its traversal limit, 100,000 events (sub-events included) across all event sheets, or at a nesting depth of more than 50 levels (events nested more than 50 deep); then the move is refused without `force` too, since the uses beyond the limit are unknown; when only a limit blocks the move, the message offers `force=true` only, since there is no other place to move the items to.
+
+Written moves carry warnings, if any: new load-time warnings; *Set return value* where it stands outside a function block after the move (never refused); a notice when every condition of the source has moved, so the source then runs whenever its parent runs (a function block or custom action block: on every call of it); and, with `force`, the uses left out of scope. A move or copy of a trigger condition into a block that holds a function block or a custom action block, at any depth below it, is refused by the load-time gate (*cannot add another trigger to event branch*).
+
+Returns `{ success, entity, category: "eventsheet", action: "updated", sourceBlockSid, targetBlockSid, itemType, copy, sids, targetIndex, warnings?, references?, reboundReferences?, backupFile }`; `sids` are the SIDs of the moved items (the new ones for a copy). A call that leaves the items where they were writes nothing and returns `action: "unchanged"`. When the write fails, the sheet is put back, unless another write changed it since; the error then names it with its `.bak`. A failure before the write puts the sheet back and reads "The change was stopped before anything was written: ... Nothing was changed."
+
+### `remove_event_from_sheet`
+
+Remove include events for a given sheet from an event sheet. Use `delete_event_from_sheet` with a SID for other event types.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet to modify |
+| `includeSheet` | string | Yes | Name of the included sheet to remove |
+
+### `add_custom_action`
+
+Add a custom action definition (a custom action block, `eventType` `"custom-ace-block"`) to an event sheet. A custom action belongs to an object type or family and is called on it with a call action (see **Calling a custom action** below). Its conditions and actions are added afterwards with [`update_event_block`](#update_event_block) on the returned SID. Arguments the tool does not take are refused, and nothing is written.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Target event sheet, as registered (letter case included) |
+| `objectClass` | string | Yes | The object type or family the custom action belongs to |
+| `aceName` | string | Yes | The custom action's name, as calls give it in `customAction` |
+| `description` | string | No | The description shown in the editor (up to 2000 characters) |
+| `category` | string | No | The category it is listed under in the editor |
+| `isAsync` | boolean | No | The editor's "Asynchronous" option (default false) |
+| `copyPicked` | boolean | No | The editor's "Copy picked" option (default false) |
+| `parameters` | array | No | Parameters in call order, up to 100: `{ name, type, initialValue?, comment? }` with `type` `"number"`, `"string"` or `"boolean"`. `initialValue` defaults to `"0"`, `""` or `"false"` by type. |
+| `groupPath` | string | No | Into a group by title path, matched as in `add_event_block` |
+| `parentSid` | number | No | Into the sub-events of this group |
+| `parentEventPath` | string | No | Picks one of several events that share `parentSid` |
+| `siblingSid` | number | No | Beside this event, in the same list; needs `position` `"before"` or `"after"` |
+| `siblingEventPath` | string | No | Picks one of several events that share `siblingSid` |
+| `position` | enum | No | `"start"`, `"end"` (default), or `"before"` / `"after"` the `siblingSid` event |
+| `force` | boolean | No | Add even while an event sheet the server could not parse, or a scan that stopped at its limit, may define a custom action of that name (default false) |
+
+**Placement.** The definition goes at the top level, in a group, or beside an event there, and only where every event above it is a group, so a group inside a group is allowed. A place below a block, a block with conditions, a function block or a custom action block is refused. Construct 3 r506-2 (Free edition) was tried with a custom action block at the top level and in a top-level group, and accepted it in both; the rule for nested groups is this tool's own and was not checked in the editor. A custom action block is a trigger root for the load-time check, as a function block is.
+
+**Refusals.** Each one changes nothing, and its message ends with "Nothing was changed.":
+- An owner that is no object type or family. System and the Functions object own no custom action. A name that differs only in letter case gets a hint with the spelling that exists.
+- An empty `aceName`, or one of only spaces.
+- A second custom action of the same name on the same owner, ignoring letter case, anywhere in the project; the message names its sheet, path and SID. A custom action of the same name on another object type, or a member's own action that overrides its family's, is allowed. Construct 3 r506-2 (Free edition) ran the first of two definitions of one name and renamed the second one when it saved (DoK became DoK2), so a call could not tell them apart. The refusal also covers names that differ only in letter case; that wider rule is the tool's own and was not checked in the editor.
+- A parameter name that the editor's function parameter dialog refuses: a name that a global variable, an event variable or an earlier parameter of the same list has, a name given twice, or a name that differs only in case from one of them. In a group, a name that a variable of an enclosing event has is refused as well; this is the tool's own rule.
+- A place where a custom action block may not stand (see **Placement**).
+
+**Unparsed sheets and the scan limit.** Event sheets that the server could not parse are searched as text for the custom action's name and its owner. A possible match refuses the call without `force`, and the sheets are listed in `unscannedFiles`; with `force` the definition is added and a warning names them. A sheet searched without a match gets a warning. The scan of custom action definitions stops at its limit (100,000 events across all event sheets, or nesting deeper than 50 levels); a definition past it is unknown, so the call refuses without `force`, and with `force` it is added with a warning. A registered sheet other than the target that cannot be read at all refuses the call without `force`; with `force` the call is added with a warning. If the target sheet itself cannot be read, the call is refused, with or without `force`.
+
+**Load-time gate.** The sheet is checked against the load-time rules as in `add_event_block`, and the new warnings are returned in `warnings`. For example, a custom action block placed between a block and its else block gets an `else-placement` warning.
+
+**Written shape.** The definition is written as Construct 3 r506-2 (Free edition) saved one: the keys `aceType`, `aceName`, `objectClass`, `functionDescription`, `functionCategory`, `functionReturnType` (always `"none"`), `functionCopyPicked`, `functionIsAsync`, `functionParameters`, `eventType` (`"custom-ace-block"`), `conditions`, `actions` and `sid`, in that order, with no `children` key. Each parameter is `{ name, type, initialValue, comment, sid }`. There is no return type parameter.
+
+**Returns.** `generatedSid` (the definition's SID), `parameterSids` (`{ name, sid }` for each parameter, when there are any), `eventPath`, `backupFile`, and `warnings` and `unscannedFiles` when there are any.
+
+**Rollback.** When the write fails, the sheet is put back, unless the file no longer holds this call's write (an editor save changed it after the write, say, or another write did); then the sheet is left as it is and the error names it with its `.bak`. The message keeps the write's own error.
+
+**Calling a custom action**
+
+A call is an action of `add_event_block` (in `actions`) or of `update_event_block` (in `addActions`): `{ customAction, objectClass, customActionObjectClass?, parameters?, disabled? }`. It is written with the keys `customAction`, `objectClass`, `customActionObjectClass` (when there is one), `sid`, `disabled` (only when true) and `parameters` (only when there are arguments), in that order.
+
+- `objectClass` must be an object type or family of the project. System and the Functions object are refused, and so is an unknown name.
+- `customActionObjectClass` must be `objectClass` itself or a family that `objectClass` belongs to; any other name is refused.
+- The definition a call runs is the one on `customActionObjectClass` when given, else on `objectClass`, else on the first family `objectClass` belongs to that defines the name. The name matches ignoring letter case. A call written in another case gets the definition's spelling from `add_event_block` and from the calls `update_event_block` adds, with a warning; `update_event_block`'s `updateActions` and `update_event_block_action` keep the stored name and warn.
+- A member's call of a custom action its family defines (the member has no definition of that name) carries `customActionObjectClass` set to that family, after `objectClass`, as Construct 3 r506-2 (Free edition) saved it. A call on the family itself, or on a member with its own definition, carries none.
+- A call that names no custom action of the parsed sheets is written with a warning. Whether Construct 3 opens a project with such a call was not checked.
+- When the object has no definition of the name of its own, the call names no `customActionObjectClass`, and two of its families both define the name, the call uses the first family in the order the families are read, with a warning. Which one Construct 3 runs was not checked. The first family is used whatever the spelling: when it defines the name in another letter case than the call and a later family defines it in the call's exact spelling, the warning names that family.
+- An argument count other than the definition's parameter count is written with a warning.
+- A boolean argument stays a JSON boolean. Other arguments are strings, as expressions. `add_event_block` and the `addActions` of `update_event_block` refuse a number argument (the argument schema takes strings and booleans only); `update_event_block_action` and the `updateActions` of `update_event_block` take numbers and write them as strings. The number behavior was not checked in the editor.
+- `update_event_block` edits the conditions and actions of a custom action block by its SID (it has no `isElse`, since a custom action block cannot be an else block). It adds no sub-events, and no tool on this branch places an event inside a custom action block.
+- `update_event_block` and `update_event_block_action` replace a call's arguments with an array in parameter order (key-value parameters are refused); an empty array removes them. An argument count that differs from the definition's parameter count is written with a warning.
+
+### `update_function`
+
+Change a function block (`eventType` `"function-block"`) or a custom action block (`"custom-ace-block"`), found by its SID: its name, description, category, options and parameters and, for a function block, its return type. `returnType` is refused for a custom action block: this tool applies it to function blocks only. The calls that run the block are rewritten only with `updateCallers`. Arguments the tool does not take are refused, and nothing is written.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet that holds the block, as registered (letter case included) |
+| `sid` | number | Yes | SID of the function block or custom action block |
+| `eventPath` | string | No | Picks one of several events that share the SID (see [Events that share a SID](#mutation-tools)) |
+| `functionName` | string | No | The new name: a function's name, or a custom action's `aceName`. A function name is checked as in [Function names](#function-names); a custom action name as in [`add_custom_action`](#add_custom_action) |
+| `returnType` | `"none"` \| `"number"` \| `"string"` \| `"any"` | No | The editor's Return type. Function blocks only |
+| `description` | string | No | The editor's Description |
+| `category` | string | No | The editor's Category |
+| `isAsync` | boolean | No | The editor's Asynchronous option |
+| `copyPicked` | boolean | No | The editor's Copy picked option |
+| `addParameters` | array | No | Parameters to append, in order: `{ name, type, initialValue?, comment? }`, with `type` `"number"`, `"string"` or `"boolean"` |
+| `removeParameters` | string[] | No | Names of parameters to remove |
+| `renameParameters` | array | No | `{ from, to }` renames. Uses in the body are not rewritten, so a rename whose old name the body still uses is refused without `force` (below) |
+| `updateCallers` | boolean | No | Rewrite the calls that run the block and, for a function block, its function map registrations (default: false) |
+| `force` | boolean | No | Update past the refusals marked "without `force`" below; what was found is named in a warning, and parameter uses in the body are also listed in `references` and `reboundReferences` (default: false) |
+| `dryRun` | boolean | No | Report what would change and write nothing (default: false) |
+
+**Calls and function maps.** A call is found by its name, ignoring letter case. With `updateCallers`, a rename rewrites the name of each call (`callFunction`, or `customAction` for a custom action block) and the function name of each function map registration. A `Functions.Name(...)` call in an expression is listed and left as it is. Scripts are not checked: a script action is neither found nor rewritten.
+
+**Refused, with or without `force`.** Nothing is written:
+- A call that gives no update (none of the name, the options, `returnType` or a parameter change) and no `dryRun`.
+- An event that is neither a function block nor a custom action block.
+- A function name the editor refuses, as in [Function names](#function-names), and a return type the function's current name cannot have.
+- `returnType` on a custom action block.
+- A custom action renamed to an empty name or one of only spaces: `functionName is empty or only spaces.`
+- A custom action renamed to a name its owner already has, ignoring letter case (a case-only rename is checked against the owner's other definitions too), with the rule of [`add_custom_action`](#add_custom_action). An update that keeps the name is not checked, so a duplicate the project already holds does not stop it.
+- A parameter to remove or rename that the block does not have, or a parameter name the editor refuses (see [Event variable names](#event-variable-names)). Removals come before renames, so renaming a parameter the same call removes is refused.
+- A rename, or a parameter added or removed, while calls (or, for a renamed function block, function map registrations) exist and `updateCallers` is not given: the calls are listed.
+
+**Refused without `force`.** Each refusal lists what it found and writes nothing:
+- Removing a parameter or renaming one that the body still uses by its old name, or a rename after which a use in the body finds another parameter.
+- A `Functions.Name(...)` call in an expression, when the block is renamed, a parameter is added or removed, or its return type changes to `none`.
+- An event sheet that could not be parsed, whose text may hold the old name or, for a rename, the new name, when the block is renamed, a parameter is added or removed, or the return type becomes `none`. Such a sheet is searched as text.
+- A check of the uses of the block that stopped at its limit of 100,000 events across all event sheets.
+
+**Refused even with `force`.**
+- A custom action rename that would make a call the scan reached run another definition, stop running the renamed one, or, running nothing now, run the renamed one. The message lists the calls, with what each runs now and what it would run after the rename.
+- Removing and adding the same number of parameters in one call while calls exist. Each call would keep its argument count, so a run repeated after a stop could not tell a call already rewritten from one not yet rewritten. Make two calls: one that removes, then one that adds. With no calls, the same update is made.
+
+**Calls rewritten with `updateCallers`.**
+- A call's arguments are rewritten only when it passes the parameter count from before the update: arguments at removed positions are dropped and new ones appended. A call with another count keeps its arguments and is listed in `warnings`, so a run repeated after a stop changes nothing more.
+- A new parameter's argument is its initial value: a number as its numeric literal, a string as a Construct string literal with each inner quote doubled, or `true` or `false` for a boolean.
+- The initial value is checked before anything is written: a number must be a number (`1 + x` is refused), a boolean must be `true` or `false`, and a string cannot hold a line break (a newline or a carriage return). That refusal is this tool's own rule: whether Construct 3 accepts a line break inside a string literal was not checked in the editor.
+
+**Custom action calls.** A call is matched to the definition it runs as [`add_custom_action`](#add_custom_action) describes. A plain call on an object that belongs to two families that both define the new name gets a warning: it uses the definition on the renamed block's owner, and which one Construct 3 runs was not checked in the editor. Ten such warnings are listed, one for each call; further calls are counted in a last warning ("And N more rewritten call(s) ...").
+
+**Order and rollback.** Every sheet is read before the first write. The caller sheets are written first, in the order the project registers them, and the sheet of the block last. A failure after the first write puts back what the call wrote. A file that another program saved meanwhile is left as it is, and the message names it with its `.bak`. "Nothing was changed." appears only when the call left every file as it was. The message says what is on disk.
+
+**Unchanged and dry runs.** An update to the values the block already has returns `action: "unchanged"` and writes nothing. `dryRun` reports what would change (`calls`, `maps`, `expressions` and `parameters`) and writes nothing.
+
+**Returns.** `kind` (`"function"` or `"custom-action"`), `updatedSid`, `name`, `previousName`, `parameters` (each with its `sid`), `updatedSheets` in the order written, `rewrittenCalls`, `rewrittenMaps`, `backupFiles`, and when there are any `warnings`, `references` and `reboundReferences` (parameter uses left with `force`) and `unscannedFiles`.
 
 ### `fix_legacy_behavior_keys`
 
@@ -1272,7 +1422,7 @@ The tool also converts scripts stored as one string or without `language`. Older
 | `dryRun` | boolean | No | Only report what would change (default: **true**). Set `false` to rewrite the affected sheets. |
 
 **Converted** (the result is unambiguous):
-- `isElse: true` on a block without conditions whose previous sibling, not counting comments, is a block without a trigger: a System `else` condition with a new SID is put first and the key dropped. When the block already starts with the `else` condition (also a disabled one, which stays disabled: the editor never read the key, so dropping it changes nothing about how the block runs), or the key is not `true`, the key is just dropped.
+- `isElse: true` on a block without conditions whose previous sibling, not counting comments, is a block without a trigger: a System `else` condition with a new SID is put first and the key dropped. When the block already starts with the `else` condition, or the key is not `true`, the key is just dropped.
 - `isOr` on every condition after the first: the block gets `isOrBlock: true` and the keys are dropped. `isOr` keys that never had an effect (on the first condition only, `false`, or in a block that already is an OR block) are dropped.
 - Function calls: `id`, `objectClass` and behavior keys are dropped, and parameters keyed `"0"`, `"1"`, … or exactly by the function's parameter names become the positional array, in the order `callFunction, sid, disabled, parameters`.
 - Script actions and script events: a script stored as one string becomes an array of lines (split at line breaks), and a missing `language` becomes `"javascript"`, in the order `type, language, script, disabled`.
@@ -1280,6 +1430,76 @@ The tool also converts scripts stored as one string or without `language`. Older
 **Reported under `manual`** (left untouched): an `isElse` block that has conditions (it would become an else-if that tests them: decide with `update_event_block` and `isElse: true` or `false`), an `isElse` block with no block before it (comments aside) or after a block with a trigger (Else can only follow non-triggered events), `isOr` on only some of the later conditions (make it an OR block, or split the event), calls whose parameter keys cannot be mapped, and scripts that are neither text nor a list of lines.
 
 Only sheets with conversions are written, each backed up first. Returns `totalConverted`, `totalManual`, `totalBehaviorChanges` and per-sheet `changes` (kind, JSON path, SID, what changes, `changesBehavior`; capped at 100 per sheet), `manual` and `backupFile` when written. `validate_project` reports affected sheets as warnings with check `legacy-event-shape`.
+
+### `update_event_group`
+
+Update a group event in place: its title, description, *Active on start*, disabled state and colours. The group keeps its SID and its sub-events. A group is found by SID; `eventPath` picks one of several events that share it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `sid` / `eventPath` | number / string | Yes / No | The group; the path picks one of several events that share the SID |
+| `title`, `description` | string | No | New title and description |
+| `isActiveOnStart`, `disabled` | boolean | No | The editor's *Active on start*; disables or enables the group |
+| `backgroundColor`, `textColor` | `[red, green, blue, alpha]` or `null` | No | Each 0-1, written as `background-color` and `text-color`; `null` removes the key |
+| `force` | boolean | No | Rename even while a `group-name` parameter or an unparsed event sheet may name the old title; they are listed and left as they are |
+
+Give at least one of `title`, `description`, `isActiveOnStart`, `disabled`, `backgroundColor` and `textColor`. A value the group already has changes nothing.
+
+Refused, changing nothing (each message ends "Nothing was changed."): no update given; a SID that no event has, or that several events share (`eventPath` picks one); an event that is not a group; an event sheet that is not registered.
+
+**Titles.** Refused, changing nothing: an empty or blank title, and a title that another group in the same list has, exactly or with outer whitespace ignored, since group paths in that list could not tell the two apart. Another group that has the title, ignoring letter case and outer whitespace, does not refuse the rename: it is named in a warning, because "set-group-active" and "is-group-active" name a group by its title. That covers a group in another list or another sheet, and a group in the same list whose title differs only in letter case. Construct 3 r506-2 (Free edition) opened and saved a project with two groups titled "Same", one at the top level and one nested in a group "Outer".
+
+**Uses of the old title.** A rename is refused without `force` while a `group-name` parameter of a condition or action names the old title: a quoted string equal to it, equal to it ignoring case, or any other value, which may give it. Event sheets that could not be parsed (for example, not valid JSON) are searched as text for the old title, and a match refuses the rename too. A search that stops at its node limit (100,000 events across all event sheets) or its nesting-depth limit (events nested more than 50 deep) refuses the rename too and names the limit. The refusal lists the uses and ends "Nothing was changed."; with `force` the group is renamed, the uses are listed in `references` and counted in a warning, and they are never rewritten. A local count of an r495.2 editor-saved project found no `group-name` parameter.
+
+**Colours.** The colour keys are written after `sid`, with `text-color` before `background-color`. That order rests on one saved group in Construct 3 r506-2 (Free edition), which carried both colours. A colour key the group already has is updated where it stands. A group with only one colour gets the same placement; that was not checked in the editor. `null` removes the key.
+
+Returns `{ success, entity, category, action, updatedSid, eventPath, title, warnings?, references?, unscannedFiles?, backupFile? }`, with `backupFile` when written. `action` is `"updated"`, or `"unchanged"` when the values already match and nothing is written. A rename that is refused for its uses, a limit or an unparsed sheet returns `{ success: false, action: "rename_blocked", message, entity, category, references, unscannedFiles? }` and changes nothing.
+
+When a change throws before the write, the sheet is put back in memory and the call refuses with "The change was stopped before anything was written: ... Nothing was changed." When the write fails, the call is rolled back; if the editor saved the sheet after the failed write, the error names the file and its `.bak` and leaves the sheet as it is.
+
+### `update_comment`
+
+Update a comment event in place: its text and colours. A comment has no SID, so it is addressed by its container and its 0-based `index` among all events of that container, counted in the order the events appear there. A comment row among a block's actions is changed with `update_event_block` instead.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `groupPath` | string | No | The group that holds the comment; none: the top level |
+| `parentSid` / `parentEventPath` | number / string | No | The event whose sub-events hold the comment |
+| `index` | integer | Yes | Index of the comment among all events of its container |
+| `text` | string | No | New text |
+| `textColor`, `backgroundColor` | `[red, green, blue, alpha]` or `null` | No | Each 0-1, written as `text-color` and `background-color`; `null` removes the key |
+
+Give at least one of `text`, `textColor` and `backgroundColor`. The tool takes no `siblingSid` and no `position`; they are refused as unknown arguments.
+
+Refused, changing nothing (each message ends "Nothing was changed."): no update given; an index past the end of the container; an event at the index that is not a comment; an event sheet that is not registered or cannot be read.
+
+A comment event keeps its keys in the order `eventType`, `text`, `text-color`, `background-color`. A colour the comment lacks is inserted after the keys that come before it in that order (`text-color` after `text`, `background-color` after `text-color`). The tool uses this order for comment rows among a block's actions too; it was not checked in the editor for a comment event. `null` removes a colour. An update to the values the comment already has returns `"unchanged"` and writes nothing.
+
+Returns `{ success, entity, category, action, eventPath, backupFile? }`, with `action` `"updated"` or `"unchanged"` and `backupFile` when written. A failure is handled as for `update_event_group`: the sheet is put back, and a failed write names the file and its `.bak` when the editor saved the sheet after it.
+
+### `update_script_event`
+
+Replace the JavaScript of a script event, enable or disable it, or remove it. A script event has no SID, so it is addressed like a comment, by its container and `index`. A script action among a block's actions is changed with `update_event_block` instead.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheetName` | string | Yes | Event sheet, as registered |
+| `groupPath` / `parentSid` / `parentEventPath` | string / number / string | No | The container, as for `update_comment` |
+| `index` | integer | Yes | Index of the script event among all events of its container |
+| `script` | string or string[] | No | New JavaScript: one string, split into lines, or an array of lines |
+| `disabled` | boolean | No | `true` disables the event; `false` removes its `disabled` key |
+| `remove` | boolean | No | Removes the script event; needs `expectedText` |
+| `expectedText` | string | With `remove` | The first line of the script event to remove |
+
+Give exactly one of `script`, `disabled` and `remove`. `expectedText` is only used with `remove`.
+
+**Removal.** `remove` needs `expectedText`, and the script event at `index` must start with it: its first line, whether the script is stored as one string or as a list of lines (an entry of the list that holds a line break counts up to the break). Otherwise the removal is refused and the message gives the first line found. Removing a script event runs the load-time gate; its warnings are returned, and an else block that then continues another event is reported in a warning.
+
+Refused, changing nothing (each message ends "Nothing was changed."): none, or more than one, of `script`, `disabled` and `remove`; `expectedText` without `remove`; `remove` without `expectedText`; a first line that differs; an index past the end of the container; an event at the index that is not a script event (an event without an `eventType` is named as one that has none); an event sheet that is not registered or cannot be read; a removal after which the load-time check reports errors for issues the removal introduces in the sheet (the message starts "Construct 3 load-time check failed; nothing was written." and lists the rules broken; no current load rule can produce this for a real sheet, since the rules look at an event's ancestors, and at its predecessor only for an else block, which is a warning, but the guard stays).
+
+Returns `{ success, entity, category, action, eventPath, warnings?, backupFile? }`; `action` is `"updated"`, `"deleted"` for a removal, or `"unchanged"` when the event already has the values given. `backupFile` is given when written. Failures are handled as for `update_comment`.
 
 ### `create_layout`
 
@@ -1311,10 +1531,10 @@ Place an object instance on a layout layer or sub-layer. For copying instances b
 | `properties` | object | No | Plugin-specific properties (auto-filled for known plugins) |
 | `angle` | number | No | Rotation angle in radians (default: 0) |
 | `color` | number[4] | No | RGBA tint as `[r, g, b, a]` with values 0-1 (default: [1,1,1,1]) |
-| `zElevation` | number | No | Z elevation for 3D layering (default: 0) |
+| `zElevation` | number | No | Z elevation for 3D layering (default: 0), written as `world.z` |
 | `originX` | number | No | Horizontal origin 0-1 (default: 0.5 = center) |
 | `originY` | number | No | Vertical origin 0-1 (default: 0.5 = center) |
-| `instanceVariables` | object | No | Instance variable values as `{varName: value}` |
+| `instanceVariables` | object | No | Instance variable values as `{varName: value}`; every instance variable of the object and its families not given gets its default (`0`, `""` or `false`); a name the object and its families have no instance variable of is refused |
 | `behaviors` | object | No | Behavior property values as `{behaviorName: {properties: {prop: val}}}` (the shape `get_layout_details` returns) or `{behaviorName: {prop: val}}`; they override the defaults |
 | `tags` | string | No | Comma-separated instance tags (alphanumeric only) |
 | `showing` | boolean | No | Whether instance is initially visible (default: true) |
@@ -1322,21 +1542,13 @@ Place an object instance on a layout layer or sub-layer. For copying instances b
 
 **Notes:**
 - Blocks global-only objects (singleglobal-inst) from being placed
-- The new UID is above every UID in the project, sub-layer instances included, and the new SID is unused
+- The new UID is above every UID in the project, sub-layer instances included, and above every UID a hierarchy link names (`sceneGraphData` `"parent-uid"` and `children`), so a link left pointing at a deleted instance never names the new one; the new SID is unused. Layouts and object types over the reader's size limit (10MB by default) or with invalid JSON count too: their UIDs and SIDs are found by a text scan of the file. The text scan streams the file, so there is no size limit. The scan reads a UTF-16LE byte order mark as such and leaves out NUL characters, so UTF-16 without a byte order mark, UTF-16BE and a file whose end is zeros are scanned too. When a registered layout or object type exists but cannot be read at all (e.g. a folder in its place, no access), the tool refuses and names the file and the reason instead of risking a UID that is already in use, and the next call tries the file again; a registered name without a file does not block it
 - Nonworld-global objects (Array, JSON, Dictionary) are placed in `nonworld-instances` instead of on layers
 - Auto-fills default instance properties for Sprite, Text, TiledBg, NinePatch
 - Writes a behavior entry for every behavior of the object and of the families it belongs to, like the editor: family behaviors first, then the object's own, each as `{"properties": {...}}` with the built-in behavior's default values (from the Construct 3 r449 editor's behavior definitions). Values passed in `behaviors` override the defaults. A behavior without known defaults (third-party addons) gets `{"properties": {}}` and a warning; Construct 3 fills in missing properties with their defaults when it opens the project (Scirra's own example projects contain such entries). The warning also points out a behaviorId that is not one the editor defines, such as `"Solid"` for `"solid"`
-- Warns on unknown instanceVariable keys (may be inherited from families), on behavior names that are not behaviors of the object or its families, on property ids that a built-in behavior does not have, and on values whose type differs from the property's default (e.g. a string for a check box)
+- Writes a value for every instance variable of the object and of the families it belongs to, like the editor: family variables first, then the object's own, the given values on top of the defaults (`0`, `""`, `false`). A name in `instanceVariables` that neither the object nor its families have is refused (names are matched with their letter case; a name that differs only in case is pointed out), and a value of another type than its variable is written with a warning. A family file that could not be parsed (see [Files the server could not parse](#mutation-tools)) whose text names the object, or that cannot be read at all, may make the object a member: a given name that its text holds is written as given, and a warning (with `unscannedFiles`) says that the new instance got no values for that family's other instance variables and no entries for its behaviors
+- Warns on behavior names that are not behaviors of the object or its families, on property ids that a built-in behavior does not have, and on values whose type differs from the property's default (e.g. a string for a check box)
 - All visual and behavioral properties are preserved when specified
-
-### `delete_instance_from_layout`
-
-Remove a placed instance by UID from the layout's layers and sub-layers or its non-world instances. Hierarchy links to it are detached; the result names the layer or sub-layer it was removed from.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout holding the instance |
-| `uid` | integer | Yes | UID of the instance to remove |
 
 ### `delete_layout`
 
@@ -1350,110 +1562,44 @@ Delete a layout from the project.
 **Behavior:**
 - Blocks unconditionally if the layout is the project's startup layout (`firstLayout`)
 - Checks for bound event sheets and placed objects
+- When the layout's own file could not be parsed (see [Files the server could not parse](#mutation-tools)), its text is searched for instances (`"uid": <number>`) and a non-empty `"eventSheet"` binding: a match (`names`: `instances`, `an event sheet binding`), or a file that cannot be read at all, blocks as well (`unscannedFiles`)
 - If referenced and `force=false`: returns the reference list and blocks
 - If referenced and `force=true`: deletes with warning (references NOT cleaned up)
-- Removes the name from c3proj first, then backs up and deletes the JSON file. A failure between the two steps leaves an orphaned file (reported by `validate_project` as info at any subfolder depth if its directory is readable), never a registration that points at nothing; the error names the file to clean up
+- Refuses when the JSON file changed on disk since it was read; then removes the name from `project.c3proj` and deletes the file (kept as `.bak`). When either step fails, the call is undone; when `project.c3proj` was saved again meanwhile and cannot be put back, the error says what is on disk: if it no longer lists the name, the file is left on disk unregistered. If `project.c3proj` lists the name again after the file was deleted, the call is an error
 
-### `update_instance`
+### `rename_layout`
 
-Update a placed instance on a layout. Instances are found by UID in any layer, nested sub-layer, or the layout's non-world instances.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout name |
-| `uid` | number | Yes | UID of the instance |
-| `x`, `y`, `width`, `height`, `angle`, `zElevation`, `color` | number / number[4] | No | World transform and tint (ignored, with a warning, on non-world instances) |
-| `originX`, `originY` | number | No | Origin as a fraction of the instance size; see the origin notes below |
-| `blendMode` | string | No | `normal` (removes the stored key), `additive`, `xor`, `copy`, `destination-over`, `source-in`, `destination-in`, `source-out`, `destination-out`, `source-atop`, `destination-atop` |
-| `depth` | number | No | 3D Shape depth (`world.depth`, written after the Z key); other plugins get a warning |
-| `showing`, `locked`, `tags` | boolean / string | No | Editor visibility, lock, and tags |
-| `instanceVariables` | object | No | Instance variable values to merge |
-| `properties` | object | No | Plugin property values to merge, keyed by property ID (Text `text`, iframe `url`, Tilemap `tile-width`, ...) |
-| `behaviors` | object | No | Per-instance behavior settings as `{ behaviorName: { properties: { ... } } }`, merged per behavior |
-| `effects` | object | No | Per-instance effect state as `{ effectName: { isEnabled?, parameters? } }`, merged per effect |
-
-**Notes:**
-- Behavior names not defined on the object type or one of its families produce a warning; effect names not defined there are rejected, because Construct fails to load an instance with an unknown effect key. Attach the effect first with `add_effect`.
-- Property keys are not validated against the plugin; use the IDs Construct writes into the layout file.
-- Origin follows the editor: a Sprite instance always carries its animation frame's origin (30,222 of 30,223 sampled instances), so any other value is refused (use `update_frame`). Objects with an `origin` property (Text, Tiled Background, 9-patch, Sprite Font, SVG Picture) take only the nine grid points; `originX`/`originY` set `properties.origin` too, and `properties: { origin }` sets the world origin. The r495.2 editor recomputes the world origin from that property on load.
-- `zElevation` is written to `world.zElevation` when the instance already stores that key (projects saved by older releases) and to `world.z` otherwise.
-
-### `move_instance`
-
-Move a world instance to another layer and/or change its Z order. A layer's `instances` array is stored bottom to top.
+Rename a layout and update what names it.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout name |
-| `uid` | number | Yes | World instance UID |
-| `toLayer` | string | No | Destination layer at any depth (default: current layer) |
-| `position` | `"top"` / `"bottom"` / number | No | Z position in the destination layer, index counted from the bottom (default: top when changing layer) |
-| `aboveUid`, `belowUid` | number | No | Place directly above or below an instance on the destination layer |
+| `name` | string | Yes | Current layout name, as registered (letter case included) |
+| `newName` | string | Yes | New layout name (the rules of [`create_layout`](#create_layout)) |
+| `dryRun` | boolean | No | Report the references the rename would update and the files it would write, and write nothing (default: false) |
+| `force` | boolean | No | Rename even when event sheets that could not be parsed possibly name the layout, or timeline files that could not be read or parsed possibly start on it (they are NOT updated). Default: false |
 
-Give at most one of `position`, `aboveUid` and `belowUid`. Non-world instances are refused. The result reports `fromLayer`, `fromIndex`, `toLayer` and `toIndex`; `action: "unchanged"` when nothing moved.
+The rename updates what names the layout, matching names ignoring case as the editor compares layout names (in Construct 3 r506-2, Free edition, renaming a layout in the Project Bar changed the Go to layout parameters, the startup layout and the timelines' `startOnLayout`, and left a Go to layout (by name) string, a longer string and a variable value that held the name):
+- **`"layout"` parameters** of conditions and actions in every event sheet that are the layout's name as the editor saves it, the bare name and not a string expression (`"layout": "Level 2"`, System *Go to layout*), get the new name. Only System conditions and actions are rewritten: a `"layout"` parameter of another object's condition or action (a custom function or action, a plugin) is listed in `possibleReferences`.
+- **Timelines** whose `startOnLayout` is the layout get the new name (the old content of each timeline file is kept as `.bak`; a timeline the editor saved during the call is left as it is and the rename is refused).
+- **`project.c3proj`**: the layout's entry keeps its folder and its position, and the startup layout (`firstLayout`, also in `properties` when the file holds it there) stays the startup layout under its new name.
+- **The file** is written as `<new name>.json` in the same folder, with its `"name"` changed and its SID kept; the old file is deleted and kept as `.bak` (`backupFile`). The layout's `eventSheet` binding is not changed.
+- **The editor's view state** is moved to the new name (`viewStateMoved`): `<name>.uistate.json` beside the layout's file and `layouts/uistate/<folders>/<name>.instancesBar.json` (the Instances Bar's folders). It holds view settings only, so it is moved last and a failure is a warning: a file whose new name holds other content is left as it is.
 
-### Bulk instance tools
+Other strings that contain the layout's name may name the layout or something else of that name, so they are never changed: a warning lists them and `possibleReferences` holds each one: string literals in other parameters, as part of a longer expression or as a function call argument (*Go to layout (by name)*, `LayoutName = "Level 2"`; the `"layout"` parameter of a `...-by-name` action is an expression, never rewritten; `kind` `string literal`), quoted strings in script lines of events (`kind` `script`), initial values of event variables and function parameters that are the name (`kind` `variable value`), instance variable values of layout instances that are the name (`kind` `instance variable`, with the instance's `uid`), and lines of project script files that hold the name as a string (`kind` `script file`, `in` the script's path). A script file that cannot be read is named in a warning. Layouts that could not be parsed are not searched for instance variable values, and the call does not say so.
 
-Four tools apply a list of instance edits to one layout in a single call. They share these rules:
+Refused, changing nothing (the message ends "Nothing was changed."): a layout that is not registered or is given in another letter case than registered (the error gives the registered name); a layout whose own file does not exist or could not be parsed (rename it in the Construct 3 editor); a `newName` that is not a valid name, starts or ends with a space, is the layout's own name, differs from it only in letter case (on Windows and macOS both names are the same file: rename it to another name first) or is another layout's name ignoring case; a file for the new name that already exists in the layout's folder and is not one a stopped rename of this layout left (below).
 
-- Items are applied in list order, so a later item sees what an earlier one did (a `move_instances` position counts the instances the earlier moves left on that layer).
-- Every item is checked and applied in memory before anything is written. If any item fails, the call returns an error that names the item by its 0-based index (`Item 2: ...`) and writes nothing. Otherwise the layout file is written once, with one backup.
-- Each item is checked exactly as its single tool checks it, and produces the same layout: the single and bulk tools share one implementation per edit.
-- Up to 500 items per call. `dryRun: true` checks and applies every item in memory, reports the results with `action: "dry-run"`, and writes nothing.
-- The result has `count`, per-item `results` (each with its `index` and `uid`), and `warnings` prefixed with the item index.
-- Edits on several layouts need one call per layout; nothing links separate calls.
+Event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched as text for the layout's name: a match, or such a sheet that cannot be read at all, refuses the rename (`"success": false`, `"action": "rename_blocked"`, `message`, `references` and `unscannedFiles`; nothing changed). So does a timeline file that cannot be read or parsed, or a timeline registered in a folder the timeline tools cannot resolve (it may start on the layout). With `force: true` it goes ahead, and a warning names those files, which are NOT updated.
 
-### `add_instances_to_layout`
+The event sheets that name the layout are written first, then the layout under its new name, then `project.c3proj`, then the timelines, then the old file is deleted (the last write the rollback covers), then the view state is moved. When a write fails, what the call wrote is put back; a file another write changed after the call wrote it (a save in the editor) is left as it is and named with its `.bak`, and a new file whose own write could not be confirmed is left and named. When a file the call is about to write changed on disk during the call, the write is refused, the file keeps that change, and what the call wrote before is put back.
 
-Place many instances on one layout.
+Running the same call again finishes a rename that stopped midway (the server process ended): references already pointed at the new name are not found again; a file for the new name that holds the layout's SID and the new name, and is not registered, is written over; and when the project registers the new name already while the old file itself is still there with the same SID, the call does what is left (points the references and timelines that still name the old name at the new one, deletes the old file, moves the view state) and says so with `"stoppedRun": true` and a warning. A rename deletes the old file as its last write, so the same call after a finished rename answers that the name is not found and changes nothing.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Target layout |
-| `instances` | object[] | Yes | 1 to 500 items, each with the parameters of `add_instance_to_layout` except `layoutName` (`layerName`, `objectType`, `x`, `y`, and the optional ones) |
-| `dryRun` | boolean | No | Report the results and write nothing (default: false) |
-
-Each result carries the `objectType` and the new `uid` and `sid`. New UIDs continue from the highest UID in the project. A dry run reserves UIDs for its preview only, so a real call afterwards assigns different ones.
-
-### `update_instances`
-
-Update many placed instances of one layout.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout name |
-| `updates` | object[] | Yes | 1 to 500 items, each with a `uid` and the parameters of `update_instance` except `layoutName` |
-| `dryRun` | boolean | No | Report the results and write nothing (default: false) |
-
-An item that names no field to change is refused before the layout is read.
-
-### `move_instances`
-
-Move many world instances of one layout to other layers or Z positions.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout name |
-| `moves` | object[] | Yes | 1 to 500 items, each with a `uid` and the parameters of `move_instance` except `layoutName` (`toLayer`, `position`, `aboveUid`, `belowUid`) |
-| `dryRun` | boolean | No | Report the results and write nothing (default: false) |
-
-Each result reports `fromLayer`, `fromIndex`, `toLayer`, `toIndex`, `layerInstanceCount` and `unchanged`. When every item leaves its instance where it was, the call returns `action: "unchanged"` and writes nothing.
-
-### `delete_instances_from_layout`
-
-Remove many instances, world or non-world, from one layout by UID.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout name |
-| `uids` | integer[] | Yes | 1 to 500 UIDs; a UID listed twice is refused |
-| `dryRun` | boolean | No | Report the results and write nothing (default: false) |
-
-Hierarchy links are detached as `delete_instance_from_layout` detaches them: each removed instance leaves its parent's child list, and its children lose their parent link. Each result carries the removed `objectType`.
+Returns `{ success, entity (the new name), category: "layout", action: "renamed", previousName, references, possibleReferences?, filesWritten, fileDeleted, backupFile?, viewStateMoved?, stoppedRun?, warnings?, unscannedFiles? }`. `references` has one entry per place that was updated: `in` (the file, project-relative), `kind` (`layout parameter` with `path` (the event's JSON path), `ace` and `parameter`; `firstLayout`, `in` `project.c3proj`; or `startOnLayout`, `in` the timeline file) and `value` (the name as saved); `filesWritten` lists project-relative paths; `viewStateMoved` lists `{ from, to }`. With `dryRun: true` nothing is written: `action: "would_rename"`, `newName`, `references`, `possibleReferences?`, `filesToWrite`, `fileToDelete`, `stoppedRun?`, and the same warnings worded as what would happen.
 
 ### `update_layout`
 
-Update layout properties (event sheet binding, dimensions, scrolling, sampling, projection, viewport anchor).
+Update layout properties (event sheet binding, dimensions).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1461,131 +1607,356 @@ Update layout properties (event sheet binding, dimensions, scrolling, sampling, 
 | `eventSheet` | string | No | New event sheet binding (validated for existence) |
 | `width` | number | No | New layout width in pixels |
 | `height` | number | No | New layout height in pixels |
-| `unboundedScrolling` | boolean | No | Allow scrolling beyond the layout bounds |
-| `sampling` | string | No | `auto` (inherit the project setting), `nearest`, `bilinear`, `trilinear` |
-| `projection` | string | No | `perspective` or `orthographic` |
-| `vpX` | number | No | Viewport anchor X, 0-1 (Construct writes 0.5) |
-| `vpY` | number | No | Viewport anchor Y, 0-1 (Construct writes 0.5) |
 
-At least one parameter must be provided. Renaming a layout is not done here.
+At least one parameter must be provided.
 
 ### `add_layer`
 
-Add a layer to a layout, at the top level or inside another layer's `subLayers`.
+Add a new top-level layer to a layout.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `layoutName` | string | Yes | Layout to add the layer to |
 | `layerName` | string | Yes | New layer name, different from every layer of the layout (sub-layers included) ignoring case, as the editor compares layer names |
-| `parentLayer` | string | No | Create the layer inside this layer's `subLayers` (default: top level); a sub-layer can also be given by its path, e.g. `"Main > HUD"` |
-| `index` | number | No | Position among its siblings, 0 = bottom (default: append to top) |
-| `isInitiallyVisible` | boolean | No | Layer starts visible (default: true) |
-| `isTransparent` | boolean | No | Layer is transparent (default: true) |
-| `parallaxX`, `parallaxY` | number | No | Parallax rates (default: 1) |
+| `index` | number | No | Insert position (0 = bottom; default: on top) |
+| `isInitiallyVisible` | boolean | No | Starts visible (default: true) |
+| `isTransparent` | boolean | No | Transparent background (default: true) |
+| `parallaxX` | number | No | Horizontal parallax rate (default: 1) |
+| `parallaxY` | number | No | Vertical parallax rate (default: 1) |
 | `blendMode` | enum | No | `"normal"` (default), `"additive"`, `"xor"`, `"copy"`, `"destination-over"`, `"source-in"`, `"destination-in"`, `"source-out"`, `"destination-out"`, `"source-atop"`, `"destination-atop"` |
 
-**Notes:**
-- The parent layer is found at any nesting level; a parent with no `subLayers` array gets one.
-- A name used by another layer of the layout (sub-layers included) is refused, also when it differs only in case: the editor refuses such a layer name and cannot load a layout with two of them.
-
-### `delete_layer`
-
-Delete a layer from a layout, at the top level or nested in another layer. The last top-level layer of a layout cannot be deleted. A layer's sub-layers go with it, so without `force` the call is refused when the layer holds any instance at any depth or has any sub-layer at all; the `delete_blocked` result names the sub-layers and counts the instances, the layer's own and those below it.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout name |
-| `layerName` | string | Yes | Layer or sub-layer to delete, by name (a sub-layer also by its path, e.g. `"Main > HUD"`) |
-| `force` | boolean | No | Delete even when the layer or its sub-layers hold instances, or it has sub-layers at all; they are lost with it (default: `false`) |
-
-A blocked delete returns `success: false`, `action: "delete_blocked"` with `instanceCount` (sub-layers included), and `subLayers` (their names) and `subLayerCount` when the layer has sub-layers.
+A name used by another layer of the layout (sub-layers included) is refused, also when it differs only in case: the editor refuses such a layer name and cannot load a layout with two of them.
 
 ### `update_layer`
 
-Update an existing layer, at the top level or nested in another layer.
+Update properties of an existing layer or sub-layer.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `layoutName` | string | Yes | Layout name |
 | `layerName` | string | Yes | Layer or sub-layer to update, by name (a sub-layer also by its path, e.g. `"Main > HUD"`, which picks one of several layers with the same name) |
 | `newName` | string | No | Rename the layer (must differ from the other layers of the layout, sub-layers included, ignoring case; changing the case of the layer's own name is fine) |
-| `isInitiallyVisible`, `isInitiallyInteractive`, `isTransparent` | boolean | No | Initial visibility, interactivity, transparency |
-| `parallaxX`, `parallaxY`, `scaleRate`, `zElevation` | number | No | Parallax rates, scale rate, Z elevation |
+| `updateReferences` | boolean | No | With `newName`: point the event parameters that name the layer at the new name (default: true; see below) |
+| `isInitiallyVisible` | boolean | No | Initial visibility |
+| `isInitiallyInteractive` | boolean | No | Initial interactivity |
+| `isTransparent` | boolean | No | Transparency |
+| `parallaxX` | number | No | Horizontal parallax rate |
+| `parallaxY` | number | No | Vertical parallax rate |
 | `blendMode` | enum | No | Same values as `add_layer` |
-| `color` | number[4] | No | Layer tint as `[r, g, b, a]`, values 0-1 |
-| `backgroundColor` | number[4] | No | Background color as `[r, g, b, a]`, values 0-1 (used when the layer is not transparent) |
-| `global` | boolean | No | Make the layer global (shared across layouts) |
-| `isHTMLElementsLayer` | boolean | No | Mark the layer as the HTML elements layer |
-| `sampling` | string | No | `auto` (inherit the project setting), `nearest`, `bilinear`, `trilinear` |
-| `renderingMode` | string | No | Free-form; Construct 3 r495 writes `3d` |
-| `forceOwnTexture` | boolean | No | Render the layer to its own texture |
-| `useRenderCells` | boolean | No | Use render cells for culling |
-| `drawOrder` | string | No | Free-form; Construct 3 r495 writes `z-order` |
+| `scaleRate` | number | No | Scale rate (parallax zoom) |
+| `zElevation` | number | No | Z elevation for 3D layering |
 
-At least one parameter must be provided. `sampling` is validated against the list above; `renderingMode` and `drawOrder` are accepted as bounded strings because only one value of each was observed in a real r495 project.
+At least one property must be provided. A new name used by another layer of the layout (sub-layers included), also one that differs only in case, is refused; changing only the case of the layer's own name is allowed.
+
+**Events that name the layer.** Conditions and actions name a layer in their `"layer"` parameter as a string expression (`"layer": "\"HUD\""`), and layer expressions take one too (`LayerScale("HUD")`); the editor looks layer names up ignoring case, and a layer parameter names a layer of whatever layout runs the event sheet. On a rename, every event sheet is searched (events, groups, function blocks and sub-events):
+- A `"layer"` parameter whose whole expression is the quoted old name, ignoring case, is pointed at the new name (a quote in the name is written as two quotes), and a warning lists them. Not when `updateReferences` is `false`, or when another layout has a layer of the old name (ignoring case) or a layout the reader could not parse names it (see [Files the server could not parse](#mutation-tools)): a layer parameter may name that layer, so they are listed in a warning instead
+- Any other string literal naming the layer (in another parameter, as part of a longer expression, as a function call argument, in a script) may name the layer or something else of the same name, such as an animation or a text: a warning lists them and they are never changed
+- Event sheets the reader could not parse are searched as text for the old name; a match, or one that cannot be read, is named in a warning (`unscannedFiles`)
+
+A rename that only changes the letter case (`Main` to `MAIN`) breaks no event, since the editor looks layer names up ignoring case: the event sheets are not searched or written.
+
+The layout is written first, then the event sheets; if one fails, everything written is restored from its backup, except a file saved again in the editor meanwhile, which is left as it is and named in the error.
+
+### `rename_layer`
+
+Rename a layer in one or more layouts in one call. In each layout the layer is found as [`update_layer`](#update_layer) finds it (its exact name, or a sub-layer by its path such as `"Main > HUD"`), or else the layer whose name differs only in letter case. The new name must not match another layer of the layout, sub-layers included, ignoring case. Every layout is read and checked before anything is written; a refusal changes nothing.
+
+The `"layer"` parameters of conditions and actions whose whole expression is the quoted old name (ignoring case) name a layer of whatever layout runs the event sheet. They are pointed at the new name only when every layout with a layer of the old name is in `layoutNames`; while another layout has one (or a layout file the server could not parse names the old name), they are listed in a warning and not changed, as with `update_layer`. Other strings that name the layer (`LayerScale("Main")`, scripts, function call arguments) are listed, never changed. A rename that only changes the letter case changes no event sheet.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutNames` | string[] | Yes | 1 to 200 layouts; each is renamed once, also when listed twice or in another letter case |
+| `layerName` | string | Yes | Current layer name, or a sub-layer path |
+| `newName` | string | Yes | New layer name |
+| `updateReferences` | boolean | No | Default `true`; `false` lists the parameters instead of changing them |
+| `dryRun` | boolean | No | Default `false`; `true` returns `wouldWrite` and the warnings and writes nothing |
+
+Returns `{ success, entity, category: "layer", action: "renamed", newName, layouts, filesWritten, warnings?, unscannedFiles? }`; with `dryRun`, `action: "rename_preview"`, `dryRun: true` and `wouldWrite` instead of `filesWritten`. A layout whose layer already has the new name is left out of `layouts`. The layouts are written first, then the event sheets; when a write fails, the files the call wrote are rolled back, except a file another write changed since (a save in the editor), which is left as it is and named with its `.bak`. When the first write fails and its file is left as it was, nothing had been written, and the error says so; a file that was left with the new content is named. This is a rollback of the failed call, not an undo a user can run later. If the server process stops during the call (for example out of memory), nothing is rolled back; the `.bak` files the call left are the way back: restore only the files that hold the new name, since a `.bak` beside a file the call never reached holds an older state from an earlier call. Before each layout or event sheet is replaced, the call copies it to a `.bak` file beside it (for example `layouts/Layout 1.json.bak`), which holds the file as it was before the call and stays after a successful call, until a later call writes that file again.
+
+### `delete_layer`
+
+Delete a layer or sub-layer from a layout, together with its sub-layers.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `layerName` | string | Yes | Layer or sub-layer to delete, by name (a sub-layer also by its path, e.g. `"Main > HUD"`) |
+| `force` | boolean | No | Delete even if the layer or its sub-layers hold instances; they are lost (default: false) |
+
+**Behavior:**
+- The last top-level layer of a layout cannot be deleted
+- A layer whose own or sub-layers' instances are not empty returns `success: false`, `action: "delete_blocked"` with `instanceCount` (sub-layers included), and `subLayerCount` when the layer has sub-layers, unless `force=true`
+- Hierarchy links of the layout's other instances to the deleted instances are removed, as for [`delete_instance_from_layout`](#delete_instance_from_layout): children on other layers stay without a parent, and parents on other layers no longer list the deleted children; a warning names their UIDs
 
 ### `reorder_layers`
 
-Reorder one nesting level of a layout.
+Put the layers of one level of a layout in a new order: the layout's own layers, or the sub-layers of `parentLayer`. `layerNames` lists every layer of that level once, with its exact name, first to last (index 0 first, as `add_layer` counts). Sub-layers and instances stay with their layer. A list that leaves out, repeats or adds a layer is refused and changes nothing; so is a level where two layers share a name. Returns `{ success, entity, category: "layout", action: "updated", order, parentLayer?, backupFile, warnings? }`; an order the level already has returns `action: "unchanged"` and writes nothing.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `layoutName` | string | Yes | Layout name |
-| `layerNames` | string[] | Yes | Every layer at that level, in the new order (index 0 = bottom) |
-| `parentLayer` | string | No | Reorder this layer's sub-layers instead of the top-level layers |
+| `layerNames` | string[] | Yes | Every layer of the level, in the new order |
+| `parentLayer` | string | No | Reorder this layer's sub-layers (a path such as `"Main > HUD"` is accepted) |
 
-**Notes:**
-- `layerNames` must be a full permutation of that level. A missing name, a duplicate, or a name from another level is rejected and nothing is written — a partial list would silently drop layers and the instances on them.
+A `"layer"` parameter of a condition or action can name a layer by a number (any number literal, or an expression that may give one), which may count layers by their position; every such parameter that is not one quoted name is counted in a warning, which lists the first five and then a count, and is never changed. Event sheets the server could not parse are not searched for them, and a warning names the first five of them. The scan covers only `"layer"` parameters: layer numbers in expressions (such as `LayerOpacity(1)`) and in scripts are not searched.
+
+When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
 
 ### `move_layer`
 
-Move a layer between nesting levels of the same layout.
+Move a layer, with its sub-layers and instances, to another place in the same layout: into the sub-layers of `parentLayer`, with `parentLayer: null` to the layout's own layers, or with `parentLayer` left out within its current level, at `index` (0 = first; default: last). A move into the layer itself or one of its sub-layers is refused. Returns `{ ..., action: "updated", layer, from: { parentLayer, index }, to: { parentLayer, index }, backupFile, warnings? }` (`parentLayer` null for the layout's own layers); a layer already in that place returns `action: "unchanged"`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `layoutName` | string | Yes | Layout name |
-| `layerName` | string | Yes | Layer to move (searched at every nesting level) |
-| `parentLayer` | string / null | No | Destination parent layer; `null` or omitted moves the layer to the top level |
-| `index` | number | No | Position among the destination siblings *after* the layer is removed from its old position (default: append to top; larger values are clamped) |
+| `layerName` | string | Yes | Layer to move, or a sub-layer path |
+| `parentLayer` | string \| null | No | Destination parent layer; null: the layout's own layers; omitted: its current level |
+| `index` | number | No | Position at the destination once moved; refused when past the last place |
 
-**Notes:**
-- Moving a layer into itself, or into one of its own sub-layers, is refused: it would detach the whole branch from the layout.
-- The layout's last remaining top-level layer cannot be nested.
-- Sub-layers move with the layer.
+A `"layer"` parameter of a condition or action can name a layer by a number (any number literal, or an expression that may give one), which may count layers by their position; every such parameter that is not one quoted name is counted in a warning, which lists the first five and then a count, and is never changed. Event sheets the server could not parse are not searched for them, and a warning names the first five of them. The scan covers only `"layer"` parameters: layer numbers in expressions (such as `LayerOpacity(1)`) and in scripts are not searched.
+
+When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
+
+### `update_instance`
+
+Update a placed instance, found by UID on any layer or sub-layer or among the non-world instances (which ignore position, size, angle, Z elevation and color).
+
+The Z elevation is written as `world.z`. Construct 3 r495.2 saves that key for instances (one editor-saved project, 47 of 47 instances), and r506-2 keeps it when it saves a project; layers keep `zElevation`. On a new instance `world.z` goes after `color`; a key renamed in place from `world.zElevation` keeps the old key's position. An instance keeps one Z key: one written by version 1.10.0 or older holds `world.zElevation`, which is moved to `world.z` in its place, and one with both keys loses `world.zElevation`; each with a warning that names the old value. Construct 3 r506-2 reads `world.zElevation` and saves it as `world.z`; this was seen on one project that used the Normalized Z axis scale.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of the instance |
+| `x`, `y` | number | No | New position |
+| `width`, `height` | number | No | New size |
+| `angle` | number | No | New angle in radians |
+| `zElevation` | number | No | New Z elevation, written as `world.z` |
+| `color` | number[4] | No | RGBA tint `[r, g, b, a]`, values 0-1 |
+| `showing` | boolean | No | Initial visibility |
+| `locked` | boolean | No | Locked in the editor |
+| `tags` | string | No | Comma-separated tags |
+| `instanceVariables` | object | No | Values merged into the instance's existing `instanceVariables`; only instance variables of the instance's object type and its families |
+
+At least one property must be provided. A name in `instanceVariables` that neither the instance's object type nor its families have is refused and nothing is changed (names are matched with their letter case; a name that differs only in case is pointed out), as is any value when the object type does not exist; a value of another type than its variable is written with a warning. When the object type's file could not be parsed, the names are not checked and a warning says so. A name that a family file which could not be parsed possibly declares (its text names the object type and the name, or it cannot be read at all) is written with a warning and `unscannedFiles`, as in [`add_instance_to_layout`](#add_instance_to_layout).
+
+### `move_instance`
+
+Move a placed instance to another layer or sub-layer of its layout, to another place in its layer's instances, or both. A layer keeps its instances in an array: `position` counts in it, from `"first"` to `"last"`. With `afterUid` or `beforeUid` the instance goes right after or right before that instance of the destination layer. Without a position, an instance that changes layer goes last. Refused, changing nothing: a call with nothing to do (no `toLayer` and no position), an anchor that is the instance itself, a UID the layout does not have, a non-world instance, a UID or anchor that several instances of the layout have, an anchor on another layer, an index past the last place, two placements at once. Hierarchy links stay as they are. Returns `{ ..., action: "updated", uid, fromLayer, fromIndex, toLayer, toIndex, layerInstanceCount, backupFile }`; an instance already in that place returns `action: "unchanged"`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of an instance on a layer or sub-layer |
+| `toLayer` | string | No | Destination layer or sub-layer path (default: its own layer) |
+| `position` | `"first"` \| `"last"` \| number | No | Place in the destination's instances |
+| `afterUid` / `beforeUid` | number | No | Right after / right before this instance |
+
+When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`.
+
+### `move_instances`
+
+Move many placed instances of one layout in one call and one write. Each move takes a `uid` and the other arguments of [`move_instance`](#move_instance) and is applied as that tool applies it, in list order: a `position` or an anchor counts the instances as the moves before it left them, and an anchor may be an instance an earlier move put on the destination layer. Every move is checked and applied to the layout in memory first. When one is refused, for any reason `move_instance` refuses a call or because its arguments are (two placements, nothing to do, a place next to itself), or when applying it throws, nothing is changed and the message names the move by its 0-based index and ends with "Nothing was changed." (for example `Item 1: Instance 5 is not on the destination layer "Main": ... Nothing was changed.`); the first refusal in list order is the one reported. The layout name must be given as registered, in that letter case; a layout file that cannot be read is refused too. Hierarchy links stay as they are.
+
+When the moves leave the layout as it was, nothing is written and the result is `action: "unchanged"` (with `dryRun: true` when `dryRun` was given). Otherwise the layout is written once, with one backup, and the result is `{ ..., action: "updated", count, results, backupFile }`, where `results` has one entry per move: `{ index, uid, fromLayer, fromIndex, toLayer, toIndex, layerInstanceCount }`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name, as registered, in that letter case |
+| `moves` | array | Yes | 1 to 500 moves, applied in order; each has `uid` and the optional `toLayer`, `position`, `afterUid` and `beforeUid` of `move_instance` |
+| `dryRun` | boolean | No | Check every move and apply it to the layout in memory, report the results, and write nothing (default: false) |
+
+A dry run of moves that change the layout returns `action: "dry-run"` and `dryRun: true`. It checks the moves; the write's own checks run only when the layout is written. More than 500 moves are refused when the arguments are parsed. When the write fails, the layout is put back, unless another write changed it since; the error then names it with its `.bak`. `move_instance` rolls back a failed write in the same way.
+
+### `delete_instance_from_layout`
+
+Remove a placed instance by UID from the layout's layers and sub-layers or its non-world instances.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of the instance to remove |
+
+Hierarchy (scene graph) links to the instance are removed with it, since links name UIDs and a new instance can get the deleted one's UID: its children get `"parent-uid": null` and stay in the layout, on whatever layer they are (whether the editor deletes them with their parent is not verified, and detaching loses no instance), and its parent's `children` entry for it is removed (an emptied `children` array is removed, as the editor saves a parent without children). A warning names the UIDs of the instances changed. When another instance of the layout has the same UID (a duplicate UID, `duplicate-uid` in `validate_project`), the links naming it are left as they are, since they may mean that instance, and a warning says so; `delete_layer` does the same.
 
 ### `set_instance_parent`
 
-Attach a world instance to a hierarchy parent in the same layout, or detach it.
+Make a placed instance the hierarchy child of another one in the same layout, or with `parentUid: null` take it off its parent. Both sides of the link are written, as the editor saves them: the child's `sceneGraphData` gets `"parent-uid"` and `flags`, the parent's lists `{ uid, flags }` in `children`; children may sit on another layer than their parent. A child with another parent is taken off that one, and any other instance that lists it as a child without the child naming it loses that entry (`staleEntries`, a one-sided link); the loop check follows both sides of every link. An instance without a `sceneGraphData` record gets one, placed before its `instanceFolderItem`, `showing`, `locked` or `world` key, whichever it has first. A record that gains children gets `children` after `uid` and before `flags` and `preview`, the order of a record saved by Construct 3 r506-2 (`parent-uid`, `uid`, `children`, `flags`, `preview`) and of upstream's three-cups record. Its `preview` copies the keys of a record already in the project (numbers 0, booleans false, other values as they are), or it gets none when the project has no record. An existing link keeps its flags, keys this server does not know included; given keys are written over them. A child with no hierarchy record, or a record without `flags`, gets the flags Construct 3 r495.2 saved for a record (`x`, `y`, `z`, `w`, `h`, `d`, `a` true; `o`, `v` false; `sm` `"normal"`; checked against one r495.2 editor-saved project), with the given keys written over them. Observed: a save by Construct 3 r506-2 added `de: true` to the flags of links written outside the editor. This server does not write `de`. Whether the editor keeps the flags this server writes, or rewrites them, has not been checked. Refused, changing nothing: a link that would close a loop, an instance that is its own parent, a UID that names no instance, a non-world instance, a UID that several instances of the layout have, a previous parent or other lister whose UID several instances share, and `flags` with `parentUid: null`. Taking off a child keeps its record with `"parent-uid": null`, and a parent left without children loses its `children` list. Returns `{ success, entity, category: "layout", action: "updated", childUid, parentUid, flags, previousParentUid?, staleEntries?, createdRecords?, backupFile, warnings? }` (`flags` only when a link is made); a link that exists already with these flags, or a child without a parent taken off, returns `action: "unchanged"`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `layoutName` | string | Yes | Layout name |
-| `childUid` | number | Yes | UID of the instance that becomes the child |
-| `parentUid` | number / null | Yes | UID of the parent instance, or `null` to detach the child from its current parent |
-| `flags` | object | No | Inheritance flags merged over the defaults; unknown keys are rejected |
-
-**Flags** (the key set Construct 3 r495 writes): `x`, `y`, `z`, `w`, `h`, `d`, `a`, `o`, `v` are booleans and `sm` is one of `normal`, `wrap`, `all`. Defaults for a fresh child are `x, y, z, w, h, d, a: true`, `o: false`, `v: false`, `sm: "normal"` — the shape carried by 598 of the 669 child records in the reference project (opacity and visibility are not inherited unless asked for).
-
-**Notes:**
-- Both instances must be world instances (placed on a layer) in the same layout; non-world instances have no hierarchy.
-- Both sides of the link are maintained: the child's `sceneGraphData["parent-uid"]` and its own `flags`, and a `{ uid, flags }` entry with the same values on the parent's `sceneGraphData.children`. A record is created in Construct's shape (including the `preview` block) when the instance has none.
-- Re-parenting removes the entry from the previous parent, and an emptied `children` array is dropped, matching how Construct writes childless instances.
-- Self-parenting is refused, as is a parent that already descends from the child (a hierarchy cycle).
-- Detaching an instance that has no hierarchy record returns `action: "unchanged"` and writes nothing.
+| `childUid` | number | Yes | The child |
+| `parentUid` | number \| null | Yes | The parent, or null to take the child off its parent |
+| `flags` | object | No | Booleans `x`, `y`, `z`, `w`, `h`, `a`, `o`, `v`, `d` and the string `sm`, as the layout file saves them; other keys given here are refused (a saved link's own unknown keys are kept) |
 
 ### `remove_instance_children`
 
-Detach every hierarchy child of a world instance.
+Take every hierarchy child off a placed instance: each child it lists that names it as its parent gets `"parent-uid": null` (`detached`), so does each instance that names it as its parent without being listed (`unlisted`: a one-sided link, which `validate_project` reports as `hierarchy-link`), and the instance loses its `children` list. Entries that name no instance of the layout (`missing`) or an instance with another parent or none (`otherParent`, whose own record stays as it is) are removed too and listed. Refused, changing nothing: a `parentUid` that names no instance, a `parentUid` several instances of the layout have, a non-world instance, and a child UID that several instances have. Returns `{ success, entity, category: "layout", action: "updated", parentUid, detached, unlisted?, missing?, otherParent?, backupFile, warnings? }`; an instance that neither lists children nor is named as a parent returns `action: "unchanged"`.
+
+### `add_instances_to_layout`
+
+Place many object instances on one layout in one call and one write. Each item is placed as [`add_instance_to_layout`](#add_instance_to_layout) places one, in list order. Every item is checked and placed in the layout in memory first; the layout file is written once, with one backup of it, only when every item was placed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Target layout, as registered, in that letter case |
+| `instances` | object[] | Yes | 1 to 500 items, placed in order. Each item takes the arguments of `add_instance_to_layout` without `layoutName`: `layerName`, `objectType`, `x`, `y`, `width`, `height`, `properties`, `angle`, `color`, `zElevation`, `originX`, `originY`, `instanceVariables`, `behaviors`, `tags`, `showing`, `locked` |
+| `dryRun` | boolean | No | Place every item in memory, report the results and write nothing (default: false) |
+
+**Limits.** At most 500 items per call (`MAX_BULK_INSTANCES`). The limit bounds the size of one request and of its result, since each item may carry up to 50KB of property values and 50KB of behavior values and the result lists every item; it does not bound a layout. A layout is bounded by the file size limit instead: the writer refuses a layout whose text as written (tab-indented, in the file's line endings, with its BOM) is over the limit in UTF-8 bytes, 10MB by default and set by `C3MCP_MAX_FILE_MB`, before anything is backed up or written, whatever the number of calls that grew it. The reader refuses a file over the same limit, so a layout these tools write can be read back. A dry run of a call whose layout would pass the limit is refused the same way. Construct 3 r506-2 (Free edition) opened and saved a layout of 9,975,982 bytes that had been written with `add_instance_to_layout` calls, one per instance: that is the size the editor was seen to open, not a check of these tools.
+
+**Refusals.** When an item is refused, the call is refused as a whole before anything is written, and the message names the item by its 0-based index and ends with `Nothing was changed.`, for example `Item 1: Object type "Missing" does not exist. ... Nothing was changed.` The refusals are the single tool's. An error a step throws inside the item loop (for example the UID generator refusing because a project file could not be scanned) is refused the same way. A layout name that is not registered in that letter case is refused (`Did you mean "Layout 1"?`), as is a layout file that cannot be read or does not hold a layout object; an error before the first item becomes `The change was stopped before anything was written: ... Nothing was changed.` The UIDs and SIDs taken for the items of a refused call are not reused within one server run.
+
+**Result.** `success`, `entity`, `category`, `action` (`"updated"`), `count`, `results` (for each item `index`, `objectType`, `uid`, `sid`), `backupFile`, `warnings` and `unscannedFiles`. A warning that several items gave is listed once with its items: `Item 2: ...`, `Items 0, 1: ...` (after five items, `Items 0, 1, 2, 3, 4 and 7 more: ...`). A family file the server could not parse that possibly lists an object type of an item as a member is listed once in `unscannedFiles`, with the names every item found in it. Each placement searches such a file again, so a call with many items costs more when a family file cannot be parsed.
+
+**Dry run.** `dryRun: true` places the items in memory and runs the checks of the write (the JSON, the file's text style and the size limit), and writes nothing. The result has `action: "dry-run"`, `dryRun: true`, the `results` and a `message` saying so. The UIDs and SIDs in it were taken for the preview only: a call without `dryRun` gives new ones.
+
+**Rollback.** If the write fails after it replaced the file, the file is put back from its backup, and the error says what is on disk. A file another write changed meanwhile (an editor save, say), or whose backup was replaced, is left as it is and named in the error, which then says the call was rolled back only in part. The single instance tools write without this rollback, as before; these three tools roll back a failed write.
+
+### `update_instances`
+
+Update many placed instances of one layout in one call and one write. Each item is applied as [`update_instance`](#update_instance) applies one, in list order: two items for one UID apply one after the other.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name, as registered, in that letter case |
+| `updates` | object[] | Yes | 1 to 500 items. Each item takes the arguments of `update_instance` without `layoutName`: `uid`, `x`, `y`, `width`, `height`, `angle`, `zElevation`, `color`, `showing`, `locked`, `tags`, `instanceVariables` |
+| `dryRun` | boolean | No | Apply every item in memory, report the results and write nothing (default: false) |
+
+An item that names no property to change (only `uid`) is refused as `update_instance` refuses it, at its turn: the first refused item in list order is the one named. The limits, refusals, rollback and dry run are as for [`add_instances_to_layout`](#add_instances_to_layout), except that no UID or SID is taken, so the dry run's message says only that nothing was written. `results` lists `index` and `uid` for each item. An update that moves a Z elevation held as `world.zElevation` to `world.z` gives the single tool's warning, prefixed with its item.
+
+### `delete_instances_from_layout`
+
+Remove many placed instances of one layout by UID in one call and one write, as [`delete_instance_from_layout`](#delete_instance_from_layout) removes one, in list order.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name, as registered, in that letter case |
+| `uids` | number[] | Yes | 1 to 500 UIDs of the instances to remove |
+| `dryRun` | boolean | No | Remove every instance in memory, report the results and write nothing (default: false) |
+
+A UID that is not in the layout is refused at its turn, and so is a UID listed twice (`Item 2: UID 5 is listed more than once.`). Hierarchy links to the removed instances are removed once for all of them, after the last one: a child of a removed instance gets `"parent-uid": null` and stays in the layout, and a removed child is taken out of its parent's `children`, as for the single tool. For a chain of parent, child and grandchild, removing the parent and the child gives one warning, which names the grandchild (it stays, without a parent), and none about the removed child. A hierarchy warning is given only when a link changed, and it is not prefixed with an item. `results` lists `index`, `uid` and `objectType` for each item, and the warnings say where each was removed from (`Item 0: Removed instance of "Sprite" (UID 5) from layer "Main".`; an instance with no type name gets none). The limits, refusals, rollback and dry run are as for [`add_instances_to_layout`](#add_instances_to_layout), except that no UID or SID is taken, so the dry run's message says only that nothing was written.
+
+### `get_tilemap_data`
+
+Read the painted tiles of a placed Tilemap instance, stored in the instance's `ownData.tilemapData`. A read tool: it changes nothing, so its refusals do not end with "Nothing was changed.".
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `layoutName` | string | Yes | Layout name |
-| `parentUid` | number | Yes | UID of the parent instance whose children are detached |
+| `uid` | number | Yes | UID of the Tilemap instance |
+| `region` | object | No | Cell rectangle `{ x, y, width, height }` to return; required when the tilemap has more than 10,000 cells |
 
-**Notes:**
-- Clears each child's `parent-uid` and removes the parent's `children` array.
-- A parent with no children returns `action: "unchanged"` with `detached: 0` and writes nothing.
-- A listed child UID with no matching world instance in the layout is reported as a warning; the stale link is still removed.
+The result holds `layoutName`, `uid`, `objectType`, `width` and `height` (the grid, in cells), `tileWidth` and `tileHeight`, `tilesetTileCount` (when the object type's image size is known: the tiles that fit in it after the tile offsets and spacing), `emptyCells` (empty cells of the whole map, not only of the region), `region`, `rows`, and `warnings`. `rows[y][x]` is `null` for an empty cell, a tile index (the first tile of the tileset is 0, as the Tilemap Bar numbers it in Construct 3 r506-2, Free edition) for a plain tile, or `{ tile, flipX, flipY, flipDiagonal }` for a flipped one. Tile width and height come from the instance's `properties` or `ownData` (default 32). An instance with no tile data shows an empty grid sized from the instance (instance size divided by tile size, rounded up), with a warning.
+
+Refused with an error:
+- a layout name that is not registered exactly (a name that differs only in letter case is answered with *Did you mean* and the registered spelling), or an unknown layout;
+- an instance that is not in the layout, a UID used by more than one instance of the layout (`duplicate-uid` in `validate_project`), or an instance of an object type whose plugin is not `Tilemap`; an object type file that cannot be read;
+- an instance whose `ownData` or `ownData.tilemapData` is present but not an object;
+- an invalid tile size, tile data that cannot be decoded (malformed token or a cell count that does not match the size), and a bare instance whose size gives a grid over the 4,000,000-cell limit of a tilemap;
+- a tilemap over 10,000 cells without a `region`, a `region` over 10,000 cells, or a `region` that extends past the map.
+
+### `set_tilemap_tiles`
+
+Paint, flip or erase single cells of a placed Tilemap instance, or fill a rectangle; all other cells are kept. The instance's size is not changed. The layout is written once.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of the Tilemap instance |
+| `tiles` | object[] | No | Up to 250,000 cells `{ x, y, value }`, applied in order |
+| `fill` | object | No | Rectangle `{ x, y, width, height, value }`, applied before `tiles` |
+
+At least one of `tiles` and `fill` must be given. `value` is `null` (erase), a tile index from 0, or `{ tile, flipX, flipY, flipDiagonal }` with the flags optional. Rotations are clockwise (as the Tilemap Bar of Construct 3 r506-2, Free edition counts them): 90 degrees is `flipX` + `flipDiagonal`, 180 degrees is `flipX` + `flipY`, 270 degrees is `flipY` + `flipDiagonal`. A cell with no flag set is stored as its plain index. A tile index is at most 9007199254740990 (the schema refuses a larger one in the request; a larger stored one, with a paint on the same map, is refused by the tool).
+
+An instance with no tile data gets a grid sized from the instance (instance size divided by tile size, rounded up), with a warning. A tile index past the end of the tileset (when its size is known) is written with a warning. The other keys of `ownData.tilemapData` are kept; its `width`, `height`, `max-width` and `max-height` are set to the grid size. `tile-width`, `tile-height`, `tile-x-offset`, `tile-y-offset`, `tile-x-spacing` and `tile-y-spacing` are copied from the instance's `properties` into `ownData` when `ownData` lacks them, and never replaced. On success the result is a `WriteResult` with `category: "layout"`, `action: "updated"`, `entity: "<layout>/<uid>"` and `backupFile`, the absolute path of the layout's `.bak`.
+
+Refused before anything is written, with the ending "Nothing was changed.":
+- neither `tiles` nor `fill`, a `fill` over 250,000 cells, a `fill` or a cell outside the map, and a map with no cells;
+- every refusal of [`get_tilemap_data`](#get_tilemap_data) that concerns the layout, the instance, `ownData`, `ownData.tilemapData`, the tile size, undecodable tile data and a grid over the cell limit;
+- a tile index over the limit anywhere in the resulting grid;
+- an error thrown by one of the checks, worded *The change was stopped before anything was written: ...*.
+
+A layout file that Construct 3 saved after the server read it is refused, not overwritten: the text says `layouts/<name>.json was changed on disk after this server read it ... It was not written, so that change is kept. Run the tool again: it reads the file as it is now.`. When the write fails after the layout was replaced (for example the read-back fails), the layout is rolled back and the error says *The call was rolled back: layouts/<name>.json is as before the call.*; if it cannot be put back, the error names the file and its `.bak`.
+
+### `set_tilemap_data`
+
+Replace all tile data of a placed Tilemap instance with `rows[y][x]`. The grid size becomes the size of `rows`. The layout is written once.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout name |
+| `uid` | number | Yes | UID of the Tilemap instance |
+| `rows` | array | Yes | `rows[y][x]` of `null`, a tile index, or `{ tile, flipX, flipY, flipDiagonal }`; every row the same length, at most 250,000 cells |
+| `resizeInstance` | boolean | No | Set the instance size to columns x tile width by rows x tile height (default: true) |
+
+The previous tile data is replaced, also when it cannot be decoded. With `resizeInstance: false` the instance size is kept, and a warning names the cells the instance covers when they differ from the grid. A tile index past the end of the tileset (when its size is known) is written with a warning. Tile keys and `max-width` and `max-height` are written as for [`set_tilemap_tiles`](#set_tilemap_tiles), and the result is the same `WriteResult`.
+
+Refused before anything is written, with the ending "Nothing was changed.": an empty first row, a grid over 250,000 cells, a row of another length than the first, a cell that is not `null`, a non-negative integer or an object with `tile` and boolean flags (an unknown key is refused), a tile index over 9007199254740990, and the refusals of `set_tilemap_tiles` that concern the layout, the instance and its `ownData`. A stale layout and a failed write end as described for `set_tilemap_tiles`.
+
+**Editor behavior (Construct 3 r506-2, Free edition).** A layout written by these tools was opened in the editor: it drew every cell as written (plain, mirrored, flipped vertically, rotated), and the saved layout held the same `tilemapData.data` strings byte for byte. A cell written as `flipX` + `flipDiagonal` showed as a rotation of 90 degrees clockwise, the same picture as the cell the editor wrote when its Tilemap Bar rotated a tile clockwise once; the editor wrote 180 degrees as `flipX` + `flipY` and 270 degrees as `flipY` + `flipDiagonal`. Rotating anticlockwise was not tried. On an instance 64 x 32 with a 3 x 3 grid (`resizeInstance: false`) the editor drew the 3 x 2 cells of the grid that lie inside the 4 x 2 area the instance covers, not the third row, and kept both the instance size and the 3 x 3 data when it saved. When it saved a Tilemap instance written by these tools it also changed `world.originX` and `world.originY` from 0.5 to 0 and added `tile-x-offset`, `tile-y-offset`, `tile-x-spacing` and `tile-y-spacing` (0) to `ownData`, and `drawing-mode`, `tile-x-drawing-offset`, `tile-y-drawing-offset` and the four offset and spacing keys to `properties`. A Tilemap instance painted in the editor, and one the editor created itself, saved with `tile-width`, `tile-height`, `tile-x-offset`, `tile-y-offset`, `tile-x-spacing` and `tile-y-spacing` in `ownData` and `max-width` and `max-height` in `tilemapData`. The editor does not re-read a layout the server writes while the project is open (see the editor reload note).
+
+### `list_tilemap_brushes`
+
+List the editor brushes stored for a Tilemap object type. A read tool.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+
+The result holds `objectName`, `file` (the brush file's project-relative path), `fileExists`, `brushes` (each `{ index, name, type, size }`; `size` is columns x rows, `4x4` for `auto16`, `8x6` for `auto47`, and the brush's `width` x `height` for a `patch`, or `unknown`), `count` and `warnings`. An object type without a brush file lists no brushes. An object type whose plugin is not `Tilemap` is listed anyway, with a warning.
+
+**Where the brush file is.** A Tilemap object type's brushes are stored outside its object file, in `tilemapBrushes/objectTypes/<its project-bar folders>/<name>.brush.json`, one folder for each folder of the object type's path in the project bar (so `Tiles` is `tilemapBrushes/objectTypes/Tiles.brush.json` and `Walls` in the folders `Scenery/Inner` is `tilemapBrushes/objectTypes/Scenery/Inner/Walls.brush.json`). The tools use the file of that name, ignoring letter case, in the object type's own folder. A brush file named after the object type in another folder below `tilemapBrushes/` is not used: the read tool lists it in a warning, and a write tool refuses while the object type's own folder has none, since the object type would get two brush files. The search below `tilemapBrushes/` stops at 20,000 entries and 8 folder levels or when a folder cannot be read; while it is incomplete and the own folder has no file, the read tool warns that another file may exist and a write tool refuses.
+
+Refused with an error: an object name that is not registered exactly (a name that differs only in letter case is answered with *Did you mean* and the registered spelling), an object type file that cannot be read, and a brush file that cannot be read: not valid JSON, not an array, holding an entry that is not an object with a string `name`, unreadable, or over 10MB. The message names the file by its project-relative path.
+
+### `add_tilemap_brush`
+
+Add a brush to a Tilemap object type's brush file, creating the file (and its folders) when it does not exist yet.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Brush name, unique within the object type |
+| `type` | string | Yes | `auto16`, `auto47` or `patch` |
+| `data` | any | Yes | The brush grid for the type (below) |
+
+The grids the tools accept: `auto16`, 4 rows of 4 cells; `auto47`, 6 rows of 8 cells; `patch`, `{ width, height, data }` with `width` and `height` from 1 to 256 and `data` holding `height` rows of `width` cells. A cell is a tile index (a non-negative integer), `null` for an empty cell, or an array of weighted alternatives `[{ index, probability }]` with a probability above 0. A new file is written compact (one line); an existing file keeps its indentation, line endings, trailing whitespace and BOM. The result is a `WriteResult` with `category: "tilemapbrush"`, `action: "created"`, `entity: "<object>/<brush>"` and `backupFile`, the absolute path of the file's `.bak` (none for a new file).
+
+Brush names are compared exactly when a brush is looked up. A new name that differs from an existing one only in letter case is refused, and the error names the existing brush.
+
+Refused before anything is written, with the ending "Nothing was changed.": an invalid name, a grid of the wrong size or with a bad cell, a name already used (also in another letter case), every refusal of [`list_tilemap_brushes`](#list_tilemap_brushes), and a brush file named after the object type in another folder or an incomplete search for one (see above).
+
+A brush file that another program saved after the server read it is refused and left as it is: the text says `<file> was changed on disk after this server read it ... It was not written, so that change is kept. Run the tool again: it reads the file as it is now.`. When a write fails, the message says what the file holds: *Nothing was changed.* when it is as it was read and the call left nothing beside it, or that it is as it was read and this call's `.bak` or a folder it made for a new file is left; that it holds the new list although the write was not confirmed, that it is missing or cannot be read, or that it is not as it was before the call, each with where its state from before the call is (the file's own `.bak`, checked, "it did not exist before the call", or "the state from before the call is not known").
+
+### `update_tilemap_brush`
+
+Rename a brush, change its type, or replace its grid.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Current brush name |
+| `newName` | string | No | New brush name |
+| `type` | string | No | New type; requires `data` |
+| `data` | any | No | Replacement grid, checked against the brush's (new) type |
+
+At least one of `newName`, `type` and `data` must be given. A call that leaves the brush list as it was returns `action: "unchanged"` and writes nothing. Otherwise the result is a `WriteResult` with `action: "updated"`.
+
+Refused before anything is written, with the ending "Nothing was changed.": nothing to update, a `type` without `data`, an invalid `newName`, an object type without a brush file, an unknown brush (a name that differs only in letter case is answered with the registered spelling), a `newName` already used by another brush (also in another letter case), data that does not fit the type, and the refusals of `add_tilemap_brush`. A stale brush file and a failed write end as described there.
+
+### `delete_tilemap_brush`
+
+Delete a brush. The file is kept as an empty array when the last brush is removed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Tilemap object type name |
+| `name` | string | Yes | Brush name to delete |
+
+The result is a `WriteResult` with `action: "deleted"`. Refused before anything is written, with the ending "Nothing was changed.": an object type without a brush file, an unknown brush (a name that differs only in letter case is answered with the registered spelling), and the refusals of `add_tilemap_brush`. A stale brush file and a failed write end as described there.
+
+**Editor behavior (Construct 3 r506-2, Free edition).** The Tilemap Bar listed the brushes of the files these tools wrote at the paths above: `auto16` and `patch` brushes with tile indices written as bare integers, for `Tiles` and for `Walls` in the folders `Scenery/Inner`, and brushes the editor created were saved to the same files. When the editor saved after brush editing it rewrote every cell of the brushes these tools had written as a weighted alternative `{ "index": N, "probability": 1 }`, and a brush created empty in the editor was saved as four rows of `null` cells. Whether an empty cell of a brush written by these tools stays `null` was not checked. The Tilemap Bar listed an `auto47` brush written by these tools (6 rows of 8); its grid was not opened in the brush editor. The editor does not re-read a brush file the server writes while the project is open (see the editor reload note).
 
 ### `update_project_metadata`
 
@@ -1598,33 +1969,26 @@ Update project-level metadata.
 | `author` | string | No | Author name |
 | `description` | string | No | Project description |
 
-At least one parameter must be provided. Every other project setting, including the startup layout and viewport size, is handled by `update_project_properties`.
+At least one parameter must be provided.
 
 ### `update_project_properties`
 
-Update project settings beyond the four metadata fields: any key of `project.properties`, plus the top-level startup layout, viewport size, worker mode and functions name.
+Update project settings: any key of `project.properties` plus the top-level startup layout, viewport size, worker mode and functions name. Use [`update_project_metadata`](#update_project_metadata) for name, version, author and description.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `properties` | object | No | Values merged into `project.properties`, keyed by Construct property name (max 60 keys, depth 3) |
-| `firstLayout` | string | No | Startup layout name (validated for existence) |
-| `viewportWidth` | number | No | Project viewport width in pixels |
-| `viewportHeight` | number | No | Project viewport height in pixels |
-| `useWorker` | string | No | Worker mode; Construct writes values such as `dom` or `auto` |
-| `functionsName` | string | No | Script-interface name for functions (must be a JavaScript identifier, e.g. `Fn`) |
+| `properties` | object | No | Values merged into `project.properties`, keyed by Construct property name (e.g. `fullscreenMode`, `sampling`, `zFar`, `fixedFramerate`); up to 60 keys. A key that is not a `project.properties` key is refused with the list of valid ones |
+| `firstLayout` | string | No | Startup layout. It must be a layout of the project; letter case is ignored and the registered spelling is written |
+| `viewportWidth` | integer | No | Viewport width in pixels (1 to 100000) |
+| `viewportHeight` | integer | No | Viewport height in pixels (1 to 100000) |
+| `useWorker` | string | No | Worker mode; Construct writes values such as `"dom"` or `"auto"` |
+| `functionsName` | string | No | Name of the built-in Functions object in scripts; a JavaScript identifier |
 
-At least one parameter must be provided.
-
-**Valid `properties` keys** (the writer's allowlist, compile-checked against the `ProjectProperties` type): `anisotropicFiltering`, `appId`, `author`, `authorEmail`, `authorWebsite`, `autoIncrementVersion`, `backgroundColor`, `cordovaAndroidScheme`, `cordovaiOSScheme`, `description`, `downscaling`, `exportFileStructure`, `fixedFramerate`, `fov`, `framerateMode`, `fullscreenMode`, `fullscreenQuality`, `gpuPreference`, `loaderStyle`, `maxSpriteSheetSize`, `multitexturing`, `orientations`, `pixelRounding`, `preloadSounds`, `renderingMode`, `sampling`, `scriptsType`, `splashColor`, `themeColor`, `uidAllocationMode`, `useLoaderLayout`, `useThemeColor`, `version`, `viewportFit`, `webgpu`, `zAxisScale`, `zFar`, `zNear`.
-
-**Notes:**
-- An unknown key is rejected with the full valid-key list and nothing is written.
-- Top-level keys (`name`, `firstLayout`, `viewportWidth`, `viewportHeight`, `useWorker`, `functionsName`) cannot be smuggled through `properties`; use the parameters above, or `update_project_metadata` for `name`.
-- `name`, `version`, `author` and `description` remain available through `update_project_metadata`, which is unchanged.
+At least one parameter must be provided. An argument that is not in the table is refused by name, not dropped, and nothing is written. A `firstLayout` that names no layout of the project is refused with the project's layout names and the text `Nothing was changed.` All settings of one call are written in one update of `project.c3proj` through the project writer: backed up once per call (`project.c3proj.bak`), written through a temp file and read back. A `project.c3proj` saved in the editor during the call is merged with the update, not refused.
 
 ### `register_addon`
 
-Add an addon to the project's `usedAddons`. Known Scirra plugins and behaviors are registered automatically by `create_object` and `update_object_properties`; effects are not, so register an effect with this tool before `add_effect` uses it.
+Add an addon to the project's `usedAddons`. Known Scirra plugins and behaviors are registered automatically by `create_object` and `update_object_properties`; effects are not, so register them with this tool. The ID is not checked: any ID is written, and afterwards `create_object` accepts objects of that plugin. Registering a third-party addon does not install it; add third-party addons in the editor.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1634,17 +1998,237 @@ Add an addon to the project's `usedAddons`. Known Scirra plugins and behaviors a
 | `author` | string | No | Author (default: `"Scirra"`) |
 | `bundled` | boolean | No | Value of the entry's `bundled` flag (default: false) |
 
-An addon that is already registered returns `action: "already_registered"` and nothing is written.
+An addon that is already registered returns `action: "already_registered"` and nothing is written. Otherwise `project.c3proj` is written through the project writer: backed up once per call (`project.c3proj.bak`), written through a temp file and read back. A `project.c3proj` saved in the editor during the call is merged with the new entry, not refused.
 
 ### `unregister_addon`
 
-Remove an addon from `usedAddons`. Construct 3 errors on load if objects or behaviors still use it.
+Remove an addon from `usedAddons`. Construct 3 errors on load if objects or behaviors still use it, and the server does not check for such uses (`force` only concerns built-ins); it only adds a warning. Afterwards `validate_project` reports leftover uses as `missing-addon` warnings.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `type` | `"plugin"` \| `"behavior"` \| `"effect"` | Yes | Addon type |
 | `id` | string | Yes | Addon ID |
 | `force` | boolean | No | Required to remove a known Scirra built-in plugin or behavior (default: false) |
+
+The removal is written through the project writer: `project.c3proj` is backed up once per call (`project.c3proj.bak`), written through a temp file and read back. A `project.c3proj` saved in the editor during the call is merged with the removal, not refused.
+
+### `list_effects`
+
+List the effects of an object type, a family, a layout or one of its layers, in order, as saved, and the effect addons registered in the project (the effect ids `add_effect` accepts). Nothing is written.
+
+The five effect tools (`list_effects`, `add_effect`, `update_effect`, `remove_effect` and `reorder_effects`) take the same target. Give exactly one of `objectName`, `familyName` and `layoutName`; with `layoutName`, `layerName` makes a layer of that layout the target instead of the layout. Names are matched with their letter case, as registered; an object type or family name that differs only in case is refused with a hint giving the registered spelling. `layerName` without `layoutName` is refused.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | One of the three | Object type that holds the effect, as registered |
+| `familyName` | string | One of the three | Family that holds the effect, as registered |
+| `layoutName` | string | One of the three | Layout that holds the effect, or whose layer does |
+| `layerName` | string | No | With `layoutName`: the layer that holds the effect, by its name or, for a sub-layer, its path (`"Main > HUD"`), found as `update_layer` finds it |
+
+Where the state of an effect is kept:
+
+- An object type's or family's effect is an entry `{ effectId, name }` in the `effectTypes` of its file (the shape of the one family entry of an r495.2 editor-saved project and of the one object type entry Construct 3 r506-2 saved). Its state is on every placed instance of the object type, or of each member of the family, in the instance's `effects`, under the effect's name, as `{ isEnabled, parameters }`.
+- A layer's or layout's effect is an entry `{ effectId, name, instance: { isEnabled, parameters } }` in the `effectTypes` of the layer or of the layout: the one layer entry of an r495.2 editor-saved project, and the one layout entry Construct 3 r506-2 saved.
+
+The result is `{ target, effects, registeredEffectAddons }`. `target` is `{ kind, name }` for an object type, a family or a layout, and `{ kind: "layer", layout, layer }` for a layer; `effects` lists the entries in order; `registeredEffectAddons` lists the `usedAddons` entries of type `effect`.
+
+### `add_effect`
+
+Add an effect to an object type, a family, a layout or a layer, at the end of its stack or at `index`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName`, `familyName`, `layoutName`, `layerName` | string | See `list_effects` | The target, as in `list_effects` |
+| `effectId` | string | Yes | Effect addon id, as registered in `usedAddons` (for example `"fogexponential"`) |
+| `name` | string | No | Effect name: letters, digits, underscores and spaces (default: the effect id with its first letter in upper case, so `"fogexponential"` is named `"Fogexponential"`) |
+| `parameters` | object | No | Parameter values, as the editor saves them for this effect (default: `{}`) |
+| `isEnabled` | boolean | No | Whether the effect starts enabled (default: true) |
+| `index` | integer | No | Position in the stack, from 0 (default: after the last effect) |
+
+- `effectId` must be an entry of `usedAddons` of type `effect`. The tool never registers an addon, since the addon's files must be in the project: a refusal names `register_addon`.
+- `name` passes the name check the other tools use, and must not match, ignoring case, a name the instances key their entries by: an effect of the holder; for an object type, also an effect of one of its families; for a family, an effect that any member gets from itself or from another family.
+- `index` past the end of the stack is refused; `index` equal to the number of effects appends.
+- `parameters` is optional. When it is left out, `{}` is written. Construct 3 r506-2 opened and kept such an entry for an object type's effect and for a layout's effect. A family's effect has the same entry shape as an object type's, and a layer's the same as a layout's; neither was opened in the editor, so the editor's handling of those two is not checked.
+- An object type's or family's effect gets `{ isEnabled, parameters }` on every placed instance of the object type, or of each member of the family. Instances placed after the effect was added get none, because `add_instance_to_layout` does not write effect entries; `update_effect` refuses such an instance.
+- A layer's or layout's effect writes only its own layout.
+
+The result is `{ success, entity, category, action: "updated", effect, effects, backupFile }`, with `warnings` and `unscannedFiles` when there are some.
+
+### `update_effect`
+
+Change an effect's `isEnabled` and `parameters`. The parameters given are merged key by key into the existing ones; keys not given keep their values. Give `name` (the effect's name, letter case included) and at least one of `isEnabled` and `parameters`, or the call is refused.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | The effect's name, as registered on the holder |
+| `isEnabled` | boolean | No | Enable or disable the effect |
+| `parameters` | object | No | Parameter values to set, merged key by key |
+| `instanceLayoutName` | string | Object type and family only | The layout of the instance to change |
+| `instanceUid` | integer | Object type and family only | The UID of the instance to change |
+
+- A layer's or layout's effect: its entry's `instance` is changed, and the layout is the only file written.
+- An object type's or family's effect: the state is on one placed instance, so `instanceLayoutName` and `instanceUid` are required. The instance must be of the object type, or of one of the family's members, and must hold an entry for the effect; otherwise the call is refused and nothing is changed. An instance placed after the effect was added holds no entry, because `add_instance_to_layout` does not write effect entries, and the refusal says so.
+- One layout is written, and the holder is not. A call that changes nothing returns `action: "unchanged"` and writes nothing.
+
+The result is as for `add_effect`; for an object type or a family it also carries `instance: { layout, uid }`, the instance that changed.
+
+### `remove_effect`
+
+Remove an effect from the holder: its entry and, for an object type or a family, its entries on the placed instances. Parameters are the target, `name` (the effect's name, letter case included) and `force` (boolean, default false).
+
+Before anything changes, the uses of the effect in the event sheets are checked. A use refuses the call unless `force` is given; with `force` the effect is removed and a warning lists the uses. Uses are never changed.
+
+- Object type: actions and conditions on the object type that name the effect. This check, and the search of event sheets that could not be parsed, are skipped when one of the object type's families keeps an effect of that name: actions on the object type still reach the family's effect, so no use check runs, and the instance entries are kept (an entry a family still has is not removed).
+- Family: actions and conditions on the family, and those on each member that keeps no effect of that name, of its own or from another family (a member's action reaches the family's effect without naming the family).
+- Layer and layout: System actions and conditions that name an effect of that name. Which layer or layout a System action means is not checked, so each of them counts as a possible use.
+- A use whose effect is given by an expression that is not a quoted name cannot be checked: it is listed in a warning, not counted as a use.
+- Event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are searched as text: for an object type, for the effect's name together with the object type's name; for a family, for the effect's name together with the family's name or a member's name that keeps no effect of that name; for a layer or layout, for the effect's name alone. A match, or such a sheet that cannot be read at all, refuses without `force` as well (`unscannedFiles`).
+
+A blocked removal returns `{ success: false, action: "remove_blocked", message, entity, category, references: { eventSheets, effectUses } }`, with `layer` for a layer target and `unscannedFiles` when event sheets that could not be parsed were searched as text (the field is absent when there are none). It changes nothing, and its message says so before the hint about `force`. Each removal that drops entries on placed instances, with or without `force`, names them in a warning: the first ten, then a count of the rest. Only the layouts' `.bak` files hold those entries afterwards. With `force`, the uses are listed in a warning and are not changed.
+
+### `reorder_effects`
+
+Put the effects of the holder in a new order. `names` lists every effect of the holder once, with its exact name (1 to 100 names). An order the holder already has is reported as `action: "unchanged"` and writes nothing.
+
+- `names` must be a permutation of the holder's effects; any other list is refused, and the refusal gives the current order.
+- A holder whose effects share a name is refused, and the refusal names them, since their entries cannot be told apart.
+- For an object type or a family, the placed instances' entries of these effects are put in the new order among the places they hold. Entries of other effects, and of other families, stay where they are.
+- The result carries `effects` (the new order) and no `effect` key, since the change is to the whole stack.
+
+**Writes and rollback** (the four tools that write; `list_effects` writes nothing): each tool writes the layouts whose instance entries it changes first and the holder's file last. A call stopped between those writes leaves the holder as it was, and running the call again finishes the work: an entry already added is skipped, and an entry already gone is not removed again. A failed write is rolled back: the files the call wrote earlier are put back from their `.bak`, and a file that an editor saved after its failed write is left as it is and named with its `.bak`. A layer or layout target writes only its layout, and `update_effect` writes one layout. A process that is stopped in the middle of a call rolls nothing back. The check of `remove_effect` covers event sheets only, not scripts, timelines or flowcharts.
+
+Each of the four write tools returns `success`, `entity`, `category` (`object`, `family`, `layout` or `layer`), `action` (`updated` or `unchanged`), `effects` and, except for `reorder_effects`, `effect`, with `backupFile` for a write and `layer` for a layer target. `list_effects` returns the fields listed in its section. `add_effect`, `remove_effect` and `reorder_effects` refuse a holder whose `effectTypes` is not a list, or holds an entry that is not a record with a string `name` (a hand edit; the editor does not save such a file), because they would drop an entry or write the wrong ones. The refusal names the entry and asks for it to be renamed or removed in the Construct 3 editor first. A refusal made before any write changes nothing. Most refusals end with "Nothing was changed."; a name that is not found, and an error raised while `remove_effect` reads the event sheets ("Error ...: <cause>"), do not say so. An instance's layout that `update_effect` cannot read is refused with the sentence.
+### `load_addon_definitions`
+Load a third-party addon's definitions (`addon.json` and `aces.json`) so that [`validate_project`](#validate_project) and the event tools check its conditions, actions and expressions. It changes only what this server checks: nothing is written to the project, and a refusal ends `Nothing was loaded.` Only plugins and behaviors define conditions and actions; an addon of another type is refused.
+| `path` | string | No | An addon folder (holding `addon.json` and `aces.json`), a `.c3addon` archive, or a folder holding several of them one level deep. A relative path is resolved against the folder the server was started in, not the project folder, so give an absolute path. Omit it to list the definitions loaded so far |
+Returns `{ loaded, skipped, nowLoaded }`. `loaded` lists each addon read in this call without its ACEs: `id`, `type`, `name`, `version`, `source` (the base name it came from) and `counts` of conditions, actions and expressions. `skipped` lists `{ name, reason }` for what was not loaded; a scan of a folder continues past a failed entry. `nowLoaded` lists every definition now held as `<type>:<id>`. Loading an addon again replaces its earlier definition. When nothing at all could be loaded the call is an error naming each skipped entry. Reports name sources by base name only, never by path, and never carry text from a file. Paths listed in the `C3_ADDON_DEFINITIONS` variable (separated by the platform's path delimiter) are loaded the same way when the server starts, and what they loaded or skipped goes to stderr.
+**Allowed locations.** A path must lie inside the project folder (for a `.c3p` project, the folder that holds the `.c3p` file, not its temporary working folder) or inside a path named in `C3_ADDON_DEFINITIONS`. A path outside both is refused, and so is a network path. Symbolic links and junctions are followed to their target and the target is what is checked: for the path given, for every addon found under it and for each definition file, so a link that leads out of the allowed folders is refused. A hard link is not detected. A process that can write the project folder and replaces a checked path between the check and the read is not guarded against.
+**Limits.** An `addon.json` or `aces.json` of at most 10MB; a `.c3addon` archive of at most 25MB, listing at most 10,000 entries and no path deeper than 16 folders. Of an archive only `addon.json` and `aces.json` at its root or one folder deep are read: at most four definition files and 20MB of them together, and exactly one `addon.json` and one `aces.json` in the same folder. A reason in the report is a fixed text chosen by the kind of failure.
+
+### `register_script_file`
+
+Register an existing script file in `rootFileFolders.script` with `script-info` metadata. Only `project.c3proj` is changed: the script file is neither copied nor checked.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Script file name, without a folder path |
+| `type` | string | No | MIME type recorded for a new entry (default: `"application/javascript"`) |
+| `purpose` | string | No | `script-info` purpose, any string of up to 100 characters (Construct 3 uses `"main"`, `"imports-for-events"` and `"none"`). A new entry gets `"none"` when omitted; an existing entry keeps its purpose |
+| `subfolder` | string | No | Slash-separated script subfolder |
+
+**Notes:**
+- One update of `project.c3proj` through the writer: backed up once per call (`project.c3proj.bak`); a change saved in the editor during the call is merged. The SID is taken for a new entry only, and is collision-safe
+- An entry that is registered already keeps its SID and type, and returns `action: "already_registered"` with `generatedSid` set to its SID. An older registration is repaired in the same update (a `file-info` key replaced by `script-info`, a missing `script-info` added, a purpose changed, duplicate registrations of the name removed) and the result lists the repairs in `repaired`. When nothing needs repair nothing is written, so `project.c3proj` is not brought to its save shape either; an update that writes does that (see [Mutation Tools](#mutation-tools))
+- `purpose: "main"` is refused while another script is the main script (use [`set_main_script`](#set_main_script)); the check runs again inside the update, so a script that became main meanwhile is refused too
+- Names and subfolders are matched with their letter case. A name or subfolder that differs only in case from a registered one is refused, with the registered spelling named, also when the case variant is saved during the call
+- A name or a subfolder part that Windows cannot store as one plain file is refused: the characters `< > : " | ? *` and control characters, a trailing dot or space, the device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1` to `COM9`, `LPT1` to `LPT9` and their superscript forms, with or without an extension) and a name longer than 251 characters (so that `<name>.tmp` and `<name>.bak` fit in 255)
+- A refusal made before anything is changed ends with "Nothing was changed." An unexpected error puts back what the call wrote and says so
+
+### `deregister_script_file`
+
+Remove a script registration from `rootFileFolders.script` (every registration of the name in that folder). The script file is kept.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Script file name |
+| `subfolder` | string | No | Slash-separated script subfolder |
+
+**Notes:**
+- One update of `project.c3proj` through the writer, backed up once per call; a change saved in the editor during the call is merged
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named; names that Windows cannot store as one plain file are refused. A name that is not registered is refused
+- Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
+
+### `set_main_script`
+
+Mark one registered script as the main script: it gets `script-info` purpose `"main"`, and every other script that had `"main"` gets `"none"`. Other purposes are left alone.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Registered script file name |
+| `subfolder` | string | No | Script subfolder. When omitted, the script of that name at the root of the script folder is chosen, else the only subfolder that has one; a name registered in several subfolders is refused |
+
+**Notes:**
+- One update of `project.c3proj` through the writer, backed up once per call; a change saved in the editor during the call is merged. The script's registration is checked again inside the update
+- The result has `action: "updated"` and lists the purpose changes in `warnings`, or `action: "unchanged"` when the script already was the main script and nothing else had `"main"`; nothing is written then
+- Refused, before any change, when the current main script is the runtime bridge (`c3-runtime-bridge.js`): the bridge loads as the main script, and moving `main` away would stop it loading. Call [`remove_runtime_bridge`](#remove_runtime_bridge) first
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named. Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
+
+### `register_project_file`
+
+Copy a file into the directory its Project File family uses and register it in `rootFileFolders` with `file-info` metadata.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | No | Destination file name (default: the source basename) |
+| `sourcePath` | string | No | Path to the source file to copy, up to 100 MB. Required unless the file is registered already. Aliases: `filePath`, `source` |
+| `folder` | `"general"` \| `"sound"` \| `"music"` \| `"video"` \| `"font"` | No | Project File family (default: `"general"`). Alias: `category`; two aliases that disagree are refused |
+| `type` | string | No | MIME type recorded for a new entry (inferred from the extension when omitted). Alias: `mimeType` |
+| `purpose` | string | No | `file-info` purpose, up to 100 characters. A new entry gets `"none"` when omitted; an existing entry keeps its purpose |
+| `subfolder` | string | No | Slash-separated subfolder inside the family directory |
+
+| Family | Directory |
+|--------|-----------|
+| `general` | `files/` |
+| `sound` | `sounds/` |
+| `music` | `music/` |
+| `video` | `videos/` |
+| `font` | `fonts/` |
+
+Observed on Construct 3 r506-2, Free edition, guest: a project with a script, a general file, a sound, a music, a video and a font file registered by these tools opened, listed each under its family, and its save kept the files in `scripts/`, `files/`, `sounds/`, `music/`, `videos/` and `fonts/`. An earlier record for Construct 3 r495 shows `files/` and `sounds/` (tier not recorded).
+
+The same save gave the entries the tools had registered new SIDs (the SIDs of the entries already in the project were kept), and wrote `application/octet-stream` as the type of the music and font files, where the tool had recorded `audio/webm` and `font/ttf` (r506-2, Free edition, guest). Other releases and tiers were not checked.
+
+**Notes:**
+- One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), made first. The file is copied after its registration, and a failed copy puts the registration back; the error says what was put back, what could not be, and a file left on disk. The SID is taken for a new entry only
+- A file at the destination is refused, checked again after the registration, and a third time by the writer under the file lock right before it writes (the registration is then put back). A file another program creates in the moment between that last check and the write is replaced and kept as `<file>.bak`
+- A destination reached through a symbolic link or Windows junction that leaves the project folder is refused. It is checked before the registration and again just before the write; a link swapped in after the second check is not covered
+- A name whose `<name>.tmp` is a registered or existing file is refused (the server writes through `<name>.tmp`)
+- The server copies any file its process can read; a source over 100 MB, or one that is not a file, is refused
+- A file that is registered already needs no source and returns `action: "already_registered"` (with `repaired` when an older registration was repaired). A source given then is not copied, and the result says so in `warnings`; a registered file that is not on disk is reported in `warnings` as well
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named, also when a case variant is saved during the call; names and subfolder parts that Windows cannot store as one plain file are refused (see [`register_script_file`](#register_script_file))
+- Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
+
+### `deregister_project_file`
+
+Remove a Project File registration and delete its file from the family directory.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Project File name |
+| `folder` | `"general"` \| `"sound"` \| `"music"` \| `"video"` \| `"font"` | No | Project File family (default: `"general"`). Alias: `category` |
+| `subfolder` | string | No | Slash-separated subfolder inside the family directory |
+
+**Notes:**
+- One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), then the file is deleted. The file is backed up to `<file>.bak` first; the latest deleted version is kept, and a later delete of the same path replaces that copy. The result has `fileRemoved` (false when there was no file to delete) and, when a file was deleted, `backup` (the project-relative path of the copy)
+- Only the file that was registered when the call selected it is deleted: a registration that changed meanwhile (registered again, or saved in the editor with a new SID) is refused before anything is changed
+- A file reached through a symbolic link or Windows junction that leaves the project folder is not deleted; this is checked before the registration is removed (the call is then refused and nothing is changed) and again just before the delete (a link swapped in after the second check is not covered). The same two checks apply to `<name>.bak`
+- A name whose `<name>.bak` is a registered file is refused, before anything is changed (the server backs up to `<name>.bak`). An unregistered `<name>.bak` is replaced by the backup of the deleted file
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named; names and subfolder parts that Windows cannot store as one plain file are refused
+- Refusals made before anything is changed end with "Nothing was changed."; an unexpected error in the update of `project.c3proj` puts back what the call wrote and says so
+- After the registration is removed, three outcomes leave the registration removed and return an error that says so: a link or junction found just before the delete (the file is left in place), a file changed since the call selected it (left in place, and named, to check and remove by hand), and a failed delete (the error gives the code and calls the file orphaned, to remove by hand). Nothing is put back in these cases
+
+### `create_data_file`
+
+Create a Construct 3 data file under `files/` and register it as a `general` Project File with `file-info` metadata.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | File name including its extension, for example `"levels.json"` |
+| `kind` | `"array"` \| `"dictionary"` \| `"json"` \| `"text"` | Yes | Body format |
+| `content` | string | No | up to 5,000,000 characters. `dictionary` and `json`: a JSON document. `text`: the literal body. `array`: an optional JSON `[width][height][depth]` data array |
+| `arraySize` | number[3] | No | `array` only: `[width, height, depth]`, each a whole number from 0 to 10,000 (default: `[1, 1, 1]`); other kinds refuse it |
+| `type` | string | No | MIME type recorded for the entry (inferred from `kind` when omitted: `application/json` for `array`, `dictionary` and `json`, `text/plain` for `text`) |
+| `purpose` | string | No | `file-info` purpose, up to 100 characters (default: `"none"`) |
+| `subfolder` | string | No | Slash-separated subfolder inside `files/` |
+
+**Notes:**
+- `array` writes `{"c2array":true,"size":[w,h,d],"data":[[[...]]]}` and `dictionary` writes `{"c2dictionary":true,"data":{}}`, the bodies the Array and Dictionary plugins load. An array holds up to 1,000,000 cells (a depth of 0 counts as 1); `content` must match `arraySize`. `json` is checked to parse and written as given (`{}` without `content`); `text` is written as given (empty without `content`)
+- One update of `project.c3proj` through the writer (backed up once per call; a change saved in the editor during the call is merged), made first. The file is written after its registration, and a failed write puts the registration back; the error says what was put back, what could not be, and a file left on disk. The SID is taken for a new entry only
+- A name that is registered already is refused. A name another writer registers during the call is refused inside the update, and no file is written
+- A file at the path is refused, checked again after the registration, and a third time by the writer under the file lock right before it writes (the registration is then put back). A file another program creates in the moment between that last check and the write is replaced and kept as `<file>.bak`
+- A path reached through a symbolic link or Windows junction that leaves the project folder is refused, before the registration and again just before the write (a link swapped in after the second check is not covered). A name whose `<name>.tmp` is a registered or existing file is refused (the server writes through `<name>.tmp`)
+- The result has `action: "created"` and `kind`
+- Names and subfolders are matched with their letter case and refused otherwise, with the registered spelling named; names and subfolder parts that Windows cannot store as one plain file are refused. Refusals made before anything is changed end with "Nothing was changed."; an unexpected error puts back what the call wrote and says so
 
 ### `add_animation_to_sprite`
 
@@ -1683,16 +2267,7 @@ Update properties of an existing animation on a Sprite object.
 
 At least one property must be provided.
 
-Like the other tools that take an existing `animationName` (`delete_animation`, `rename_animation`, `add_frame_to_animation`, `delete_frame_from_animation`, `update_frame`, `replace_sprite_image`), it finds the animation by its exact name in any animation folder, where the animation stays. When the name is not found, the error lists the sprite's animations, those in animation folders with their folder path (e.g. `Moves/Walk`); pass the name alone.
-
-### `delete_animation`
-
-Delete an animation from a Sprite object; an animation in an animation folder is removed from that folder. The last animation cannot be deleted (animations in folders count). The animation's image files are left in `images/`.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Sprite object name |
-| `animationName` | string | Yes | Animation to delete |
+Like the other tools that take an existing `animationName` (`delete_animation`, `rename_animation`, `move_animation_to_folder`, `add_frame_to_animation`, `delete_frame_from_animation`, `update_frame`, `reorder_frames`, `reverse_frames`, `duplicate_frame`, `replace_sprite_image`), it finds the animation by its exact name in any animation folder, where the animation stays. When the name is not found, the error lists the sprite's animations, those in animation folders with their folder path (e.g. `Moves/Walk`); pass the name alone.
 
 ### `rename_animation`
 
@@ -1703,11 +2278,12 @@ Rename an animation on a Sprite object.
 | `objectName` | string | Yes | Sprite object name |
 | `animationName` | string | Yes | Current animation name |
 | `newName` | string | Yes | New animation name |
+| `force` | boolean | No | Rename even when layouts that could not be parsed possibly have instances that start with the animation (they are NOT updated). Default: false |
 
 A new name that differs from another animation of the sprite (in any animation folder) only in case is refused (see [`add_animation_to_sprite`](#add_animation_to_sprite)); changing only the case of the animation's own name is allowed. `objectName` must be spelled exactly like the object's name: layout instances and event sheets name the object exactly, so a differently cased name (which Windows and macOS would still find the object file with) is refused.
 
 The rename also does what the editor does when it renames an animation:
-- **Frame image files** are renamed with it: for every frame, the file it uses, `images/<object>-<old name>-NNN.<ext>` (`.png`, `.jpg` for a JPEG frame, or the file's own extension for another format such as GIF), becomes `images/<object>-<new name>-NNN.<ext>`, all lowercase. A file whose name differs only in case is found too and gets the lowercase name. Frames, `sid` and `imageSpriteId`s stay as they are (the file name does not contain them). A frame without an image file is named in a warning, and a warning says so when no frame file needed renaming. Files no frame uses (another extension, or an index past the last frame) keep their names.
+- **Frame image files** are renamed with it: for every frame, the file it uses, `images/<object>-<old name>-NNN.<ext>` (`.jpg` for a JPEG frame, `.png` otherwise), becomes `images/<object>-<new name>-NNN.<ext>`, all lowercase. A file whose name differs only in case or in Unicode normalization (e.g. `ä` stored decomposed, as macOS HFS+ lists names) is found too and gets the lowercase name. Frames, `sid` and `imageSpriteId`s stay as they are (the file name does not contain them). A frame without an image file is named in a warning. Files no frame uses (another extension, or an index past the last frame) keep their names.
 - **Layout instances** of the object whose `initial-animation` is the old name get the new name (on every layer and sub-layer).
 
 It is refused, and nothing is changed, when:
@@ -1715,36 +2291,66 @@ It is refused, and nothing is changed, when:
 - the new name has a character that cannot be part of a file name (see [`add_animation_to_sprite`](#add_animation_to_sprite));
 - another animation of the object (in any animation folder) has frames and a name that differs from the old name only in case: both use the same image files, and renaming them would leave the other animation without images. Delete the duplicate first (`delete_animation` leaves the image files in place).
 
-The image files are renamed first, then the object and the layouts are written; if a write fails, the files already written, and the file whose write failed if it was already replaced (e.g. its post-write check failed), are restored from their backups and the image files are renamed back. The image moves are recorded in the change journal with the object and layout writes, so `revert_last_change` undoes the whole rename.
+The image files are renamed first, then the object and the layouts are written; if a write fails, the files already written are put back as they were before the call, the file whose write failed is restored from its backup if it was already replaced (e.g. its post-write check failed), and the image files are renamed back. A file saved again in the editor after the call wrote it, or during its write, is left as it is and named in the error.
 
 Strings in event sheets that name the old animation (e.g. `"Walk"` in *Set animation*) are not changed; a warning lists the event sheets with such parameters on the conditions and actions of the object and of the families it belongs to. Parameters that compute a name (e.g. `"Walk" & n`) are not counted.
 
+Layouts and event sheets that could not be parsed (see [Files the server could not parse](#mutation-tools)) are not updated or counted. They are searched as text for the object's name together with the old animation name: a warning names each layout whose instances possibly still start with the old name, each such layout that cannot be read at all, and the event sheets that possibly name it; they are listed in `unscannedFiles`. Without `force`, a layout whose text names both (possibly instances that start with the old name, which the rename cannot update), or that cannot be read at all, refuses the rename (`"success": false`, `"action": "update_blocked"`, nothing changed); with `force: true` it goes ahead and the warnings name those layouts. Event sheets only get a warning.
+
+### `delete_animation`
+
+Delete an animation from a Sprite object; an animation in an animation folder is removed from that folder. The last animation cannot be deleted (animations in folders count). The animation's image files are left in `images/`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation to delete |
+
+### `create_animation_folder`
+
+Create an animation folder among a Sprite object's animations, with the folders above it that are not there yet. The folder is not part of the frame image file names, so no image file changes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `folderPath` | string | Yes | Folder path, `/`-separated (e.g. `"Combat/Melee"`); no empty segment, `.`, `..` or `\` |
+
+Returns `foldersCreated` (the paths created, outermost first). A new folder is written as `{ "items": [], "subfolders": [], "name": ... }`, the key order of a new project-bar folder; the order the editor itself writes for animation folders was not checked. Refused, with nothing changed: an invalid `folderPath`; an object that is not found, is not a Sprite, or whose animations have no folder list; a path that exists already; a folder that differs from an existing sibling folder only in case (a rule of the server, as for `subfolder` paths; whether the editor allows such folders was not checked); a folder on the path that has no list of items or subfolders. If the object write fails after replacing the file, the file is restored from its backup while it holds that write's content; another write's content is left as it is.
+
+### `move_animation_to_folder`
+
+Move an animation of a Sprite object into an existing animation folder, or back to the top level of its animations. The animation is found by its exact name in any folder, as by the other animation tools, and is added at the end of the target's list, so the order of the object's animations changes (moving one out and back puts it last); how the editor treats that order was not checked. No image file changes, and nothing in the animation changes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation to move |
+| `folderPath` | string \| null | No | Existing folder path, `/`-separated, compared exactly; left out, `null` or `""` for the top level |
+
+Returns `fromFolder` and `toFolder` (`null` for the top level). A warning says when this move leaves no animation outside animation folders; how the editor treats such an object was not checked. Refused, with nothing changed: an invalid `folderPath`; an object that is not found, is not a Sprite, or has no animations structure; an animation that is not found; a folder that does not exist, or has no items list (the error names an existing folder whose name differs only in case from the requested one); and a move into the folder the animation is in (also the top level, when it is there). A failed object write is handled as for `create_animation_folder`.
+
 ### `add_frame_to_animation`
 
-Add a blank frame (with a placeholder PNG in `images/`) to a Sprite animation. Like every image the tools write, the file is named as the editor names it: `<object>-<animation>-<frame, 3 digits>.png`, all lowercase, spaces kept (e.g. `hero-walk left-001.png`). Frames after the insertion point have their image files renamed to their new index, whatever their file type.
+Add a blank frame (with a placeholder PNG in `images/`) to a Sprite animation. Like every image the tools write, the file is named as the editor names it: `<object>-<animation>-<frame, 3 digits>.png`, all lowercase, spaces kept (e.g. `hero-walk left-001.png`).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `objectName` | string | Yes | Sprite object name |
 | `animationName` | string | Yes | Animation name |
-| `index` | integer | No | Insert at this frame index (default: append) |
-| `width` | integer | No | Frame width in pixels (default: the first frame's) |
-| `height` | integer | No | Frame height in pixels (default: the first frame's) |
-| `duration` | number | No | Frame duration (default: `1`) |
+| `index` | number | No | Insert at this frame index, 0 to the frame count (default: append) |
+| `width` | number | No | Frame width in pixels (default: first frame's width) |
+| `height` | number | No | Frame height in pixels (default: first frame's height) |
+| `duration` | number | No | Frame duration (default: 1) |
 
-### `delete_frame_from_animation`
+An `index` greater than the frame count is refused before anything is written.
 
-Delete one frame of a Sprite animation, by index. The last frame cannot be deleted. The image files of later frames are renamed to their new index, whatever their file type.
+**Frame image files move with their frames.** The editor names a frame's image after the frame's index (`<object>-<animation>-NNN.<ext>`), so inserting at `index` renames the image files of the frames from `index` on one index up, the last frame first (`hero-walk-002.png` → `hero-walk-003.png`, then `hero-walk-001.png` → `hero-walk-002.png`), and the placeholder takes the freed name. Each file keeps the extension of its frame's `fileType` (`.jpg` for a JPEG frame, `.png` otherwise; for another `fileType`, every file with the frame's name and a single extension moves, e.g. `.gif`). Names are matched ignoring case and Unicode normalization (as for `rename_animation`), and moved files get the lowercase name. The names are built from the object's name as stored in its file (so an `objectName` that reaches the file another way, e.g. `./Sprite`, finds the same images). `warnings` gives how many image files were renamed, with the first one, and names the frames after the index that have no image file.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Sprite object name |
-| `animationName` | string | Yes | Animation name |
-| `frameIndex` | integer | Yes | 0-based index of the frame to delete |
+No existing file is written over, also when appending: a file that no frame uses but has the name a moved image or the placeholder needs (e.g. an image left behind by `delete_frame_from_animation` of earlier versions, or a PNG next to a JPEG frame's `.jpg`) is renamed to `<file>.bak` (`<file>.1.bak`, … if that name is taken) and named in `warnings`. The image files are renamed first, then the placeholder and the object are written. The placeholder is written only to a name that holds no file when its write runs: a file that appeared there after the renames were planned (written by another program, or saved in the editor) refuses the write and is left as it is. If a step fails, the object file is restored from its backup only while it still holds the failed write's own content. The images are undone only when the object file, read again after the failure, holds the frames from before the call: then a placeholder this call wrote is removed (unless it changed on disk since) and the image files get their old names again. An image file whose old name is taken (for example by such a file) keeps its new name; the other files are renamed back, and the error lists what was rolled back and what was not, including which file holds the old name. When the object file holds this call's frames the images stay with them, and when it holds neither or cannot be read they stay as the call left them and the error says recovery is unresolved and where each file is. If the object write failed because another write replaced the file during it (the post-write check finds other valid JSON, e.g. from a tool outside the animation tools running in parallel), the file is read again instead: when it has this call's frames, that write was made on top of this one, the image files stay moved and the call succeeds with a warning to re-read the object; when it has the frames from before the call, the placeholder and the renames are undone to match it; otherwise the images stay, as above. The file is left as that write left it (no backup is restored over it). The call is refused, with nothing changed, if the renames cannot be done without replacing a file (e.g. two files whose names differ only in case on a case-sensitive file system).
 
 ### `update_frame`
 
-Update per-frame properties of one Sprite animation frame.
+Update per-frame properties of a Sprite animation frame.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1753,86 +2359,39 @@ Update per-frame properties of one Sprite animation frame.
 | `frameIndex` | number | Yes | 0-based frame index |
 | `width` | number | No | New frame width in pixels |
 | `height` | number | No | New frame height in pixels |
-| `duration` | number | No | New frame duration in seconds |
-| `originX` | number | No | Horizontal origin, normalized 0-1 |
-| `originY` | number | No | Vertical origin, normalized 0-1 |
-| `tag` | string | No | Frame tag; an empty string clears it |
-| `imagePoints` | array | No | Replace the whole image point list with `{ name, x, y }` entries |
-| `addImagePoints` | array | No | Append `{ name, x, y }` entries to the existing list |
-| `removeImagePoints` | string[] | No | Remove image points by name |
-| `collisionPoly` | number[] | No | Custom collision polygon as `[x0, y0, x1, y1, ...]`, or `[]` to clear it |
-| `useCollisionPoly` | boolean | No | Whether C3 uses the custom polygon for this frame |
+| `duration` | number | No | New frame duration |
+| `originX` | number | No | Horizontal origin 0-1 (0.5 = center) |
+| `originY` | number | No | Vertical origin 0-1 (0.5 = center) |
 
-At least one updatable property must be provided.
+### `delete_frame_from_animation`
 
-**Notes:**
-- Image point `x`/`y` are normalized 0-1 relative to the frame, and names must
-  be unique within a frame. The frame origin is not an image point; it is
-  stored separately as `originX`/`originY`.
-- `imagePoints` replaces the whole list and cannot be combined with
-  `addImagePoints` or `removeImagePoints`. Within one call, removals are
-  applied before additions, so a point can be replaced by name.
-- `removeImagePoints` fails if any named point is absent, rather than removing
-  the points it did find.
-- `collisionPoly` is a flat list of x,y pairs normalized 0-1 relative to the
-  frame, so its length must be even and at least 6 (three points). Values
-  outside 0-1 are accepted with a warning, because a polygon point may sit
-  beyond the frame edge.
-
-### `replace_sprite_image`
-
-Replace the image of one Sprite animation frame with PNG data. The PNG is written to the frame's file in `images/` (the old image is backed up first, so `revert_last_change` can restore it); the object JSON is backed up and rewritten. The editor picks the file's extension from the frame's `fileType`, so a frame stored in another format (JPEG in `<name>.jpg`, GIF in `<name>.gif`) gets `fileType: "image/png"` and the new `<name>.png`; the old file is left in `images/` and a warning names it.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Sprite object type |
-| `animationName` | string | Yes | Animation name |
-| `frameIndex` | integer | Yes | 0-based frame index |
-| `pngBase64` | string | Yes | The PNG, base64-encoded (checked for the PNG signature) |
-| `width` | integer | No | Image width in pixels; updates the frame's metadata when given |
-| `height` | integer | No | Image height in pixels; updates the frame's metadata when given |
-
-**Notes:**
-- Images of other object kinds are replaced with `replace_object_image`.
-
-### `replace_object_image`
-
-Replace the image of an object type that has a single `image` (Tiled Background, 9-patch, Particles, Sprite Font, Tilemap).
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Object type name (Sprites are refused; use `replace_sprite_image`) |
-| `pngBase64` | string | Yes | Base64 PNG data |
-
-Writes `images/<lowercased name>.png`, the naming every single-image object uses in the r495 examples, and sets `image.width`/`image.height` from the PNG header (and `fileType` to `image/png` when the key is present). A Tilemap whose tileset changes size gets a warning, because tile numbers count across the image. If the object type write fails, the previous image is restored.
-
-### `reorder_frames`
-
-Reorder the frames of a Sprite animation. Every frame tool that moves, copies or renames image files (`reorder_frames`, `reverse_frames`, `duplicate_frame`, `delete_frame_from_animation`, `add_frame_to_animation`, `rename_animation`) takes each file's extension from the frame's `fileType`, so a GIF-backed frame is moved as `.gif`; only `image/png` and `image/gif` were seen in the r495.2 samples.
+Delete a frame by index. The last frame of an animation cannot be deleted.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `objectName` | string | Yes | Sprite object name |
 | `animationName` | string | Yes | Animation name |
-| `order` | number[] | Yes | Full permutation of the current 0-based frame indices |
+| `frameIndex` | number | Yes | 0-based frame index |
 
-**Notes:**
-- `order` must list every current frame index exactly once. A partial list, a
-  repeated index, or an out-of-range index is rejected before anything is
-  written.
-- C3 addresses a frame's image by the frame index baked into its file name
-  (`images/<object>-<animation>-NNN.png`), so the tool renames the frame image
-  files to match the new order. Without that rename the reordered frames would
-  each show whichever image previously sat at their index. The files are parked
-  under temporary names first, and the renames are rolled back if the JSON
-  write then fails.
-- When no frame image files exist under `images/` the frame JSON is reordered
-  on its own, and the result says so in `warnings`.
+Like [`add_frame_to_animation`](#add_frame_to_animation), it keeps the frames and their image files together: the deleted frame's image file is renamed to `<file>.bak` (kept, not deleted), then the image files of the frames after it are renamed one index down, with the extension of their `fileType`. `warnings` gives how many image files were renamed, with the first one, names the kept file, and names the frames after it that have no image file. If the object write fails, the object file is restored from its backup if it was already replaced, and the image files get their old names again only when the object file, read again, holds the frames from before the call (an image file whose old name is taken keeps its new name, and the error says which file holds it); when another write replaced the object file during it, the file is kept as for `add_frame_to_animation` and the image files follow what it holds.
+
+### `reorder_frames`
+
+Put the frames of a Sprite animation in a new order. Each frame keeps its properties and its `imageSpriteId`, and its image file moves with it: the editor names a frame's image after the frame's index (see [`add_frame_to_animation`](#add_frame_to_animation)), so the file of the frame that ends at index k is renamed to `<object>-<animation>-<k, 3 digits>.<ext>`, all lowercase, keeping the extension of its `fileType` (for another `fileType`, every file with the frame's name and a single extension moves).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Sprite object name |
+| `animationName` | string | Yes | Animation name |
+| `order` | number[] | Yes | The frames' indexes before the call, in their new order: `order[k]` is the frame that ends at index k. Every index from 0 to the frame count minus 1, once. Integers, from 1 to 1000 entries (longer lists or other values are refused when the arguments are checked) |
+
+Refused before anything is written, with nothing changed: an animation with no frames, or whose object file has no frames list; an `order` that does not list every frame once, or that leaves every frame at its index; another animation of the object (in any animation folder) with frames and a name that differs only in case (both use the same image files, so moving them would give that animation other images); renames that cannot be done without replacing a file.
+
+Files that take each other's names in a cycle (two that swap, or more) move through a temporary name, `<file>.reorder` (`<file>.1.reorder`, ... when taken). A file no frame uses under a name a moved image needs is renamed to `<file>.bak` first. `warnings` give how many image files were renamed, with the first ones, the files kept as `.bak`, and the frames that change index but have no image file. The image files are renamed first, then the object file is written; if the write fails, the object file is restored from its backup when it was already replaced and still holds that write's own content, then read again. The image files are renamed back only when it holds the frames from before the call (an image file whose old name is taken keeps its new name, and the error names the file in its way, and what was and was not rolled back); when it holds the new order (compared by `imageSpriteId` when every frame has its own, otherwise by each frame's whole content, and by each frame's image file extension) they stay, and after another write made on top of this one the call succeeds with a warning; when it holds neither or cannot be read they stay and the error says recovery is unresolved and where each file is. A frame that has no image file still reserves its new name: an unused file there is kept as `.bak`. A process stopped during the renames leaves the object file as it was and can leave image files under their new or `.reorder` names; restore `images/` from version control or a copy of the project.
 
 ### `reverse_frames`
 
-Reverse the frame order of a Sprite animation. Shares `reorder_frames`'
-image-file handling.
+Reverse the order of a Sprite animation's frames, with their image files, as [`reorder_frames`](#reorder_frames) does with the reversed order. The middle frame of an odd count keeps its file. An animation with one frame is refused, with nothing changed.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1841,295 +2400,48 @@ image-file handling.
 
 ### `duplicate_frame`
 
-Duplicate one frame of a Sprite animation, copying both its JSON and its image
-file.
+Insert a copy of a Sprite animation frame: the frame's properties, a new `imageSpriteId` when the frame has one (as for a frame [`add_frame_to_animation`](#add_frame_to_animation) adds), and a copy of its image file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `objectName` | string | Yes | Sprite object name |
 | `animationName` | string | Yes | Animation name |
-| `frameIndex` | number | Yes | 0-based index of the frame to duplicate |
-| `insertAt` | number | No | 0-based insert position (default: immediately after the source frame) |
+| `frameIndex` | number | Yes | 0-based index of the frame to copy |
+| `index` | number | No | Insert the copy at this index, 0 to the frame count (default: right after the frame), as `add_frame_to_animation`'s `index` |
 
-**Notes:**
-- The copy receives a freshly generated `imageSpriteId` when the source frame
-  has one, so the two frames do not share an image identity. A frame without
-  that field stays without it.
-- Frame image files at or after `insertAt` are shifted up by one and the source
-  frame's image is copied into the freed slot. All moves are rolled back if the
-  JSON write fails.
+As for `add_frame_to_animation`, the image files of the frames from `index` on move one index up first, and a file no frame uses under a needed name is kept as `<file>.bak`; then each of the frame's files is copied, from its new name when it moved, to `<object>-<animation>-<index>.<ext>` with its own extension, only to a name that holds no file. A frame without an image file is copied without one, with a warning; every frame placed, the copy included, reserves its image name, so an unused file there is kept as `.bak` instead of being taken. Returns `index` (where the copy was inserted) and `imageSpriteId` (the copy's). If a copy or the object write fails, the object file is restored from its backup if it was already replaced and read again; when it holds the frames from before the call, every copy this call wrote is removed (a copy that cannot be confirmed as this call's is left and named) and the image files get their old names again; otherwise the images are kept as for [`reorder_frames`](#reorder_frames) (the whole frame list is compared). A frame index or `index` out of range is refused before anything is written, and so is a frame of an animation that shares its image files with another one whose name differs only in case, an animation with no frames or without a frames list in its object file, and an insert whose renames or copies cannot be done without replacing a file (for example two files whose names differ only in case on a case-sensitive file system); nothing is changed, and no `.bak` is made.
 
-### `create_animation_folder`
+### `replace_sprite_image`
 
-Create an animation subfolder on a Sprite object, mirroring C3's
-`animations.subfolders` tree.
+Replace a frame's image with real PNG data. The PNG is written to the frame's file in `images/`; the object JSON is backed up and rewritten. The editor picks the file's extension from the frame's `fileType`, so a frame stored in another format (e.g. JPEG, in `<name>.jpg`) gets `fileType: "image/png"` and the new `<name>.png`; the old file is left in `images/` and a warning names it. The image the frame held is backed up once per call as `<file>.bak` under the first free name (`<file>.1.bak`, ... when that name is taken), before the new PNG is written; it is never replaced.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `objectName` | string | Yes | Sprite object name |
-| `folderPath` | string | Yes | Slash-separated folder path, e.g. `"Combat/Melee"` |
+| `animationName` | string | Yes | Animation name |
+| `frameIndex` | number | Yes | 0-based frame index |
+| `pngBase64` | string | Yes | Base64-encoded PNG (checked for the PNG signature) |
+| `width` | number | No | Image width in pixels; updates the frame metadata |
+| `height` | number | No | Image height in pixels; updates the frame metadata |
 
-Missing parent folders are created. The call fails when the full path already
-exists.
+### `replace_object_image`
 
-### `move_animation_to_folder`
-
-Move an animation between the animations root and an existing subfolder.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Sprite object name |
-| `animationName` | string | Yes | Animation name to move |
-| `folderPath` | string or null | Yes | Destination folder path, or `null` for the animations root |
-
-The animation is found anywhere in the folder tree. The destination folder must
-already exist; create it with `create_animation_folder` first. A move that
-would not change the folder is rejected.
-
-### `register_script_file`
-
-Register a script file in `rootFileFolders.script`. The registration uses C3's
-`script-info` metadata and an SID allocated by the project-wide ID generator.
-The tool changes `project.c3proj` only; it does not copy or delete the script
-file under `scripts/`.
+Replace the single image of an object type that has one image instead of animations. Any object type with an `image` record and no `animations` is accepted. The repository has checked this storage, `images/<object>.<ext>`, for a Tiled Background (see `src/construct3/object-images.ts`); no other single-image object type was checked, so where the editor keeps its image file is not known to this tool. For Sprite frames use [`replace_sprite_image`](#replace_sprite_image).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `name` | string | Yes | Script file name, without a folder path |
-| `type` | string | No | MIME type (default: `application/javascript`) |
-| `purpose` | string | No | `script-info.purpose` (default: `none`) |
-| `subfolder` | string | No | Slash-separated folder path under `scripts/` |
+| `objectName` | string | Yes | Object type name |
+| `pngBase64` | string | Yes | Base64-encoded PNG (checked for the PNG signature, as `replace_sprite_image` does) |
+| `width` | number | No | Image width in pixels; set in the image record only when given |
+| `height` | number | No | Image height in pixels; set in the image record only when given |
 
-### `deregister_script_file`
+The PNG is written to `images/<object>.png`, all lowercase, the object's name as stored in its file. An image under that name is kept first under the first free `.bak` name, as for `replace_sprite_image`. The image record then gets `fileType: "image/png"`, and its `width` and `height` each only when given. The object file is always written, also when its record did not change, so the write's check that the file did not change on disk since the call read it always runs. An image stored in another format (`images/<object>.jpg`) is left in `images/` and named in a warning.
 
-Remove a script registration from `rootFileFolders.script`; the script file
-itself is preserved.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Script file name |
-| `subfolder` | string | No | Slash-separated folder path under `scripts/` |
-
-### `register_project_file`
-
-Copy a source file into the directory its Project File family uses and register
-it under that family (`general`, `sound`, `music`, `video`, or `font`). The
-registration uses `file-info` metadata and a collision-safe SID. Nested
-subfolders are created below the family directory and mirrored in
-`rootFileFolders`.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sourcePath` | string | Yes* | Source file to copy (`filePath` and `source` are aliases) |
-| `name` | string | No | Destination name; defaults to source basename |
-| `folder` | enum | No | `general`, `sound`, `music`, `video`, or `font` (default: `general`; `category` is an alias) |
-| `type` | string | No | MIME type (`mimeType` is an alias; inferred when omitted) |
-| `purpose` | string | No | `file-info.purpose` (default: `none`) |
-| `subfolder` | string | No | Slash-separated folder path inside the family directory |
-
-*Required unless the exact Project File registration already exists.
-
-Each family keeps its files in its own directory of a project saved as a
-folder, so a file copied into the wrong one leaves the registration pointing at
-nothing:
-
-| Family | Directory |
-|--------|-----------|
-| `general` | `files/` |
-| `sound` | `sounds/` |
-| `music` | `music/` |
-| `video` | `videos/` |
-| `font` | `fonts/` |
-
-`files/` and `sounds/` are confirmed against the C3-ACE project on r495; the
-other three follow Construct's project-folder layout.
-
-### `create_data_file`
-
-Create a Construct 3 data file under `files/` and register it as a `general`
-Project File.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | File name including its extension |
-| `kind` | enum | Yes | `array`, `dictionary`, `json`, or `text` |
-| `content` | string | No | `dictionary`/`json`: a JSON document. `text`: the literal body. `array`: an optional JSON `[width][height][depth]` data array |
-| `arraySize` | number[] | No | `array` only: `[width, height, depth]` (default: `[1, 1, 1]`) |
-| `type` | string | No | MIME type recorded by C3 (inferred from `kind` when omitted) |
-| `purpose` | string | No | `file-info.purpose` (default: `none`) |
-| `subfolder` | string | No | Slash-separated folder path under `files/` |
-
-**Notes:**
-- `array` writes `{"c2array":true,"size":[w,h,d],"data":[[[...]]]}` and
-  `dictionary` writes `{"c2dictionary":true,"data":{}}` — the bodies the Array
-  and Dictionary plugins load. `json` and `text` are written verbatim for a
-  project that parses them itself.
-- `array` and `dictionary` register as `application/json`, `text` as
-  `text/plain`.
-- Supplied `array` content must match `arraySize` in all three dimensions.
-- The tool never overwrites: it refuses when the name is already registered or
-  a file already sits at the destination, and it deletes the file it wrote if
-  the registration then fails.
-
-### `set_main_script`
-
-Mark one registered script as the project main script.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Registered script file name |
-| `subfolder` | string | No | Script subfolder; required only when the same name is registered more than once |
-
-**Notes:**
-- Exactly one script may carry `script-info.purpose` of `main`, so the tool
-  sets `main` on the target and clears every other script that held it back to
-  `none`. Other purposes are left alone.
-- The script must already be registered; register it with
-  `register_script_file` first.
-- The result reports `unchanged` when the script was already the main script.
-
-### `deregister_project_file`
-
-Remove a Project File registration and its corresponding file from the
-directory its family uses (see the table under `register_project_file`).
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Project File name |
-| `folder` | enum | No | Project File family (default: `general`; `category` is an alias) |
-| `subfolder` | string | No | Slash-separated folder path inside the family directory |
-
----
-
-## Timeline Tools
-
-Timelines live in `timelines/[subfolder/]<name>.json` and are registered in the
-`timelines` container of `project.c3proj`. The first nameless subfolder of
-that container (the editor writes it first) lists custom eases, whose files live in `timelines/transitions/`
-(see [Custom eases](#custom-eases)); timeline tools never treat either as a
-timeline. Every write makes a `.bak` copy
-first and then replaces the file through a temp file and a rename.
-
-`playheadTime`, `stepTime` and the `showing*` flags are editor UI state: the
-tools preserve whatever the editor wrote and never compute them. Unknown keys
-survive a read-modify-write at the file, track, property-track and keyframe
-level.
-
-### File format
-
-The track shape below was confirmed against a timeline saved by Construct 3
-r495.2 with one instance track (`test/fixtures/timeline-sample`).
-
-| Field | Meaning |
-|-------|---------|
-| `tracks[]` | Tracks at the root of the track list: `type` `instance-track`, `value-track` or `audio-track`. Tracks with no `type` are an older instance-track form (below) |
-| `tracks[].worldInstance` | UID of the animated world instance |
-| `tracks[].objectType` | Object type name of that instance |
-| `tracks[].project` | The project's `uniqueId` |
-| `tracks[].initialVisibility` | Visibility applied when the timeline starts. New tracks get `true` |
-| `tracks[].virtualPosition` | Editor anchoring state. A new track gets the r495.2 values, including `relativeFlags: 16383`, which the tools never compute |
-| `tracks[].keyframes[]` | Master keyframes: `{ time, tags, enabled, ease, pathMode }`. They carry no value |
-| `tracks[].propertyTracks[]` | One per animated property: `{ property, source, enabled, interpolationMode, resultMode, ease, pathMode, propertyKeyframes }` |
-| `propertyKeyframes[]` | `{ time, enabled, resultMode, ease, pathMode, value, rValue, aValue, addons }` |
-| `propertyKeyframes[].addons` | r495.2 writes one `cubic-bezier` entry with all four anchors disabled; new keyframes get exactly that entry |
-| `tracks[].propertyTracksRoot` | The per-track `Property Track Folder` tree |
-| `tracksRoot` | Track folder tree. A track in a folder is removed from `tracks` and stored whole in the folder's `items` (robotic-loader example: 12 tracks in 3 folders, `tracks` empty). The root folder's own `items` stayed empty in every sample |
-| `transitionsData[]` | `{ folders: [], json: <ease file> }`, one copy of each custom ease the timeline uses |
-
-Other track kinds, from the r495.2 example packages:
-
-| Kind | Shape |
-|------|-------|
-| `value-track` (10 samples, 3 packages) | `{ type, name, project, enabled, interpolationMode, ease, initialVisibility, id, keyframes, propertyTracks, propertyTracksRoot }` with no `resultMode`/`pathMode`/`resizeMode`. Master keyframes are `{ time, tags, enabled, ease }`. One property track, `{ property: "value", source: { type: "value", uid: "value" }, enabled, interpolationMode, ease, propertyKeyframes }`, whose keyframes are `{ time, enabled, ease, value, rValue, aValue, addons: [] }` with the three values equal (32 of 32) and one keyframe per master keyframe time |
-| `audio-track` (1 sample, synth-sunset) | Like a value track plus `resultMode` after `interpolationMode`. One property track `{ property: "audioSource", source: { type: "audio", uid: "audio" }, enabled, propertyKeyframes: [], sourceAdapter }`; `sourceAdapter` is `{ audioProjectFile, audioStartOffset, audioTag, audioType }`, where `audioProjectFile` is a verbatim copy of the file's `rootFileFolders` entry and `audioType` names that folder (`music` in the sample) |
-| untyped (5 samples, 4 packages saved by r168-r184) | An older instance track: `worldInstance` but no `type`, `objectType`, `project` or `resizeMode`; property keyframes without `resultMode` and mostly without `rValue`/`aValue`. No sample shows how Construct upgrades one, so the tools read these tracks, and can re-flag, move or remove them, but refuse edits that would rewrite their values (`set_keyframe`, `add_property_track`, a result-mode change) and refuse a second track for the same instance |
-
-Property-track folders were sampled only as the editor's own folders for
-behavior property tracks (tasty-cappuccino): each carries
-`ownerId: "behavior"` and `ownerUid: <behavior name>` after `subfolders`.
-The tools find and edit property tracks inside such folders but do not
-create, rename or delete property-track folders.
-
-Folders carry `resultMode` too. Every sampled folder (72 track roots, 397
-property-track roots, 3 track folders, 6 property-track folders) has
-`"default"`, so how Construct applies a folder's mode to the tracks inside is
-unknown. Tools that compute stored values (`add_timeline_track`,
-`add_property_track`, `set_keyframe`, a result-mode change in `update_track`
-or `update_timeline`, and `move_timeline_track` for instance tracks) refuse
-when a folder above the track or its property tracks has another mode.
-
-### Keyframe values: `value`, `rValue` and `aValue`
-
-`aValue` is the property's absolute value and `value` is its value relative to
-the instance's own layout value. `rValue` equals `value` in every observed
-keyframe, and these tools always write the two equal. In the sample, an
-instance placed at x 324 has an offsetX keyframe of
-`value: 0, rValue: 0, aValue: 324`, so for `offsetX` and `offsetY`:
-
-```
-value = rValue = absolute - instance.world.x|y
-aValue = absolute
-```
-
-**Verified property names:** `offsetX` and `offsetY`. Those are the only two a
-Construct sample confirmed, and the only two whose absolute and relative values
-the tools can relate on their own.
-
-**Unverified property names:** `property` is a free string, so a name the
-Construct editor uses for width, height, angle, opacity, zElevation or color
-can be written, but none of those names was observed and the Construct manual
-text bundled with this server does not list them. Any name other than
-`offsetX`/`offsetY` is accepted, reported in the result `warnings`, and given
-no derived value: `set_keyframe` requires both `absolute` and `relative` for
-it, and a track created for it starts at `value: 0, aValue: 0`. Check such a
-track in the Construct 3 editor before relying on it.
-
-Nested timelines (`nestedData`, `childrenNestedData`, `nestedTimelinesRoot`)
-have no tool support. Their containers are created empty and preserved as
-written.
-
-Tools that take `instanceUid` or `trackName` address one track, wherever it is
-in the track folders: an instance track by UID, or a value or audio track by
-name. Give exactly one. Every timeline write also refreshes `transitionsData`:
-a copy of each custom ease the timeline uses is added or updated, and copies of
-project eases it no longer uses are dropped. Ease names that are neither
-Construct's own ids nor a custom ease are written with a warning. Construct's
-ids are `default`, `noease`, `linear` and `easein`/`easeout`/`easeinout`
-followed by `sine`, `quad`, `cubic`, `quart`, `quint`, `expo`, `circ`, `back`,
-`elastic` or `bounce`, in lower case. Fourteen of them were seen in the
-samples; the rest complete Construct's documented list in the same pattern.
-
-`update_timeline` refuses a result-mode change while an untyped (older) track
-takes its mode from the timeline (neither the track nor its property tracks
-set one); every sampled untyped track sets its own.
-
-### `list_timelines`
-
-List all timeline names (root and subfolders) with a count, in project-bar order. No parameters. Returns `{ timelines, count, transitions }`. Transitions (the custom easing curves in the editor's Transitions folder, which `project.c3proj` keeps as the first-level `timelines` subfolder without a `name`; see [Custom eases](#custom-eases)) are returned separately in `transitions`. Any other subfolder without a name is malformed (reported by `validate_project`); its items are not listed, the other timeline tools report them as unresolvable, and `create_timeline` refuses their names so they are not registered twice.
-
-### `list_timeline_tracks`
-
-Summarize every track: `kind` (`instance-track`, `value-track`, `audio-track`,
-`legacy-instance-track` or `unknown`), `instanceUid`/`objectType` or `name`,
-`folder`, `enabled`, `keyframeTimes`, and each property track's `property`,
-`sourceType`, `folder` and `keyframeCount`. Audio tracks also report
-`audioFile`, `audioType`, `audioStartOffset` and `audioTag`.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `timelineName` | string | Yes | Timeline name |
-
-### `get_timeline_details`
-
-Return the parsed timeline file unchanged, including all tracks, property tracks and keyframes. The file is located from the timeline's folder in `project.c3proj`: `timelines/<name>.json` at the root, `timelines/<folder>/.../<name>.json` in a subfolder. Transitions (stored in `timelines/transitions/`) are refused and pointed to the ease tools: the timeline tools never read, change or delete them. A registered name whose file has no `tracks` (an ease file) is reported as not a timeline, and a file that cannot be read is named with the read error.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Timeline name |
+Returns `imageFile`, `imageBackup` (absent when there was no image under the name) and `backupFile`. The image is written first, then the object file. If the object write fails, or is refused because the object file changed on disk during the call, the object file is restored from its backup when its write failed after replacing it and it still holds that write's own content (a file another write changed is left as it is, and the error names it and its `.bak`), and then read again. A record that this call left unchanged (no size given, and the record was PNG already) is the same before and after, so it counts as the one from before the call and a failed write puts the image back. The image is put back from its `.bak` (which stays), or removed when there was none, only when the object's image record (its stored name, format and size) is the one from before the call, and only while neither the image nor its `.bak` changed on disk since; otherwise both are left and named, and neither is called the old image. When the object file holds this call's image record, the new image stays (after another write made on top of this one the call succeeds with a warning); when it holds neither record or cannot be read, the new image stays and the error says recovery is unresolved. When the rollback cannot finish, the error leads with "The change was not rolled back" when nothing was undone, and with "The change was rolled back only in part" when something was. When the image write itself cannot be confirmed (another write landed right after it), the object file is not written, and the error names the file this call kept before writing the image (its `.bak`) when there was an image under the name.
 
 ### `create_timeline`
 
-Create a timeline in `timelines/` (or `timelines/<subfolder>/`) and register it in `project.c3proj`, in the same project-bar folder. The name must not be used by another timeline, by a transition (custom ease), or by an entry in a malformed nameless folder (see [`list_timelines`](#list_timelines)). Construct 3 compares timeline names exactly, but a name that differs only in case from a timeline in the same folder is refused: on Windows and macOS both would be one file. A case variant of a timeline in another folder, or of a transition, is created with a `warnings` entry. A `subfolder` folder that differs from an existing project-bar folder only in case is refused, and an existing file at the target path is never replaced (no backup is made on create).
+Create a timeline in `timelines/` (or `timelines/<subfolder>/`) and register it in `project.c3proj`, in the same project-bar folder. The name must not be used by another timeline, by a transition, or by an entry in a malformed nameless folder (see [`list_timelines`](#list_timelines)). Construct 3 compares timeline names exactly, but a name that differs only in case from a timeline in the same folder is refused: on Windows and macOS both would be one file. A case variant of a timeline in another folder, or of a transition, is created with a `warnings` entry. A `subfolder` folder that differs from an existing project-bar folder only in case is refused, and an existing file at the target path is never replaced (no backup is made on create).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -2140,431 +2452,345 @@ Create a timeline in `timelines/` (or `timelines/<subfolder>/`) and register it 
 | `repeatCount` | number | No | Repeat count when not looping (default: 1) |
 | `startOnLayout` | string | No | Layout to auto-start on (default: `""` = none) |
 | `ignoreSystemTimescale` | boolean | No | Ignore the system timescale (default: true) |
-| `subfolder` | string | No | Project-bar folder within `timelines/`, `/`-separated (e.g. `"UI"` or `"UI/Menus"`), stored as the same folder on disk. A path starting with `transitions` (any case) is refused: Construct 3 keeps custom eases there |
+| `subfolder` | string | No | Project-bar folder within `timelines/`, `/`-separated (e.g. `"UI"` or `"UI/Menus"`). Not `"transitions"`: Construct 3 keeps transitions there |
 
 ### `update_timeline`
 
-Update timeline-level properties of an existing timeline, in whichever `project.c3proj` folder it is. The file is backed up to `<file>.bak` and rewritten at the same path. Transitions are refused. At least one property is required.
+Update the settings of an existing timeline, in whichever `project.c3proj` folder it is. The file is backed up to `<file>.bak` and rewritten at the same path. Transitions are refused.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Timeline name |
-| `totalTime` | number | No | New duration in seconds |
-| `loop`, `pingPong`, `enabled` | boolean | No | Playback flags; `enabled` enables or disables the timeline |
+| `totalTime` | number | No | New total duration in seconds |
+| `loop` | boolean | No | Loop setting |
+| `pingPong` | boolean | No | Ping-pong playback |
 | `repeatCount` | number | No | Repeat count |
-| `startOnLayout` | string | No | Auto-start layout (empty string = none) |
-| `ignoreSystemTimescale` | boolean | No | Ignore system timescale |
-| `ease` | string | No | Timeline-level ease name (e.g. `noease`) |
-| `interpolationMode` | string | No | Timeline-level interpolation mode |
-| `resultMode` | string | No | Timeline-level result mode |
-| `pathMode` | string | No | Timeline-level path mode (e.g. `line`) |
-| `transformWithSceneGraph` | boolean | No | Apply values through scene-graph parents |
+| `startOnLayout` | string | No | Auto-start layout (`""` = none) |
+| `ignoreSystemTimescale` | boolean | No | Ignore the system timescale |
+| `enabled` | boolean | No | Enable or disable the timeline |
+| `ease` | string | No | Timeline-level ease: one of Construct's ease names (e.g. `"noease"`) or a custom ease. A name that is neither is written with a warning |
+| `interpolationMode` | string | No | Timeline-level interpolation mode (e.g. `"default"`) |
+| `resultMode` | string | No | Timeline-level result mode (e.g. `"default"`). The stored values of the numeric keyframes of instance tracks are recomputed for the new mode |
+| `pathMode` | string | No | Timeline-level path mode (e.g. `"line"`) |
+| `transformWithSceneGraph` | boolean | No | Apply the timeline's values through scene-graph parents |
 
-The five mode strings are written as given: they are not validated against the
-project's ease list or against an enumeration, because no such list was
-observed in the project format.
+At least one setting must be provided. A new `resultMode` is refused, changing nothing, in two cases: an untyped (older) instance track takes its result mode from the timeline, and changing it would leave the values stored in that track stale; or an instance track sits in a track folder, or has a property-track folder, with a result mode other than `default`, so the values the new mode would store are not known. The file is not written when it was saved on disk after the tool read it (see **Editing timelines and eases** below).
 
 ### `delete_timeline`
 
-Delete a timeline: back up exactly the file that is deleted to `<file>.bak`, delete it, and remove the timeline from its folder in `project.c3proj`. Transitions are refused, and so is a registered name whose file is not a timeline (an ease file).
+Delete a timeline: back up exactly the file that is deleted to `<file>.bak`, delete it, and remove the timeline from its folder in `project.c3proj`. Transitions are refused.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Timeline name to delete |
 
-**Notes:**
-- A registered timeline whose file is missing is only removed from `project.c3proj`: the result has `action: "deregistered"` and a warning that no file was removed.
-- When the file exists but cannot be deleted, the tool returns an error and `project.c3proj` is not changed. When `project.c3proj` cannot be updated after the file was deleted, the error says so.
+Result: a `WriteResult` with `action: "deleted"` and `backupFile`, the path of the `.bak` file.
+
+**Behavior change.** `delete_timeline` of a registered timeline whose file is missing removes the registration (`action: 'deregistered'`) instead of refusing; the result has no `backupFile` and a warning says that no file was removed. A file that exists but cannot be read, or that holds no tracks (a custom ease file, for example), is not deleted: the call is refused and `project.c3proj` is left as it is. A timeline file saved on disk after the tool read it is not deleted either. When the file cannot be deleted, or the registration cannot be removed after the delete, the tool returns an error, `project.c3proj` is unchanged, and the file is put back (a file it could not put back is named in the error).
+
+**Editing timelines and eases.** The tools from `add_timeline_track` to `delete_ease` below edit timelines piece by piece. They share these rules.
+
+- **Refusals change nothing.** A tool checks every argument and every file it will touch, builds all the new text, and only then writes. A deliberate refusal is an error result whose message ends once with "Nothing was changed."; no file changes, `.bak` files included. A timeline or ease name in another letter case than the registered one is refused, and the message names the registered one (`Did you mean "Move"?`). The read-only tools (`get_timeline_details`, `list_timeline_tracks`) answer the same lookups with a plain error that does not say this. An unexpected failure is reported as `Error <doing>: <message>`.
+- **Messages name files relative to the project folder**, written with `/` (`timelines/Move.json`), never an absolute path. A file that cannot be read is named with the error code or the JSON parse text, not the file system's message.
+- **The writes.** A tool that changes a timeline reads its one file, builds the new text and writes that file, backed up once per call as `<file>.bak` (`backupFile`, the path of the backup). An existing file keeps its text style (line endings and BOM); a new file follows the project's. When a timeline is saved, its `transitionsData` gets a copy of each custom ease the timeline uses, refreshed when the ease changed, and loses the copy of a project ease it no longer uses. A timeline or ease file that changed on disk after the tool read it is neither written nor deleted: the call is refused and the file keeps the change. A file another program created meanwhile is not overwritten, and the message says so. Run the tool again. `create_timeline`, `delete_timeline`, `create_ease`, `update_ease` and `delete_ease` write several files (the timeline or ease file, `project.c3proj`, and for `update_ease` and `delete_ease` the event sheets and timelines that hold a copy of the ease). When a later step fails, they put the earlier files back, and the error names a file they could not put back.
+- **Results.** A write returns a `WriteResult` (`success`, `entity`, `category: "timeline"` or `"ease"`, `action`, `backupFile`, `warnings`) and the editor reload note.
+- **What the tools leave alone.** The values of an untyped instance track (an older track with no `type`) are never rewritten: `add_timeline_track` for its instance, `add_property_track`, `set_keyframe` and a result mode change refuse it, and `remove_timeline_track`, `remove_property_track`, `delete_keyframe`, `move_timeline_track` and `update_track` flags still work. Property-track folders are read (the tools find property tracks inside them) but never created, renamed or deleted. A track or property-track folder with a result mode other than `default` is never given values: the tools that would compute them refuse. The timeline tools never read, change or delete transitions (custom eases); the ease tools do.
+- **File shapes.** New tracks, keyframes, folders and eases are written in the key order of timelines saved by Construct 3 r495.2 (the shapes kept in the test fixtures).
 
 ### `add_timeline_track`
 
-Add an instance track for one world instance, with a master keyframe at each
-`keyframeTimes` entry and one property track per `properties` entry whose
-keyframes hold the instance's current values. Refused when the instance already
-has a track in this timeline, when the UID is not in the layout, when it is a
-non-world instance, when `properties` repeats a name, or when a time falls
-outside `[0, totalTime]`.
+Add an instance track to a timeline: one world instance of a layout, with master keyframes at the given times and one property track per property. Each property track gets a keyframe at every master keyframe time, holding the instance's current value (a world property from the layout, an instance variable or plugin property from the instance). Value and audio tracks are added with [`add_value_track`](#add_value_track) and [`add_audio_track`](#add_audio_track).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
 | `layoutName` | string | Yes | Layout that holds the instance |
-| `instanceUid` | number | Yes | UID of the world instance to animate |
-| `properties` | string[] | No | Property track names (default: `["offsetX","offsetY"]`) |
-| `keyframeTimes` | number[] | No | Master keyframe times in seconds (default: `[0]`) |
+| `instanceUid` | integer | Yes | UID of the world instance to animate |
+| `properties` | string[] | No | Properties to animate, at most 32 (default: `["offsetX","offsetY"]`) |
+| `keyframeTimes` | number[] | No | Master keyframe times in seconds, each within `[0, totalTime]`, 1 to 200 of them (default: `[0]`). Duplicates count once and the times are sorted |
+
+`properties` takes the world properties `offsetX`, `offsetY`, `offsetZElevation`, `offsetWidth`, `offsetHeight`, `offsetScaleX`, `offsetScaleY`, `offsetAngle`, `offsetOpacity` and `offsetColor`, the names of the object type's instance variables, and the ids of the instance's plugin properties (such as `initial-animation`). Write `var:name` or `plugin:name` when a name is both. A name that matches none of them is refused before anything is written, whatever the name: Construct 3 r506-2 (Free edition, guest) refused to open a project with a property track named `angle` on a Text object type ("property track type 'undefined' is not valid", then "Failed to open project"), and no other unknown name was tried. The message names the known world properties. The property tracks are stored in a fixed order (world properties, then instance variables, then plugin properties) whatever order they are given in.
+
+Result: `action: "track-added"`. Refused, with nothing written: a property name that matches no world property, instance variable or plugin property of the instance (the message names it and lists the world properties; when the object type file cannot be read it says so, also for a `var:` or `plugin:` name, since only world properties are then known), as well as the other refusals of this tool.
+
+Refused, changing nothing: the layout is not registered (the message gives the registered spelling of a different letter case, or the nearest names) or its file cannot be read; the instance UID is not in the layout, or is not a world instance; the instance already has a track in the timeline (also an untyped track, or one in a track folder); the timeline's root track folder has a result mode other than `default`; a property is named twice, or a known property's current value cannot be read; a keyframe time lies outside `[0, totalTime]`.
 
 ### `remove_timeline_track`
 
-Remove one track, at the root or in a track folder, with all of its property
-tracks and keyframes. Untyped (older) instance tracks can be removed too.
+Remove a track with all of its property tracks and keyframes: an instance track by `instanceUid` (an untyped track included) or a value or audio track by `trackName`, at the root or in a track folder.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | One of | UID of the animated instance |
-| `trackName` | string | One of | Name of a value or audio track |
+| `instanceUid` | integer | One of the two | UID of the animated instance (instance tracks) |
+| `trackName` | string | One of the two | Name of a value or audio track |
+
+Result: `action: "track-removed"`. Refused: neither or both selectors given; no track for the UID (the message lists the tracked UIDs); no value or audio track of that name (the message lists the names).
 
 ### `add_property_track`
 
-Add one property track to an existing instance track. Its keyframes are created
-at every existing master keyframe time, holding the instance's current value
-(`value: 0, aValue: 0` for an unverified property name). Refused when the track
-already has that property, including inside a property-track folder, and on
-untyped (older) tracks.
+Add one property track to an existing instance track, with a keyframe holding the instance's current value at every master keyframe time.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | Yes | UID of the animated instance |
-| `property` | string | Yes | Property name; only `offsetX` and `offsetY` are verified |
+| `instanceUid` | integer | Yes | UID of the animated instance |
+| `property` | string | Yes | Property to animate (names as for [`add_timeline_track`](#add_timeline_track)) |
+
+Result: `action: "property-track-added"`. Refused: no track for the UID; the track is an untyped (older) track; a track folder or property-track folder holding the track has a result mode other than `default`; the instance is in no layout (when a layout could not be read, the message names it), or is not a world instance; the property name matches no world property, instance variable or plugin property of the instance (as for `add_timeline_track`); the property has a track already (also one in a property-track folder), or its current value cannot be read.
 
 ### `remove_property_track`
 
-Remove one property track and all of its keyframes, also from a
-property-track folder.
+Remove one property track, and all of its keyframes, from an instance track (also from a property-track folder).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | Yes | UID of the animated instance |
-| `property` | string | Yes | Property track name to remove |
+| `instanceUid` | integer | Yes | UID of the animated instance |
+| `property` | string | Yes | Property track to remove; `var:` or `plugin:` selects between tracks that share a name |
+
+Result: `action: "property-track-removed"`. Refused: no track for the UID; no such property track (the message lists the ones present).
 
 ### `set_keyframe`
 
-Create or update the master keyframe at `time`, and create or update the
-keyframe at `time` on each property track named in `values`, creating a missing
-property track (reported in `warnings`). Keyframes stay sorted by time. `time`
-must be within `[0, totalTime]`; raise `totalTime` with `update_timeline`
-first if it is not.
+Create or update the master keyframe at a time on a track, and the per-property keyframes at that time. An instance track takes any animated property; a value track takes only `value`; an audio track has master keyframes only.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | One of | UID of the animated instance; it must already have a track |
-| `trackName` | string | One of | Name of a value or audio track |
+| `instanceUid` / `trackName` | integer / string | One of the two | The track, as for [`remove_timeline_track`](#remove_timeline_track) |
 | `time` | number | Yes | Keyframe time in seconds, within `[0, totalTime]` |
-| `values` | object | No | Per-property `{ absolute?, relative?, ease? }`, e.g. `{ "offsetX": { "absolute": 400 } }`; `ease` sets that property keyframe's ease |
-| `ease` | string | No | Master keyframe ease (a new keyframe gets `default`) |
+| `values` | object | No | Per-property values, at most 32, e.g. `{ "offsetX": { "absolute": 400 }, "offsetOpacity": { "relative": -0.5 }, "tag": { "absolute": "done" } }` |
+| `ease` | string | No | Master keyframe ease (a new keyframe gets `"default"`) |
 | `enabled` | boolean | No | Master keyframe enabled flag |
-| `tags` | string | No | Master keyframe tags string |
+| `tags` | string | No | Master keyframe tags |
 
-For `offsetX`/`offsetY`, give `absolute` **or** `relative` and the other is
-computed from the instance's layout position; supplying neither is refused. For
-any other property name, both `absolute` and `relative` are required, because
-no mapping between them was observed; supplying only one is refused. Resolving
-a position property needs the instance to still exist in some layout: a track
-left behind by a deleted instance is refused with a message naming
-`remove_timeline_track`.
+Each entry of `values` has `absolute`, `relative` and `ease`. A number property takes `absolute` (the value) or `relative` (an offset from the instance's own value in its layout); the stored values follow the result mode in force. A string or boolean property, or an instance variable or plugin property of that type, takes `absolute`; `offsetColor` takes `absolute` as `[r, g, b, a]`, each 0 to 1. A property without a track gets one, and a warning lists the tracks created: they hold a keyframe only at the times set so far. A name that matches no world property, instance variable or plugin property does not get a new track: it is refused (see below). A track that already has such a name, for example one the editor saved, can still be set, and then needs both `absolute` and `relative` as numbers, which are stored as given. A value track takes `values.value.absolute` as a number and no `relative`; a keyframe is created only when `absolute` is given. A warning names an ease that is neither one of Construct's nor a custom ease of the project.
 
-A value track takes only `values.value` with an `absolute` number, and needs
-it when `time` has no keyframe yet; its master keyframe and value keyframe are
-kept at the same times. An audio track takes no `values`: only its master
-keyframe is created or updated. Untyped (older) instance tracks are refused.
+Result: `action: "keyframe-created"` when the track had no master keyframe at that time, otherwise `"keyframe-updated"`. Refused: a time outside `[0, totalTime]`; more than 32 properties; an untyped (older) track; values given for an audio track; a value track given another property, a `relative` value or a value that is not a number; a value of the wrong kind, or a number property given neither `absolute` nor `relative`; a property name that matches no world property, instance variable or plugin property and has no track yet (nothing is written; Construct 3 r506-2 Free edition, guest, refused to open a project with a property track named `angle` on a Text object type); the instance is in no layout (the message names a layout that could not be read); a folder with a non-default result mode.
 
 ### `delete_keyframe`
 
-Without `property`, delete the master keyframe at `time` and every property
-keyframe at that time. With `property`, delete only that one property keyframe
-and leave the master keyframe in place (instance tracks only). Deleting the
-last remaining master keyframe is refused, because a track with no keyframes
-is not a valid track; use `remove_timeline_track` instead. Property keyframes
-inside property-track folders are removed with their master keyframe. An audio
-track's keyframe at time 0 is also refused: Construct moves a keyframe there on
-load, so deleting it would leave a track the editor silently rewrites.
+Delete the master keyframe at a time and every property keyframe at that time, or with `property` only that property's keyframe of an instance track.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | One of | UID of the animated instance |
-| `trackName` | string | One of | Name of a value or audio track |
-| `time` | number | Yes | Time of the keyframe to delete |
-| `property` | string | No | Delete only this property track's keyframe |
+| `instanceUid` / `trackName` | integer / string | One of the two | The track, as for [`remove_timeline_track`](#remove_timeline_track) |
+| `time` | number | Yes | Time of the keyframe, in seconds |
+| `property` | string | No | Delete only this property track's keyframe of an instance track, leaving the master keyframe |
+
+Result: `action: "keyframe-deleted"`, or `"property-keyframe-deleted"` with `property`. Refused: no master keyframe at that time (the message lists the times); the last master keyframe of a track (use `remove_timeline_track`); the keyframe at time 0 of an audio track; `property` given for a value or audio track; no such property track, or no keyframe on it at that time.
 
 ### `update_track`
 
-Update the playback properties of one track. At least one is required.
-Keyframes and property tracks are left alone, except that a result-mode change
-recomputes the stored `value` of typed instance-track keyframes. Fields a
-track kind does not have are refused (`resultMode` on value tracks and untyped
-tracks, `pathMode` on value and audio tracks).
+Update the playback properties of one track. A value or audio track can also be renamed, and an audio track pointed at another registered audio file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | One of | UID of the animated instance |
-| `trackName` | string | One of | Name of a value or audio track |
-| `enabled` | boolean | No | Enable/disable the track |
+| `instanceUid` / `trackName` | integer / string | One of the two | The track, as for [`remove_timeline_track`](#remove_timeline_track) |
+| `enabled` | boolean | No | Enable or disable the track |
 | `ease` | string | No | Track ease name |
 | `interpolationMode` | string | No | Track interpolation mode |
 | `resultMode` | string | No | Track result mode (instance and audio tracks) |
 | `pathMode` | string | No | Track path mode (instance tracks) |
-| `initialVisibility` | boolean | No | Visibility applied when the timeline starts |
-| `name` | string | No | New name of a value or audio track (unique in the timeline) |
-| `audioFile` | string | No | Audio track: another registered sound or music file |
-| `audioFolder` | `sound` / `music` | No | Where `audioFile` is registered, when both folders hold that name |
+| `initialVisibility` | boolean | No | Visibility when the timeline starts |
+| `name` | string | No | New name of a value or audio track |
+| `audioFile` | string | No | Audio track: registered sound or music file to play |
+| `audioFolder` | `"sound"` \| `"music"` | No | Audio track: which folder holds `audioFile`, needed only when both do |
 | `audioStartOffset` | number | No | Audio track: offset into the file, in seconds |
 | `audioTag` | string | No | Audio track: tag given to the playing audio |
 
-### `add_value_track`
+Result: `action: "track-updated"`. Refused: no update given; `resultMode` on a value track, or on an untyped (older) track, or under a folder with a non-default result mode; `pathMode` on a value or audio track; `name` on an instance track, or a name another value or audio track has, or a name Construct cannot use; an audio argument on a track that is not an audio track; an audio file that is not registered, or registered in both folders without `audioFolder`.
 
-Add a value track: a named number animated over time. Each keyframe creates a
-master keyframe and a value keyframe at the same time. Refused when the
-timeline already has a value or audio track of that name.
+### `list_timeline_tracks`
+
+Read-only. Summarize every track of a timeline.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `name` | string | Yes | Track name |
-| `keyframes` | array | No | `{ time, value, ease? }` (default: one keyframe of value 0 at time 0) |
-| `folder` | string | No | Track folder to put it in (default: the root) |
+
+Result: `{ timeline, tracks, count }`. Each track has `kind` (`instance-track`, `value-track`, `audio-track`, or `legacy-instance-track` for an untyped track), `folder` (`""` at the root), `enabled`, `keyframeTimes` and `propertyTracks` (`property`, `sourceType`, `folder`, `keyframeCount`). An instance track has `instanceUid` and `objectType`, a value or audio track has `name`, an audio track has `audioFile`, `audioType`, `audioStartOffset` and `audioTag`, and an untyped track has a `note`. Lookup failures are plain errors.
+
+### `add_value_track`
+
+Add a value track (a named number animated over time) with one keyframe per given time.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `name` | string | Yes | Track name, unique among the timeline's value and audio tracks |
+| `keyframes` | object[] | No | `{ time, value, ease? }`, 1 to 200 (default: one keyframe of value 0 at time 0) |
+| `folder` | string | No | Track folder to put the track in (default: the root) |
+
+Result: `action: "value-track-added"`; `warnings` names an ease that is neither one of Construct's nor a custom ease. Refused: a name Construct cannot use; a name another value or audio track has (also in a folder); a time given twice; a time outside `[0, totalTime]`; a folder that does not exist (the message lists the folders).
 
 ### `add_audio_track`
 
-Add an audio track that plays a sound or music file. The file must be
-registered in `rootFileFolders.sound` or `.music`; its entry is copied into
-the track's `sourceAdapter.audioProjectFile` and the folder name becomes
-`audioType`. Only one audio track was sampled, so check the result in the
-editor. The result carries `trackName`.
-
-`sourceAdapter.audioProjectFilePath` follows `audioProjectFile`. Live r495.2
-saves of a project whose `exportFileStructure` was `folders` wrote
-`media/Theme.webm` for a music file at the root and `media/Sfx/Blip.webm`
-for a sound file in the Sounds subfolder `Sfx`; the r432.3 sample has no such
-key. The tools write `media/[<subfolder>/]<file name>` when the project uses
-`folders`, and no path otherwise, with a warning. `update_track` writes the
-path when `audioFile` changes and removes a path that no longer applies.
-
-The first keyframe must be at time 0: r495.2 moved a lone keyframe written at
-1s back to 0, and the sampled audio track starts at 0.
+Add an audio track that plays a sound or music file registered in the project. The track holds a copy of the file's registration entry; `audioProjectFilePath` is written only when the project's export file structure is one the tool knows, and otherwise a warning says so.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `audioFile` | string | Yes | Registered file name, e.g. `Theme.webm` |
-| `audioFolder` | `sound` / `music` | No | Needed only when both folders hold that name |
-| `name` | string | No | Track name (default: `Audio Track N`, the next free number) |
+| `audioFile` | string | Yes | File name of a registered sound or music file, e.g. `"Theme.webm"` |
+| `audioFolder` | `"sound"` \| `"music"` | No | Folder holding `audioFile`, needed only when both hold that name |
+| `name` | string | No | Track name (default: `"Audio Track N"`, the next free number) |
 | `audioStartOffset` | number | No | Offset into the file, in seconds (default: 0) |
 | `audioTag` | string | No | Tag given to the playing audio (default: empty) |
-| `keyframeTimes` | number[] | No | Master keyframe times (default: `[0]`) |
-| `folder` | string | No | Track folder to put it in (default: the root) |
+| `keyframeTimes` | number[] | No | Master keyframe times in seconds (default: `[0]`) |
+| `folder` | string | No | Track folder to put the track in (default: the root) |
 
-### `add_timeline_folder`, `rename_timeline_folder`, `delete_timeline_folder`
+Result: `action: "audio-track-added"` and `trackName`. Refused: the file is not registered in the project's sound or music files (import it in the editor first), or is registered in both without `audioFolder`; a name Construct cannot use, or one another value or audio track has; a time outside `[0, totalTime]`; keyframe times without 0; a folder that does not exist.
 
-Edit track folders in `tracksRoot`. Folder paths are slash-separated
-(`"Doors"`, `"Doors/Left"`); sibling folder names must differ. Every sampled
-folder sat directly under the root, so creating a nested folder returns a
-warning. Deleting a folder moves its tracks and subfolders to the parent
-(tracks moved to the root go back into `tracks`) unless `deleteContents` is
-true.
+### `add_timeline_folder`
 
-| Parameter | Type | Tool | Description |
-|-----------|------|------|-------------|
-| `timelineName` | string | all | Timeline name |
-| `name` | string | add | New folder name |
-| `parentFolder` | string | add | Parent folder (default: the root) |
-| `folder` | string | rename, delete | Folder path |
-| `newName` | string | rename | New folder name |
-| `deleteContents` | boolean | delete | Delete the contents too (default: false) |
+Create a track folder in a timeline.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `name` | string | Yes | Folder name, 1 to 200 characters, without `/` or control characters |
+| `parentFolder` | string | No | Slash-separated path of the folder to create it in (default: the root) |
+
+Result: `action: "folder-added"`. A folder inside another folder is written with a warning: how Construct stores a nested track folder is not known here. Refused: an invalid name; a parent folder that does not exist (the message lists the folders); a sibling folder of that name.
+
+### `rename_timeline_folder`
+
+Rename a track folder.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `folder` | string | Yes | Path of the folder to rename |
+| `newName` | string | Yes | New folder name (same rules as `name` of `add_timeline_folder`) |
+
+Result: `action: "folder-renamed"`. Refused: an invalid name; the root folder; a folder that does not exist; a sibling folder of the new name.
+
+### `delete_timeline_folder`
+
+Delete a track folder. Its tracks and subfolders move to the parent folder unless `deleteContents` is true.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `timelineName` | string | Yes | Timeline name |
+| `folder` | string | Yes | Path of the folder to delete |
+| `deleteContents` | boolean | No | Also delete the tracks and subfolders inside it (default: false) |
+
+Result: `action: "folder-deleted"`; a warning counts the items moved or deleted. Refused: the root folder; a folder that does not exist; without `deleteContents`, a subfolder whose name the parent folder already has, and a move that would change the result mode in force for an instance, audio or untyped track (a value track is exempt), as [`move_timeline_track`](#move_timeline_track) is. With `deleteContents` the result mode check does not apply, since the tracks are deleted with the folder.
 
 ### `move_timeline_track`
 
-Move a track into a track folder, or back to the root (`tracks`) with
-`folder: ""`.
+Move a track into a track folder, or back to the root with `folder: ""`. The track keeps all of its keyframes.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `timelineName` | string | Yes | Timeline name |
-| `instanceUid` | number | One of | UID of the animated instance |
-| `trackName` | string | One of | Name of a value or audio track |
-| `folder` | string | Yes | Destination track folder, or `""` for the root |
+| `instanceUid` / `trackName` | integer / string | One of the two | The track, as for [`remove_timeline_track`](#remove_timeline_track) |
+| `folder` | string | Yes | Destination track folder |
 
-### Custom eases
+Result: `action: "track-moved"`. Refused: the track is already there; the destination folder does not exist; a folder the track leaves or enters has a result mode other than `default` (a value track is exempt).
 
-A custom ease (sample: tasty-cappuccino `LightOutBack`) is
-`timelines/transitions/<name>.json`:
+### `list_eases`
 
-```json
-{
-  "name": "LightOutBack",
-  "linear": false,
-  "purpose": "any",
-  "transitionKeyframes": [
-    { "x": 0, "y": 0, "sax": 0.433, "say": 1.329, "eax": 0, "eay": 0, "se": true, "ee": false, "sm": "cubic" },
-    { "x": 1, "y": 1, "sax": 0, "say": 0, "eax": -0.355, "eay": 0.009, "se": false, "ee": true, "sm": "cubic" }
-  ]
-}
-```
+Read-only. List the project's custom eases, the timelines that use them and the event sheets whose ease parameters (such as the Tween ease) name them.
 
-Its name is listed in the first nameless subfolder of the `project.c3proj`
-`timelines` container (every sampled project has that folder, first among the subfolders), and each
-timeline using the ease holds a copy in `transitionsData`. `sax`/`say` is the
-outgoing handle and `eax`/`eay` the incoming handle, as offsets from the
-point; `se`/`ee` mark which handles exist. The sample has two points only:
-points between the ends get both handles, which is unsampled. `purpose` is
-always written as `any`, the only sampled value.
+No parameters. Result: `{ eases, count, unreadableTimelines? }`. Each ease has `name`, `linear`, `purpose`, `points`, `usedBy` (timeline names) and `usedByEventSheets`. A registered ease whose file cannot be read has an `error` without a path instead of its points. `unreadableTimelines` names timelines that could not be opened, which are left out of `usedBy`.
 
-#### `list_eases`
+### `create_ease`
 
-List custom eases with `linear`, `purpose`, `points`, `usedBy` (the
-timelines that name the ease) and `usedByEventSheets` (sheets whose ACE `ease`
-parameters name it, as a string or an embedded copy). No parameters.
-
-#### `create_ease`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Ease name; refused when it equals a Construct ease id in any letter case, or is already an ease or timeline name |
-| `points` | array | Yes | `{ x, y, startHandle?: { x, y }, endHandle?: { x, y } }` from `(0,0)` to `(1,1)`, x strictly increasing; the first point takes no `endHandle` and the last no `startHandle` |
-| `linear` | boolean | No | Default: false |
-
-#### `update_ease`
-
-Rewrite the points or `linear` flag, then refresh the copy in every timeline
-that uses the ease and every embedded copy in an event-sheet `ease`
-parameter. The result lists `timelinesRefreshed` and `eventSheetsRefreshed`.
+Create a custom ease curve: a file in `timelines/transitions/` registered in the Transitions folder of `project.c3proj`. Timelines can then name it as an ease.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Ease name |
-| `points` | array | No | New points, as for `create_ease` |
-| `linear` | boolean | No | New flag |
+| `points` | object[] | Yes | Curve points, 2 to 50: `{ x, y, startHandle?, endHandle? }`, from (0,0) to (1,1); `x` is 0 to 1, `y` and the handle offsets -10 to 10 |
+| `linear` | boolean | No | The `linear` flag (default: false) |
 
-#### `delete_ease`
+Result: `action: "created"`, `category: "ease"`; no `backupFile`, since the file is new. A curve with points between the ends is written with a warning to check it in the editor. If the registration fails, the new file is removed again. Refused: a name Construct cannot use; one of Construct's own ease names (compared ignoring letter case); a name already registered, or one that differs from a registered ease only in letter case; the name of a timeline; points that do not run from (0,0) to (1,1) with strictly increasing `x`, or that give the first point an incoming handle or the last point an outgoing handle; a file of that name that already exists on disk but is not registered.
 
-Delete an ease that no timeline uses: first its registration, then its file
-and `.uistate.json` (with `.bak` copies), and any stale copy left in a
-timeline's `transitionsData`. Refused, naming them, while a timeline uses the
-ease or a registered timeline cannot be opened. The Tween behavior and
-scripts can also name an ease, so event sheets and registered script files
-are searched for the name as a whole word; a hit, or a file that cannot be
-read, refuses the delete unless `force` is true, and a forced delete reports
-them in `warnings`. A forced delete leaves embedded copies in event
-parameters in place (and says so); what Construct does with such a copy
-after its ease is gone was not sampled.
+### `update_ease`
+
+Change a custom ease's points or `linear` flag, and refresh the copy of it in every timeline that uses it and in every event-sheet ease parameter that embeds it. Timelines that do not use the ease are not touched.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Ease name |
-| `force` | boolean | No | Delete despite event-sheet or script mentions (default: false) |
+| `points` | object[] | No | New curve points, as for `create_ease` |
+| `linear` | boolean | No | New `linear` flag |
 
----
+Result: `action: "updated"`, `backupFile` (the ease file's backup), `timelinesRefreshed` and `eventSheetsRefreshed`. The event sheets are written first, then the timelines, and the ease file last. It is refused, changing nothing, while a registered timeline or an event sheet cannot be read, because the copy in it could not be refreshed. Also refused: no update given; an ease that is not registered, or whose file cannot be read; invalid points.
 
-## Effect Tools
+### `delete_ease`
 
-Effects attach to object types, families, layers, and layouts. Object-type and family effects keep the shared definition on the type (`effectTypes: [{ effectId, name }]`) and the per-instance state on every placed instance (`effects: { name: { isEnabled, parameters } }`). Layer and layout effects keep both in one entry (`effectTypes: [{ effectId, name, instance: { isEnabled, parameters } }]`).
-
-Effects are never auto-registered: the effect addon must already be listed in `usedAddons` (add it in the Construct editor or with `register_addon`), because the effect's files must be present in the project. Neither coordinate parameter defaults nor parameter validation come from the addon; when `parameters` are omitted the tools write an empty parameter set for Construct to default on load.
-
-All targets take the same addressing parameters:
+Delete a custom ease that no timeline uses: its registration, its file (kept as a `.bak`) and its editor-state file (`<name>.uistate.json`, also kept as a `.bak`). A timeline's stored copy of the ease is removed from timelines that no longer use it.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `targetType` | `objectType` / `family` / `layer` / `layout` | Yes | What the effect is attached to |
-| `targetName` | string | Yes | Object type, family, layout, or layer name |
-| `layoutName` | string | For `layer` | The layout containing the layer |
+| `name` | string | Yes | Ease name |
+| `force` | boolean | No | Delete although event sheets or script files mention the name, or cannot be read (default: false) |
 
-### `list_effects`
+Result: `action: "deleted"` and `backupFile`. Refused: an ease that is not registered; a timeline that cannot be opened; a timeline that uses the ease; unless `force` is set, an event sheet or script file that mentions the name as a whole word (a lexical search, which can report a name that is not an ease), or that cannot be read. With `force`, a warning says so and names the event sheets that still embed a copy of the ease. Files saved on disk after the tool read them (the ease file, its editor-state file, a timeline) are not deleted. A failed step puts the earlier ones back.
 
-Returns the target's effect stack and the effect addon IDs registered in the project.
+### Flowchart tools
 
-### `add_effect`
+A flowchart is `flowcharts/<name>.json` (`flowcharts/<folder>/.../<name>.json` in a Project Bar folder), registered in the `flowcharts` container of `project.c3proj` in the same folder, as a timeline is. The tools below share these rules:
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `effectId` | string | Yes | Effect addon ID from `usedAddons` |
-| `name` | string | No | Effect name shown in the editor (default: the ID); must be unique on the target |
-| `parameters` | object | No | Initial parameter values |
-| `isEnabled` | boolean | No | Initially enabled (default: true) |
-| `index` | number | No | Position in the stack (default: append) |
+- A name is accepted as registered, letter case included. A name in another letter case is refused with the registered name. `create_flowchart` refuses a name that differs only in case from an existing flowchart in any folder, and a `subfolder` that differs only in case from an existing Project Bar folder.
+- A tool reads the file, changes it in memory and writes it back once, through a temp file, with the state from before the call kept as `<file>.bak` (once per call). A flowchart file that changed on disk after the call read it, for example because it was saved in the editor, is not overwritten: the error says so and the file keeps that change. The server does not make an open editor re-read the file (see the editor reload note).
+- A refusal is given before anything is written and ends with *Nothing was changed.* A write refused because the file changed on disk says so in its own words: the file was not written, and the tool can be run again. An error before the first write says the change was stopped before anything was written. When a write fails, the error says what is on disk.
+- Arguments a tool does not take are refused, also inside the `outputs` entries of `add_flowchart_node`. Positions and sizes must be finite numbers.
+- A registration whose folder or name would put the file outside `flowcharts/` is not read, changed or deleted.
+- The file keeps its line endings, trailing whitespace and BOM; a new file follows `project.c3proj`. Keys the tools do not model are kept.
+- The tools never write the editor-state file `<name>.uistate.json`, except that `delete_flowchart` deletes it with the flowchart. In Construct 3 r506-2 (Free edition, guest) the editor wrote its own `<name>.uistate.json` for each flowchart when it saved.
+- A flowchart file that is not an object with a list of `nodes` is refused.
 
-For object-type and family targets, every placed instance of the type (or of each member) receives the per-instance state; the layouts written are listed in `warnings`.
+Observed in Construct 3 r506-2 (Free edition, guest): the editor opened a project with two flowcharts made by these tools (one at the root, one in a Project Bar folder) without a dialog, listed both in the Project Bar, opened both, and saved them at the same paths with the values the tools wrote: node types, start and enabled flags, captions, outputs and their connections, `pnSIDs`, `poSIDs`, `nodeSIDs`, and the comment node's text and formatting. A comment body with one run of two spaces inside a line and one line break was kept byte for byte. Runs of three or more spaces, spaces at a line start or end and blank lines were not seen. The order in which Construct 3 runs the outputs of a node was not observed.
 
-### `update_effect`
+#### File format
 
-Set `isEnabled` and/or merge `parameters` on a **layer or layout** effect identified by `name`. Per-instance state of object-type and family effects is edited with `update_instance` (`effects`).
-
-### `remove_effect`
-
-Remove the effect named `name` from the target, and its per-instance state from every placed instance.
-
-### `reorder_effects`
-
-`names` must list every effect on the target exactly once, in the new order. Effects render in array order.
-## Flowchart Tools
-
-Flowcharts live in `flowcharts/[subfolder/]<name>.json` and are registered in
-the `flowcharts` container of `project.c3proj`, exactly like timelines. Every
-new `sid` comes from the project-wide ID generator, and every write makes a
-`.bak` copy first and then replaces the file through a temp file and a rename.
-
-### File format
-
-The shape below was confirmed against a real Construct 3 r495 project (31
-flowchart files, 1539 nodes).
+The fields the tools read and write. In the same r506-2 (Free edition, guest) save, the nodes had the same set of keys, and the flowchart the same top-level keys, as the files the tools wrote:
 
 | Field | Meaning |
 |-------|---------|
 | `sid`, `name`, `w`, `h` | Flowchart SID, name and canvas size (20000 x 20000 on a new flowchart) |
 | `preset-nodes` | `{ items, subfolders }` preset-node folder tree |
-| `nodes[].t` | Node type/title. Equal to `c` on 1170 of the 1539 sampled nodes; empty on comment boxes |
+| `nodes[].t` | Node type/title. Usually equal to `c`; empty on comment boxes |
 | `nodes[].c` | Node caption. **Not** a color: node and output colors live in the sibling `<name>.uistate.json` |
-| `nodes[].s` | Start node. All 31 sampled files carry exactly one |
+| `nodes[].s` | Start node. The tools keep exactly one |
 | `nodes[].e` | Enabled |
-| `nodes[].ty` | Value type. Observed values: `dictionary` (1373) and `comment` (166) |
+| `nodes[].ty` | Value type: `dictionary` or `comment` |
 | `nodes[].n`, `fo`, `fs`, `fb`, `fi`, `fc` | Comment nodes only, after `prfnsid`: body as the editor's HTML (first line plain, later lines in `<div>`, blank lines `<div><br></div>`), font face, font size, bold, italic and `#rrggbb` font color. Comment nodes have no outputs or connections and `t: ""`; their `c` is a separate caption |
-| `nodes[].pi` | Observed values 0, 1 and 2; meaning could not be determined from the sample |
+| `nodes[].pi` | Observed values 0, 1 and 2; meaning not determined |
 | `nodes[].pr`, `prfsid`, `prfnsid` | Preset-node markers. Never taken from tool input: new nodes get `false`/`null`/`null` and existing nodes keep whatever they carry |
-| `nodes[].pnSIDs`, `poSIDs` | Strictly parallel, one entry per incoming connection (1295 of 1295 sampled pairs valid): `poSIDs[i]` is an output of the node `pnSIDs[i]` |
+| `nodes[].pnSIDs`, `poSIDs` | Strictly parallel, one entry per incoming connection: `poSIDs[i]` is an output of the node `pnSIDs[i]` |
 | `nodes[].nodeSIDs` | Distinct child node SIDs, in an order independent of the `outputs` array order |
 | `nodes[].outputs[]` | `{ sid, cnSID, name, value, enable, default }`; `cnSID` is the connected node SID or `null` |
 
-Every unknown key is preserved on read-modify-write, at both the file and node
-level. These tools never create, update or delete the sibling
-`<name>.uistate.json` except when `delete_flowchart` removes the flowchart
-itself, which removes that file too (with its own `.bak`).
+#### `create_flowchart`
 
-### `list_flowcharts`
-
-List every flowchart registered in the project, at the container root and in
-every subfolder. Returns `{ flowcharts: string[], count: number }`.
-
-No parameters.
-
-### `get_flowchart_details`
-
-Return the parsed flowchart file, including all nodes, outputs and connections.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Flowchart name |
-
-### `create_flowchart`
-
-Create an empty flowchart file and register it. The call is refused when the
-Flowchart plugin is not already in `usedAddons`; add a Flowchart object in the
-Construct 3 editor first, because this tool never registers plugins itself.
-Duplicate names are refused wherever the existing name is registered.
+Create an empty flowchart and register it in the same folder of `project.c3proj`, creating the `flowcharts` entry and the folders when they are missing. The file is written first and the registration second. The checks on the name and the folder are made again on the `project.c3proj` the registration is made in, so a name or folder saved in the editor after the first check is refused and nothing is registered. When the write of the file fails after the file was written, or the registration fails, the registration this call made is taken out again (a change saved in the editor meanwhile is kept) and the file is removed again once `project.c3proj` on disk does not register it; the error says so. A file that cannot be removed is named; a file that `project.c3proj` still registers, or whose registration cannot be checked, is kept and named. A folder the write made stays, empty, and the error names it. Refused before anything is written: an unsafe name or folder, a name that is registered already (a name registered in a folder without a name is refused with its own message), a name that differs only in case from a registered one, a folder that differs only in case from an existing one, a file already on disk at the path (also one whose name differs only in case), and a `project.c3proj` that changed on disk after the call read the version its checks used. When the Flowchart plugin is not in `usedAddons` the result carries a warning that a Flowchart object has to be added in the editor before the flowchart is used at run time. This tool does not register plugins. In Construct 3 r506-2 (Free edition, guest) the editor opened a project whose `usedAddons` held no Flowchart plugin and drew the nodes of both flowcharts; the project it saved listed no addons at all, so this does not show what it does with a Flowchart plugin entry.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Flowchart name |
 | `subfolder` | string | No | Slash-separated folder path under `flowcharts/`, created in both places |
 
-### `delete_flowchart`
+#### `delete_flowchart`
 
-Delete the flowchart file, its `.uistate.json` sibling and the `project.c3proj`
-registration. The file is removed first, so a failure leaves the registration
-intact and the call retryable.
+Delete a flowchart: remove its registration from `project.c3proj`, then its file (kept as `<file>.bak`) and the editor-state file `<name>.uistate.json` beside it (also kept as `.bak`). Each file is deleted only if it is still in the state it had before the call began: a flowchart file or editor-state file saved in the editor during the call, or created where there was none, is kept (for the flowchart file the call is refused and the registration put back; for the editor-state file it is a warning). When the file cannot be deleted, a file that is gone is restored from its backup first and then the registration is put back at its place in its folder, on the `project.c3proj` as it is then (a change saved in the editor meanwhile is kept); a file that cannot be restored leaves the registration removed, so no registered name lacks its file, and the error names the backup. The error says what is on disk. A registered name whose file is missing loses its registration, with a warning. A failure to delete the editor-state file is a warning; the flowchart is gone. Refused before anything is changed when `project.c3proj` changed on disk after the call read it, and when the registration's folder or name would put the file outside `flowcharts/`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Flowchart name to delete |
 
-### `add_flowchart_node`
+#### `add_flowchart_node`
 
 Add a node. Outputs are created unconnected; wire them with
 `connect_flowchart_nodes`. When `isStart` is true the flag is cleared on every
-other node, because Construct 3 keeps exactly one start node per flowchart. The
+other node, so that a flowchart has one start node (each flowchart the editor of
+r506-2, Free edition, guest, saved had exactly one). The
 result carries `generatedSid` for the node and `outputSids` for its pins, plus a
 warning when the flowchart is left without a start node.
 
@@ -2579,17 +2805,17 @@ warning when the flowchart is left without a start node.
 | `enabled` | boolean | No | The `e` field (default: true) |
 | `valueType` | `dictionary` / `comment` | No | The `ty` field (default: `dictionary`). A comment node takes no `outputs`, gets `t: ""` unless `nodeType` is given, and gets the comment keys |
 | `outputs` | array | No | `{ name, value?, enabled?, isDefault? }` pins to create |
-| `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption). Runs of spaces become alternating `&nbsp;` and spaces starting with `&nbsp;`, ending in `&nbsp;` at a line end, and a lone space at a line start or end becomes `&nbsp;`, as in 7,888 of the 7,922 space runs in the C3-ACE comments |
+| `commentText` | string | No | Comment body as plain text, escaped and stored as the editor's HTML (default: the caption). Runs of spaces become alternating `&nbsp;` and spaces starting with `&nbsp;`, ending in `&nbsp;` at a line end, and a lone space at a line start or end becomes `&nbsp;` |
 | `commentHtml` | string | No | Comment body as HTML, stored unchanged; give this or `commentText` |
-| `font`, `fontSize`, `bold`, `italic`, `fontColor` | string, number, boolean, boolean, `#rrggbb` | No | Comment formatting (`fo`, `fs`, `fb`, `fi`, `fc`). Missing values take the most common sampled values (Calibri, 36, bold, not italic, `#39b530`) with a warning; Construct's own defaults were not sampled |
+| `font`, `fontSize`, `bold`, `italic`, `fontColor` | string, number, boolean, boolean, `#rrggbb` | No | Comment formatting (`fo`, `fs`, `fb`, `fi`, `fc`). Missing values take the values most common in editor-saved flowcharts (Calibri, 36, bold, not italic, `#39b530`) with a warning; Construct's own defaults were not observed (in r506-2, Free edition, guest, the editor kept a size of 24, bold, and these common values for the other three unchanged when it saved) |
 
 The comment fields are refused on a dictionary node, and a comment node
-cannot be the start node (none of the 166 sampled comment nodes is).
+cannot be the start node.
 
 There is no `color` parameter: the node `c` field is the caption, and colors are
 held in the `.uistate.json` file these tools do not write.
 
-### `update_flowchart_node`
+#### `update_flowchart_node`
 
 Update node properties. Connections, preset markers and unknown keys are
 preserved. `isStart: true` clears the flag on every other node.
@@ -2600,7 +2826,7 @@ preserved. `isStart: true` clears the flag on every other node.
 | `nodeSid` | number | Yes | SID of the node to update |
 | `caption` | string | No | New caption (`c`) |
 | `nodeType` | string | No | New type/title (`t`) |
-| `tags` | string | No | Writes a `tags` key. **Not observed** in any r495 sample flowchart; the result carries a warning saying so |
+| `tags` | string | No | Writes a `tags` key. **Not observed**; the result carries a warning saying so |
 | `isStart` | boolean | No | Set or clear the start flag |
 | `enabled` | boolean | No | The `e` field |
 | `parentIndex` | number | No | The `pi` field (meaning undetermined) |
@@ -2608,7 +2834,7 @@ preserved. `isStart: true` clears the flag on every other node.
 | `valueType` | `dictionary` / `comment` | No | Change the `ty` field. To `comment`: refused while the node has outputs or connections, or is (or is being made) the start node; `t` is cleared and the comment keys are added (body from the caption unless given). To `dictionary`: the comment keys are removed and an empty `t` takes the caption |
 | `commentText`, `commentHtml`, `font`, `fontSize`, `bold`, `italic`, `fontColor` | | No | Comment fields as for `add_flowchart_node`; only on a node that is, or becomes, a comment |
 
-### `delete_flowchart_node`
+#### `delete_flowchart_node`
 
 Delete a node and clean every reference to it: other nodes' `nodeSIDs`, their
 parallel `pnSIDs`/`poSIDs` entries, and any output whose `cnSID` pointed at it
@@ -2619,7 +2845,7 @@ parallel `pnSIDs`/`poSIDs` entries, and any output whose `cnSID` pointed at it
 | `flowchartName` | string | Yes | Flowchart name |
 | `nodeSid` | number | Yes | SID of the node to delete |
 
-### `add_flowchart_output`
+#### `add_flowchart_output`
 
 Add an output pin, unconnected, at the end of the array or at `index`.
 Refused on a comment node, which has no outputs.
@@ -2634,7 +2860,7 @@ Refused on a comment node, which has no outputs.
 | `isDefault` | boolean | No | The `default` field (default: false) |
 | `index` | number | No | Insertion index; must not exceed the current output count |
 
-### `update_flowchart_output`
+#### `update_flowchart_output`
 
 Update an output pin. Its `cnSID` is preserved.
 
@@ -2646,7 +2872,7 @@ Update an output pin. Its `cnSID` is preserved.
 | `enabled` | boolean | No | The `enable` field |
 | `isDefault` | boolean | No | The `default` field |
 
-### `delete_flowchart_output`
+#### `delete_flowchart_output`
 
 Delete an output pin, first undoing any connection it held.
 
@@ -2655,12 +2881,14 @@ Delete an output pin, first undoing any connection it held.
 | `flowchartName` | string | Yes | Flowchart name |
 | `outputSid` | number | Yes | SID of the output to delete |
 
-### `reorder_flowchart_outputs`
+#### `reorder_flowchart_outputs`
 
 Reorder a node's output pins. `outputSids` must be a permutation of that node's
 current output SIDs, so a wrong, short or duplicated list is rejected and
-nothing is written. Output array order is execution order in Construct 3, so
-this changes behavior.
+nothing is written. A node whose outputs hold one SID twice is refused too.
+The new order is the order of the outputs array in the flowchart file. Whether
+Construct 3 runs the outputs in that order was not observed, so check the
+flowchart's behavior after a reorder.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -2668,7 +2896,7 @@ this changes behavior.
 | `nodeSid` | number | Yes | Node whose outputs to reorder |
 | `outputSids` | number[] | Yes | The node's output SIDs in their new order |
 
-### `connect_flowchart_nodes`
+#### `connect_flowchart_nodes`
 
 Set the output's `cnSID`, append the source node SID to the target's `pnSIDs`
 and the output SID to its `poSIDs`, and add the target to the source's
@@ -2682,7 +2910,7 @@ node, which has no connections.
 | `outputSid` | number | Yes | Source output pin |
 | `targetNodeSid` | number | Yes | Node to connect to |
 
-### `disconnect_flowchart_nodes`
+#### `disconnect_flowchart_nodes`
 
 Reverse one connection. Because `pnSIDs` and `poSIDs` are per connection, only
 the entry for this output is removed; the target stays in the source's
@@ -2694,849 +2922,499 @@ between the same two nodes survives untouched.
 | `flowchartName` | string | Yes | Flowchart name |
 | `outputSid` | number | Yes | Output pin to disconnect |
 
----
+### Instance template tools
 
-## Structure Tools
+A template is a layout instance whose `template` block has `mode: "template"`; the instances that follow it are its replicas, whose blocks have `mode: "replica"` and name it. The state of an instance is its `template` block in `layouts/<name>.json`; there is no separate registry. Construct 3 r506-2 (Free edition, guest) saved the template an object type creates new instances from in `editorNewInstanceIsReplica` and `editorNewInstanceTemplateName` on the object type. Instances are found on every layer and sub-layer and among the non-world instances, but `set_instance_template` writes a block on a world instance only. Construct 3 r506-2 (Free edition, guest) opened a project in which `set_instance_template` had written a template, a replica of it and a replica of a template that does not exist on Text instances, and `set_default_template` the default, and saved all of them with the text that was written.
 
-Moving and copying Project Bar items (`src/tools/structure-tools.ts`) and
-Construct's Replace object and expression find-and-replace
-(`src/tools/replace-tools.ts`).
+Template names are compared exactly, with their letter case and Unicode form, and the tools identify a template by its object type and name. Construct 3 r506-2 (Free edition, guest) accepted a template `herot` next to `HeroT`, and a name next to its Unicode-normalisation twin, and saved them as separate templates. A name in another letter case is therefore a different template: `set_default_template` warns that no such template exists, and `set_instance_template` writes the name as given.
 
-### Project Bar folders
+Layout and object type names must be given as registered in `project.c3proj`, in that letter case. A name that differs only in letter case is refused with the registered spelling named (`Layout "level 1" not found: names are matched with their letter case. Did you mean "Level 1"?`). The two write tools end every refusal that happens before a write with `Nothing was changed.` `list_templates` changes nothing and answers an unknown object type with the plain not-found text.
 
-`project.c3proj` stores each tree as `{ "items": [...], "subfolders": [...] }`
-and each folder as `{ "items", "subfolders", "name" }`, in that key order.
-Construct keeps the file path in step with the folder: an item in folder
-`Enemies/Bosses` lives at `<category>/Enemies/Bosses/<name>.json`, with its
-`<name>.uistate.json` beside it (sheets, layouts, flowcharts) and, for a
-layout, `layouts/uistate/Enemies/Bosses/<name>.instancesBar.json`. A tilemap's
-brush file mirrors the object type's folder under
-`tilemapBrushes/objectTypes/`. Scripts and imported project files follow the
-same rule under `scripts/` and `files/`. Folders keep the user's order; new
-ones are appended.
+**The `template` block.** `set_instance_template` writes the block in the shape Construct 3 r506-2 (Free edition, guest) saved for a template and for a replica on Text and Sprite instances (other plugins were not checked): `mode`, `templateName`, `sourceTemplateName`, three hierarchy flags, `components` and `replicasUIDs`. The editor saved `replicasUIDs` as `null`, on a template that has a replica as well, and the tool writes `null`. `components` always holds the five ids `plugin`, `instance-variable`, `behavior`, `effect` and `world-instance`, in that order, built from the instance itself:
 
-### `move_project_item`
+| Component | Derived from | Notes |
+|---|---|---|
+| `plugin` | the keys of the instance's `properties` | `live-preview` is left out, as the editor leaves it out |
+| `instance-variable` | the keys of `instanceVariables` | written as `{ iv, state }` records |
+| `behavior` | one entry per key of `behaviors` | lists that behavior's own property keys, without `live-preview` |
+| `effect` | one entry per key of `effects` | lists the effect's parameters, then `<<effect-template-enable>>` |
+| `world-instance` | a fixed list of 24 keys, in the order the editor saves them | `x` and `y` are `false`, every other key `true` |
+
+### `list_templates`
+
+List every template instance in the project.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectType` | string | No | Only list templates of this object type (as registered, in that letter case) |
+
+Returns `templates`, one row per template instance with `templateName`, `objectType`, `layout`, `uid` and `replicaCount`, and `count`. A replica names its template, not the template's UID, so the count is the number of replicas of the same object type whose `sourceTemplateName` equals the name exactly. A replica whose template is in none of the layouts that could be read is listed under `orphanedReplicas` (`objectType`, `layout`, `uid`, `sourceTemplateName`), with `orphanedReplicaCount`. Construct 3 r506-2 (Free edition, guest) opened a project with such a replica without a message, showed its Template source blank and kept the source name through a save. At most 50 orphaned replicas are listed; when there are more, `orphanedReplicasTruncated` is `true` and a warning gives the total.
+
+Layouts that could not be parsed are not searched. When there are any, the result carries `complete: false`, `unscannedFiles` (`file` and `reason`, for example `layouts/Level 2` and `not valid JSON`) and a warning that counts and orphans may be wrong. Error text carries no absolute path.
+
+### `set_instance_template`
+
+Make a layout instance a template, a replica of a named template, or neither.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layoutName` | string | Yes | Layout holding the instance (as registered, in that letter case) |
+| `uid` | number | Yes | Instance UID (found on every layer and sub-layer, and among the non-world instances; `template` and `replica` are refused for a non-world instance) |
+| `mode` | enum | Yes | `none`, `template` or `replica` |
+| `templateName` | string | For `template` | Template name |
+| `sourceTemplateName` | string | For `replica` | Name of the template to follow |
+
+- `none` removes the `template` block. An instance with no block is refused.
+- `template` builds the block with `mode: "template"`. A name that another instance of the same object type already has as a template, in any readable layout, is refused: `Instance UID 7 in layout "Level 2" is already a template named "T" for object type "Player". Template names must be unique per object type.`
+- `replica` builds the block with `mode: "replica"` and the source name. It is written even when no instance of the object type is a template of that name, with a warning. An instance that is itself the template of that name is refused.
+- A non-world instance is refused for `template` and `replica`, before anything is written: Construct 3 r506-2 (Free edition, guest) refused to open a project with a template block (and again with a replica block) on the non-world instance of an Array object type, in 2 of 2 attempts ("Failed to open project"); it opened the same project with those blocks removed, and with only the blocks on world instances kept. `none` is not affected.
+- A layout that cannot be parsed, an unknown layout and an unknown UID are refused. A missing `templateName` or `sourceTemplateName` is refused before anything is read.
+- The layout is written once and backed up to `<file>.bak` (`backupFile`). If the write or its read-back fails, the layout is put back as it was before the call and the error says what is on disk.
+
+The result is `success`, `entity` (`<layout>#<uid>`), `category: "template"`, `action` (`template removed`, `template created` or `replica linked`), `warnings` and `backupFile`. The warnings, in the wording of the tool:
+
+| When | Warning |
+|---|---|
+| a replica names a template that no instance of the object type has | `No instance of "Player" is a template named "T". The replica is written anyway; it has no template to follow until one of that name exists.` |
+| the instance already had a block of the same mode | `The instance's existing template block was rebuilt from its current properties, instance variables, behaviors and effects; sync settings changed in the editor were reset.` (`replica` for a replica) |
+| the call removes a template, renames it or turns it into a replica, and replicas follow the old name | `2 replica(s) of "Player" follow the template "T", which no instance is any more; list_templates lists them as orphanedReplicas.` |
+| the same call, and the object type's default template is the old name | `Object type "Player" creates new instances from the template "T"; clear or change it with set_default_template.` (`Whether object type "Player" creates new instances from "T" could not be checked (...)` when the object type cannot be read) |
+| layouts could not be parsed | the consequence, then the layouts, for example `Whether another instance of "Player" is already a template named "T" could not be checked in every layout. Layouts that could not be parsed: layouts/Level 2 (not valid JSON).` |
+
+Construct 3 r506-2 (Free edition, guest) also offered no template properties on the Array object type and saved its non-world instance with no `template` key. Other non-world plugin types, other tiers and r495 were not checked.
+
+### `set_default_template`
+
+Set or clear the template a new instance of an object type is created from.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `objectName` | string | Yes | Object type name (as registered, in that letter case) |
+| `templateName` | string \| null | Yes | Template to create new instances from, or `null` to clear it. An empty string is rejected |
+
+Setting a name writes `editorNewInstanceIsReplica: true` and `editorNewInstanceTemplateName` on the object type. Construct 3 r506-2 (Free edition, guest) saved a cleared default as `editorNewInstanceIsReplica: true` with no `editorNewInstanceTemplateName`, and `null` writes exactly that. If no instance of the object type is a template of that name, in a layout that could be read, the name is saved as given with the warning `No instance of "Player" is a template named "T". Create one with set_instance_template first.`; layouts that could not be parsed are named in a second warning. An object type file that cannot be parsed is refused. Only the object type file is written, with a `.bak` backup; a failed write or read-back puts it back and the error says what is on disk. The result is `success`, `entity`, `category: "objecttype"`, `action` (`default template set` or `default template cleared`), `warnings` and `backupFile`.
+
+### Find and replace
+
+Two tools change the event sheets by name. `replace_object_in_events` swaps one object type or family for another, event by event, and leaves what the replacement cannot serve. `replace_in_expressions` finds and replaces text in the parameter values of conditions and actions. Both decide every change in memory first and write the changed sheets together; a refusal before the first write changes nothing and ends "Nothing was changed.", and a write that fails puts back the sheets the call had already written (the message says what is on disk). Event sheet names are taken as the project registers them, in that letter case. Layouts are not changed.
+
+#### `replace_object_in_events`
+
+Construct's event-sheet Replace object.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `fromObject` | string | Yes | Object type or family to replace, as registered (letter case included) |
+| `toObject` | string | Yes | Replacement of the same plugin, as registered |
+| `sheetName` | string | No | Limit the swap to this event sheet, as registered (default: every event sheet) |
+| `dryRun` | boolean | No | Report what would be swapped and skipped, and write nothing (default: `false`) |
+
+**What a swap rewrites.** The references the rename tools rewrite ([`rename_object_type`](#rename_object_type)): the `objectClass` of conditions and actions, the owner of custom action blocks, the family of a custom action call, the object parameters (`object`, `object-to-create`, `pin-to` and `child` always; any other parameter whose whole value is the name only when it is the name exactly as registered and the reference index counts it as the object), the `objectClass` of an object-valued `instance-variable` parameter (`{ name, objectClass }`; Construct 3 r506-2, Free edition, opened and saved it on System Sort Z order, and `set-instvar-value` takes the string form, a project with the object form on it did not open), and expressions that use the name as an object (`Name.X`, `Name(0).X`). A whole value that differs from the name only in letter case, a string literal, a script line and the initial value of an event variable are never changed. They are counted in `notChanged` and named in one warning.
+
+**What it needs from the replacement.** The unit of a swap is a branch: an event that references the replaced object together with all its sub-events, which share its picked instances. A branch is swapped whole or not at all, and the reason of a sub-event is reported as `sub-event <path>: ...` on the branch's top event. A branch is left alone when a condition or action on the replaced object uses a behavior (`behaviorType`) or an effect (an `effect` parameter holding a quoted name, checked only when the replaced object has that effect) that the replacement lacks, or when its `instance-variable` parameter names an instance variable the replacement lacks (a plain name, or a record whose `objectClass` is the replaced object; a record naming another object is not about it) (an object type has the behaviors, instance variables and effects of its families too), when an expression reads `From.Member` (or `Self.Member` in a condition or action on the replaced object) for such a behavior or instance variable, when the replacement has a behavior of the same name but of another behavior type, and when a condition or action calls a custom action (whether the replacement has it is not checked). Behavior, instance variable and effect names are compared exactly, letter case included. A custom action definition owned by the replaced object is left whole with the events inside it. A branch nested deeper than 60 levels is left alone and listed. A named animation that the replacement lacks does not stop a swap; it draws a warning.
+
+**Sheets that cannot be parsed.** A registered event sheet over the size limit (10MB by default) or not valid JSON is never read as events and never changed. In a call without `sheetName` it is listed in `unscannedFiles` (`{ file, reason, textSearch, names? }`) with `complete: false` and a warning; the file is searched as text for `fromObject`, and `textSearch` says what that found (`possible-use`, `no-match` or `unreadable`). A global variable declared in such a sheet is not known to the swap. A call that names such a sheet in `sheetName` is refused. A family file that cannot be parsed refuses the call, since what it gives its members is unknown.
+
+**Refused, changing nothing:** a name that is not registered, or is given in another letter case than registered (the message gives the registered one); the same object for both; objects of different plugins; an object type or family file that cannot be parsed; an unknown `sheetName`; a `sheetName` whose file cannot be read; and, in a call without `sheetName`, a registered event sheet that has no file.
+
+**Result.** `{ success, entity (toObject), category ("object" or "family", of fromObject), action ("replaced" or "dry-run"), fromObject, toObject, sheetsScanned, references, skippedEvents, notChanged, filesWritten, dryRun, complete?, warnings?, unscannedFiles? }`. `references` is `{ total, byKind, byFile }` with the swapped uses counted by kind (`objectClass`, `custom action owner`, `custom action family`, `object parameter`, `instance-variable object`, `expression`) and by file. `skippedEvents` is `[{ file, path, eventSid, references, reasons }]`. `notChanged` is `{ total, byKind }` over the kinds the swap never changes (`possible expression`, `string literal`, `script`, `variable value`). `filesWritten` lists the sheets written, which is empty for a dry run.
+
+#### `replace_in_expressions`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `find` | string | Yes | Text, or a regular expression when `regex` is true |
+| `replace` | string | Yes | Replacement; `$1`-style groups are expanded only with `regex`, and in plain text `$` is literal |
+| `regex` | boolean | No | Treat `find` as a JavaScript regular expression (default `false`) |
+| `caseSensitive` | boolean | No | Default `true` |
+| `wholeWord` | boolean | No | Match whole words only (default `false`) |
+| `sheets` | string[] | No | Limit to these event sheets, as registered (default: every event sheet) |
+| `parameterKeys` | string[] | No | Only parameters with these keys; positional custom action and function call arguments use `"0"`, `"1"`, ... |
+| `dryRun` | boolean | No | Report the changes and write nothing (default: `false`) |
+| `maxReported` | number | No | Individual changes listed in `changes` (default 100, at most 1000); the counts are always complete |
+
+Only the string values of condition and action parameters are visited, never comments, scripts or variable declarations. Parameters that hold a name are skipped unless `parameterKeys` names their key: `variable`, `instance-variable`, `object`, `object-to-create`, `parent`, `child`, `instance`, `layout`, `timeline`, `property`, `object-class`, `pin-to`, `target`, `function`, `file` and `audio-file`. So are combo choices (a bare lower-case ID such as `enabled` under keys like `state`, `mode`, `ease` or `visibility`). Matches in skipped parameters are counted in one warning that names the keys. Naming a key in `parameterKeys` makes it replaceable. A sheet named twice in `sheets` is scanned once.
+
+**Refused, changing nothing:** an invalid regular expression; a sheet that is not registered (a case variant is named in the message); a sheet in `sheets` that cannot be read, or, in a call without `sheets`, a registered sheet that has no file; a pattern that matches zero characters anywhere (for example `a?`), since the replacement would be inserted between characters; and a pattern that does not finish in time. All matching of one call runs in a `vm` script limited to 2000 ms in total, and V8 enforces the limit inside regular expression execution, so a catastrophically backtracking pattern fails the call instead of hanging the server.
+
+**Sheets that cannot be parsed.** In a call without `sheets`, a registered event sheet that cannot be parsed is not changed. It is listed in `unscannedFiles` with `complete: false` and a warning. When `find` is a plain name (not `regex`, letters, digits and underscores, not starting with a digit) the file is searched as text for it, and `textSearch` says what that found. For any other `find` the file is not searched: `textSearch` is `not-searched`. A call that names such a sheet in `sheets` is refused.
+
+**Result.** `{ success, action ("replaced" or "dry-run"), find, replace, sheetsScanned, totalMatches, parametersChanged, bySheet, changes, changesTruncated, filesWritten, dryRun, complete?, warnings?, unscannedFiles? }`. `bySheet` is `[{ sheet, parameters, matches }]` for the sheets with changes. `changes` is `[{ sheet, eventSid, path, key, before, after }]`, up to `maxReported`, in the order of the sheet: the sheets in the order scanned, and within a sheet each event's conditions, then its actions, then its sub-events, each in index order (a positional argument by its index as a number, the parameters of one condition or action by key name). `path` is the JSON path of the parameter, such as `events[0].actions[1].parameters.value` or `events[3].conditions[0].parameters[0]`. `changesTruncated` is true when `changes` lists fewer parameters than `parametersChanged`.
+
+### Project Bar structure
+
+`move_project_item` moves an item to another Project Bar folder together with its files. `duplicate_layout`, `duplicate_layer`, `duplicate_event_sheet`, `duplicate_object_type` and `duplicate_timeline` copy an entity under a new name. All six take names as the project registers them, in that letter case; the refusal of another spelling of an object type, family, layout, layer, event sheet or flowchart name gives the registered one. A refusal before the first write changes nothing and ends "Nothing was changed."; a call that fails after it wrote something is rolled back, and its message says what is on disk (see Failures, below).
+
+**Project Bar folders.** `project.c3proj` stores each tree as `{ "items": [...], "subfolders": [...] }` and each folder as `{ "items", "subfolders", "name" }`, in that key order. The tools keep an item's file path in step with its folder: an item in folder `Enemies/Bosses` has its entity file at `<category folder>/Enemies/Bosses/<name>.json`, with `<name>.uistate.json` beside it for a layout, an event sheet or a flowchart, `layouts/uistate/Enemies/Bosses/<name>.instancesBar.json` for a layout, and an object type's tilemap brush file at `tilemapBrushes/objectTypes/Enemies/Bosses/<name>.brush.json`. Scripts and imported project files follow the same rule under `scripts/` and `files/`. This is the layout of files the tools produce. In a live check, Construct 3 r506-2 (Free edition, guest) opened a project laid out this way after moves and copies by these tools, listed the folders with the items in them, and wrote its own save at the same paths (entity files, `.uistate.json`, `.instancesBar.json` and images). Not checked: the editor moving an item itself, and moved flowcharts, families, scripts, imported project files and tilemap brush files. Folders keep their order; a folder the call creates is appended after its siblings, and a moved item is appended to its destination folder.
+
+#### `move_project_item`
 
 Move an existing item to another folder, or to the root.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `category` | enum | Yes | `objectType`, `family`, `layout`, `eventSheet`, `flowchart`, `script` or `file` (an imported project file under `files/`) |
-| `name` | string | Yes | Item name; for scripts and files, the file name (`main.js`) |
-| `folder` | string | No | Destination path such as `Enemies/Bosses`; empty (default) moves to the root |
+| `name` | string | Yes | Item name, as registered; for scripts and files, the file name (`main.js`) |
+| `folder` | string | No | Destination path such as `Enemies/Bosses`, spelled as an existing folder is; empty (default) moves to the root |
 | `sourceFolder` | string | No | Scripts and files: the current folder, when the file name exists in more than one folder |
 | `createFolders` | boolean | No | Create a missing destination path (default `true`) |
 
-The files are copied to the new location first, then `project.c3proj` is
-rewritten, then the old files are deleted. A failure before the rewrite
-removes the copies; a failure after `project.c3proj` was replaced (while
-verifying or re-reading it) keeps them and finishes the move with a warning,
-because the project already points at the new location. An old file that
-cannot be deleted is reported in a warning. A move is refused when any
-destination file already exists. The emptied source folder is kept, with a
-warning.
+**What moves.** The entity file; for a layout, an event sheet or a flowchart its `<name>.uistate.json`; for a layout also its `.instancesBar.json`; for an object type its tilemap brush file when one exists at the object type's own folder (a Tilemap object type without one draws a warning, and the move goes on); for a script or an imported project file, the file. The view-state files (`.uistate.json`, `.instancesBar.json`) are moved after `project.c3proj` was updated and the old files were deleted, and a failure to move one is a warning: the call is not rolled back for it. A view-state file that already exists at the new place with other content is left as it is, with a warning. A view-state file is moved as bytes and is not read: in the live check on Construct 3 r506-2 (Free edition, guest), the editor read three moved view-state files at their new paths and kept their values, but refused to open a project whose layout `.uistate.json` had no `grid` object (2 of 2 attempts).
 
-Folder names become directory names, so they are matched without case: moving
-to `enemies` when `Enemies` exists uses `Enemies` (with a warning), and the
-current folder in another case counts as the same folder. Segments that
-Windows cannot store are refused: a leading space, a trailing space or dot,
-`< > : " | ? *` or control characters, and reserved device names such as
-`CON` or `LPT1`. Moving a script
-warns that module imports naming its path are not rewritten. Timelines cannot
-be moved: no sample project has a timeline in a named folder.
+**Flowcharts registered in an unusual way.** A flowchart moves through the same file path and registration the flowchart tools use. A flowchart registered only in a folder without a name is refused with the reason the flowchart tools give (its file cannot be resolved). One registered both in a named folder and in a folder without a name is moved from the named folder, and the other entry is left as it is. A name registered in two named folders, which only a damaged `project.c3proj` holds, differs between the tools: the flowchart tools use its first place, while `move_project_item` refuses it as registered in more than one folder.
 
-Result: `from`, `to`, `foldersCreated`, `filesMoved` (`[{ from, to }]`),
-`warnings`, `backupFile`.
+**Order of writes.** The files are created at their new paths first, each as a file of the call and refused when a file is already there, in any letter case. Every source is then checked once more for a change since it was read. `project.c3proj` is updated next: the item leaves its old folder and is appended to the destination, with any missing folders created. The old files are deleted next (the view-state files are moved after that), each kept as `<file>.bak` and named in `oldFilesKeptAs`. An old file that changed after the call copied it is not deleted: the result warns and says that the new file holds it as it was before that change. An old file that cannot be deleted is a warning too, because the project already names the new place. The emptied source folder is kept, with a warning. Moving a script warns that import statements naming its path are not rewritten. Timelines cannot be moved.
 
-### Duplicates
+**Refused, changing nothing:** an item that is not registered, or is registered in another letter case; an item that exists in more than one folder when `sourceFolder` does not choose one; a destination that is the folder the item is in; a destination folder that differs from a sibling only in letter case (the message names the existing spelling, because on Windows and macOS the two are one directory); a folder segment Windows cannot store (a leading space, a trailing space or dot, `< > : " | ? *` or a control character, a reserved device name such as `CON` or `LPT1`, `..`); a missing destination with `createFolders: false`; a script or file whose name is already in the destination folder; a destination file that already exists; a registered file that is missing on disk; a file that cannot be read (the message gives the reason, never a path); and a project with no tree for the category.
 
-Every duplicate gets fresh SIDs throughout (one old SID always maps to the
-same new SID inside the copy), is registered directly after its source in the
-same folder, and does not copy editor state (`*.uistate.json`,
-`*.instancesBar.json`). New names are compared with existing ones without
-case, because they become file names. A copy that cannot be faithful is
-refused with the reason and nothing is written.
+**Result.** `{ success, entity, category, action ("moved"), from, to, foldersCreated, filesMoved, oldFilesKeptAs, warnings?, backupFile }`. `filesMoved` is `[{ from, to }]` with project-relative paths, the view-state files included once they moved.
 
-### `duplicate_layout`
+#### Duplicates
+
+A copy gets fresh SIDs throughout: every `sid` in it is new, and one old SID maps to the same new SID everywhere inside the copy. The new name must be usable (it must start with a letter or underscore, as for the create tools) and is compared with the names in use without regard to letter case (a layout, event sheet, object type or timeline name becomes a file name; a layer name is compared among the layers of its layout). A file already at the target path, in any letter case and registered or not, refuses the call. The editor's view-state files (`*.uistate.json`, `*.instancesBar.json`) are never copied; in the live check on Construct 3 r506-2 (Free edition, guest) the editor opened the copies without them, used view settings of its own and wrote such files beside each copy when it saved. A copy is written through the same check as every entity the writer writes: JSON generated for it over 5MB is refused before anything is changed (`Generated JSON for "<name>" is too large`). A copy that cannot be made faithful is refused with the reason.
+
+The copy's entity file is created first and registered right after its source, in the source's folder (`duplicate_layer` instead writes the layout that holds the layer). An object type's image files and tilemap brush file are created after that. The new JSON files are written with the line endings of the project.
+
+**Failures.** This applies to `duplicate_layout`, `duplicate_event_sheet`, `duplicate_object_type`, `duplicate_timeline` and `move_project_item`. `duplicate_layer` writes one file, the layout, and puts the layout back when its write fails and says so, as the other layout tools do (the message ends "The call was rolled back: layouts/<layout>.json is as before the call."). If a step fails after the first write, the call puts back `project.c3proj` and then removes the files it created, but only once `project.c3proj` no longer names the copy. If `project.c3proj` still names it, the created files are kept and named ("kept: project.c3proj still registers what this call added, so the file stays"), so that the project never names a file the rollback removed. The message ends with the form `The call was rolled back: <files> is/are as before the call.` when everything was put back (a created file is listed as `removed: the call had created it`). When the rollback itself fails, the message says the writes could not be undone and names the files that may be left as the call wrote them. Folders the call made for new files may remain after a rollback. `move_project_item` uses the same rollback; it also keeps the copies of a move that fails while `project.c3proj` still names the new folder.
+
+#### `duplicate_layout`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout to copy |
+| `layoutName` | string | Yes | Layout to copy, as registered |
 | `newName` | string | Yes | Name of the copy |
 
-Every instance (world and non-world) gets a UID above the project maximum;
-`sceneGraphData.uid`, `parent-uid` and `children[].uid` are remapped through
-the same map, and `instanceFolderItem.sid` and `scene-graphs-folder-root`
-entries follow their instance's new SID. The copy keeps `eventSheet`. Refused
-when an instance is a template (`template.mode: "template"`), because a
-template name exists only once per object type; replicas copy normally. Warns
-when the layout places global object types, when a timeline addresses one of
-the source instances by UID (the copy is not animated), and when an event
-picks one of them by a fixed `unique-id` (it still picks the original).
+Every layer and instance, world and non-world, is copied. Instances get UIDs above the highest UID in the project, and `sceneGraphData.uid`, `parent-uid`, `children[].uid` and a replica list are remapped through the same map; the `instanceFolderItem` and `scene-graphs-folder-root` entries that address an instance by SID, where the layout file has them, follow their instance's new SID (Construct 3 r506-2, Free edition, guest, saved neither key in the live check, so the layouts it saves have none; the hierarchy remap was confirmed there: the editor showed and saved the copy's link on the copy's UIDs). The copy keeps the source's `eventSheet`.
 
-### `duplicate_layer`
+Refused, changing nothing: a layout that holds a template instance (`template.mode: "template"`, since a template name can exist only once per object type; replicas copy normally); hierarchy links to instances outside the layout; a name another layout has, ignoring case; a layout that cannot be read; and a project whose files cannot all be scanned for UIDs (the message gives the UID generator's reason and names the files).
+
+Warnings: the layout places a global object type (the copy places another instance of it); an object type could not be read, so that was not checked; a timeline addresses an instance of the source by UID (it still addresses the original and was not duplicated); an event sheet picks an instance of the source by a fixed `unique-id` (it still picks the original); a timeline or event sheet could not be read or parsed, so the check for those two could not be made, and it is named. The check looks at every timeline file (to a depth of 64 levels) and every event sheet (to a depth of 128 levels).
+
+#### `duplicate_layer`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout that owns the layer |
-| `layerName` | string | Yes | Layer to copy |
-| `newName` | string | Yes | Name of the new layer (unique in the layout) |
+| `layoutName` | string | Yes | Layout that owns the layer, as registered |
+| `layerName` | string | Yes | Layer to copy, as registered |
+| `newName` | string | Yes | Name of the new layer, unique in the layout ignoring case |
 
-The copy is inserted directly above the source (the next index in the same
-sibling array). Its instances get new UIDs and SIDs, and a
-`scene-graphs-folder-root` entry is added after each entry of a copied
-instance. Refused for a layer with sub-layers (their names would repeat), for
-template instances, and for hierarchy links to instances on other layers.
+The copy is inserted directly after the source layer in its sibling list. Its instances get new UIDs and SIDs, and each `scene-graphs-folder-root` entry of a copied instance, where the layout file has them, gets a copy after it (Construct 3 r506-2, Free edition, guest, saves no such entries). The layout file is written once, with a backup, and a failed write puts it back. Timelines and event sheets that address the original layer's instances by UID are not scanned: they keep addressing the originals.
 
-### `duplicate_event_sheet`
+Refused, changing nothing: a layer with sub-layers (their names would repeat in the layout); template instances; hierarchy links to instances on other layers; a name another layer of the layout has, ignoring case; a layout that cannot be read; and a project whose files cannot all be scanned for UIDs. Warnings: the same global object type warnings as `duplicate_layout`.
+
+#### `duplicate_event_sheet`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Event sheet to copy |
+| `sheetName` | string | Yes | Event sheet to copy, as registered |
 | `newName` | string | Yes | Name of the copy |
 
-Refused when the sheet declares a group, a function, a custom action or a
-root-level (global) variable anywhere, since the copy would declare the name
-twice. Group names are unique project-wide: the samples hold 508 groups with no
-title repeated within a project. The copy is attached to no layout.
+Refused, changing nothing: a sheet that declares a group, a function, a custom action or a global (top-level) variable, since the copy would declare the name twice (the first ten are named in the message); events nested deeper than 64 levels, which the scan for those names does not follow; a name another event sheet has, ignoring case; a sheet that cannot be read. The copy is attached to no layout and included by no sheet; the result says so in a warning.
 
-### `duplicate_object_type`
+#### `duplicate_object_type`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `objectName` | string | Yes | Object type to copy |
-| `newName` | string | Yes | Name of the copy (must not match an object type or family) |
+| `objectName` | string | Yes | Object type to copy, as registered |
+| `newName` | string | Yes | Name of the copy; an object type or a family with that name, ignoring case, refuses the call |
 
-Behaviors, instance variables, effects and animations are copied with fresh
-SIDs and fresh `imageSpriteId` values. Image files named from the lowercased
-object name (`<name>-<animation>-NNN.<ext>` and `<name>.<ext>`) are copied
-under the new name, and a tilemap brush file is copied beside the original.
-No instances are placed, and family and container membership is not copied
-(the result warns). Single-global objects are refused.
+Behaviors, instance variables, effects and animations are copied with fresh SIDs, and every animation frame gets a fresh `imageSpriteId`. The frames' image files in `images/` are copied under the lower-case name of the same frame of the copy, keeping the extension, and a tilemap brush file at the object type's folder is copied beside the original. No instance is placed. A copied object type keeps the source's default template (`editorNewInstanceIsReplica` and `editorNewInstanceTemplateName`), and the result warns when it names a template, which belongs to the source. Family and container membership is not copied; the result warns and names the families.
 
-### `duplicate_timeline`
+Refused, changing nothing: a single-global object type (Keyboard, Mouse, ...); a target in `images/` that already exists or that two files would share; a brush file that already exists at the new name; an image, brush or object file that cannot be read (the message gives the reason, never a path). A frame with no image file is a warning, and the copy has no file for it.
+
+#### `duplicate_timeline`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `timelineName` | string | Yes | Timeline at the root of the timelines tree |
+| `timelineName` | string | Yes | Timeline at the root of the timelines tree, as registered |
 | `newName` | string | Yes | Name of the copy |
 
-Writes `timelines/<newName>.json` with only `name` changed. The copy's tracks
-address the same instances by UID. Custom eases (the unnamed subfolder of the timelines list) are refused.
+Writes `timelines/<newName>.json`, the source with only `name` changed, and registers it right after the source. The copy's tracks address the same instances by UID, so a warning says that playing both at once makes them compete (not given for a timeline without tracks).
 
-### `replace_object_in_events`
-
-Construct's event-sheet Replace object.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `fromObject` | string | Yes | Object type or family to replace |
-| `toObject` | string | Yes | Replacement of the same plugin |
-| `sheetName` | string | No | Limit to one sheet (default: all sheets) |
-| `dryRun` | boolean | No | Report only (default `false`) |
-
-The references are the rename scanner's: `objectClass`, the bare object-name
-parameters (`object`, `object-to-create`, `parent`, `child`, `instance`) and
-identifier tokens in expressions. The unit of a swap is a branch: an event
-that references the replaced object together with all its sub-events, which
-share its picked instances. A branch is swapped whole or not at all; the
-reasons of a sub-event are reported as `sub-event <path>: ...` on the branch's
-top event. An event is incompatible when a condition or action on the replaced object uses a
-behavior (`behaviorType`), an instance variable (`instance-variable`) or an
-effect (an `effect` parameter holding a quoted name) that the replacement
-lacks (object types inherit their families' behaviors, variables and
-effects), or has one of the same name but of another kind (a `Move` that is
-Platform on the replaced object and Bullet on the replacement), when an
-expression reads `From.Member` for such a behavior or variable, or when it
-calls a custom action. A custom action definition owned
-by the replaced object is skipped with its body. Layouts are not changed. The
-result has `references` (as in the rename tools), `skippedEvents`
-(`[{ file, path, eventSid, references, reasons }]`) and `filesWritten`. The
-swapped conditions and actions are checked as described in
-[ACE validation](#ace-validation), and each problem is a warning.
-
-### `replace_in_expressions`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `find` | string | Yes | Text, or a regular expression when `regex` is true |
-| `replace` | string | Yes | Replacement; `$1`-style groups only with `regex` |
-| `regex` | boolean | No | Default `false` |
-| `caseSensitive` | boolean | No | Default `true` |
-| `wholeWord` | boolean | No | Default `false` |
-| `sheets` | string[] | No | Limit to these sheets |
-| `parameterKeys` | string[] | No | Only these parameter keys; positional call arguments use `"0"`, `"1"`, ... |
-| `dryRun` | boolean | No | Report only (default `false`) |
-| `maxReported` | number | No | Individual changes listed (default 100); counts are always complete |
-
-The rewritten conditions and actions are checked as described in [ACE validation](#ace-validation), so a combo value changed through `parameterKeys` that is no longer one of its choices draws a warning. A dry run is not checked.
-
-Only condition and action parameter strings are changed, never comments,
-scripts or variable declarations. Parameters that hold a name are skipped
-unless `parameterKeys` names their key: `variable`, `instance-variable`,
-`object`, `object-to-create`, `parent`, `child`, `instance`, `layout`,
-`timeline`, `property`, `object-class`, `pin-to`, `target`, `function`,
-`file` and `audio-file` (keys whose sample values are names). So are combo
-choices (a bare lower-case ID such as `enabled` under keys like `state`,
-`mode`, `ease` or `visibility`). Matches in skipped parameters are counted in
-a warning. Repeated `sheets` entries are scanned once.
-
-A pattern that matches zero characters anywhere (for example `a?` with
-`wholeWord`) is refused before anything is written. All matching for one call
-runs in a `vm` script limited to 2000 ms in total; V8 enforces the limit inside
-regular expression execution, so a catastrophically backtracking pattern
-fails the call instead of hanging the server. The result has `totalMatches`, `parametersChanged`, `bySheet`,
-`changes` (`[{ sheet, eventSid, path, key, before, after }]`) and
-`filesWritten`.
+Refused, changing nothing: a timeline in a folder; a custom ease (a transition); a name another timeline or transition has, ignoring case; a file at the target that is not registered, in any letter case; a source file that cannot be read or is not a JSON object.
 
 ---
 
-## Rename Tools
+## Change Journal Tools
 
-Renaming an entity in Construct 3 touches many files: the name is duplicated
-into event sheets, layouts, families, `project.c3proj` trees and containers,
-the entity's own file name, and (for object types) its image and tilemap-brush
-file names. These tools collect every reference through one shared scanner,
-rewrite exactly what they report, and return the counts per reference kind.
+The change journal records, for each open project, the tool calls that changed a project file and what each one wrote, created, deleted or moved. `list_changes` lists the journal and `revert_last_change` undoes the most recent call in it, from the `.bak` backups. The journal:
 
-Every tool accepts `dryRun` (default `false`). A dry run returns the same
-reference report and writes nothing.
+- records every tool call that changed a project file, including one that ended in an error (its error text carries no `Changed N file(s)` line), a write whose read-back failed, and an undo that could not put a file back;
+- records nothing for a call that put everything back itself;
+- backs each file up once per call, and keeps one backup per file: the next call that writes the file replaces it. Images are the exception: each call takes the first free `<file>.N.bak` name, so image backups accumulate (no bound) and a later call does not replace an earlier one;
+- does not journal files outside the project;
+- ends the changed-files line of a result (`Changed N file(s): ...`) after the first 12 files with `, and N more`; `list_changes` lists them all;
+- is kept in memory per open project: the last 50 calls, in the order they ended, with `at` the start time. A server restart starts it empty; the `.bak` files stay.
 
-**Result shape** (extends the standard `WriteResult`):
+Neither tool is journaled itself: their results carry no changed-files line and they are not listed.
+
+### `list_changes`
+
+List the recorded calls, newest first. Only calls that changed a file appear.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | integer, 1 to 50 | No | How many calls to list, newest first (default 20) |
+
+The result has `calls`, newest first. Each call has `id`, `tool`, `at` (when the call started, ISO 8601 text), `reverted` (`true` once every change of the call was undone) and `changes`, in the order the call made them. Each change has:
+
+- `kind`: `write`, `create`, `delete` or `move`;
+- `file`: the file (for a move, its new name);
+- `from`, for a move: its old name;
+- `backup`, for a write or delete: the backup as named on disk (images may use `<file>.N.bak`).
+
+Paths are relative to the project. For example (the values are illustrative):
 
 ```json
 {
-  "success": true,
-  "entity": "Hero",
-  "category": "objecttype",
-  "action": "renamed",
-  "previousName": "Player",
-  "references": {
-    "total": 21,
-    "byKind": { "objectClass": 4, "expression": 6, "instanceType": 2 },
-    "byFile": [
-      { "file": "eventSheets/Main.json", "count": 13, "kinds": { "objectClass": 4 } }
-    ]
-  },
-  "filesWritten": ["eventSheets/Main.json", "project.c3proj"],
-  "dryRun": false,
-  "warnings": ["..."],
-  "backupFile": "..."
+  "calls": [
+    {
+      "id": 2,
+      "tool": "rename_animation",
+      "at": "2026-10-17T09:14:03.120Z",
+      "reverted": false,
+      "changes": [
+        { "kind": "write", "file": "objectTypes/Hero.json", "backup": "objectTypes/Hero.json.bak" },
+        { "kind": "move", "file": "images/hero-run 1-000.png", "from": "images/hero-walk 1-000.png" }
+      ]
+    }
+  ]
 }
 ```
 
-### Expression rewriting
+A failure to read the journal is an error response: `Error listing changes: <reason>.`
 
-Expression text is rewritten token-aware, never textually:
+### `revert_last_change`
 
-- only a whole identifier run matches, so `PlayerShip.X` survives a rename of
-  `Player`;
-- a run right after a `.` is a member name, so `Enemy.Player` is left alone;
-- text inside a `"..."` string literal is never touched, so
-  `"Player wins" & Player.X` rewrites only the second occurrence.
+Undo the most recent recorded call that is not fully reverted, from the `.bak` backups its writes left. The changes are undone last first: a written file is restored from its backup, a created file is removed, a deleted file is restored from its backup and a moved file is moved back. Folders a call created stay.
 
-Layer names are the one exception: a layer reaches an expression only as a
-whole string literal (`"layer": "\"UI\""`, `LayerScale("UI")`), so
-`rename_layer` rewrites whole literals and nothing else.
+Only the most recent call that changed a file can be reverted, because each file keeps one backup and the next call that writes the file replaces it (images are the exception: each call takes the first free `<file>.N.bak` name, so image backups accumulate and a later call does not replace an earlier one). For example, `replace_sprite_image` and then `rename_animation` on the same object: both write `objectTypes/<name>.json`. `revert_last_change` undoes the rename, but the replace can no longer be reverted, because the rename's backup of the object file replaced the one the replace left, and the refusal says so.
 
-### Write order and interrupted renames
+Behavior:
 
-Referencing files are written first and the entity itself (file plus
-`project.c3proj` registration) last. Every scan looks for the *old* name, so a
-file already rewritten contributes nothing on a second pass: re-running the
-identical call after a failure finishes the rename. Each result lists
-`filesWritten` in order, and a failure message repeats that list.
+- Reverts run one at a time per project.
+- A revert stops at the first step it cannot undo, keeps the steps it did undo, and the next call resumes there. A call is marked `reverted` only when every step was undone.
+- A revert that restored a file carries `editorNote`, like other writes (see [Mutation Tools](#mutation-tools)).
+- When the revert puts back `project.c3proj`, the project is loaded again afterwards.
 
-### What is never rewritten
+The refusals are error responses (`isError: true`). A refusal restores nothing. The three texts are:
 
-| Location | Why |
-|---|---|
-| `script` action and event bodies | JavaScript; a name there cannot be told from an unrelated identifier. Counted and reported as a warning. |
-| `comment` text and a variable's `initialValue` | Free text. Counted and reported as a warning. |
-| Instance-variable values holding a layer or layout name | Data, not a reference. |
-| `parameters.instance-variable` | A different name space from event variables. |
-| Layout names in general expression text | No layout-valued parameter exists in the reference project, so only `layout`-keyed parameters are rewritten. |
+> No tool call of this server has changed a file yet, or every such call was already reverted.
 
-### `rename_object_type`
+> The last change (call `<id>`, `<tool>`) cannot be reverted: its backup(s) `<files>` no longer hold the state from before that call (a later call backed the same file(s) up again, since one backup per file is kept, or the backup was changed by hand). Nothing was restored. Only the most recent call that changed a file can be reverted.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Current object type name |
-| `newName` | string | Yes | New name; must be unique among object types *and* families |
-| `dryRun` | boolean | No | Report only (default `false`) |
+> The last change (call `<id>`, `<tool>`) cannot be reverted: `<files>` changed after that call by something the change journal does not record (Construct, another program, or a tool write outside the journal), so restoring the backups would not return the project to its state before the call. Nothing was restored. Restore the .bak files by hand if that is still what you want.
 
-Object type, family, layout and event sheet names are compared without case, because they become file names: renaming `Player` to `enemy` while `Enemy` exists is refused, since on Windows or macOS the new file would replace the other entity's. A rename that changes only the case of the same name (`Main` to `MAIN`) is refused too, because the new file would replace the old before the old is deleted; rename to a temporary name first, then to the final one.
+The result has:
 
-Reference kinds: `objectClass` (conditions and actions),
-`customAceObjectClass` (a `custom-ace-block` event's owner),
-`parameterObjectName` (the bare-name keys `object`, `object-to-create`,
-`parent`, `child`, `instance`), `expression` (identifier tokens in any other
-string parameter, including the array-form arguments of a custom-action call),
-`instanceType` (layout instances, nested sub-layers and `nonworld-instances`),
-`familyMember`, `containerMember` (`containers[].members`),
-`timelineTrackObjectType` (`tracks[].objectType` on an instance track, in
-every `timelines/**/*.json`), `projectTree`, `entityName`, `entityFile`,
-`imageFile` (`images/<lowercase name>-...png` and the TiledBg form
-`images/<lowercase name>.png`) and `tilemapBrushFile`.
-
-Timeline files are found by walking the `timelines/` directory rather than the
-`project.c3proj` `timelines` tree, so a transition timeline in a subfolder the
-tree does not list is still rewritten; `*.uistate.json` siblings are skipped.
-Construct r495.2 refuses to open a project whose track names an object type
-that no longer exists, so this is not optional. A track's `worldInstance` and
-a property track's `source: { type: "world-instance", uid }` address an
-instance by UID and are left alone, as is `tracks[].project` (the project's
-`uniqueId`).
-
-An image whose new name is already taken is skipped with a warning rather
-than overwritten.
-
-### `rename_family`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Current family name |
-| `newName` | string | Yes | New name; must be unique among families *and* object types |
-| `dryRun` | boolean | No | Report only |
-
-Same event-sheet kinds as `rename_object_type`, plus `projectTree`,
-`entityName` and `entityFile`. A family has no layout instances, images or
-brush file, and its own `members` list holds object types, which a family
-rename does not touch.
-
-### `rename_layout`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Current layout name |
-| `newName` | string | Yes | New layout name |
-| `dryRun` | boolean | No | Report only |
-
-Reference kinds: `firstLayout`, `projectTree`, `timelineStartOnLayout`
-(`startOnLayout`, the only key in a timeline file that names a layout, in
-every `timelines/**/*.json`), `layoutParameter` (a `layout`-keyed parameter,
-in both the bare-name and quoted-expression forms), `entityName` and
-`entityFile`.
-
-### `rename_event_sheet`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Current event sheet name |
-| `newName` | string | Yes | New event sheet name |
-| `dryRun` | boolean | No | Report only |
-
-Reference kinds: `layoutEventSheet` (each layout's `eventSheet`),
-`includeSheet`, `projectTree`, `entityName` and `entityFile`.
-
-### `rename_layer`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout that owns the layer |
-| `layerName` | string | Yes | Current layer name |
-| `newName` | string | Yes | New name; must be unique within this layout |
-| `dryRun` | boolean | No | Report only |
-
-Reference kinds: `layerName` (the layer in its layout), `layerParameter` (a
-`layer`-keyed parameter) and `layerLiteral` (a whole `"<name>"` literal in any
-other expression, such as `LayerScale("UI")`).
-
-A layer name is unique only within its layout, but an event-sheet `layer`
-parameter is not layout-scoped. When another layout has a layer of the same
-name, the event-sheet pass is skipped and the affected layouts are named in a
-warning; only the chosen layout's layer is renamed.
-
-### `rename_event_variable`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sheetName` | string | Yes | Sheet holding the declaration |
-| `sid` | number | Yes | SID of the `variable` event |
-| `newName` | string | Yes | New variable name |
-| `dryRun` | boolean | No | Report only |
-
-Reference kinds: `variableDeclaration`, `variableParameter` (the `variable`
-key used by `set-eventvar-value`, `add-to-eventvar`, `subtract-from-eventvar`,
-`reset-eventvar` and `compare-eventvar`) and `expression`.
-
-A declaration at the sheet root is a global event variable and is rewritten
-across every sheet; a nested declaration is local and only its own sheet is
-rewritten. A new name that collides with another sheet's global is refused; a
-local declaration of the same name is allowed but warned about, because
-Construct resolves the local first inside its container.
+- `success`: `true` when every step was undone;
+- `reverted`: the entry, as `list_changes` shows it;
+- `restored`: the steps this attempt undid, each `{ file, how }`, where `how` is `restored from <backup>`, `removed (the call created it)` or `moved back from <file>`;
+- `notRestored`, only when a step could not be undone: each `{ file, reason }`, where `reason` is an error code (such as `EACCES`) or a short sentence, for example `it, or its backup, changed on disk while the revert ran`. The steps after the failed one are listed with the reason `not attempted: an earlier step could not be undone`.
 
 ---
 
-## Template and Tilemap Tools
+## Runtime Tools
 
-### Instance templates
+These tools drive a running game through an injected bridge script, `scripts/c3-runtime-bridge.js`, exposed as `globalThis.__c3bridge`. The server reaches it over the Chrome DevTools Protocol (CDP): `connect_to_game` opens a connection to the game's browser tab, and `call_bridge`, `wait_for_condition`, the event tools, `simulate_input`, `get_canvas_size` and `screenshot_game` use it. `serve_preview` serves an exported game on this machine and can launch a browser for it. A typical run:
 
-A Construct 3 template is a layout instance the editor treats as the master
-copy for other instances ("replicas"). The state lives entirely in the
-instance's `template` block inside `layouts/<name>.json`; there is no separate
-registry. The block carries `mode`, `templateName`, `sourceTemplateName`, the
-three hierarchy flags, a `components` list and `replicasUIDs`.
+1. `inject_runtime_bridge`, then reload the project in the editor.
+2. Preview in a browser started with `--remote-debugging-port`, or export (Menu > Project > Export > Web (HTML5)) and `serve_preview` the exported folder with `launchBrowser: true`.
+3. `connect_to_game`, then `call_bridge`, `wait_for_condition`, `subscribe_events` / `read_events`, `simulate_input`, `screenshot_game`.
+4. `disconnect_from_game`, `stop_preview`, and `remove_runtime_bridge` before shipping.
 
-`components` always holds the five ids `plugin`, `instance-variable`,
-`behavior`, `effect` and `world-instance`, in that order. Each entry says
-which properties the instance keeps in sync with its template. The tools
-derive them from the instance itself:
-
-| Component | Derived from | Notes |
-|---|---|---|
-| `plugin` | the instance's `properties` keys | `live-preview` is excluded; it is the only property observed being dropped |
-| `instance-variable` | `instanceVariables` keys | written as `{ iv, state }` records |
-| `behavior` | one entry per `behaviors` key | state lists that behavior's own property keys; a behavior with no properties gets `[]` |
-| `effect` | one entry per `effects` key | state lists the effect's parameters plus the `<<effect-template-enable>>` marker |
-| `world-instance` | fixed 24-key list | `x` and `y` are `false`, every other key `true`; empty for a non-world instance |
-
-`replicasUIDs` is always written as `null`: it is `null` on every template
-block on disk, including templates that have replicas, so Construct
-recomputes it on load.
-
-### `list_templates`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectType` | string | No | Only list templates for this object type |
-
-Returns one row per template instance with its `templateName`, `objectType`,
-`layout`, `uid` and `replicaCount`. A replica whose named template is not in
-the project is reported separately under `orphanedReplicas`.
-
-### `set_instance_template`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout holding the instance |
-| `uid` | number | Yes | Instance UID (searched across nested sub-layers and non-world instances) |
-| `mode` | enum | Yes | `none`, `template` or `replica` |
-| `templateName` | string | For `template` | Template name; must be unique per object type |
-| `sourceTemplateName` | string | For `replica` | Name of the template to follow |
-
-`none` removes the `template` block. `replica` is written even when the named
-template does not exist yet, with a warning. A non-world instance gets a
-warning: no template block was observed on one in the reference project.
-
-### `set_default_template`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Object type name |
-| `templateName` | string \| null | Yes | Template to create new instances from, or `null` to clear it |
-
-Sets `editorNewInstanceIsReplica` and `editorNewInstanceTemplateName` on the
-object type, which is how the editor decides what a newly placed instance
-copies. In the reference project 109 object types carry the flag and only 53
-also carry the name, so the flag can stand alone; this tool always writes them
-together and says so in a warning.
-
-### Tilemap brushes
-
-A tilemap object type's editor brushes live at
-`tilemapBrushes/objectTypes/<same subfolder as the object type>/<name>.brush.json`
-— the brush path mirrors the object type's subfolder. The file is a JSON array
-of `{ name, type, data }`:
-
-| `type` | `data` |
-|---|---|
-| `auto16` | 4 rows of 4 cells |
-| `auto47` | 6 rows of 8 cells |
-| `patch` | `{ width, height, data }`, where `data` has `height` rows of `width` cells |
-
-A cell is a non-negative tile index, `null` for an empty cell, or a list of
-weighted alternatives `[{ index, probability }, ...]`. Grid dimensions and
-every cell are validated before the file is written.
-
-**Tile data is not implemented.** No sample of a Tilemap instance's tile-data
-serialization exists in the reference project, so its shape would have to be
-invented; use the Construct editor for tile data.
-
-### `list_tilemap_brushes`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Tilemap object type name |
-
-Returns the brush file path, whether it exists, and each brush's index, name,
-type and grid size. A non-`Tilemap` plugin is a warning, not an error.
-
-### `add_tilemap_brush`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Tilemap object type name |
-| `name` | string | Yes | Brush name, unique within this object type |
-| `type` | enum | Yes | `auto16`, `auto47` or `patch` |
-| `data` | object | Yes | Grid matching the type |
-
-Creates the brush file when it does not exist yet.
-
-### `update_tilemap_brush`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Tilemap object type name |
-| `name` | string | Yes | Current brush name |
-| `newName` | string | No | New brush name |
-| `type` | enum | No | New brush type — requires `data` |
-| `data` | object | No | Replacement grid, validated against the brush's (new) type |
-
-### `delete_tilemap_brush`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `objectName` | string | Yes | Tilemap object type name |
-| `name` | string | Yes | Brush name to delete |
-
-Removing the last brush leaves the file as an empty array.
-
-### Tilemap data
-
-The painted cells of a placed Tilemap instance. Each cell value is `null` for an empty cell, a tile index, or `{ tile, flipX, flipY, flipDiagonal }`. Editor rotations: 90 is `flipY` plus `flipDiagonal`, 180 is `flipX` plus `flipY`, 270 is `flipX` plus `flipDiagonal`.
-
-#### `get_tilemap_data`
-
-Read a placed Tilemap instance's cells as `rows[y][x]`.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout holding the instance |
-| `uid` | integer | Yes | UID of the Tilemap instance |
-| `region` | object | No | `{ x, y, width, height }` cell rectangle to return; required when the tilemap has more than 10000 cells |
-
-#### `set_tilemap_tiles`
-
-Paint or erase individual cells, or fill a rectangle. Cells not named keep their value.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout holding the instance |
-| `uid` | integer | Yes | UID of the Tilemap instance |
-| `tiles` | object[] | No | `{ x, y, value }` cells to set, applied in order (at most 250000) |
-| `fill` | object | No | `{ x, y, width, height, value }` rectangle filled before `tiles` is applied |
-
-**Notes:**
-- A `value` of `null` erases the cell.
-
-#### `set_tilemap_data`
-
-Replace all of a placed Tilemap instance's cells.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `layoutName` | string | Yes | Layout holding the instance |
-| `uid` | integer | Yes | UID of the Tilemap instance |
-| `rows` | array[] | Yes | `rows[y][x]` cell values; every row the same length |
-| `resizeInstance` | boolean | No | Resize the instance to columns times tile width and rows times tile height (default: `true`) |
-
-**Notes:**
-- The grid takes the size of `rows`.
-
----
-
-## Runtime Bridge and Packaging Tools
-
-These prepare a project for a live run: they inject or remove the runtime bridge script that exposes the running game as `globalThis.__c3bridge`, and copy or pack the project. The connection tools in the next section drive the running game.
+The connection tools need Node.js 22 or later (its built-in WebSocket client); on an older Node.js they say so, and the rest of the server works as before. Two settings belong to whoever starts the server, not to a tool call: `C3MCP_ALLOW_EVAL=1` allows `wait_for_condition` conditions of type `"expression"` (JavaScript in the game page), and `C3MCP_ALLOW_REMOTE_CDP=1` allows `connect_to_game` to reach a browser on another machine. `CHROME_PATH` names the browser `serve_preview` launches.
 
 ### `inject_runtime_bridge`
 
-Add the runtime bridge script `scripts/c3-runtime-bridge.js` to the project, register it in `project.c3proj` (`rootFileFolders.script.items`, with `script-info`) and import it from `scripts/main.js`. It runs on startup through `runOnStartup()` and processes bridge commands every tick, so the connection tools below, or external tools such as Playwright, a browser console or curl, can control the running game.
+Write the bridge script and register it so Construct loads it. Construct loads only the main script on its own; other scripts run only when the main script imports them (manual, "Script files"). So in a project with a main script, one marked line goes at the top of that script (`import "./c3-runtime-bridge.js"; // construct3-mcp runtime bridge (...)`, with the relative path from the main script's folder; line endings and BOM kept), and the bridge is listed with `"script-info": {"purpose": "none"}`, under a SID from the project's ID generator (no other SID of the project has it). A project without a main script gets the bridge as its main script (`"purpose": "main"`). An entry an earlier version wrote (`"file-info"`, purpose none, loaded by nothing) is replaced in place. Projects whose `scriptsType` property is `"classic"` get the entry without an import (a classic script cannot hold one), with a warning. Called again, it leaves the entry where it is and writes `project.c3proj` only when the registration changed. Each bridge file is backed up once per call (`<file>.bak`), right before its own write. It reads the main script and the bridge file before it writes anything: when `project.c3proj` names a main script that is missing or cannot be read, or a folder is where the bridge script goes, it refuses and changes nothing, and when one of its writes fails, it puts back the files it wrote before (the same holds for `export_for_preview` and `pack_project` when they add the bridge). A write that replaced a file but whose read-back could not confirm the bytes has two outcomes: a file that holds other bytes is named and left as it is; a file that could not be read back is put back when it is still as the read-back saw it, and named when that cannot be confirmed. A `project.c3proj` that changed on disk during the call (saved in the editor) is refused before the first write and again right before `project.c3proj` is written, which puts back the files written before (see [Error Response](#error-response)). The next tool call works with the new script list. No parameters.
 
-No parameters.
+Returns `success`, `injected`, `path`, `registered` (whether `project.c3proj` changed), `loadedAs` (`"import"`, `"main"` or `"classic"`), for `"import"` also `mainScript` (path under `scripts/`) and `importAdded`, and `message`.
+
+The script starts through `runOnStartup()` and processes commands each tick, on the page or, with *Use worker* on, in the runtime's worker. When it runs, the console shows `[c3-bridge] Runtime bridge initialized. Access via globalThis.__c3bridge`. `submit(type, args)` returns a command id; `getResult(id)` returns `{ ok, value }` or `{ ok: false, error }` once, after the next tick (`null` before); `cancel(id)` withdraws a command (`"queued"`: removed before it ran, `"result"`: its result dropped, `false`: unknown). Results nobody collects expire after 60 seconds. `emit(name, data)` feeds custom events to subscriptions.
 
 ### `remove_runtime_bridge`
 
-Remove the runtime bridge script, its registration and its import from `scripts/main.js`, after testing.
-
-No parameters.
+Delete the bridge script, remove its entries from `project.c3proj`, and remove every line in the project's scripts (`.js`, `.mjs`, `.ts` under `scripts/`) that only imports the bridge, with at most a comment after it: the marked line `inject_runtime_bridge` added, after which the main script is byte for byte as before (BOM and line endings included), and a line typed by hand, such as the `import "./c3-runtime-bridge.js";` the v1.9.2 instructions had you add. A script that uses the bridge in another way (`import * as bridge from "./c3-runtime-bridge.js"`, `export ... from`, `import(...)`) makes the tool refuse before it changes anything, naming the script: without the bridge file the game would not load. So does a script or folder under `scripts/` that cannot be read (held open by another program, no read access), which could import the bridge. It works out every change before its first write, refuses a `project.c3proj` that changed on disk during the call as `inject_runtime_bridge` does, and when one of its writes fails, it puts back the files it wrote before (the scripts and `project.c3proj`). Each bridge file it writes is backed up once per call (`<file>.bak`), right before its own write. A folder where the bridge script would be is not the bridge and is left as it is. No parameters. Returns `entriesRemoved`, `importRemoved` and `scriptsChanged` (paths under `scripts/`).
 
 ### `get_bridge_commands`
 
-List the commands the runtime bridge supports, which is what `call_bridge` accepts.
+List the commands `call_bridge` runs, with their arguments: `ping`, `callFunction`, `getGlobalVar`, `setGlobalVar`, `getObjectState`, `getAllInstances`, `getLayout`, `goToLayout`, `evaluateExpression`, `listObjects`, `listGlobalVars`, `layerToCssPx`, `cssPxToLayer`, `subscribeEvents`, `readEvents`, `unsubscribeEvents`. No parameters.
 
-No parameters.
+### `connect_to_game`
 
-### `generate_bridge_eval_script`
-
-Generate a shell command, using curl or Python, that runs one bridge command in the running game over the browser's remote debugging protocol.
+Open a CDP connection to the game's page and keep it for the other runtime tools. With `host` and `port`, the pages the browser lists (narrowed by `pageUrl` and `urlContains`) are tried at once and the one whose bridge answers ready is kept. When several pages have a ready bridge (two games, or another site that defines a `globalThis.__c3bridge` of its own), the call fails and lists their URLs instead of guessing; once one page answered, the others get 1.5 seconds to finish their first check. With `cdpEndpoint`, that page only. The bridge is looked for on the page and in the page's dedicated workers (reached through `Target.setAutoAttach`), so games with *Use worker* on work too. The tab is brought to the front (`Page.bringToFront`); a hidden page runs no ticks, so bridge calls would time out.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `command` | string | Yes | Bridge command, for example `callFunction`, `getGlobalVar` or `getObjectState` |
+| `cdpEndpoint` | string | No | A page's CDP WebSocket endpoint (`ws://` or `wss://`), e.g. `browser.pageEndpoint` from `serve_preview` |
+| `host` | string | No | Browser debugging host (default: `127.0.0.1`) |
+| `port` | integer | No | Browser debugging port (default: 9222) |
+| `pageUrl` | string | No | With `host`/`port`: only pages of this URL's origin whose path starts with its path, e.g. the `url` from `serve_preview` (`http://127.0.0.1:53817/`) |
+| `urlContains` | string | No | With `host`/`port`: only pages whose origin and path contain this text; the query and fragment do not count |
+| `timeoutMs` | integer | No | Time for the whole connection, 100 to 60000 (default: 10000) |
+
+Only hosts on this machine (`localhost`, `127.x.x.x`, `::1`) are allowed unless the server runs with `C3MCP_ALLOW_REMOTE_CDP=1`; that includes the page endpoints a debugging port on this machine lists, which are refused when they name another host. The connection lasts as long as the page: after a reload or a navigation the game starts over (its state and subscriptions are gone), so the connection is closed, and every call with its `connectionId` fails with an error that says the page reloaded; the same happens when the bridge's worker ends. Connect again. Returns `connectionId`, `bridgeReady`, `bridgeContext` (`"page"` or `"worker"`), `pageVisible` (with a `warning` when the page stayed hidden), `gameState` (`ready`, `layoutName`, `tickCount`, `gameTime`, `dt`, `objectCount`) and, after discovery, `target` (`id`, `title`, `url`). When no page's bridge answers in time, the error lists the pages tried.
+
+### `disconnect_from_game`
+
+Close a connection. Subscriptions stay in the page until `unsubscribe_events` or a reload.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | string | Yes | From `connect_to_game` |
+
+### `call_bridge`
+
+Submit a bridge command, poll for its result and return it: `commandId`, `result`, `elapsedMs`. A command the bridge rejects (`{ ok: false }`) is an error. On a timeout the command is withdrawn (`cancel`), and the error says whether it had not run and will not, ran after all, or, with an older bridge, may still run.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | string | Yes | From `connect_to_game` |
+| `command` | string | Yes | One of the commands `get_bridge_commands` lists |
+| `args` | object | No | Command arguments (max 100 keys, depth 6); `getObjectState` takes `objectName` |
+| `pollIntervalMs` | integer | No | 10 to 1000 (default: 50) |
+| `timeoutMs` | integer | No | 100 to 60000 (default: 5000) |
+
+### `wait_for_condition`
+
+Check a condition at once and then every `pollIntervalMs` until it holds or `timeoutMs` ends. Returns `met`, `elapsedMs` and `finalValue` (the last value read); not meeting the condition is not an error.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | string | Yes | From `connect_to_game` |
+| `condition` | object | Yes | One of the shapes below |
+| `pollIntervalMs` | integer | No | 10 to 5000 (default: 100) |
+| `timeoutMs` | integer | No | 100 to 120000 (default: 30000) |
+
+Conditions: `{ type: "globalVar", name, operator, value }`, `{ type: "objectProperty", objectType, property, operator, value }` (a property of the first instance, or one of its instance variables), `{ type: "layout", name }`, and `{ type: "expression", expr, operator, value }`. Operators: `eq`, `neq` (strict, `Object.is`), `gt`, `lt`, `gte`, `lte` (two numbers or two strings) and `contains` (substring or array element). An `expression` is JavaScript evaluated where the bridge runs, with the page's full rights; it is refused unless the server runs with `C3MCP_ALLOW_EVAL=1`.
+
+### `subscribe_events`
+
+Buffer events in the bridge between polls, for [`read_events`](#read_events). Custom events come from the game's own script: `globalThis.__c3bridge.emit(name, data)`. Changes are found by comparing values once per tick, so a change and its reversal within one tick are not seen. There is no generic event-sheet signal subscription: no documented interface reports them. A subscription lives in the page: it stays after `disconnect_from_game` and ends with [`unsubscribe_events`](#unsubscribe_events) or a reload.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | string | Yes | From `connect_to_game` |
+| `eventType` | string | Yes | `"globalVarChange"` (changes of one global variable), `"layoutChange"` (changes of the current layout) or `"custom"` (events the game emits) |
+| `filter` | object | No | `variable`: the global variable to watch, required for `"globalVarChange"`; `name`: for `"custom"`, only events emitted with this name (default: every custom event) |
+| `bufferSize` | integer | No | Events kept, 1 to 1000 (default: 100); the oldest event is dropped when full |
+
+Returns `subscriptionId`, `eventType`, `filter` and `bufferSize`.
+
+### `read_events`
+
+Read the events a subscription buffered since the last read.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | string | Yes | From `connect_to_game` |
+| `subscriptionId` | string | Yes | From `subscribe_events` |
+| `clear` | boolean | No | Empty the buffer after reading (default: true); `false` leaves the events for a later read |
+
+Returns `events` (`type`, `name`, `value`, `previousValue` for changes, `timestamp`, `tick`, oldest first) and `count`.
+
+### `unsubscribe_events`
+
+Stop a subscription and release its buffer. An unknown subscription is an error.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | string | Yes | From `connect_to_game` |
+| `subscriptionId` | string | Yes | From `subscribe_events` |
+
+Returns `subscriptionId` and `unsubscribed`.
+
+### `simulate_input`
+
+Send input through the CDP Input domain.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | string | Yes | From `connect_to_game` |
+| `action` | object | Yes | One of the actions below |
+| `delayMs` | integer | No | Wait before the input, 0 to 60000 (default: 0) |
+| `coordinateSpace` | string | No | `"viewport"` (page CSS pixels, default), `"canvas"` (CSS pixels from the canvas's top left) or `"layout"` (layout coordinates, converted by the game through `layerToCssPx`) |
+| `layer` | string or integer | No | For `"layout"`: the layer name or index (default: 0) |
+
+Actions: `{ type: "click", x, y, button?, clickCount? }`, `{ type: "mouseMove", x, y }`, `{ type: "touch", x, y, gesture: "tap" | "longPress" | "swipe", endX?, endY? }` (touch emulation is on for the gesture only), `{ type: "key", key, modifiers? }` and `{ type: "type", text, mode? }`. A `key` is a key name (`Enter`, `Escape`, `Space`, `ArrowLeft`, `Tab`, `Backspace`, `Insert`, `F1` to `F24`, ...) or one character; characters get the code and keyCode of the US keyboard key that types them (`.` is `Period`, 190; `!` is `Digit1`, 49, with Shift). `type` presses one key per character (keyDown with its text, keyUp), so a game reading the keyboard sees it; `mode: "insertText"` inserts the text at once into a focused text field instead, without key events.
+
+### `get_canvas_size`
+
+The game canvas's position and CSS size in the viewport (`left`, `top`, `cssWidth`, `cssHeight`), its backing-store size (`backingWidth`, `backingHeight`), `devicePixelRatio` and the viewport size. Takes `connectionId`.
+
+### `screenshot_game`
+
+Capture the page, or only the canvas, as a PNG or JPEG file. The file is checked before the capture: an absolute path outside the open project's folder (junctions resolved), ending in `.png` for PNG or `.jpg`/`.jpeg` for JPEG. Missing folders are created, and an existing file is replaced only with `overwrite: true`. The runtime tools leave the project as it is, so a screenshot never lands there.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `connectionId` | string | Yes | From `connect_to_game` |
+| `outputPath` | string | Yes | Absolute path of the image file, outside the project folder |
+| `format` | string | No | `"png"` (default) or `"jpeg"` |
+| `quality` | integer | No | JPEG quality 0 to 100 |
+| `canvasOnly` | boolean | No | Only the canvas rectangle (default: the whole viewport) |
+| `overwrite` | boolean | No | Replace an existing file (default: false, which makes an existing file an error) |
+| `timeoutMs` | integer | No | Time for the capture, 1000 to 120000 (default: 30000; a large canvas takes seconds) |
+
+Returns `success`, `path`, `bytes`, `format` and, for the canvas, `clip`. The image has no size limit of its own.
+
+### `serve_preview`
+
+Serve an exported game folder (the one holding `index.html`) at `http://127.0.0.1:<port>/`, and optionally launch Chrome or Edge on it. A source project folder or a `.c3p` is refused: Construct exports only from its editor.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `folder` | string | Yes | The exported game folder |
+| `port` | integer | No | HTTP port on 127.0.0.1 (default: 0, any free port). A port another program answers on is refused |
+| `crossOriginIsolated` | boolean | No | Send COOP `same-origin`, COEP `require-corp` and CORP `same-origin`, for `SharedArrayBuffer` (default: false; `require-corp` blocks resources from other origins that do not allow it, such as a CDN script) |
+| `launchBrowser` | boolean | No | Launch a browser on the served URL (default: false) |
+| `headless` | boolean | No | Headless, with software WebGL (default: false) |
+| `windowWidth`, `windowHeight` | integer | No | Browser window size |
+| `readyTimeoutMs` | integer | No | Wait for the browser's debugging port, 1000 to 120000 (default: 15000) |
+
+The server listens on 127.0.0.1 only, answers only requests whose `Host` names this machine (127.0.0.1, localhost, [::1]; others get 403), serves only files whose real path lies in the folder (no junction or link out of it), GET and HEAD only, with `cache-control: no-store` and the usual content types (`.wasm` as `application/wasm`). A file is opened once per request: one that disappears meanwhile (a new export into the folder) is a 404, and a download the browser aborts closes its file. The browser comes from `CHROME_PATH` (which must name a file) or the usual Chrome and Edge install locations; the tool takes no browser path, host or interface, and refuses such parameters. A browser that cannot be started is an error of the call, and its fresh profile is removed. It starts with a fresh profile and `--remote-debugging-port=0`: it picks a free port itself and writes it into that profile, so the port is never another program's. Returns `serverId`, `url`, `host`, `port`, `folder`, `crossOriginIsolated`, `requests`, for a launched browser `browser` (`pid`, `executable`, `cdpPort`, `pageEndpoint`, `headless`), and `next`.
+
+### `stop_preview`
+
+Stop one preview server (`serverId`) or all of them, ending the browsers they launched and removing their profiles. Only the launched child process is ended. Profiles left over by an earlier run whose server and browser have ended are removed at the next launch. All preview servers and connections also end when the MCP server shuts down.
+
+### `generate_bridge_eval_script`
+
+Generate a Python script and manual console steps that submit a bridge command and poll for its result, for use without `connect_to_game`. The Python script only prints the JavaScript lines (`js_submit`, `js_poll_template`) to run in the preview's browser console; it does not connect to the browser. The console steps (`manualUsage`) name the Firefox DevTools console, but they are plain JavaScript for the developer tools console of the preview window.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | string | Yes | Bridge command (e.g. `"callFunction"`, `"getGlobalVar"`) |
 | `args` | object | No | Command arguments (max 100 keys, depth 6) |
 
 ### `export_for_preview`
 
-Pre-flight check for a preview test: reports the project's worker mode (`useWorker` should be `"dom"` so the bridge can reach `globalThis`; the tool reports it and does not change it) and, by default, injects the runtime bridge. Returns what is needed to serve and open the project.
+Pre-flight check for runtime testing: reports where the runtime runs (`workerMode`, from *Use worker*; `"dom"`/`"no"` or `false` in older files: on the page, `"worker"`/`"yes"` or `true`: in a worker, which `connect_to_game` reaches; `"auto"`: on the page once the project uses scripts, as it does with the bridge) and, by default, injects the bridge like `inject_runtime_bridge`, returning its `loadedAs`, `mainScript` and `importAdded`. It does not change `useWorker`. The `nextSteps` name `serve_preview` and `connect_to_game`. With `injectBridge: false` nothing is written.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `injectBridge` | boolean | No | Inject the runtime bridge (default: `true`) |
-
-**Notes:**
-- This writes to the project. Pass `injectBridge: false` when the project should stay as it is.
+| `injectBridge` | boolean | No | Inject the runtime bridge (default: true) |
 
 ### `clone_project`
 
-Copy the project folder to a new directory, for example to test on a copy, optionally with the bridge injected into the copy. The original project is not modified.
+Copy the project folder to a new directory, optionally with the bridge injected into the copy the same way as `inject_runtime_bridge`. The original project is not modified.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `targetDir` | string | Yes | Directory to copy the project into |
-| `includeBridge` | boolean | No | Include the runtime bridge in the copy (default: `true`) |
+| `targetDir` | string | Yes | Target directory for the copy |
+| `includeBridge` | boolean | No | Inject the bridge into the copy (default: true) |
 
 ### `pack_project`
 
-Pack the project folder into a `.c3p` archive that the Construct editor opens directly. Skips `.git`, `node_modules`, `.bak` files, `.DS_Store` and `Thumbs.db`. Returns `success`, `packed`, `outputPath`, `fileCount`, `sizeBytes`, `sizeMB` and `bridgeInjected`.
+Pack the project folder into a `.c3p` file (ZIP archive) that the Construct 3 editor can open. Skips `.git`, `node_modules`, `.bak` files, the files an interrupted write leaves (`.c3mcp-<16 hex digits>.tmp`, `.link` or `.old`), `.DS_Store` and `Thumbs.db`. Entries are stored without compression, and names with characters outside ASCII are marked as UTF-8. Unless `injectBridge` is false, it first adds the bridge **to the project itself**, as `inject_runtime_bridge` does (the bridge file, its entry and the marked import line in the main script), so the packed game loads the bridge. To pack a game for players, call `remove_runtime_bridge` and pack with `injectBridge: false`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `outputPath` | string | Yes | Path of the `.c3p` to write |
-| `injectBridge` | boolean | No | Inject the runtime bridge before packing (default: `true`) |
+| `outputPath` | string | Yes | Output path for the `.c3p` file |
+| `injectBridge` | boolean | No | Inject the bridge into the project before packing (default: true) |
 
-**Notes:**
-- With the default, packing also injects the bridge into the source project. Pass `injectBridge: false` for a package that is only inspected or load-checked.
-- When the server was started on a `.c3p`, the source project is its working folder, so an injected bridge is also written back into that `.c3p` after the call, like any other change. The same holds for `export_for_preview` and `inject_runtime_bridge`.
-
----
-
-## Runtime Connection Tools
-
-These tools use the Chrome DevTools Protocol (CDP) to communicate with a
-running game whose injected `globalThis.__c3bridge` is active. Start the
-browser with a remote debugging port and keep the game in DOM mode.
-
-### `connect_to_game`
-
-Open and retain a CDP WebSocket connection. Supply either a direct page
-WebSocket endpoint or discovery host/port. The tool waits for the runtime
-bridge to report `ready: true` before returning.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `cdpEndpoint` | string | No* | Direct `ws://` or `wss://` page endpoint |
-| `host` | string | No* | CDP discovery host (default: `localhost`) |
-| `port` | integer | No* | CDP discovery port (default: `9222`) |
-| `timeoutMs` | integer | No | Connect and bridge-ready timeout, 100 to 60000 ms (default: 10000) |
-| `allowRemoteHost` | boolean | No | Allow a host other than this machine (default: `false`) |
-
-*Use `cdpEndpoint` alone, or `host`/`port`; do not combine the two routes.
-
-Only `localhost`, `127.x.x.x` and `::1` are accepted unless `allowRemoteHost` is
-true, whether the host comes from `host` or from the `cdpEndpoint` URL: the
-runtime bridge runs script in whatever page it reaches.
-
-The result contains `connectionId`, `bridgeReady`, `gameState`, and, for a
-discovered connection, the selected page target metadata.
-
-### `call_bridge`
-
-Submit one of the 16 commands listed by `get_bridge_commands`, poll the bridge
-for its result, and return `commandId`, `result`, and `elapsedMs`. The two
-coordinate commands, `layerToCssPx` and `cssPxToLayer` (`{ layer?, x, y }`),
-convert between layout coordinates on a layer and CSS pixels relative to the
-page viewport through the game's own transform; a game running a bridge
-injected before they existed answers them with an unknown-command error, so
-inject the current bridge and export again.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
-| `command` | enum | Yes | A command listed by `get_bridge_commands` |
-| `args` | object | No | Command-specific arguments |
-| `pollIntervalMs` | integer | No | Poll interval, 10 to 1000 ms (default: 50) |
-| `timeoutMs` | integer | No | Command timeout, 100 to 60000 ms (default: 5000) |
-
-### `wait_for_condition`
-
-Poll the connected game until a global variable, object property, layout name,
-or page expression matches the requested condition. The first check is
-immediate. A timeout is a successful tool response with `met: false`, not a
-tool error; the response always includes `elapsed_ms` and the last
-`final_value` observed.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
-| `condition` | object | Yes | One of the condition shapes below |
-| `pollIntervalMs` | integer | No | Poll interval, 10 to 5000 ms (default: 100) |
-| `timeoutMs` | integer | No | Wait timeout, 100 to 120000 ms (default: 30000) |
-
-Condition shapes:
-
-- Global variable: `{ type: "globalVar", name, operator, value }`
-- Object property: `{ type: "objectProperty", objectType, property, operator, value }`
-- Layout: `{ type: "layout", name }`
-- Page expression: `{ type: "expression", expr, operator, value }`
-
-Operators are `eq`, `neq`, `gt`, `lt`, `gte`, `lte`, and `contains`.
-Ordered comparisons require two numbers or two strings. `contains` supports a
-string containing a string or an array containing a value. Object properties
-are resolved first from the bridge's object-state result and then from its
-`_instVars` object.
-
-Expression conditions execute caller-supplied JavaScript in the connected
-page through CDP. Use them only with trusted expressions and pages; they have
-the same authority as code entered in that page's DevTools console.
-
-### `simulate_input`
-
-Send a mouse, touch, keyboard, or text action through the connected page's CDP
-Input domain. The result is `{ success: true, action }` after every protocol
-command for the action succeeds.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
-| `action` | object | Yes | One of the action shapes below |
-| `delayMs` | integer | No | Delay before dispatch, 0 to 60000 ms (default: 0) |
-| `coordinateSpace` | string | No | `viewport` (default), `canvas` or `layout` |
-| `layer` | string or integer | No | For `layout`: the layer name or index the coordinates are on (default: layer 0) |
-
-Action shapes:
-
-- Click: `{ type: "click", x, y, button?, clickCount? }`; `button` defaults
-  to `left`, and `clickCount` is `1` or `2` with default `1`.
-- Touch: `{ type: "touch", x, y, gesture, endX?, endY? }`; `gesture` is
-  `tap`, `longPress`, or `swipe`, and a swipe requires both end coordinates.
-- Key: `{ type: "key", key, modifiers? }`; modifiers are `Alt`, `Control`,
-  `Meta`, and `Shift`.
-- Text: `{ type: "type", text }`; text is inserted one Unicode character at
-  a time and is limited to 1,000 characters per call.
-- Mouse move: `{ type: "mouseMove", x, y }`.
-
-With the default `viewport` space, coordinates are CSS pixels relative to the
-page viewport, which is also the coordinate system used by CDP. With `canvas`,
-coordinates are CSS pixels relative to the top-left corner of the page's first
-`canvas` element; the tool reads the canvas bounding rectangle immediately
-before dispatch, adds its offset, and rejects points beyond the canvas CSS
-width or height. With `layout`, coordinates are layout coordinates on
-`layer`, and every point (the start, and a swipe's end) is converted by the
-game itself through the bridge's `layerToCssPx`, so scaling, letterboxing,
-the canvas offset and the device pixel ratio are Construct's arithmetic;
-the game must run the current bridge, and a layer the layout does not have is
-an error before anything is dispatched. Long press holds for 500 ms; swipe
-interpolates eight move events from the start to the end point. A swipe
-without both end coordinates is rejected before any event is dispatched.
-
-### `get_canvas_size`
-
-Read the geometry of the connected page's first `canvas` element. Parameter:
-`connectionId` (required UUID). Returns `left` and `top` (CSS pixels in the
-viewport), `cssWidth` and `cssHeight`, `backingWidth` and `backingHeight`
-(canvas pixel buffer), `devicePixelRatio`, and `viewportWidth` and
-`viewportHeight`. The tool returns an error when the page has no canvas.
-
-### `subscribe_events`
-
-Start observing the running game through its bridge, so a test sees what
-happened between polls instead of polling fast or missing it. Three event
-types, from documented runtime state only:
-
-| Event type | What it reports | Filter |
-|------------|-----------------|--------|
-| `globalVarChange` | Each change of one global variable, compared on every tick with `Object.is` | `filter.variable`, required: the global's name |
-| `layoutChange` | Each change of the current layout's name | none |
-| `custom` | Each call of `globalThis.__c3bridge.emit(name, data)` from the game's own script or a page evaluation | `filter.name`, optional: only that name |
-
-There is no documented Construct interface that observes every event-sheet
-signal or plugin trigger, so a generic "signal" subscription is not offered;
-a game that wants a trigger observed emits a custom event where it fires.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
-| `eventType` | enum | Yes | `globalVarChange`, `layoutChange` or `custom` |
-| `filter` | object | No* | `{ variable? , name? }` as above; *required with `variable` for `globalVarChange` |
-| `bufferSize` | integer | No | Events kept per subscription, 1 to 1000 (default 100); the oldest is dropped when full |
-
-Returns `subscription_id` (a bridge-local id such as `sub-1`) with the type,
-filter and buffer size. Subscribing captures the current value as the
-baseline and emits no initial event; the bridge processes queued commands
-before comparing baselines on each tick, so a subscription made on one
-tick starts observing on the next. Events carry `type`, `name`, `value`,
-`previousValue` (global and layout changes), `timestamp` (`Date.now()`) and
-`tick` (`runtime.tickCount`). The game must run the current bridge.
-
-### `read_events`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
-| `subscriptionId` | string | Yes | The `subscription_id` returned by `subscribe_events` |
-| `clear` | boolean | No | Empty the buffer after reading (default `true`); `false` returns a copy and keeps the events |
-
-Returns `events`, oldest first, and `count`. An unknown subscription is an error.
-
-### `unsubscribe_events`
-
-Stop a subscription and release its buffer. Parameters: `connectionId` and
-`subscriptionId`. Returns `subscription_id` and `unsubscribed: true`; an
-unknown subscription is an error rather than a claimed cleanup.
-
-### `screenshot_game`
-
-Capture the connected page as an image file, so a run keeps visual evidence
-of a state without an editor or a browser tool.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `connectionId` | UUID | Yes | ID returned by `connect_to_game` |
-| `outputPath` | string | Yes | File to write; missing folders are created |
-| `format` | enum | No | `png` (default) or `jpeg` |
-| `quality` | integer | No | JPEG quality 0 to 100 |
-| `canvasOnly` | boolean | No | Capture only the game canvas rectangle (default: the whole viewport) |
-
-Returns `path`, `bytes`, `format` and, with `canvasOnly`, the `clip`
-rectangle in viewport CSS pixels.
-
-### `serve_preview`
-
-Serve an exported Construct game over HTTP on this machine and, on request,
-launch Chrome (or Edge) on it with a remote-debugging port, so a run starts,
-connects to, drives and stops the game with no editor open.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `folder` | string | Yes | The HTML5 export folder, the one holding `index.html` |
-| `port` | integer | No | HTTP port (default 0: any free port) |
-| `host` | string | No | Interface to listen on (default: `localhost`) |
-| `allowRemoteHost` | boolean | No | Allow an interface other than this machine (default: `false`) |
-| `launchBrowser` | boolean | No | Launch the browser on the served URL (default: `false`) |
-| `chromeDebuggingPort` | integer | No | Its remote-debugging port (default: 9222) |
-| `chromePath` | string | No | Browser executable (default: `CHROME_PATH`, then the usual Chrome and Edge locations) |
-| `headless` | boolean | No | Headless with software WebGL (default: `false`, a visible window) |
-| `windowWidth`, `windowHeight` | integer | No | Window size in pixels |
-| `readyTimeoutMs` | integer | No | Wait for the debugging port, 1000 to 120000 ms (default: 15000) |
-
-Returns `serverId`, `url`, `host`, `port`, `folder`, `browser` (`pid`,
-`executable`, `cdpPort`, `headless`) when one was launched, and `next`, the
-call to make after this one.
-
-- The input must be what Construct's Export > Web (HTML5) produced. A source
-  project folder (`project.c3proj`) or a `.c3p` is refused: Construct exports
-  only from its editor, and a source project is not a runnable game. For the
-  bridge tools to work, inject the bridge (`inject_runtime_bridge`) before
-  exporting.
-- Files are served as they are, with `Cache-Control: no-store`, from under the
-  folder only; a path that escapes it is a 404.
-- The launched browser gets a fresh temporary profile and ends with the MCP
-  server process or on `stop_preview`, which asks it to close over CDP and
-  kills it if it does not.
-
-### `stop_preview`
-
-Stop a preview server and the browser it launched. Parameter: `serverId`
-(the UUID `serve_preview` returned); without it, every preview server this
-MCP server holds is stopped. Returns the stopped servers' details.
-
-### `disconnect_from_game`
-
-Close a persistent connection. Parameter: `connectionId` (required UUID).
-All remaining connections are terminated, and every preview server stopped,
-when the MCP transport closes or the server receives SIGINT/SIGTERM.
+Returns `success`, `packed`, `outputPath`, `fileCount`, `sizeBytes`, `sizeMB` and `bridgeInjected`; with the bridge also `loadedAs`, `mainScript` and `importAdded` (as `inject_runtime_bridge` returns them) and a `warning` that the packed game exposes `globalThis.__c3bridge`.
 
 ---
 
@@ -3586,10 +3464,16 @@ Diagnose a game that gets stuck or a feature that silently does nothing. Optiona
 
 ```json
 {
-  "content": [{ "type": "text", "text": "Error: message" }],
+  "content": [{ "type": "text", "text": "Object \"Player\" already exists. Use update_object_properties to modify it." }],
   "isError": true
 }
 ```
+
+The text is a plain message (some start with `Error ...`, e.g. `Error creating object: ...`). Arguments that do not match a tool's input schema are refused the same way, with a text that starts `MCP error -32602: Input validation error: Invalid arguments for tool <name>: [...]`.
+
+A write that would replace a change made on disk outside the tool call is an error: when an event sheet, layout, object type or family file changed after the call read it (saved in the Construct 3 editor, restored with git, or written by a tool call running in parallel on the same file), or, for the timeline, addon and runtime-bridge tools, `project.c3proj` changed during the call, the text says `<file> was changed on disk after this server read it (...). It was not written, so that change is kept. Run the tool again: it reads the file as it is now.` When the call had already written other files, they are put back first and the text goes on `The files this tool call had already changed were put back as they were before the call (<files>), so the call changed nothing.`; a file that changed on disk again meanwhile is left as it is and named with its `.bak` (`... left as they are (...): <file> (its state from before the call is in <file>.bak). Check the project (validate_project, git diff) before you run the tool again.`). The server's own `project.c3proj` updates (registering or removing an entity, addon auto-registration, `update_project_metadata`) keep a change made on disk and are not refused for it. Of two parallel create calls for the same name, the second fails with `Refusing to create "<name>": the file ... already exists`. A tool call whose `project.c3proj` changed on disk and is not valid JSON at the moment (still being written) fails with `project.c3proj changed on disk and could not be read again (...)`. Changes made on disk between tool calls need no reconnect: each call checks `project.c3proj`, and the files the server's caches hold when the call first uses them, and reads again what changed.
+
+Refusals by the reference checks are **not** errors: `delete_object`, `update_object_properties`, `move_events_between_sheets`, `move_event_block`, `update_event_variable` (`rename_blocked`) and similar tools return a normal response with `"success": false`, `"action": "delete_blocked"`, `"update_blocked"`, `"move_blocked"` or `"rename_blocked"`, a `message` and the `references` found, and `unscannedFiles` when files that could not be parsed possibly hold uses. Nothing is written in either case.
 
 ### WriteResult
 
@@ -3599,17 +3483,19 @@ Mutation tools return this structure on success:
 interface WriteResult {
   success: boolean;
   entity: string;        // name of the entity
-  category: string;      // "object" | "family" | "eventsheet" | "layout" | "timeline" | "project" | "addon"
-  action: string;        // "created" | "updated" | "deleted" (also "delete_blocked", "would_delete", "already_registered")
+  category: string;      // "object" | "family" | "eventsheet" | "layout" | "timeline" | "tilemapbrush" | "project" | "addon" | "script-file" | "project-file"
+  action: string;        // "created" | "updated" | "deleted" | "renamed" | "registered" | "deregistered" (also "unchanged" for an `update_tilemap_brush` or a `set_main_script` that changes nothing, "delete_blocked", "update_blocked", "move_blocked", "rename_blocked", "would_delete", "would_rename", "would_update", "already_registered")
   generatedSid?: number;
   generatedUid?: number;
   warnings?: string[];   // e.g., "Auto-registered plugin..."
   backupFile?: string;   // path to .bak file
+  unscannedFiles?: UnscannedFileReport[];
+                         // files the reference check could not parse and searched as text (see Mutation Tools)
   editorNote?: string;   // not in the TypeScript type: toolResult adds it to every completed write
 }
 ```
 
-Some tools add their own fields (for example `deletedSid`, `movedSids`, `backupFiles`). Responses with `success: false` (`action: "delete_blocked"`), dry runs and no-ops carry no `editorNote`.
+Some tools add their own fields (for example `deletedSid`, `movedSids`, `backupFiles`). Responses with `success: false` (`action: "delete_blocked"`, `"update_blocked"`, `"move_blocked"` or `"rename_blocked"`), dry runs and no-ops carry no `editorNote`.
 
 ### Common Errors
 
@@ -3648,6 +3534,16 @@ interface WriteResult {
   generatedUid?: number;
   warnings?: string[];
   backupFile?: string;
+  unscannedFiles?: UnscannedFileReport[];
+}
+
+interface UnscannedFileReport {
+  file: string;          // "layouts/Big"
+  reason: string;        // "over the 10MB size limit" | "not valid JSON" | "could not be read"
+  textSearch: 'possible-use' | 'no-match' | 'unreadable' | 'not-searched';
+  names?: string[];      // with possible-use: what the text holds
+  searchedFor?: string[]; // with no-match: what the text was searched for
+  unchecked?: string;    // with not-searched in a delete: what its own unparsed file keeps from being checked
 }
 
 interface ReferenceCheckResult {
@@ -3662,4 +3558,4 @@ interface ReferenceCheckResult {
 
 ---
 
-**Last Updated**: 2026-09-28
+**Last Updated**: 2026-09-29

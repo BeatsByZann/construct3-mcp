@@ -1,299 +1,151 @@
 /**
- * Template tools: list_templates, set_instance_template, set_default_template.
- *
- * A Construct 3 "template" is a layout instance the editor treats as the
- * master copy for other instances ("replicas"). The state lives entirely in
- * the instance's `template` block inside `layouts/<name>.json`; there is no
- * separate template registry.
- *
- * Shape confirmed against C3-ACE (`layouts/Legend/repoLegendObjects.json`,
- * Construct 3 r495), where 29157 instances carry a `template` block:
- *
- *   "template": {
- *     "mode": "template",                            // or "replica"
- *     "templateName": "Default",                     // "" on a replica
- *     "sourceTemplateName": "",                      // the template on a replica
- *     "replicaHierarchyInSyncWithTemplate": false,
- *     "templatePropagateHierarchyChanges": true,
- *     "replicaIgnoreTemplateHierarchyChanges": false,
- *     "components": [ { "id": "plugin", "component": [...] }, ... ],
- *     "replicasUIDs": null
- *   }
- *
- * `components` always carries the five ids `plugin`, `instance-variable`,
- * `behavior`, `effect` and `world-instance`, in that order. Each entry is a
- * list of `{ key, state }` pairs saying which properties this instance keeps
- * in sync with its template.
+ * Instance template tools: list_templates, set_instance_template and
+ * set_default_template. A template is a layout instance the editor treats as
+ * the master copy of its replicas; the state is the instance's `template`
+ * block (construct3/instance-templates.ts). The default template of an object
+ * type is the object type's own pair of fields.
  */
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { WriteResult, Layout, Instance, ObjectType } from '../construct3/types.js';
-import { toolResult, toolError, notFoundError } from './shared.js';
-import { allLayers, allLayoutInstances } from '../construct3/layers.js';
-import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
+import type { Instance, Layout, ObjectType, WriteResult } from '../construct3/types.js';
+import { toolResult, toolError } from './shared.js';
+import { withProjectSync } from './project-sync.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
+import { unregisteredNameMessage } from './registered-names.js';
+import { refuse } from './refusals.js';
+import { writeEntityOrRollBack } from './call-rollback.js';
+import { classifyReadError } from '../construct3/project-reader.js';
+import { unscannedFilesOf, describeReadFailure, type UnscannedFile } from '../construct3/analyzers/unscanned-uses.js';
+import { forEachLayoutInstance, findInstanceByUid } from '../construct3/layers.js';
+import {
+  buildInstanceTemplate, clearDefaultTemplate, findTemplateInstance, readTemplate, sameTemplateName, templateKey,
+} from '../construct3/instance-templates.js';
 
-// ─── Template block shape ──────────────────────────────────
-
-/** One `{ key, state }` pair inside a template component. */
-export interface TemplateComponentEntry {
-  key: string;
-  /**
-   * Either a list of `[propertyName, inSync]` pairs (plugin, behavior, effect
-   * and world-instance components) or a list of `{ iv, state }` records
-   * (the instance-variable component).
-   */
-  state: Array<[string, boolean]> | Array<{ iv: string; state: boolean }>;
-}
-
-export interface TemplateComponent {
-  id: 'plugin' | 'instance-variable' | 'behavior' | 'effect' | 'world-instance';
-  component: TemplateComponentEntry[];
-}
-
-export interface InstanceTemplate {
-  mode: 'template' | 'replica';
-  templateName: string;
-  sourceTemplateName: string;
-  replicaHierarchyInSyncWithTemplate: boolean;
-  templatePropagateHierarchyChanges: boolean;
-  replicaIgnoreTemplateHierarchyChanges: boolean;
-  components: TemplateComponent[];
-  replicasUIDs: number[] | null;
-}
+type Reader = MutationToolDeps['reader'];
 
 /**
- * The world-instance property keys, in the exact order Construct writes them.
- * Identical on all 29157 template blocks in C3-ACE, so the list is fixed
- * rather than derived from the instance.
+ * Every registered layout the reader parses (shared with other callers:
+ * only read it), and the registered layouts it could not parse, which a
+ * search for templates cannot see.
  */
-export const WORLD_INSTANCE_KEYS = [
-  'x', 'y', 'z', 'w', 'h', 'a', 'o', 'c', 'sx', 'sy', 'bm',
-  'twpx', 'twpy', 'twpz', 'twpw', 'twph', 'twpa', 'dwp',
-  'ssm', 'sam', 'tgs', 'twpd', 'd', 'sz',
-] as const;
+async function layoutsForSearch(reader: Reader): Promise<{ layouts: Map<string, Layout>; skipped: UnscannedFile[] }> {
+  const layouts = new Map(await reader.readAllLayouts());
+  const skipped = unscannedFilesOf('layouts', await reader.listLayouts(), layouts, reader.getReadFailures('layouts'));
+  return { layouts, skipped };
+}
+
+/** A warning that names the layouts a search could not read ("layouts/Big (not valid JSON)"), or none. */
+function skippedWarnings(skipped: readonly UnscannedFile[], consequence: string): string[] {
+  if (skipped.length === 0) return [];
+  return [`${consequence} Layouts that could not be parsed: ${skipped.map(f => `${f.file} (${f.reason})`).join(', ')}.`];
+}
+
+/** The most orphaned replicas one result lists. */
+const ORPHAN_LIST_LIMIT = 50;
 
 /**
- * `x` and `y` are `false` on every one of the 29157 blocks observed, which is
- * what makes replicas independently placeable; every other key defaults to
- * `true` on a fresh template.
+ * What still names a template that a call removes, renames or turns into
+ * a replica: the replicas of that name in every layout (`layout`, the
+ * edited one, in place of its file) and the object type's default
+ * template. Warnings only: what the editor does with such replicas was not
+ * observed.
  */
-const WORLD_INSTANCE_DEFAULT_FALSE = new Set(['x', 'y']);
-
-/**
- * Plugin properties Construct leaves out of the `plugin` component. Only
- * `live-preview` was observed being dropped (29034 of 29157 blocks omit it and
- * nothing else). Whether other editor-only properties are dropped too cannot
- * be derived from the sample, so every other property the instance carries is
- * included.
- */
-const PLUGIN_PROPERTIES_NOT_IN_TEMPLATE = new Set(['live-preview']);
-
-/**
- * Marker key Construct appends to an effect's state list to cover the effect's
- * enabled flag. Observed verbatim on every effect component in C3-ACE.
- */
-const EFFECT_ENABLE_KEY = '<<effect-template-enable>>';
-
-// ─── Component derivation ──────────────────────────────────
-
-function pairs(keys: string[]): Array<[string, boolean]> {
-  return keys.map(key => [key, true] as [string, boolean]);
-}
-
-/** Build the five components from the instance's own plugin/behavior/effect state. */
-export function buildTemplateComponents(instance: Instance): TemplateComponent[] {
-  const properties = (instance.properties ?? {}) as Record<string, unknown>;
-  const pluginKeys = Object.keys(properties).filter(key => !PLUGIN_PROPERTIES_NOT_IN_TEMPLATE.has(key));
-
-  const instanceVariables = (instance.instanceVariables ?? {}) as Record<string, unknown>;
-  const behaviors = (instance.behaviors ?? {}) as Record<string, { properties?: Record<string, unknown> }>;
-  const effects = (instance.effects ?? {}) as Record<string, { parameters?: Record<string, unknown> }>;
-
-  const isWorld = instance.world !== undefined && instance.world !== null;
-
-  return [
-    {
-      id: 'plugin',
-      component: pluginKeys.length > 0 ? [{ key: 'plugin', state: pairs(pluginKeys) }] : [],
-    },
-    {
-      id: 'instance-variable',
-      component: [{
-        key: 'instance-variable',
-        state: Object.keys(instanceVariables).map(iv => ({ iv, state: true })),
-      }],
-    },
-    {
-      id: 'behavior',
-      component: Object.keys(behaviors).map(key => ({
-        key,
-        state: pairs(Object.keys(behaviors[key]?.properties ?? {})),
-      })),
-    },
-    {
-      id: 'effect',
-      component: Object.keys(effects).map(key => ({
-        key,
-        state: pairs([...Object.keys(effects[key]?.parameters ?? {}), EFFECT_ENABLE_KEY]),
-      })),
-    },
-    {
-      id: 'world-instance',
-      component: isWorld
-        ? [{
-          key: 'world-instance',
-          state: WORLD_INSTANCE_KEYS.map(key => [key, !WORLD_INSTANCE_DEFAULT_FALSE.has(key)] as [string, boolean]),
-        }]
-        : [],
-    },
-  ];
-}
-
-/** Build a complete `template` block for an instance. */
-export function buildInstanceTemplate(
-  instance: Instance,
-  mode: 'template' | 'replica',
-  templateName: string,
-  sourceTemplateName: string,
-): InstanceTemplate {
-  return {
-    mode,
-    templateName,
-    sourceTemplateName,
-    replicaHierarchyInSyncWithTemplate: false,
-    templatePropagateHierarchyChanges: true,
-    replicaIgnoreTemplateHierarchyChanges: false,
-    components: buildTemplateComponents(instance),
-    // Always null on disk, on templates with replicas as well as without:
-    // Construct recomputes the list when it loads the project.
-    replicasUIDs: null,
-  };
-}
-
-// ─── Lookup helpers ────────────────────────────────────────
-
-interface FoundInstance {
-  instance: Instance;
-  /** Layer name, or null for a non-world instance. */
-  layer: string | null;
-}
-
-function findInstanceByUid(layout: Layout, uid: number): FoundInstance | null {
-  for (const layer of allLayers(layout.layers)) {
-    if (!Array.isArray(layer.instances)) continue;
-    for (const instance of layer.instances) {
-      if (instance.uid === uid) return { instance, layer: layer.name };
-    }
+async function endedTemplateWarnings(
+  reader: Reader, objectType: string, templateName: string, layoutName: string, layout: Layout,
+): Promise<string[]> {
+  const search = await layoutsForSearch(reader);
+  search.layouts.set(layoutName, layout);
+  let replicas = 0;
+  for (const searched of search.layouts.values()) {
+    forEachLayoutInstance(searched, instance => {
+      const block = readTemplate(instance);
+      if (instance.type === objectType && block?.mode === 'replica' && sameTemplateName(block.sourceTemplateName, templateName)) replicas += 1;
+    });
   }
-  const nonworld = layout['nonworld-instances'];
-  if (Array.isArray(nonworld)) {
-    for (const raw of nonworld) {
-      const instance = raw as unknown as Instance;
-      if (instance.uid === uid) return { instance, layer: null };
-    }
+  const warnings: string[] = [];
+  if (replicas > 0) {
+    warnings.push(`${replicas} replica(s) of "${objectType}" follow the template "${templateName}", which no instance is any more; `
+      + 'list_templates lists them as orphanedReplicas.');
   }
-  return null;
+  warnings.push(...skippedWarnings(search.skipped.filter(f => f.name !== layoutName), `Replicas of "${templateName}" in these layouts were not counted.`));
+  try {
+    const type = await reader.readObjectType(objectType);
+    const named = type.editorNewInstanceTemplateName;
+    if (named !== undefined && sameTemplateName(named, templateName)) {
+      warnings.push(`Object type "${objectType}" creates new instances from the template "${templateName}"; clear or change it with set_default_template.`);
+    }
+  } catch (error) {
+    warnings.push(`Whether object type "${objectType}" creates new instances from "${templateName}" could not be checked (${describeReadFailure(classifyReadError(error))}).`);
+  }
+  return warnings;
 }
 
-function readTemplate(instance: Instance): InstanceTemplate | undefined {
-  const block = instance.template;
-  if (!block || typeof block !== 'object') return undefined;
-  return block as unknown as InstanceTemplate;
-}
+/** Register list_templates, set_instance_template and set_default_template. */
+export function registerTemplateTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
+  const server = withProjectSync(mcpServer, reader);
 
-// ─── Registration ──────────────────────────────────────────
-
-export function registerTemplateTools({ server, reader, writer }: MutationToolDeps) {
   // ─── list_templates ───────────────────────────────────────
 
   server.tool(
     'list_templates',
-    'List every instance template in the project: the layout, UID and object type of each template instance, and how many replicas point at it.',
+    'List every instance template in the project: the layout, UID and object type of each template instance, and how many replicas point at it. Layouts that could not be parsed are named (unscannedFiles, complete: false): templates in them are not listed.',
     {
-      objectType: z.string().max(200).optional().describe('Only list templates for this object type'),
+      objectType: z.string().max(200).optional().describe('Only list templates for this object type (its name as registered, in that letter case)'),
     },
     async (args) => {
       try {
-        if (args.objectType) {
-          const objectTypes = await reader.listObjectTypes();
-          if (!objectTypes.includes(args.objectType)) {
-            return notFoundError('Object', args.objectType, reader.findNearestName(args.objectType, 'objects'), 'list_objects');
-          }
+        if (args.objectType !== undefined) {
+          const missing = unregisteredNameMessage('Object', args.objectType, await reader.listObjectTypes(),
+            () => reader.findNearestName(args.objectType!, 'objects'), 'list_objects');
+          if (missing !== undefined) return toolError(missing);
         }
+        const { layouts, skipped } = await layoutsForSearch(reader);
 
-        interface TemplateRow {
-          templateName: string;
-          objectType: string;
-          layout: string;
-          uid: number;
-          replicaCount: number;
-        }
-        const templates: TemplateRow[] = [];
-        // Replicas name their source, not their source's UID, so they are
-        // counted per (objectType, sourceTemplateName) pair.
-        const replicaCounts = new Map<string, number>();
-        const orphanedReplicas: Array<{ objectType: string; layout: string; uid: number; sourceTemplateName: string }> = [];
-        const warnings: string[] = [];
-
-        const layouts = await reader.listLayouts();
-        const pending: Array<{ objectType: string; layout: string; uid: number; sourceTemplateName: string }> = [];
-
-        for (const layoutName of layouts) {
-          let layout: Layout;
-          try {
-            layout = await reader.readLayout(layoutName);
-          } catch (e) {
-            warnings.push(`Layout "${layoutName}" could not be read: ${e instanceof Error ? e.message : String(e)}`);
-            continue;
-          }
-          for (const instance of allLayoutInstances(layout)) {
+        interface Row { templateName: string; objectType: string; layout: string; uid: number; replicaCount: number }
+        interface Replica { objectType: string; layout: string; uid: number; sourceTemplateName: string }
+        const templates: Row[] = [];
+        const replicas: Replica[] = [];
+        for (const layoutName of await reader.listLayouts()) {
+          forEachLayoutInstance(layouts.get(layoutName), (instance: Instance) => {
             const block = readTemplate(instance);
-            if (!block) continue;
-            if (args.objectType && instance.type !== args.objectType) continue;
+            if (!block || (args.objectType !== undefined && instance.type !== args.objectType)) return;
             if (block.mode === 'template' && block.templateName) {
-              templates.push({
-                templateName: block.templateName,
-                objectType: instance.type,
-                layout: layoutName,
-                uid: instance.uid,
-                replicaCount: 0,
-              });
+              templates.push({ templateName: block.templateName, objectType: instance.type, layout: layoutName, uid: instance.uid, replicaCount: 0 });
             } else if (block.mode === 'replica' && block.sourceTemplateName) {
-              const key = `${instance.type} ${block.sourceTemplateName}`;
-              replicaCounts.set(key, (replicaCounts.get(key) ?? 0) + 1);
-              pending.push({
-                objectType: instance.type,
-                layout: layoutName,
-                uid: instance.uid,
-                sourceTemplateName: block.sourceTemplateName,
-              });
+              replicas.push({ objectType: instance.type, layout: layoutName, uid: instance.uid, sourceTemplateName: block.sourceTemplateName });
             }
-          }
+          });
         }
+        // A replica names its source template, not the source's UID: counted per (object type, name), names compared as templateKey does (exactly, like sameTemplateName)
+        const counts = new Map<string, number>();
+        for (const r of replicas) {
+          const key = templateKey(r.objectType, r.sourceTemplateName);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        for (const row of templates) row.replicaCount = counts.get(templateKey(row.objectType, row.templateName)) ?? 0;
+        const known = new Set(templates.map(row => templateKey(row.objectType, row.templateName)));
+        const orphans = replicas.filter(r => !known.has(templateKey(r.objectType, r.sourceTemplateName)));
 
-        for (const row of templates) {
-          row.replicaCount = replicaCounts.get(`${row.objectType} ${row.templateName}`) ?? 0;
-        }
-        const known = new Set(templates.map(row => `${row.objectType} ${row.templateName}`));
-        for (const replica of pending) {
-          if (!known.has(`${replica.objectType} ${replica.sourceTemplateName}`)) {
-            orphanedReplicas.push(replica);
-          }
-        }
+        const cut = orphans.length > ORPHAN_LIST_LIMIT;
+        const warnings = [
+          ...skippedWarnings(skipped, 'Templates and replicas in these layouts are not listed, so counts and orphans may be wrong.'),
+          ...(cut ? [`Only the first ${ORPHAN_LIST_LIMIT} of ${orphans.length} orphaned replicas are listed.`] : []),
+        ];
 
         return toolResult({
           templates,
           count: templates.length,
-          // A replica whose template instance is not in this project (or was
-          // filtered out by objectType) — reported rather than hidden.
-          orphanedReplicas: orphanedReplicas.length > 0 ? orphanedReplicas.slice(0, 50) : undefined,
-          orphanedReplicaCount: orphanedReplicas.length > 0 ? orphanedReplicas.length : undefined,
+          // A replica whose template instance was not found in the layouts that could be read
+          orphanedReplicas: orphans.length > 0 ? orphans.slice(0, ORPHAN_LIST_LIMIT) : undefined,
+          orphanedReplicaCount: orphans.length > 0 ? orphans.length : undefined,
+          orphanedReplicasTruncated: cut ? true : undefined,
+          ...(skipped.length > 0 ? { complete: false, unscannedFiles: skipped.map(({ file, reason }) => ({ file, reason })) } : {}),
           warnings: warnings.length > 0 ? warnings : undefined,
         });
       } catch (error) {
         console.error('[list_templates] failed:', error);
-        return toolError(`Error listing templates: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing templates: ${errorReason(error, { projectDir: reader.getProjectDir() })}`);
       }
     }
   );
@@ -302,95 +154,99 @@ export function registerTemplateTools({ server, reader, writer }: MutationToolDe
 
   server.tool(
     'set_instance_template',
-    'Make a layout instance a template, a replica of a named template, or neither. The template block is built from the instance\'s own plugin properties, instance variables, behaviors and effects.',
+    'Make a layout instance a template, a replica of a named template, or neither. The template block is built from the instance\'s own plugin properties, instance variables, behaviors and effects. The layout name must be given as registered, in that letter case. Template and replica are refused on a non-world instance, because the editor refused to open such a project on Construct 3 r506-2 (Free edition). A failed write is rolled back.',
     {
-      layoutName: z.string().max(200).describe('Layout holding the instance'),
+      layoutName: z.string().max(200).describe('Layout holding the instance (as registered, in that letter case)'),
       uid: z.number().int().describe('Instance UID'),
       mode: z.enum(['none', 'template', 'replica']).describe('none removes the template block; template makes this the master; replica links it to a template'),
-      templateName: z.string().max(200).optional().describe('Template name — required for mode "template"'),
-      sourceTemplateName: z.string().max(200).optional().describe('Name of the template to follow — required for mode "replica"'),
+      templateName: z.string().max(200).optional().describe('Template name; required for mode "template"'),
+      sourceTemplateName: z.string().max(200).optional().describe('Name of the template to follow; required for mode "replica"'),
     },
     async (args) => {
       try {
         const { layoutName, uid, mode } = args;
-
-        const layouts = await reader.listLayouts();
-        if (!layouts.includes(layoutName)) {
-          return notFoundError('Layout', layoutName, reader.findNearestName(layoutName, 'layouts'), 'list_layouts');
+        if (mode === 'template' && !args.templateName) return refuse('mode "template" requires templateName.');
+        if (mode === 'replica' && !args.sourceTemplateName) return refuse('mode "replica" requires sourceTemplateName.');
+        const missing = unregisteredNameMessage('Layout', layoutName, await reader.listLayouts(),
+          () => reader.findNearestName(layoutName, 'layouts'), 'list_layouts');
+        if (missing !== undefined) return refuse(missing);
+        let layout: Layout;
+        try {
+          layout = await reader.readLayout(layoutName);
+        } catch (error) {
+          return refuse(`Cannot read layout "${layoutName}" (${describeReadFailure(classifyReadError(error))}).`);
         }
-        const layout = await reader.readLayout(layoutName);
         const found = findInstanceByUid(layout, uid);
-        if (!found) {
-          return toolError(`No instance with UID ${uid} in layout "${layoutName}". Use get_layout_details to see the instances.`);
-        }
+        if (!found) return refuse(`No instance with UID ${uid} in layout "${layoutName}". Use get_layout_details to see the instances.`);
+        const instance = found.instance as Instance & Record<string, unknown>;
 
-        if (mode === 'template' && !args.templateName) {
-          return toolError('mode "template" requires templateName.');
-        }
-        if (mode === 'replica' && !args.sourceTemplateName) {
-          return toolError('mode "replica" requires sourceTemplateName.');
+        if (mode !== 'none' && found.entry === undefined) {
+          return refuse(`Instance UID ${uid} in layout "${layoutName}" is a non-world instance. A template or replica block on a non-world instance `
+            + 'made Construct 3 r506-2 (Free edition, guest) refuse to open the project ("Failed to open project", '
+            + '2 of 2 attempts, checked with the Array object type only), so no block is written.');
         }
 
         const warnings: string[] = [];
+        const previous = readTemplate(instance);
         let action: string;
-
         if (mode === 'none') {
-          if (!readTemplate(found.instance)) {
-            return toolError(`Instance UID ${uid} in layout "${layoutName}" has no template block; nothing to remove.`);
-          }
-          delete (found.instance as Record<string, unknown>).template;
+          if (!previous) return refuse(`Instance UID ${uid} in layout "${layoutName}" has no template block; nothing to remove.`);
+          delete instance.template;
           action = 'template removed';
         } else if (mode === 'template') {
           const templateName = args.templateName!;
-          // Two templates of one object type sharing a name would make every
-          // replica of that name ambiguous.
-          const clash = await findTemplateLocation(reader, found.instance.type, templateName, { layout: layoutName, uid });
+          // Two templates of one object type with one name would make every replica of that name ambiguous
+          const search = await layoutsForSearch(reader);
+          search.layouts.set(layoutName, layout);
+          const clash = findTemplateInstance(search.layouts, instance.type, templateName, { layout: layoutName, uid });
           if (clash) {
-            return toolError(
-              `Instance UID ${clash.uid} in layout "${clash.layout}" is already a template named "${templateName}" ` +
-              `for object type "${found.instance.type}". Template names must be unique per object type.`
-            );
+            return refuse(`Instance UID ${clash.uid} in layout "${clash.layout}" is already a template named "${templateName}" `
+              + `for object type "${instance.type}". Template names must be unique per object type.`);
           }
-          (found.instance as Record<string, unknown>).template =
-            buildInstanceTemplate(found.instance, 'template', templateName, '');
+          warnings.push(...skippedWarnings(search.skipped.filter(f => f.name !== layoutName),
+            `Whether another instance of "${instance.type}" is already a template named "${templateName}" could not be checked in every layout.`));
+          instance.template = buildInstanceTemplate(instance, 'template', templateName, '') as unknown as Record<string, unknown>;
           action = 'template created';
         } else {
           const sourceTemplateName = args.sourceTemplateName!;
-          const exists = await findTemplateLocation(reader, found.instance.type, sourceTemplateName);
-          if (!exists) {
-            warnings.push(
-              `No instance of "${found.instance.type}" is a template named "${sourceTemplateName}". ` +
-              'The replica is written anyway, but Construct will have nothing to sync it with until that template exists.'
-            );
+          if (previous?.mode === 'template' && sameTemplateName(previous.templateName, sourceTemplateName)) {
+            return refuse(`Instance UID ${uid} in layout "${layoutName}" is the template "${previous.templateName}" itself; `
+              + 'it cannot be a replica of its own template.');
           }
-          (found.instance as Record<string, unknown>).template =
-            buildInstanceTemplate(found.instance, 'replica', '', sourceTemplateName);
+          const search = await layoutsForSearch(reader);
+          search.layouts.set(layoutName, layout);
+          // The instance itself cannot be found here: a template of this name it was is refused above
+          if (!findTemplateInstance(search.layouts, instance.type, sourceTemplateName)) {
+            warnings.push(`No instance of "${instance.type}" is a template named "${sourceTemplateName}". `
+              + 'The replica is written anyway; it has no template to follow until one of that name exists.');
+            warnings.push(...skippedWarnings(search.skipped.filter(f => f.name !== layoutName), 'The template may be in a layout that could not be checked.'));
+          }
+          instance.template = buildInstanceTemplate(instance, 'replica', '', sourceTemplateName) as unknown as Record<string, unknown>;
           action = 'replica linked';
         }
-
-        if (mode !== 'none' && found.layer === null) {
-          warnings.push(
-            `UID ${uid} is a non-world instance; no template block was observed on a non-world instance in the reference project, ` +
-            'so Construct may ignore it.'
-          );
+        if (previous !== undefined && previous.mode === mode) {
+          warnings.push(`The instance's existing ${mode} block was rebuilt from its current properties, instance variables, behaviors and effects; `
+            + 'sync settings changed in the editor were reset.');
+        }
+        // A template this call removes, renames or turns into a replica leaves what named it without a template
+        if (previous?.mode === 'template' && !(mode === 'template' && sameTemplateName(previous.templateName, args.templateName!))) {
+          warnings.push(...await endedTemplateWarnings(reader, instance.type, previous.templateName, layoutName, layout));
         }
 
-        const subfolder = writer.getSubfolderForEntity('layouts', layoutName);
-        const backupPath = await writer.writeEntityFile('layouts', layoutName, layout, subfolder);
-        resetProjectIndex();
-
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'layouts', layoutName, layout);
+        } catch (error) {
+          return toolError(errorMessage(error, reader.getProjectDir()));
+        }
         const result: WriteResult = {
-          success: true,
-          entity: `${layoutName}#${uid}`,
-          category: 'template',
-          action,
-          warnings: warnings.length > 0 ? warnings : undefined,
-          backupFile: backupPath,
+          success: true, entity: `${layoutName}#${uid}`, category: 'template', action,
+          warnings: warnings.length > 0 ? warnings : undefined, backupFile: backupPath,
         };
         return toolResult(result);
       } catch (error) {
         console.error('[set_instance_template] failed:', error);
-        return toolError(`Error setting instance template: ${error instanceof Error ? error.message : String(error)}`);
+        return refuse(`Error setting instance template: ${errorReason(error, { projectDir: reader.getProjectDir() })}`);
       }
     }
   );
@@ -399,89 +255,51 @@ export function registerTemplateTools({ server, reader, writer }: MutationToolDe
 
   server.tool(
     'set_default_template',
-    'Set or clear the template a new instance of an object type is created from in the editor (editorNewInstanceIsReplica / editorNewInstanceTemplateName on the object type).',
+    'Set or clear the template a new instance of an object type is created from in the editor (editorNewInstanceIsReplica and editorNewInstanceTemplateName on the object type). The object type name must be given as registered, in that letter case. A failed write is rolled back.',
     {
-      objectName: z.string().max(200).describe('Object type name'),
-      templateName: z.string().max(200).nullable().describe('Template to create new instances from, or null to clear it'),
+      objectName: z.string().max(200).describe('Object type name (as registered, in that letter case)'),
+      templateName: z.string().min(1).max(200).nullable().describe('Template to create new instances from, or null to clear it'),
     },
     async (args) => {
       try {
-        const objectTypes = await reader.listObjectTypes();
-        if (!objectTypes.includes(args.objectName)) {
-          return notFoundError('Object', args.objectName, reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        const missing = unregisteredNameMessage('Object', args.objectName, await reader.listObjectTypes(),
+          () => reader.findNearestName(args.objectName, 'objects'), 'list_objects');
+        if (missing !== undefined) return refuse(missing);
+        let objectType: ObjectType;
+        try {
+          objectType = await reader.readObjectType(args.objectName);
+        } catch (error) {
+          return refuse(`Cannot read object type "${args.objectName}" (${describeReadFailure(classifyReadError(error))}).`);
         }
-        const objectType = await reader.readObjectType(args.objectName);
         const warnings: string[] = [];
-
         if (args.templateName === null) {
-          delete (objectType as Record<string, unknown>).editorNewInstanceTemplateName;
-          (objectType as ObjectType).editorNewInstanceIsReplica = false;
+          clearDefaultTemplate(objectType);
         } else {
-          const exists = await findTemplateLocation(reader, args.objectName, args.templateName);
-          if (!exists) {
-            warnings.push(
-              `No instance of "${args.objectName}" is a template named "${args.templateName}". ` +
-              'Create one with set_instance_template first, or the editor will have nothing to copy.'
-            );
+          const search = await layoutsForSearch(reader);
+          if (!findTemplateInstance(search.layouts, args.objectName, args.templateName)) {
+            warnings.push(`No instance of "${args.objectName}" is a template named "${args.templateName}". `
+              + 'Create one with set_instance_template first.');
+            warnings.push(...skippedWarnings(search.skipped, 'The template may be in a layout that could not be checked.'));
           }
-          (objectType as ObjectType).editorNewInstanceIsReplica = true;
-          (objectType as Record<string, unknown>).editorNewInstanceTemplateName = args.templateName;
+          objectType.editorNewInstanceIsReplica = true;
+          objectType.editorNewInstanceTemplateName = args.templateName;
         }
-
-        // 109 object types in the reference project carry
-        // editorNewInstanceIsReplica and only 53 also carry
-        // editorNewInstanceTemplateName, so the flag can stand alone; what the
-        // editor does in that case is not derivable from the sample.
-        warnings.push(
-          'editorNewInstanceIsReplica is set alongside the name. Some object types in the reference project carry the flag ' +
-          'without a template name; that combination was not reproduced here.'
-        );
-
-        const subfolder = writer.getSubfolderForEntity('objectTypes', args.objectName);
-        const backupPath = await writer.writeEntityFile('objectTypes', args.objectName, objectType, subfolder);
-        resetProjectIndex();
-
+        let backupPath: string;
+        try {
+          backupPath = await writeEntityOrRollBack(writer, 'objectTypes', args.objectName, objectType);
+        } catch (error) {
+          return toolError(errorMessage(error, reader.getProjectDir()));
+        }
         const result: WriteResult = {
-          success: true,
-          entity: args.objectName,
-          category: 'objecttype',
+          success: true, entity: args.objectName, category: 'objecttype',
           action: args.templateName === null ? 'default template cleared' : 'default template set',
-          warnings,
-          backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined, backupFile: backupPath,
         };
         return toolResult(result);
       } catch (error) {
         console.error('[set_default_template] failed:', error);
-        return toolError(`Error setting default template: ${error instanceof Error ? error.message : String(error)}`);
+        return refuse(`Error setting default template: ${errorReason(error, { projectDir: reader.getProjectDir() })}`);
       }
     }
   );
-}
-
-/**
- * Locate the instance of `objectType` that is a template named
- * `templateName`, skipping one instance by layout and UID when given.
- */
-async function findTemplateLocation(
-  reader: MutationToolDeps['reader'],
-  objectType: string,
-  templateName: string,
-  skip?: { layout: string; uid: number },
-): Promise<{ layout: string; uid: number } | null> {
-  for (const layoutName of await reader.listLayouts()) {
-    let layout: Layout;
-    try {
-      layout = await reader.readLayout(layoutName);
-    } catch {
-      continue;
-    }
-    for (const instance of allLayoutInstances(layout)) {
-      if (instance.type !== objectType) continue;
-      const block = readTemplate(instance);
-      if (!block || block.mode !== 'template' || block.templateName !== templateName) continue;
-      if (skip && skip.layout === layoutName && skip.uid === instance.uid) continue;
-      return { layout: layoutName, uid: instance.uid };
-    }
-  }
-  return null;
 }

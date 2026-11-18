@@ -15,9 +15,9 @@ import type {
   VariableEvent,
   GroupEvent,
   FunctionBlockEvent,
-  CustomActionBlockEvent,
   IncludeEvent,
   CommentEvent,
+  CustomActionBlockEvent,
   BlockEvent,
   Animation,
   AnimationFrame,
@@ -31,39 +31,13 @@ import type {
 
 // ─── Object Templates ──────────────────────────────────────
 
-/**
- * Plugins that use singleglobal-inst (no layout placement). Corrected against
- * r495.2: `Camera3D` (1 sample) and `gamepad` (8) are single-global and were
- * missing, and `Cryptography` was removed because r495.2 rewrote such an
- * object as an ordinary type with no `singleglobal-inst` at all, observed live
- * rather than in the corpus, which has no Cryptography object.
- * `NWjs` and `XMLParser` are unverified here: both are legacy SDK v1 and
- * absent from r495.2, so an object of either raises a missing-addon dialog
- * whatever this list says.
- */
+/** Plugins that use singleglobal-inst (no layout placement) */
 export const GLOBAL_PLUGINS = new Set([
   'Audio', 'AJAX', 'Mouse', 'Touch', 'Keyboard', 'Browser',
   'Geolocation', 'NWjs', 'Clipboard', 'PlatformInfo',
   'LocalStorage', 'XMLParser', 'Multiplayer',
-  'Facebook', 'IAP', 'Greenworks', 'Timeline',
-  'Camera3D', 'gamepad',
+  'Facebook', 'IAP', 'Greenworks', 'Cryptography', 'Timeline',
 ]);
-
-/**
- * Plugins whose object type carries a single `image` block, and those whose
- * object type carries `animations`. Both come from the 30 r495.2 packages: all
- * 121 single-image object types (TiledBg 68, Particles 30, Spritefont2 12,
- * Tilemap 6, NinePatch 5) share the same nine object-type keys and the same
- * eleven image keys, and all 384 animation object types (Sprite 342,
- * Shape3D 42) share one shape. Every one of them also has its PNG on disk.
- * An object of any of these written without its image makes a project r495.2
- * refuses to open, while `validate_project` still reports no errors.
- */
-export const SINGLE_IMAGE_PLUGINS = new Set([
-  'TiledBg', 'Particles', 'Spritefont2', 'Tilemap', 'NinePatch',
-]);
-
-export const ANIMATION_PLUGINS = new Set(['Sprite', 'Shape3D']);
 
 /** Plugins that are isGlobal but NOT singleglobal-inst (placed as nonworld instances) */
 export const NONWORLD_GLOBAL_PLUGINS = new Set([
@@ -82,7 +56,6 @@ export const RESERVED_NAMES = new Set([
 export const KNOWN_SCIRRA_PLUGINS: Record<string, string> = {
   AJAX: 'AJAX',
   Arr: 'Array',
-  Camera3D: '3D camera',
   Audio: 'Audio',
   Browser: 'Browser',
   Button: 'Button',
@@ -108,19 +81,15 @@ export const KNOWN_SCIRRA_PLUGINS: Record<string, string> = {
   PlatformInfo: 'Platform info',
   ProgressBar: 'Progress bar',
   'Shadow Light': 'Shadow light',
-  SVGPicture: 'SVG Picture',
-  Shape3D: '3D shape',
   Sprite: 'Sprite',
   Spritefont2: 'Sprite font',
   Text: 'Text',
   TextBox: 'Text input',
   TiledBg: 'Tiled Background',
-  Tilemap: 'Tilemap',
   Timeline: 'Timeline controller',
   Touch: 'Touch',
   Video: 'Video',
   XMLParser: 'XML',
-  gamepad: 'Gamepad',
   sliderbar: 'Slider bar',
 };
 
@@ -157,27 +126,20 @@ export const KNOWN_SCIRRA_BEHAVIORS: Record<string, string> = {
   Wrap: 'Wrap',
 };
 
-/**
- * Pixel size of the placeholder image a new object type is created with.
- * The image file written to disk must match, because Construct reads an
- * image's real dimensions on load and rewrites width/height to match.
- */
-export const DEFAULT_OBJECT_IMAGE_SIZE = 100;
-
 export function createSpriteObject(name: string, sid: number, animSid: number, imageSpriteId?: number): ObjectType {
   return {
     name,
     'plugin-id': 'Sprite',
-    sid,
     isGlobal: false,
     editorNewInstanceIsReplica: true,
+    sid,
     instanceVariables: [],
     behaviorTypes: [],
     effectTypes: [],
     animations: {
       items: [
         {
-          frames: [createAnimationFrame(DEFAULT_OBJECT_IMAGE_SIZE, DEFAULT_OBJECT_IMAGE_SIZE, imageSpriteId)],
+          frames: [createAnimationFrame(100, 100, imageSpriteId)],
           sid: animSid,
           name: 'Animation 1',
           isLooping: false,
@@ -196,9 +158,9 @@ export function createTextObject(name: string, sid: number): ObjectType {
   return {
     name,
     'plugin-id': 'Text',
-    sid,
     isGlobal: false,
     editorNewInstanceIsReplica: true,
+    sid,
     instanceVariables: [],
     behaviorTypes: [],
     effectTypes: [],
@@ -209,61 +171,28 @@ export function createTiledBgObject(name: string, sid: number, imageSpriteId?: n
   return {
     name,
     'plugin-id': 'TiledBg',
-    sid,
     isGlobal: false,
     editorNewInstanceIsReplica: true,
+    sid,
     instanceVariables: [],
     behaviorTypes: [],
     effectTypes: [],
     image: {
-      width: DEFAULT_OBJECT_IMAGE_SIZE,
-      height: DEFAULT_OBJECT_IMAGE_SIZE,
+      width: 100,
+      height: 100,
       originX: 0.5,
       originY: 0.5,
       originalSource: '',
       exportFormat: 'lossless',
       exportQuality: 0.8,
       fileType: 'image/png',
-      ...(imageSpriteId !== undefined ? { imageSpriteId } : {}),
-      collisionPoly: { points: [] },
-      useCollisionPoly: true,
       tag: '',
+      useCollisionPoly: true,
+      collisionPoly: { points: [] },
+      ...(imageSpriteId !== undefined ? { imageSpriteId } : {}),
     },
   };
 }
-
-/**
- * Properties r495.2 writes on a newly created single-global instance, by plugin.
- *
- * Harvested by creating one object of each installed global plugin with the
- * tools and reading back the editor's own save: AJAX, Browser, Clipboard,
- * Geolocation, Keyboard, Mouse, Multiplayer, PlatformInfo and Timeline write
- * an empty bag, and only these three carry defaults. Key order is the editor's.
- * A plugin that is absent here gets an empty bag, which is what the editor
- * writes for every plugin sampled so far; the editor fills in anything missing
- * on load, so an unsampled plugin costs a round-trip difference, not an error.
- */
-export const DEFAULT_GLOBAL_INSTANCE_PROPERTIES: Record<string, Record<string, unknown>> = {
-  Audio: {
-    'timescale-audio': 'off',
-    'save-load': 'all',
-    'play-in-background': false,
-    'latency-hint': 'interactive',
-    'enable-multiple-tags': false,
-    'panning-model': 'hrtf',
-    'distance-model': 'inverse',
-    'listener-z-height': 600,
-    'reference-distance': 600,
-    'maximum-distance': 10000,
-    'roll-off-factor': 1,
-  },
-  LocalStorage: {
-    'in-memory-only': false,
-  },
-  Touch: {
-    'use-mouse-input': true,
-  },
-};
 
 export function createGlobalObject(
   name: string,
@@ -278,7 +207,7 @@ export function createGlobalObject(
     sid,
     'singleglobal-inst': {
       type: name,
-      properties: { ...(DEFAULT_GLOBAL_INSTANCE_PROPERTIES[pluginId] ?? {}) },
+      properties: {},
       uid,
       sid: sgiSid,
       tags: '',
@@ -290,9 +219,9 @@ export function createGenericObject(name: string, pluginId: string, sid: number)
   return {
     name,
     'plugin-id': pluginId,
-    sid,
     isGlobal: false,
     editorNewInstanceIsReplica: true,
+    sid,
     instanceVariables: [],
     behaviorTypes: [],
     effectTypes: [],
@@ -345,18 +274,6 @@ export const DEFAULT_INSTANCE_PROPERTIES: Record<string, Record<string, unknown>
     'blend-margin-x': 0.1,
     'blend-margin-y': 0.1,
   },
-  /**
-   * Harvested from an r495.2 save: a Drawing Canvas instance the tools placed
-   * with no properties came back carrying exactly these four, in this order.
-   * Before this entry the editor filled all four on load, and corrected the
-   * world origin with them.
-   */
-  DrawingCanvas: {
-    'resolution-mode': 'auto',
-    'initially-visible': true,
-    origin: 'top-left',
-    antialiasing: 'off',
-  },
   NinePatch: {
     'initially-visible': true,
     'left-margin': 10,
@@ -372,28 +289,16 @@ export const DEFAULT_INSTANCE_PROPERTIES: Record<string, Record<string, unknown>
 
 // ─── Instance Variable & Behavior Templates ─────────────────
 
-/**
- * Build an instance-variable definition entry.
- *
- * C3 stores the definition as `{ name, type, desc, show, sid }` on the object
- * type or family; there is no default-value field, so a placed instance's
- * starting value lives only in that instance's `instanceVariables` dict.
- *
- * @param desc  Description shown in the editor (C3 `desc`, default empty)
- * @param show  Whether the variable appears in the properties bar (C3 `show`)
- */
 export function createInstanceVariable(
   name: string,
   type: 'number' | 'string' | 'boolean',
   sid: number,
-  desc = '',
-  show = true,
 ): InstanceVariable {
   return {
     name,
     type,
-    desc,
-    show,
+    desc: '',
+    show: true,
     sid,
   };
 }
@@ -592,49 +497,6 @@ export function createFunctionEvent(
   };
 }
 
-/**
- * Build a custom action definition. Key order and defaults follow a real
- * project's custom-ace-block events; only aceType "action" was observed, so
- * that is the only form produced here.
- */
-export function createCustomActionEvent(
-  aceName: string,
-  objectClass: string,
-  sid: number,
-  params?: Array<{ name: string; type: string; initialValue?: string; comment?: string; sid: number }>,
-  options?: { description?: string; category?: string; returnType?: string; isAsync?: boolean; copyPicked?: boolean },
-): CustomActionBlockEvent {
-  const functionParameters: Array<{ name: string; type: string; initialValue: string; comment: string; sid: number }> = [];
-  if (params) {
-    for (const p of params) {
-      functionParameters.push({
-        name: p.name,
-        type: p.type,
-        initialValue: p.initialValue ?? (p.type === 'number' ? '0' : p.type === 'boolean' ? 'false' : ''),
-        comment: p.comment ?? '',
-        sid: p.sid, // caller must supply a real SID from IdGenerator
-      });
-    }
-  }
-
-  return {
-    aceType: 'action',
-    aceName,
-    objectClass,
-    functionDescription: options?.description ?? '',
-    functionCategory: options?.category ?? '',
-    functionReturnType: options?.returnType ?? 'none',
-    functionCopyPicked: options?.copyPicked ?? false,
-    functionIsAsync: options?.isAsync ?? false,
-    functionParameters,
-    eventType: 'custom-ace-block',
-    conditions: [],
-    actions: [],
-    sid,
-    // r495 omits children on a custom action with no sub-events.
-  };
-}
-
 export function createIncludeEvent(sheetName: string): IncludeEvent {
   return {
     eventType: 'include',
@@ -646,6 +508,41 @@ export function createCommentEvent(text: string): CommentEvent {
   return {
     eventType: 'comment',
     text,
+  };
+}
+
+/**
+ * A custom action block in the key order the editor saves it (Construct 3
+ * r506-2 (Free edition): aceType, aceName, objectClass, the function keys,
+ * eventType, conditions, actions, sid; no children key without sub-events).
+ */
+export function createCustomActionEvent(
+  aceName: string,
+  objectClass: string,
+  sid: number,
+  params?: Array<{ name: string; type: string; initialValue?: string; comment?: string; sid: number }>,
+  options?: { description?: string; category?: string; isAsync?: boolean; copyPicked?: boolean },
+): CustomActionBlockEvent {
+  return {
+    aceType: 'action',
+    aceName,
+    objectClass,
+    functionDescription: options?.description ?? '',
+    functionCategory: options?.category ?? '',
+    functionReturnType: 'none',
+    functionCopyPicked: options?.copyPicked ?? false,
+    functionIsAsync: options?.isAsync ?? false,
+    functionParameters: (params ?? []).map(p => ({
+      name: p.name,
+      type: p.type,
+      initialValue: p.initialValue ?? (p.type === 'number' ? '0' : p.type === 'boolean' ? 'false' : ''),
+      comment: p.comment ?? '',
+      sid: p.sid,
+    })),
+    eventType: 'custom-ace-block',
+    conditions: [],
+    actions: [],
+    sid,
   };
 }
 
@@ -665,14 +562,12 @@ export function createBlockEvent(
   actions: Action[],
   options: { disabled?: boolean; children?: C3Event[]; isOrBlock?: boolean } = {},
 ): BlockEvent {
-  // An else block is a leading System "else" condition, not a block key.
   return {
     eventType: 'block',
     conditions,
     actions,
     sid,
     ...(options.disabled ? { disabled: true } : {}),
-    // r495 omits an empty children array on blocks (1,342 of 1,761 sampled blocks have none).
     ...(options.children && options.children.length > 0 ? { children: options.children } : {}),
     ...(options.isOrBlock ? { isOrBlock: true } : {}),
   };
@@ -694,11 +589,11 @@ export function createAnimationFrame(
     exportFormat: 'lossless',
     exportQuality: 0.8,
     fileType: 'image/png',
-    ...(imageSpriteId !== undefined ? { imageSpriteId } : {}),
-    collisionPoly: { points: [] },
-    useCollisionPoly: true,
     duration: 1,
     tag: '',
+    useCollisionPoly: true,
+    collisionPoly: { points: [] },
+    ...(imageSpriteId !== undefined ? { imageSpriteId } : {}),
   };
 }
 
@@ -740,17 +635,20 @@ export function createLayout(
   return {
     name,
     layers: layerData,
+    'scene-graphs-folder-root': {
+      items: [],
+      subfolders: [],
+    },
     sid,
     'nonworld-instances': [],
     effectTypes: [],
     width,
     height,
     unboundedScrolling: false,
-    sampling: 'auto',
     vpX: 0.5,
     vpY: 0.5,
     projection: 'perspective',
-    eventSheet: eventSheet ?? null,
+    ...(eventSheet ? { eventSheet } : {}),
   };
 }
 
@@ -768,7 +666,6 @@ export function createLayer(name: string, sid: number): Layer {
     color: [1, 1, 1, 1],
     backgroundColor: [1, 1, 1, 1],
     isTransparent: true,
-    sampling: 'auto',
     parallaxX: 1,
     parallaxY: 1,
     scaleRate: 1,
@@ -785,6 +682,7 @@ export function createLayer(name: string, sid: number): Layer {
 export interface InstanceOverrides {
   angle?: number;
   color?: number[];
+  /** Z elevation, written as world.z */
   zElevation?: number;
   originX?: number;
   originY?: number;
@@ -831,4 +729,42 @@ export function createInstance(
       angle: overrides?.angle ?? 0,
     },
   };
+}
+
+/**
+ * Set a placed instance's Z elevation in its world, leaving one Z key. An
+ * instance holding world.zElevation only (written by version 1.10.0 or older)
+ * gets z in that key's place; one holding both keeps z and loses zElevation;
+ * one holding neither gets z before depth or angle, where Construct 3 r495.2
+ * writes it. Returns the old key and value when one was moved or removed.
+ */
+export function setInstanceZ(world: Record<string, unknown>, value: number): { oldKey?: 'zElevation'; oldValue?: unknown } {
+  const hasZ = Object.hasOwn(world, 'z');
+  const hasOld = Object.hasOwn(world, 'zElevation');
+  const oldValue = world.zElevation;
+  if (hasOld && !hasZ) {
+    // The key is renamed in place, so the instance's other keys keep their order
+    const entries = Object.entries(world).map(([k, v]) => (k === 'zElevation' ? ['z', value] : [k, v]) as [string, unknown]);
+    for (const k of Object.keys(world)) delete world[k];
+    Object.assign(world, Object.fromEntries(entries));
+    return { oldKey: 'zElevation', oldValue };
+  }
+  if (hasOld) delete world.zElevation;
+  if (hasZ) world.z = value;
+  else placeBefore(world, 'z', value, ['depth', 'angle']);
+  return hasOld ? { oldKey: 'zElevation', oldValue } : {};
+}
+
+/** Set a key `obj` does not have before the first of `followers` it has (they move behind it). */
+function placeBefore(obj: Record<string, unknown>, key: string, value: unknown, followers: readonly string[]): void {
+  obj[key] = value;
+  const keys = Object.keys(obj);
+  const at = keys.findIndex(k => followers.includes(k));
+  if (at === -1) return;
+  for (const k of keys.slice(at)) {
+    if (k === key) continue;
+    const moved = obj[k];
+    delete obj[k];
+    obj[k] = moved;
+  }
 }

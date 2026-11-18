@@ -1,7 +1,7 @@
 {
   "name": "construct3-mcp-server",
-  "version": "1.9.1",
-  "description": "Model Context Protocol server for Construct 3 game engine projects",
+  "version": "1.10.0",
+  "description": "MCP server that lets Claude, Cursor and other AI assistants read, analyze and safely edit Construct 3 projects — editor-faithful writes with backups and validation.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -26,12 +26,10 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "ws": "^8.21.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.0.18",
     "typescript": "^5.7.2",
     "vitest": "^4.0.18"

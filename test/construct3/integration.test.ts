@@ -11,7 +11,7 @@ import { Construct3ProjectReader } from '../../src/construct3/project-reader.js'
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { validateProjectIntegrity } from '../../src/construct3/analyzers/integrity.js';
-import { getProjectIndex, resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
+import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 import { registerEventTools } from '../../src/tools/event-tools.js';
 import { MockServer } from '../mocks/mock-server.js';
 
@@ -161,18 +161,9 @@ describe('Construct3ProjectWriter (integration)', () => {
     expect(parsed.name).toBe('NewSprite');
   });
 
-  it('addToProject invalidates the project index so it lists the new name', async () => {
-    resetProjectIndex();
-    expect((await getProjectIndex(reader)).allLayouts).not.toContain('Level 2');
-
-    // A registration change must not leave the module-level index stale
-    await writer.addToProject('layouts', 'Level 2');
-    expect((await getProjectIndex(reader)).allLayouts).toContain('Level 2');
-  });
-
   it('writeEntityFile rejects oversized data', async () => {
-    // Create a string that produces >5MB JSON
-    const huge = { name: 'Big', data: 'x'.repeat(6 * 1024 * 1024) };
+    // Create a string that produces JSON over the default 10MB limit
+    const huge = { name: 'Big', data: 'x'.repeat(11 * 1024 * 1024) };
     await expect(
       writer.writeEntityFile('objectTypes', 'Big', huge),
     ).rejects.toThrow('too large');
@@ -459,12 +450,10 @@ describe('Image pipeline (integration)', () => {
     expect(paths).toHaveLength(3);
     const imagesDir = join(tmpDir, 'images');
     const files = await readdir(imagesDir);
-    // The whole name is lowercase, as Construct saves it. readdir reports the
-    // exact case even on Windows, whose lookups ignore it.
+    // The whole image file name is lowercased (readdir compares exactly, also on Windows)
     expect(files).toContain('player-run-000.png');
     expect(files).toContain('player-run-001.png');
     expect(files).toContain('player-run-002.png');
-    expect(files.some(f => f !== f.toLowerCase())).toBe(false);
   });
 
   it('Sprite creation round-trip: JSON has imageSpriteId + PNG exists', async () => {

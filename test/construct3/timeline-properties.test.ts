@@ -6,25 +6,27 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveTimelineProperty,
+  specForExistingTrack,
   valuesFor,
   effectiveResultMode,
   addVirtualPositionKey,
 } from '../../src/construct3/timeline-properties.js';
+import type { Instance, ObjectType } from '../../src/construct3/types.js';
 
-const instance: any = {
+const instance = {
   type: 'Hero', uid: 9, sid: 1,
   properties: { 'initial-animation': 'Run', 'initial-frame': 0, speed: 3 },
   instanceVariables: { speed: 4, name: 'a' },
   world: { x: 10, y: 20, width: 60, height: 90, angle: 0, color: [1, 1, 1, 0.5] },
-};
-const objectType: any = {
+} as unknown as Instance;
+const objectType = {
   name: 'Hero', 'plugin-id': 'Sprite',
   instanceVariables: [{ name: 'speed', type: 'number' }, { name: 'name', type: 'string' }],
   animations: { items: [
     { name: 'Idle', frames: [{ width: 1, height: 1 }] },
     { name: 'Run', frames: [{ width: 20, height: 30 }] },
   ] },
-};
+} as unknown as ObjectType;
 
 describe('resolveTimelineProperty', () => {
   it('divides the instance size by the initial animation frame for scale', () => {
@@ -54,6 +56,45 @@ describe('resolveTimelineProperty', () => {
   it('never animates live-preview', () => {
     const r = resolveTimelineProperty('live-preview', { ...instance, properties: { 'live-preview': false } }, objectType);
     expect(r.ok && r.spec.verified).toBe(false);
+  });
+});
+
+describe('resolveTimelineProperty refusals', () => {
+  const heldObject = { ...instance, instanceVariables: { blob: {} }, properties: { ...instance.properties, widget: {} } } as unknown as Instance;
+  const typed = { ...objectType, instanceVariables: [{ name: 'blob', type: 'object' }] } as unknown as ObjectType;
+
+  it('refuses an instance variable whose type a timeline cannot animate', () => {
+    const r = resolveTimelineProperty('blob', heldObject, typed);
+    expect(!r.ok && r.error).toBe('Instance variable "blob" has type "object", which a timeline cannot animate.');
+  });
+
+  it('refuses a plugin property that holds an object', () => {
+    const r = resolveTimelineProperty('widget', heldObject, typed);
+    expect(!r.ok && r.error).toBe('Plugin property "widget" of "Hero" holds a object, which a timeline cannot animate.');
+  });
+
+  it('refuses a prefixed name that matches no variable or plugin property', () => {
+    const v = resolveTimelineProperty('var:missing', instance, objectType);
+    expect(!v.ok && v.error).toBe('"Hero" has no instance variable named "missing".');
+    const p = resolveTimelineProperty('plugin:missing', instance, objectType);
+    expect(!p.ok && p.error).toBe('"Hero" has no plugin property named "missing".');
+  });
+});
+
+describe('specForExistingTrack', () => {
+  it('rebuilds a spec from the stored source', () => {
+    const r = specForExistingTrack({ property: 'speed', source: { type: 'instance-variable', uid: 'speed' } }, instance, objectType);
+    expect(r.ok && r.spec.source).toEqual({ type: 'instance-variable', uid: 'speed' });
+  });
+
+  it('refuses a track whose instance is missing', () => {
+    const r = specForExistingTrack({ property: 'offsetX', source: { type: 'world-instance', uid: 9 } }, undefined);
+    expect(!r.ok && r.error).toBe('The instance animated by property track "offsetX" was not found in any layout.');
+  });
+
+  it('refuses a source type these tools do not edit', () => {
+    const r = specForExistingTrack({ property: 'magnitude', source: { type: 'behavior', uid: 'Sine' } }, instance, objectType);
+    expect(!r.ok && r.error).toBe('Property track "magnitude" has source type "behavior", which these tools do not edit.');
   });
 });
 

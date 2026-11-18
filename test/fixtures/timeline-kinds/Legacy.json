@@ -6,8 +6,8 @@
 	"ease": "noease",
 	"pathMode": "line",
 	"playheadTime": 0,
-	"totalTime": 5,
-	"stepTime": 0.1,
+	"totalTime": 4,
+	"stepTime": 0.25,
 	"showingInterpolationModes": false,
 	"showingResultModes": false,
 	"showingEases": false,
@@ -54,7 +54,7 @@
 					"pathMode": "line"
 				},
 				{
-					"time": 0.5,
+					"time": 1,
 					"tags": "",
 					"enabled": true,
 					"ease": "noease",
@@ -93,11 +93,11 @@
 							]
 						},
 						{
-							"time": 0.5,
+							"time": 1,
 							"enabled": true,
 							"ease": "noease",
 							"pathMode": "line",
-							"value": 10,
+							"value": 20,
 							"addons": [
 								{
 									"id": "cubic-bezier",

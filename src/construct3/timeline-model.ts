@@ -2,42 +2,40 @@
  * Track kinds, track and property-track folders, and custom eases inside
  * timeline files.
  *
- * Sampled from 22 Construct r495.2 example packages and C3-ACE (2026-09-17):
- * - Track kinds: 381 `instance-track`, 10 `value-track` (solar-system,
- *   synth-sunset, perseverance), 1 `audio-track` (synth-sunset) and 5 tracks
- *   with no `type` at all (timeline-basics, timeline-instances,
- *   timeline-drawing, move-along-path; projects saved by r168-r184). The
- *   untyped tracks are an older instance-track form: they carry
- *   `worldInstance` but no `objectType`, `project` or `resizeMode`, and their
- *   property keyframes have no `resultMode` and often no `rValue`/`aValue`.
- *   No sample shows the same timeline before and after an upgrade, so these
- *   tools read such tracks but never rewrite their values.
+ * Shapes checked against timelines saved by the Construct 3 r495.2 editor
+ * (test/fixtures/timeline-kinds/shapes-r495.json):
+ * - Track kinds: `instance-track`, `value-track` and `audio-track`, plus
+ *   tracks with no `type` at all (untyped instance tracks): the `legacyTrack`
+ *   shape carries `worldInstance` but no `objectType`, `project` or
+ *   `resizeMode`, and its property keyframes carry `value` but no
+ *   `resultMode`, `rValue` or `aValue`. No fixture shows how the editor treats
+ *   such a track, so these tools read it but never rewrite its values.
  * - A value track has one property track, `value`, with
  *   `source: { type: 'value', uid: 'value' }`; its keyframes carry `value`,
- *   `rValue` and `aValue` (all equal in 32 of 32 samples) and no `resultMode`
- *   or `pathMode`. The track, its property track and its master keyframes
- *   have no `resultMode`/`pathMode`/`resizeMode` keys.
+ *   `rValue` and `aValue` and no `resultMode` or `pathMode`. The track, its
+ *   property track and its master keyframes have no
+ *   `resultMode`/`pathMode`/`resizeMode` keys.
  * - An audio track has one property track, `audioSource`, with
  *   `source: { type: 'audio', uid: 'audio' }`, no keyframes, and a
- *   `sourceAdapter` whose `audioProjectFile` is a verbatim copy of the file's
- *   `rootFileFolders` entry and whose `audioType` names that root folder
- *   ("music" in the sample). The audio track keeps `resultMode` but has no
+ *   `sourceAdapter` with `audioProjectFile` (an object with `name`, `type`,
+ *   `sid` and `file-info`), `audioProjectFilePath`, `audioStartOffset`,
+ *   `audioTag` and `audioType` (a string). The tools write `audioProjectFile`
+ *   as a copy of the file's `rootFileFolders` entry and `audioType` as the
+ *   root folder's name; the fixture holds no values, so check the result in
+ *   the Construct 3 editor. The audio track keeps `resultMode` but has no
  *   `pathMode`/`resizeMode`.
  * - Folders: `tracksRoot` and each track's `propertyTracksRoot` are folders.
  *   A track or property track moved into a subfolder is removed from
- *   `tracks`/`propertyTracks` and stored whole in the subfolder's `items`
- *   (robotic-loader: 12 tracks in 3 folders with `tracks` empty;
- *   tasty-cappuccino: behavior property tracks in "Sine"/"Sine2" folders).
- *   Those property-track folders are the editor's own: each carries
+ *   `tracks`/`propertyTracks` and stored whole in the subfolder's `items`.
+ *   Property-track folders the editor makes for a behavior carry
  *   `ownerId: "behavior"` and `ownerUid: <behavior name>` after `subfolders`.
- *   The root folders' own `items` were empty in every sample.
- * - Custom eases (tasty-cappuccino): `timelines/transitions/<name>.json`
- *   holding `{ name, linear, purpose, transitionKeyframes }`, registered in
- *   the first, nameless subfolder of the project.c3proj `timelines` container
- *   (every sampled project has that nameless folder, empty or not). Each
- *   timeline that uses the ease embeds a copy in `transitionsData` as
- *   `{ folders: [], json: <ease file> }`; timelines that do not use it carry
- *   no entry.
+ *   The root folders' own `items` are empty.
+ * - Custom eases: `timelines/transitions/<name>.json` holding
+ *   `{ name, linear, purpose, transitionKeyframes }`, registered in the first,
+ *   nameless subfolder of the project.c3proj `timelines` container (empty or
+ *   not). Each timeline that uses the ease embeds a copy in `transitionsData`
+ *   as `{ folders: [], json: <ease file> }`. The tools add an entry only for
+ *   an ease the timeline uses.
  */
 
 import type {
@@ -50,7 +48,7 @@ import type {
 
 // ─── Folders ───────────────────────────────────────────────
 
-/** A new track or property-track folder, keys in the sampled order. */
+/** A new track or property-track folder, keys in the editor's order. */
 export function timelineFolder(name: string): TimelineFolder {
   return {
     enabled: true,
@@ -126,16 +124,14 @@ function walkFolderItems<T>(
   prefix: string,
   accept: (item: unknown) => item is T,
   out: Array<{ item: T; list: unknown[]; folderPath: string }>,
-  depth = 0,
 ): void {
-  if (depth > 32) return;
   for (const sf of folder.subfolders as unknown[]) {
     if (!isTimelineFolder(sf)) continue;
     const path = prefix ? `${prefix}/${sf.name}` : sf.name;
     for (const item of sf.items) {
       if (accept(item)) out.push({ item, list: sf.items, folderPath: path });
     }
-    walkFolderItems(sf, path, accept, out, depth + 1);
+    walkFolderItems(sf, path, accept, out);
   }
 }
 
@@ -174,6 +170,15 @@ export function findTrackByName(data: Timeline, name: string): TrackLocation | u
     return (kind === 'value-track' || kind === 'audio-track') && loc.track.name === name;
   });
 }
+
+/**
+ * The `source.type` values a property track carries: `world-instance`,
+ * `instance-variable` and `plugin` on an instance track, `value` on a value
+ * track and `audio` on an audio track.
+ */
+export const PROPERTY_TRACK_SOURCE_TYPES: ReadonlySet<string> = new Set([
+  'world-instance', 'instance-variable', 'plugin', 'value', 'audio',
+]);
 
 /** Where a property track lives inside its track. */
 export interface PropertyTrackLocation {
@@ -225,8 +230,8 @@ export function summarizeTracks(data: Timeline): Array<Record<string, unknown>> 
       keyframeCount: Array.isArray(propertyTrack.propertyKeyframes) ? propertyTrack.propertyKeyframes.length : 0,
     }));
     if (kind === 'legacy-instance-track') {
-      summary.note = 'Untyped instance track from an older Construct release. Tools can remove, move or re-flag it, '
-        + 'but refuse to change its values; open and save it in the Construct 3 editor first.';
+      summary.note = 'Untyped instance track (no type, objectType, project or resizeMode). Tools can remove, move or re-flag it, '
+        + 'but refuse to change its values.';
     }
     if (kind === 'audio-track') {
       const adapter = listPropertyTracks(track)[0]?.propertyTrack.sourceAdapter as Record<string, unknown> | undefined;
@@ -242,12 +247,12 @@ export function summarizeTracks(data: Timeline): Array<Record<string, unknown>> 
 
 // ─── Value and audio tracks ────────────────────────────────
 
-/** A master keyframe on a value or audio track: no `pathMode` (42 of 42 samples). */
+/** A master keyframe on a value or audio track: it has no `pathMode`. */
 export function createPlainMasterKeyframe(time: number): TimelineKeyframe {
   return { time, tags: '', enabled: true, ease: 'default' } as TimelineKeyframe;
 }
 
-/** A value-track property keyframe, keys in the sampled order. */
+/** A value-track property keyframe, keys in the editor's order. */
 export function createValueKeyframe(time: number, value: number, ease = 'default'): TimelinePropertyKeyframe {
   return {
     time,
@@ -294,25 +299,22 @@ export interface AudioFileRef {
 /**
  * The `audioProjectFilePath` Construct writes for an audio file.
  *
- * Evidence: the W90 live round trip (r495.2, project `exportFileStructure`
- * "folders") saved `"audioProjectFilePath": "media/Theme.webm"` for a music
- * file at the root of the Music folder, right after `audioProjectFile`. The
- * synth-sunset sample (saved by r432.3, also "folders") has no such key, so
- * the key is newer than r432. The second W90 round trip saved
- * `"media/Sfx/Blip.webm"` for a sound file in the Sounds subfolder "Sfx", so
- * sounds share the `media/` prefix and the Project Bar subfolder path is kept.
- * For "flat" (or a missing setting) no path was sampled (r495.2 converted the
- * flat test project to "folders" when it saved it), so no path is written.
+ * The shapes fixture shows a string `audioProjectFilePath` right after
+ * `audioProjectFile` in an audio track saved by r495.2. The form written here
+ * for a project whose `exportFileStructure` is "folders" is
+ * `media/[<Project Bar subfolder>/]<file name>`; the fixture holds no value, so
+ * check the result in the Construct 3 editor. For any other setting (or a
+ * missing one) no path is written.
  */
 export function audioProjectFilePath(fileName: string, exportFileStructure: unknown, subfolder?: string): string | undefined {
   if (exportFileStructure !== 'folders') return undefined;
   return `media/${subfolder ? `${subfolder.replace(/^\/+|\/+$/g, '')}/` : ''}${fileName}`;
 }
 
-/** Sampled key order of an audio track's `sourceAdapter`. */
+/** Key order of an audio track's `sourceAdapter` as the editor saves it. */
 const AUDIO_ADAPTER_ORDER = ['audioProjectFile', 'audioProjectFilePath', 'audioStartOffset', 'audioTag', 'audioType'];
 
-/** Merge `patch` into an audio `sourceAdapter`, keeping the sampled key order; `undefined` removes a key. */
+/** Merge `patch` into an audio `sourceAdapter`, keeping the editor's key order; `undefined` removes a key. */
 export function mergeAudioSourceAdapter(
   existing: Record<string, unknown>,
   patch: Record<string, unknown>,
@@ -402,10 +404,10 @@ export interface EasePointInput {
 }
 
 /**
- * Build ease keyframes. The sample's first point has `se: true, ee: false`
- * and its last `se: false, ee: true`, with the handle offsets relative to the
- * point (the last point's incoming handle is at x -0.355). Middle points get
- * both handles enabled; no sample has a middle point.
+ * Build ease keyframes. The first point gets `se: true, ee: false` and the
+ * last `se: false, ee: true`, with the handle offsets relative to the point.
+ * Middle points get both handles enabled. The shapes fixture holds key types
+ * only, so check a built ease in the Construct 3 editor.
  */
 export function buildEaseKeyframes(points: EasePointInput[]): EaseKeyframe[] {
   return points.map((p, i) => ({
@@ -443,12 +445,9 @@ export function createCustomEase(name: string, points: EasePointInput[], linear:
 /**
  * Construct's own ease ids. `default` and `noease` are the timeline values;
  * the rest are the built-in eases of Construct's ease list (Tween and
- * timelines). Sampled in the example packages and C3-ACE: default, noease,
- * easeinsine, easeoutsine, easeinoutsine, easeinquad, easeoutquad,
- * easeinoutquad, easeincubic, easeoutcubic, easeinback, easeoutback,
- * easeoutbounce, easeoutelastic. The remaining ids complete the documented
- * list (sine, quad, cubic, quart, quint, expo, circ, back, elastic, bounce,
- * each in, out and in-out, plus linear) in the sampled naming pattern.
+ * timelines): sine, quad, cubic, quart, quint, expo, circ, back, elastic and
+ * bounce, each as `easein<kind>`, `easeout<kind>` and `easeinout<kind>`, plus
+ * `linear`.
  */
 export const BUILTIN_EASES: ReadonlySet<string> = new Set([
   'default', 'noease', 'linear',
@@ -461,6 +460,21 @@ export function isBuiltinEaseName(name: string): boolean {
   return BUILTIN_EASES.has(name);
 }
 
+/** Keyframe times are floats; compare them with a tolerance. */
+const TIME_EPSILON = 1e-9;
+
+/** Whether two keyframe times are the same time. */
+export function sameTime(a: number, b: number): boolean {
+  return Math.abs(a - b) < TIME_EPSILON;
+}
+
+/** Warn about ease names that are neither built in nor a custom ease of the project. */
+export function easeWarnings(names: Array<string | undefined>, eases: Map<string, CustomEase>): string[] {
+  const unknown = names.filter((n): n is string => typeof n === 'string' && !isBuiltinEaseName(n) && !eases.has(n));
+  if (unknown.length === 0) return [];
+  return [`Ease name(s) ${[...new Set(unknown)].join(', ')} are not Construct ease names and match no custom ease in this project (see list_eases).`];
+}
+
 /** True when a custom ease name would read as a built-in id, which Construct matches without regard to case. */
 export function clashesWithBuiltinEase(name: string): boolean {
   return BUILTIN_EASES.has(name.toLowerCase());
@@ -468,10 +482,9 @@ export function clashesWithBuiltinEase(name: string): boolean {
 
 /**
  * The first non-default `resultMode` on a folder chain: the root folder and
- * each folder down `path`. Every sampled folder (72 track roots, 397
- * property-track roots, 3 track folders, 6 property-track folders) has
- * "default", so how Construct applies a folder's mode to the tracks inside is
- * unknown; tools that compute stored values refuse when this returns a mode.
+ * each folder down `path`. No fixture holds a folder with a non-default result
+ * mode, so how Construct applies a folder's mode to the tracks inside is not
+ * known here; tools that compute stored values refuse when this returns a mode.
  */
 export function folderChainResultMode(root: TimelineFolder | undefined, path: string): string | undefined {
   if (!isTimelineFolder(root)) return undefined;
@@ -500,22 +513,19 @@ export function trackFolderResultMode(data: Timeline, track: AnyTrack, folderPat
   return undefined;
 }
 
-/** Every `ease` string in a timeline, outside `transitionsData`. */
+/** Every `ease` string in a timeline, outside `transitionsData`, at any depth. */
 export function referencedEases(data: Timeline): Set<string> {
   const names = new Set<string>();
-  const walk = (value: unknown, depth: number): void => {
-    if (depth > 64 || !value || typeof value !== 'object') return;
-    if (Array.isArray(value)) {
-      for (const item of value) walk(item, depth + 1);
-      return;
-    }
+  const pending: Array<{ value: unknown; top: boolean }> = [{ value: data, top: true }];
+  while (pending.length > 0) {
+    const { value, top } = pending.pop()!;
+    if (!value || typeof value !== 'object') continue;
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (depth === 0 && key === 'transitionsData') continue;
+      if (top && key === 'transitionsData') continue;
       if (key === 'ease' && typeof entry === 'string') names.add(entry);
-      else walk(entry, depth + 1);
+      else pending.push({ value: entry, top: false });
     }
-  };
-  walk(data, 0);
+  }
   return names;
 }
 

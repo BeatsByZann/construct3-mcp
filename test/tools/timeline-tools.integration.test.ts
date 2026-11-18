@@ -3,20 +3,21 @@
  *
  * The unit tests pin the guards that fire before any I/O. These prove the
  * on-disk outcome through the real reader: the track and keyframe shape,
- * which is compared key-for-key against a timeline saved by Construct 3
- * r495.2 (test/fixtures/timeline-sample), and the value/aValue rule, which
- * is compared against the fixture instance's layout position.
+ * which is compared key-for-key against a timeline saved by the Construct 3
+ * r495.2 editor (test/fixtures/timeline-sample), and the value/aValue rule,
+ * which is compared against the fixture instance's layout position.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, cp, rm, readFile, writeFile, stat } from 'fs/promises';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, cp, rm, readFile, readdir, writeFile, mkdir, stat } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, relative } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
+import type { MutationToolDeps } from '../../src/tools/shared.js';
 import type { Timeline, TimelineInstanceTrack } from '../../src/construct3/types.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
@@ -26,6 +27,20 @@ const SAMPLE_PATH = join(__dirname, '..', 'fixtures', 'timeline-sample', 'Timeli
 const SPRITE_UID = 0;
 const SPRITE_X = 100;
 const SPRITE_Y = 200;
+
+/** The parts of a layout file these tests change. */
+interface LayoutJson {
+  name: string;
+  layers: Array<{ instances: Array<{ uid: number }> }>;
+  'nonworld-instances'?: unknown[];
+}
+
+/** The parts of project.c3proj these tests change. */
+interface ProjectJson {
+  timelines: { items: string[]; subfolders: unknown[] };
+  layouts: { items: string[] };
+  rootFileFolders: Record<'sound' | 'music', { items: unknown[] }>;
+}
 
 function parseResult(result: { content: Array<{ type: string; text: string }>; isError?: boolean }) {
   return JSON.parse(result.content[0].text);
@@ -51,24 +66,42 @@ function shapeOf(value: unknown): unknown {
 describe('timeline track and keyframe tools (real project on disk)', () => {
   let tmpDir: string;
   let reader: Construct3ProjectReader;
+  let writer: Construct3ProjectWriter;
   let server: MockServer;
   let sample: Timeline;
+
+  /** Load the project in `tmpDir` and register the tools on a fresh server. */
+  async function boot() {
+    reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
+    await reader.loadProject();
+    const idGen = new IdGenerator();
+    writer = new Construct3ProjectWriter(reader, idGen);
+    server = new MockServer();
+    registerTimelineTools({ server, reader, writer, idGen } as unknown as MutationToolDeps);
+  }
 
   beforeEach(async () => {
     sample = JSON.parse(await readFile(SAMPLE_PATH, 'utf-8')) as Timeline;
     tmpDir = await mkdtemp(join(tmpdir(), 'c3-timeline-int-'));
     await cp(FIXTURE_DIR, tmpDir, { recursive: true });
-    reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
-    await reader.loadProject();
-    const idGen = new IdGenerator();
-    const writer = new Construct3ProjectWriter(reader, idGen);
-    server = new MockServer();
-    registerTimelineTools({ server, reader, writer, idGen } as any);
+    await boot();
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
   });
+
+  /** The bytes of every file under the project folder, by project-relative path. */
+  async function snapshot(dir = tmpDir): Promise<Record<string, string>> {
+    const files: Record<string, string> = {};
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) Object.assign(files, await snapshot(path));
+      else files[relative(tmpDir, path).split('\\').join('/')] = await readFile(path, 'utf-8');
+    }
+    return files;
+  }
 
   /** Read a timeline straight off disk, bypassing the tools. */
   async function onDisk(name = 'Move'): Promise<Timeline> {
@@ -101,10 +134,26 @@ describe('timeline track and keyframe tools (real project on disk)', () => {
     return result;
   }
 
+  /** Rewrite project.c3proj on disk; call boot() afterwards to load the change. */
+  async function patchProject(patch: (project: ProjectJson) => void) {
+    const path = join(tmpDir, 'project.c3proj');
+    const project = JSON.parse(await readFile(path, 'utf-8')) as ProjectJson;
+    patch(project);
+    await writeFile(path, JSON.stringify(project, null, '\t'), 'utf-8');
+  }
+
+  /** Rewrite the timeline "Move" on disk. */
+  async function patchTimeline(patch: (timeline: Timeline) => void) {
+    const path = join(tmpDir, 'timelines', 'Move.json');
+    const timeline = JSON.parse(await readFile(path, 'utf-8')) as Timeline;
+    patch(timeline);
+    await writeFile(path, JSON.stringify(timeline, null, '\t'), 'utf-8');
+  }
+
   /** Rewrite Layout 1 on disk and drop the reader's layout cache. */
-  async function patchLayout(patch: (layout: any) => void) {
+  async function patchLayout(patch: (layout: LayoutJson) => void) {
     const path = join(tmpDir, 'layouts', 'Layout 1.json');
-    const layout = JSON.parse(await readFile(path, 'utf-8'));
+    const layout = JSON.parse(await readFile(path, 'utf-8')) as LayoutJson;
     patch(layout);
     await writeFile(path, JSON.stringify(layout, null, '\t'), 'utf-8');
     reader.invalidateCaches();
@@ -258,13 +307,12 @@ describe('timeline track and keyframe tools (real project on disk)', () => {
     expect(result.content[0].text).toContain('Duplicate property');
   });
 
-  it('warns about a property name no Construct sample confirmed', async () => {
+  it('refuses a property name that matches no known property, writing no track', async () => {
     await createTimeline();
-    const result = parseResult(await addTrack({ properties: ['offsetX', 'width'] }));
-    expect(result.success).toBe(true);
-    expect(result.warnings.join(' ')).toContain('width');
-    const track = await firstTrack();
-    expect(track.propertyTracks[1].propertyKeyframes[0].aValue).toBe(0);
+    const result = await addTrack({ properties: ['offsetX', 'width'] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Property "width" matches no world property');
+    expect((await onDisk()).tracks).toHaveLength(0);
   });
 
   // ─── set_keyframe ─────────────────────────────────────────
@@ -355,22 +403,55 @@ describe('timeline track and keyframe tools (real project on disk)', () => {
     expect((await firstTrack()).keyframes).toHaveLength(1);
   });
 
-  it('refuses an unverified property given only one value', async () => {
+  it('refuses a property name that matches nothing, however many values it is given, and writes no track', async () => {
     await withTrack();
-    const result = await setKeyframe({ time: 1, values: { angle: { absolute: 90 } } });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('supply both');
-    expect((await firstTrack()).keyframes).toHaveLength(1);
+    const before = await snapshot();
+    for (const input of [{ absolute: 90 }, { absolute: 90, relative: 15 }]) {
+      const result = await setKeyframe({ time: 1, values: { angle: input } });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Property "angle" matches no world property, instance variable or plugin property');
+      expect(result.content[0].text).toContain('offsetAngle');
+      expect(result.content[0].text).toMatch(/Nothing was changed\.$/);
+      expect(await snapshot()).toEqual(before);
+    }
   });
 
-  it('stores an unverified property exactly as given', async () => {
+  it('edits an existing property track whose name matches nothing, storing the values as given', async () => {
     await withTrack();
-    await setKeyframe({ time: 1, values: { angle: { absolute: 90, relative: 15 } } });
+    await patchTimeline(timeline => {
+      const track = timeline.tracks[0] as TimelineInstanceTrack;
+      const copy = structuredClone(track.propertyTracks[0]);
+      copy.property = 'angle';
+      track.propertyTracks.push(copy);
+    });
+    await boot();
+    const result = parseResult(await setKeyframe({ time: 1, values: { angle: { absolute: 90, relative: 15 } } }));
+    expect(result.success).toBe(true);
+    expect(JSON.stringify(result.warnings ?? [])).not.toContain('match no world property');
     const track = await firstTrack();
-    const keyframe = track.propertyTracks.find(pt => pt.property === 'angle')!.propertyKeyframes[0];
+    const keyframe = track.propertyTracks.find(pt => pt.property === 'angle')!.propertyKeyframes.find(kf => kf.time === 1)!;
     expect(keyframe.value).toBe(15);
     expect(keyframe.rValue).toBe(15);
     expect(keyframe.aValue).toBe(90);
+  });
+
+  it('refuses add_timeline_track and add_property_track for a property name that matches nothing, writing nothing', async () => {
+    await createTimeline();
+    const empty = await snapshot();
+    const track = await addTrack({ properties: ['offsetX', 'angle'] });
+    expect(track.isError).toBe(true);
+    expect(track.content[0].text).toContain('Property "angle" matches no world property, instance variable or plugin property');
+    expect(track.content[0].text).toContain('offsetAngle');
+    expect(track.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(empty);
+
+    expect(parseResult(await addTrack()).success).toBe(true);
+    const tracked = await snapshot();
+    const property = await server.callTool('add_property_track', { timelineName: 'Move', instanceUid: SPRITE_UID, property: 'angle' });
+    expect(property.isError).toBe(true);
+    expect(property.content[0].text).toContain('Property "angle" matches no world property, instance variable or plugin property');
+    expect(property.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(tracked);
   });
 
   it('refuses a position keyframe once the instance is gone from every layout', async () => {
@@ -555,5 +636,375 @@ describe('timeline track and keyframe tools (real project on disk)', () => {
     expect(data.resultMode).toBe('absolute');
     expect(data.pathMode).toBe('catmullrom');
     expect(data.transformWithSceneGraph).toBe(false);
+  });
+
+  // ─── what a new instance track holds ──────────────────────
+
+  it('names the object type of a new instance track in objectType', async () => {
+    await withTrack();
+    const track = await firstTrack();
+    expect(track.objectType).toBe('Sprite');
+    expect(track.worldInstance).toBe(SPRITE_UID);
+  });
+
+  // ─── refusals change nothing ──────────────────────────────
+
+  it('refuses add_timeline_track calls without changing any file', async () => {
+    await createTimeline();
+    const refused: Array<[string, Record<string, unknown>]> = [
+      ['an unknown layout', { layoutName: 'Ghost' }],
+      ['an unknown instance UID', { instanceUid: 99 }],
+      ['a time beyond totalTime', { keyframeTimes: [0, 99] }],
+    ];
+    const before = await snapshot();
+    for (const [label, args] of refused) {
+      const result = await addTrack(args);
+      expect(result.isError, label).toBe(true);
+      expect(result.content[0].text, label).toMatch(/Nothing was changed\.$/);
+      expect(await snapshot(), label).toEqual(before);
+    }
+
+    // With the instance tracked, a second track for it is refused the same way
+    expect(parseResult(await addTrack()).success).toBe(true);
+    const tracked = await snapshot();
+    const second = await addTrack();
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(tracked);
+  });
+
+  it('refuses track, property and keyframe calls without changing any file', async () => {
+    await withTrack({ keyframeTimes: [0, 1] });
+    const calls: Array<[string, string, Record<string, unknown>]> = [
+      ['set_keyframe', 'a time outside the timeline', { time: 9, values: { offsetX: { absolute: 1 } } }],
+      ['set_keyframe', 'a position without a value', { time: 1, values: { offsetX: {} } }],
+      ['set_keyframe', 'a property that needs both values', { time: 1, values: { angle: { absolute: 90 } } }],
+      ['set_keyframe', 'an untracked instance', { instanceUid: 42, time: 1 }],
+      ['set_keyframe', 'both an instance UID and a track name', { trackName: 'Level', time: 1 }],
+      ['delete_keyframe', 'a time with no keyframe', { time: 4 }],
+      ['delete_keyframe', 'a property that is not there', { time: 1, property: 'angle' }],
+      ['delete_keyframe', 'a property keyframe that is not there', { time: 4, property: 'offsetX' }],
+      ['add_property_track', 'a duplicate property track', { property: 'offsetX' }],
+      ['add_property_track', 'an untracked instance', { instanceUid: 42, property: 'offsetWidth' }],
+      ['remove_property_track', 'a property track that is not there', { property: 'angle' }],
+      ['remove_timeline_track', 'an untracked instance', { instanceUid: 42 }],
+      ['update_track', 'no updates', {}],
+      ['update_track', 'a name on an instance track', { name: 'Other' }],
+      ['update_track', 'an audio field on an instance track', { audioTag: 'x' }],
+    ];
+    const before = await snapshot();
+    for (const [tool, label, args] of calls) {
+      const result = await server.callTool(tool, { timelineName: 'Move', instanceUid: SPRITE_UID, ...args });
+      expect(result.isError, `${tool}: ${label}`).toBe(true);
+      expect(result.content[0].text, `${tool}: ${label}`).toMatch(/Nothing was changed\.$/);
+      expect(await snapshot(), `${tool}: ${label}`).toEqual(before);
+    }
+
+    // A tracked instance that is gone from every layout cannot give its values
+    await patchLayout(layout => { layout.layers[0].instances = []; });
+    const gone = await snapshot();
+    for (const [tool, args] of [
+      ['set_keyframe', { time: 1, values: { offsetX: { absolute: 1 } } }],
+      ['add_property_track', { property: 'offsetWidth' }],
+    ] as const) {
+      const result = await server.callTool(tool, { timelineName: 'Move', instanceUid: SPRITE_UID, ...args });
+      expect(result.isError, tool).toBe(true);
+      expect(result.content[0].text, tool).toContain('was not found in any layout');
+      expect(result.content[0].text, tool).toMatch(/Nothing was changed\.$/);
+      expect(await snapshot(), tool).toEqual(gone);
+    }
+  });
+
+  it('refuses a layout name in another letter case, and a layout file that is not registered', async () => {
+    await createTimeline();
+    await cp(join(tmpDir, 'layouts', 'Layout 1.json'), join(tmpDir, 'layouts', 'Loose.json'));
+    const before = await snapshot();
+
+    const cased = await addTrack({ layoutName: 'layout 1' });
+    expect(cased.isError).toBe(true);
+    expect(cased.content[0].text).toContain('Did you mean "Layout 1"?');
+    expect(cased.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(before);
+
+    const loose = await addTrack({ layoutName: 'Loose' });
+    expect(loose.isError).toBe(true);
+    expect(loose.content[0].text).toContain('Layout "Loose" not found');
+    expect(loose.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('refuses a registered layout whose file cannot be read, naming no absolute path', async () => {
+    await createTimeline();
+    const layoutPath = join(tmpDir, 'layouts', 'Layout 1.json');
+
+    await writeFile(layoutPath, '{ not json', 'utf-8');
+    reader.invalidateCaches();
+    const invalid = await snapshot();
+    const broken = await addTrack();
+    expect(broken.isError).toBe(true);
+    expect(broken.content[0].text).toContain('layouts/Layout 1.json could not be read');
+    expect(broken.content[0].text).not.toContain(tmpDir);
+    expect(broken.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(invalid);
+
+    await rm(layoutPath);
+    reader.invalidateCaches();
+    const removed = await snapshot();
+    const gone = await addTrack();
+    expect(gone.isError).toBe(true);
+    expect(gone.content[0].text).toContain('layouts/Layout 1.json could not be read (ENOENT)');
+    expect(gone.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(removed);
+  });
+
+  // ─── a failing write ──────────────────────────────────────
+
+  it('leaves the timeline as it was when the write fails, and words the error project-relative', async () => {
+    await createTimeline();
+    const before = await snapshot();
+    // The unexpected-error path logs the cause; this case is meant to reach it
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(writer, 'replaceFile').mockRejectedValueOnce(
+      new Error(`EACCES: permission denied, open '${join(tmpDir, 'timelines', 'Move.json')}'`),
+    );
+
+    const result = await addTrack();
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('Error adding timeline track:');
+    expect(text).toContain('timelines/Move.json');
+    expect(text).not.toContain(tmpDir);
+    expect(text).not.toContain(tmpDir.split('\\').join('/'));
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('refuses to overwrite a timeline saved on disk after its read', async () => {
+    await withTrack();
+    const outside = '{ "outside": "a save made by another program" }';
+    const replaceFile = writer.replaceFile.bind(writer);
+    vi.spyOn(writer, 'replaceFile').mockImplementation(async (path, content, options) => {
+      if (path.split('\\').join('/').endsWith('/timelines/Move.json')) await writeFile(path, outside, 'utf-8');
+      return replaceFile(path, content, options);
+    });
+
+    const result = await setKeyframe({ time: 1, values: { offsetX: { absolute: 400 } } });
+    expect(result.isError).toBe(true);
+    // The writer's text is the answer: it names the file and says the change on disk is kept
+    expect(result.content[0].text.startsWith('timelines/Move.json was changed on disk')).toBe(true);
+    expect(result.content[0].text).toContain('so that change is kept');
+    expect(await readFile(join(tmpDir, 'timelines', 'Move.json'), 'utf-8')).toBe(outside);
+  });
+
+  // ─── an instance in another layout ────────────────────────
+
+  it('finds an instance of a layout other than the first', async () => {
+    const layout = JSON.parse(await readFile(join(tmpDir, 'layouts', 'Layout 1.json'), 'utf-8')) as LayoutJson;
+    layout.name = 'Layout 2';
+    layout.layers[0].instances[0].uid = 50;
+    await writeFile(join(tmpDir, 'layouts', 'Layout 2.json'), JSON.stringify(layout, null, '\t'), 'utf-8');
+    await patchProject(project => { project.layouts.items.push('Layout 2'); });
+    await boot();
+    await createTimeline();
+
+    const added = parseResult(await addTrack({ layoutName: 'Layout 2', instanceUid: 50, properties: ['offsetX'] }));
+    expect(added.success).toBe(true);
+    const property = parseResult(await server.callTool('add_property_track', {
+      timelineName: 'Move', instanceUid: 50, property: 'offsetY',
+    }));
+    expect(property.success).toBe(true);
+    const keyframe = parseResult(await setKeyframe({ instanceUid: 50, time: 1, values: { offsetY: { absolute: 260 } } }));
+    expect(keyframe.success).toBe(true);
+  });
+
+  // ─── result mode changes ──────────────────────────────────
+
+  it('refuses a timeline result mode change while an untyped track follows the timeline', async () => {
+    await withTrack();
+    await patchTimeline(timeline => { delete (timeline.tracks[0] as { type?: string }).type; });
+    const before = await snapshot();
+
+    const result = await server.callTool('update_timeline', { name: 'Move', resultMode: 'absolute' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('untyped (older) track(s) for instance UID 0');
+    expect(result.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('refuses a timeline result mode change while a track folder holds a result mode of its own', async () => {
+    await withTrack();
+    await patchTimeline(timeline => { (timeline.tracksRoot as unknown as { resultMode: string }).resultMode = 'absolute'; });
+    const before = await snapshot();
+
+    const result = await server.callTool('update_timeline', { name: 'Move', resultMode: 'relative' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('has result mode "absolute"');
+    expect(result.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('follows a timeline result mode change in the stored values of an instance track', async () => {
+    await withTrack();
+    const changed = await server.callTool('update_timeline', { name: 'Move', resultMode: 'absolute' });
+    expect(changed.isError).not.toBe(true);
+    // Under "absolute" the stored value is the absolute one
+    for (const keyframe of (await firstTrack()).propertyTracks[0].propertyKeyframes) {
+      expect(keyframe.value).toBe(SPRITE_X);
+    }
+  });
+});
+
+describe('update_track on value and audio tracks (real project on disk)', () => {
+  let tmpDir: string;
+  let server: MockServer;
+
+  const keyframe = (time: number) => ({ time, tags: '', enabled: true, ease: 'default' });
+
+  /** A timeline holding a value track "Volume" and an audio track "Voice". */
+  async function mixTimeline(): Promise<Timeline> {
+    const sample = JSON.parse(await readFile(SAMPLE_PATH, 'utf-8')) as Timeline;
+    return {
+      ...sample,
+      name: 'Mix',
+      tracks: [
+        {
+          type: 'value-track',
+          name: 'Volume',
+          enabled: true,
+          interpolationMode: 'default',
+          ease: 'default',
+          keyframes: [keyframe(0)],
+          propertyTracks: [{ property: 'value', source: { type: 'value', uid: 'value' }, propertyKeyframes: [] }],
+        },
+        {
+          type: 'audio-track',
+          name: 'Voice',
+          enabled: true,
+          keyframes: [keyframe(0)],
+          propertyTracks: [{ property: 'audioSource', source: { type: 'audio', uid: 'audio' }, sourceAdapter: {}, propertyKeyframes: [] }],
+        },
+      ],
+    } as unknown as Timeline;
+  }
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'c3-timeline-audio-'));
+    await cp(FIXTURE_DIR, tmpDir, { recursive: true });
+    await mkdir(join(tmpDir, 'timelines'), { recursive: true });
+    await writeFile(join(tmpDir, 'timelines', 'Mix.json'), JSON.stringify(await mixTimeline(), null, '\t'), 'utf-8');
+    const projectPath = join(tmpDir, 'project.c3proj');
+    const project = JSON.parse(await readFile(projectPath, 'utf-8')) as ProjectJson;
+    project.timelines = { items: ['Mix'], subfolders: [{ items: [], subfolders: [] }] };
+    const file = (name: string, type: string, sid: number) => ({ name, type, sid });
+    project.rootFileFolders.sound.items.push(file('Voice.ogg', 'audio/ogg', 100000000000011), file('Both.ogg', 'audio/ogg', 100000000000012));
+    project.rootFileFolders.music.items.push(file('Both.ogg', 'audio/ogg', 100000000000013));
+    await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
+    await boot();
+  });
+
+  /** Load the project in `tmpDir` on a fresh server. */
+  async function boot() {
+    const reader = new Construct3ProjectReader(join(tmpDir, 'project.c3proj'));
+    await reader.loadProject();
+    const idGen = new IdGenerator();
+    const writer = new Construct3ProjectWriter(reader, idGen);
+    server = new MockServer();
+    registerTimelineTools({ server, reader, writer, idGen } as unknown as MutationToolDeps);
+  }
+
+  /** Rewrite project.c3proj, then load the project on a fresh server. */
+  async function patchAndBoot(patch: (project: Record<string, unknown>) => void) {
+    const projectPath = join(tmpDir, 'project.c3proj');
+    const project = JSON.parse(await readFile(projectPath, 'utf-8')) as Record<string, unknown>;
+    patch(project);
+    await writeFile(projectPath, JSON.stringify(project, null, '\t'), 'utf-8');
+    await boot();
+  }
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+  });
+
+  async function mixOnDisk(): Promise<string> {
+    return readFile(join(tmpDir, 'timelines', 'Mix.json'), 'utf-8');
+  }
+
+  it('renames a value track, and refuses a name Construct cannot use', async () => {
+    const before = await mixOnDisk();
+    const refused = await server.callTool('update_track', { timelineName: 'Mix', trackName: 'Volume', name: 'bad/name' });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain('Name must start with a letter');
+    expect(refused.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await mixOnDisk()).toBe(before);
+
+    const renamed = parseResult(await server.callTool('update_track', { timelineName: 'Mix', trackName: 'Volume', name: 'Level' }));
+    expect(renamed.action).toBe('track-updated');
+    const data = JSON.parse(await mixOnDisk()) as Timeline;
+    expect((data.tracks[0] as { name?: string }).name).toBe('Level');
+  });
+
+  it('refuses an audio file that is not registered, and one registered as both sound and music', async () => {
+    const before = await mixOnDisk();
+    const missing = await server.callTool('update_track', { timelineName: 'Mix', trackName: 'Voice', audioFile: 'Ghost.ogg' });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toContain('"Ghost.ogg" is not registered');
+    expect(missing.content[0].text).toMatch(/Nothing was changed\.$/);
+
+    const both = await server.callTool('update_track', { timelineName: 'Mix', trackName: 'Voice', audioFile: 'Both.ogg' });
+    expect(both.isError).toBe(true);
+    expect(both.content[0].text).toContain('registered more than once');
+    expect(both.content[0].text).toContain('audioFolder');
+    expect(both.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await mixOnDisk()).toBe(before);
+  });
+
+  it('keeps the subfolder of a nested registration in audioProjectFilePath', async () => {
+    await patchAndBoot(project => {
+      const sound = (project.rootFileFolders as Record<string, { subfolders: unknown[] }>).sound;
+      sound.subfolders.push({
+        name: 'Voices',
+        items: [],
+        subfolders: [{ name: 'Intro', items: [{ name: 'Nested.ogg', type: 'audio/ogg', sid: 100000000000014 }], subfolders: [] }],
+      });
+    });
+    const result = await server.callTool('update_track', { timelineName: 'Mix', trackName: 'Voice', audioFile: 'Nested.ogg' });
+    expect(result.isError).not.toBe(true);
+    const data = JSON.parse(await mixOnDisk()) as Timeline;
+    const adapter = (data.tracks[1] as unknown as { propertyTracks: Array<{ sourceAdapter: Record<string, unknown> }> })
+      .propertyTracks[0].sourceAdapter;
+    expect(adapter.audioProjectFilePath).toBe('media/Voices/Intro/Nested.ogg');
+  });
+
+  it('warns about a file that is not an audio type, and about an export structure whose path is not known', async () => {
+    await patchAndBoot(project => {
+      const sound = (project.rootFileFolders as Record<string, { items: unknown[] }>).sound;
+      sound.items.push({ name: 'Notes.txt', type: 'text/plain', sid: 100000000000015 });
+      (project.properties as Record<string, unknown>).exportFileStructure = 'flat';
+    });
+    const result = parseResult(await server.callTool('update_track', { timelineName: 'Mix', trackName: 'Voice', audioFile: 'Notes.txt' }));
+    expect(result.success).toBe(true);
+    const warnings = result.warnings.join(' ');
+    expect(warnings).toContain('"Notes.txt" is registered with type "text/plain", not an audio type');
+    expect(warnings).toContain('export file structure is "flat"');
+    const data = JSON.parse(await mixOnDisk()) as Timeline;
+    const adapter = (data.tracks[1] as unknown as { propertyTracks: Array<{ sourceAdapter: Record<string, unknown> }> })
+      .propertyTracks[0].sourceAdapter;
+    expect(adapter).not.toHaveProperty('audioProjectFilePath');
+  });
+
+  it('points an audio track at a registered file', async () => {
+    const result = parseResult(await server.callTool('update_track', {
+      timelineName: 'Mix', trackName: 'Voice', audioFile: 'Voice.ogg', audioStartOffset: 0.5, audioTag: 'line',
+    }));
+    expect(result.action).toBe('track-updated');
+    const data = JSON.parse(await mixOnDisk()) as Timeline;
+    const adapter = (data.tracks[1] as unknown as { propertyTracks: Array<{ sourceAdapter: Record<string, unknown> }> })
+      .propertyTracks[0].sourceAdapter;
+    expect(adapter).toMatchObject({
+      audioProjectFile: { name: 'Voice.ogg' },
+      audioProjectFilePath: 'media/Voice.ogg',
+      audioStartOffset: 0.5,
+      audioTag: 'line',
+      audioType: 'sound',
+    });
   });
 });

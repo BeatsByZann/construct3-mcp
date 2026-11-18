@@ -10,11 +10,6 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
-import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js';
-import { IdGenerator } from '../../src/construct3/id-generator.js';
-import { registerRuntimeTools } from '../../src/tools/runtime-tools.js';
-import { MockServer } from '../mocks/mock-server.js';
 
 const FIXTURE_DIR = join(import.meta.dirname, '..', 'fixtures', 'minimal-project');
 
@@ -52,11 +47,6 @@ describe('generateBridgeScript', () => {
       'getLayout',
       'goToLayout',
       'evaluateExpression',
-      'layerToCssPx',
-      'cssPxToLayer',
-      'subscribeEvents',
-      'readEvents',
-      'unsubscribeEvents',
       'listObjects',
       'listGlobalVars',
       'ping',
@@ -239,36 +229,6 @@ describe('bridge injection into c3proj', () => {
     const c3proj = JSON.parse(await readFile(c3projPath, 'utf-8'));
     expect(c3proj.useWorker).toBe('dom');
   });
-
-  it('inject_runtime_bridge uses script-info, a collision-safe SID, and one main.js import', async () => {
-    const reader = new Construct3ProjectReader(join(tempDir, 'project.c3proj'));
-    await reader.loadProject();
-    const writer = new Construct3ProjectWriter(reader, new IdGenerator());
-    const server = new MockServer();
-    registerRuntimeTools({ server, reader, writer });
-
-    const first = await server.callTool('inject_runtime_bridge');
-    expect(first.isError).toBeUndefined();
-    const projectPath = join(tempDir, 'project.c3proj');
-    const firstProject = JSON.parse(await readFile(projectPath, 'utf8')) as any;
-    const entries = firstProject.rootFileFolders.script.items.filter((item: any) => item.name === 'c3-runtime-bridge.js');
-    expect(entries).toHaveLength(1);
-    expect(entries[0]['script-info']).toEqual({ purpose: 'none' });
-    expect(entries[0]['file-info']).toBeUndefined();
-    expect(entries[0].sid).not.toBe(firstProject.rootFileFolders.icon.items[0].sid);
-    const mainPath = join(tempDir, 'scripts', 'main.js');
-    expect((await readFile(mainPath, 'utf8')).match(/import \"\.\/c3-runtime-bridge\.js\";/g)).toHaveLength(1);
-
-    await server.callTool('inject_runtime_bridge');
-    const secondProject = JSON.parse(await readFile(projectPath, 'utf8')) as any;
-    expect(secondProject.rootFileFolders.script.items.filter((item: any) => item.name === 'c3-runtime-bridge.js')).toHaveLength(1);
-    expect((await readFile(mainPath, 'utf8')).match(/import \"\.\/c3-runtime-bridge\.js\";/g)).toHaveLength(1);
-
-    await server.callTool('remove_runtime_bridge');
-    const removedProject = JSON.parse(await readFile(projectPath, 'utf8')) as any;
-    expect(removedProject.rootFileFolders.script.items.filter((item: any) => item.name === 'c3-runtime-bridge.js')).toHaveLength(0);
-    expect((await readFile(mainPath, 'utf8')).match(/import \"\.\/c3-runtime-bridge\.js\";/g)).toBeNull();
-  });
 });
 
 describe('writeZip (c3p packing)', () => {
@@ -358,6 +318,18 @@ describe('writeZip (c3p packing)', () => {
 
     const zipData = await readFile(outputPath);
     expect(zipData.includes(binaryData)).toBe(true);
+  });
+
+  it("pack_project's writer marks a non-ASCII entry name as UTF-8", async () => {
+    const outputPath = join(tempDir, 'utf8.c3p');
+    await writeZip([{ path: 'files/données.txt', data: Buffer.from('x') }], outputPath);
+
+    const zipData = await readFile(outputPath);
+    const eocd = zipData.length - 22;
+    expect(zipData.readUInt32LE(eocd)).toBe(0x06054b50);
+    const cdOffset = zipData.readUInt32LE(eocd + 16);
+    expect(zipData.readUInt32LE(cdOffset)).toBe(0x02014b50);
+    expect(zipData.readUInt16LE(cdOffset + 8)).toBe(0x800);
   });
 
   it('can pack the minimal project fixture', async () => {

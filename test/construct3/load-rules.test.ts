@@ -247,6 +247,54 @@ describe('checkEventLoadRules — trigger placement', () => {
     expect(issues[0].message).toContain('custom action Player.Jump');
   });
 
+  it('rejects a function block or a custom action block inside a triggered event, at any depth', () => {
+    const fn = { eventType: 'function-block', functionName: 'DoIt', sid: 10, conditions: [], actions: [] };
+    const custom = { eventType: 'custom-ace-block', aceType: 'action', aceName: 'Jump', objectClass: 'Player', sid: 20, conditions: [], actions: [] };
+    for (const [root, label] of [[fn, 'function "DoIt" (sid 10)'], [custom, 'custom action Player.Jump (sid 20)']] as const) {
+      const direct = check([block(1, [cond('on-start-of-layout', 2)], [], { children: [root] })]);
+      expect(direct).toHaveLength(1);
+      expect(direct[0].severity).toBe('error');
+      expect(direct[0].rule).toBe('trigger-placement');
+      expect(direct[0].location).toContain(label);
+      expect(direct[0].message).toContain('block (sid 1)');
+      expect(direct[0].message).toContain('cannot add another trigger to event branch');
+
+      // Below a group and a block that has no trigger of its own, the trigger above still counts
+      const deep = check([block(1, [cond('on-start-of-layout', 2)], [], {
+        children: [{ eventType: 'group', title: 'G', sid: 3, children: [block(4, [], [], { children: [root] })] }],
+      })]);
+      expect(deep).toHaveLength(1);
+      expect(deep[0].location).toContain(label);
+    }
+  });
+
+  it('rejects a function block or a custom action block inside a function block or a custom action block', () => {
+    const inner = { eventType: 'function-block', functionName: 'Inner', sid: 30, conditions: [], actions: [] };
+    const issues = check([{ eventType: 'function-block', functionName: 'Outer', sid: 1, conditions: [], actions: [], children: [block(2, [], [], { children: [inner] })] }]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('error');
+    expect(issues[0].location).toContain('function "Inner" (sid 30)');
+    expect(issues[0].message).toContain('function "Outer" (sid 1)');
+  });
+
+  it('accepts a function block or a custom action block at the top level, in groups and under blocks without a trigger', () => {
+    const fn = { eventType: 'function-block', functionName: 'DoIt', sid: 10, conditions: [], actions: [] };
+    const custom = { eventType: 'custom-ace-block', aceType: 'action', aceName: 'Jump', objectClass: 'Player', sid: 20, conditions: [], actions: [] };
+    expect(check([fn, custom, { eventType: 'group', title: 'G', sid: 3, children: [fn, custom] }])).toEqual([]);
+    expect(check([block(1, [cond('compare-eventvar', 2)], [], { children: [fn, custom] })])).toEqual([]);
+    // An OR block without a trigger holds none either
+    expect(check([block(1, [cond('is-visible', 2, 'Sprite1')], [], { isOrBlock: true, children: [fn] })])).toEqual([]);
+  });
+
+  it('warns, and does not reject, a function block under a block whose only trigger is a third-party one', () => {
+    const origin: AceOriginResolver = (ace) => (ace.objectClass === 'NGIO' ? 'addon' : 'builtin');
+    const fn = { eventType: 'function-block', functionName: 'DoIt', sid: 10, conditions: [], actions: [] };
+    const issues = check([block(1, [cond('on-login-success', 2, 'NGIO')], [], { children: [fn] })], origin);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].location).toContain('function "DoIt" (sid 10)');
+  });
+
   it('downgrades violations involving third-party or unknown triggers to warnings', () => {
     const origin: AceOriginResolver = (ace) => (ace.objectClass === 'NGIO' ? 'addon' : 'builtin');
     const issues = check([block(1, [cond('compare-eventvar', 2), cond('on-login-success', 3, 'NGIO')])], origin);
@@ -368,38 +416,6 @@ describe('checkEventLoadRules — else placement', () => {
     expect(issues[0].suggestion).not.toMatch(/Put the trigger first/);
   });
 
-  it('treats a block whose else condition is disabled as an ordinary block: no block is needed before it', () => {
-    // A comment, then the block with a disabled else, then an enabled else: as an editor-saved sheet has it
-    const disabledElse = (sid: number, ...rest: unknown[]) => block(sid, [cond('else', sid + 1, 'System', { disabled: true }), ...rest]);
-    const events = (first: unknown) => [
-      block(1, [cond('every-tick', 2)], [], { children: [
-        { eventType: 'comment', text: 'c' },
-        first,
-        elseBlock(20),
-      ] }),
-    ];
-    expect(check(events(disabledElse(10, cond('is-overlapping-another-object', 12), cond('pick-by-highest-lowest-value', 13))))).toEqual([]);
-    const enabled = check(events(elseBlock(10, cond('is-overlapping-another-object', 12), cond('pick-by-highest-lowest-value', 13))));
-    expect(enabled).toHaveLength(1);
-    expect(enabled[0]).toMatchObject({ rule: 'else-placement', key: 'else-placement|eventSheets/Main|10' });
-    expect(enabled[0].message).toContain('no event comes before it (comments aside)');
-    // Not after a trigger either: a disabled else is not an else block, so nothing follows a triggered block
-    expect(check([block(1, [cond('on-start-of-layout', 2)]), disabledElse(3)])).toEqual([]);
-  });
-
-  it('reports a trigger after a disabled else as an ordinary block does, and one after an enabled else as else-placement', () => {
-    const disabled = check([block(1, [cond('every-tick', 2)]), block(3, [cond('else', 4, 'System', { disabled: true }), cond('on-start-of-layout', 5)])]);
-    expect(disabled).toHaveLength(1);
-    expect(disabled[0].rule).toBe('trigger-placement');
-    expect(disabled[0].message).toContain('is condition 1, but a trigger must be the first condition');
-    expect(disabled[0].suggestion).toContain('update_event_block with isElse: false');
-    expect(disabled[0].suggestion).not.toMatch(/^Put the trigger first/);
-    const plain = check([block(1, [cond('compare-two-values', 2), cond('on-start-of-layout', 3)])]);
-    expect(plain[0].suggestion).toBe('Put the trigger first and the other conditions after it.');
-    const enabled = check([block(1, [cond('every-tick', 2)]), elseBlock(3, cond('on-start-of-layout', 5))]);
-    expect(enabled.map(i => i.rule)).toEqual(['else-placement']);
-  });
-
   it('marks third-party addon triggers as possible triggers', () => {
     const addon: AceOriginResolver = ace => (ace.objectClass === 'System' ? 'builtin' : 'addon');
     const issues = check([block(1, [cond('on-thing', 2, 'AddonObj')]), elseBlock(3)], addon);
@@ -493,6 +509,42 @@ describe('newLoadRuleIssues', () => {
     const introduced = newLoadRuleIssues(notFirstOnly, notFirst);
     expect(introduced).toHaveLength(1);
     expect(introduced[0].severity).toBe('error');
+  });
+
+  describe('a parameter issue is keyed by its location, not its text', () => {
+    const setText = (sid: number, text: string) => block(1, [cond('every-tick', 2)], [act('set-text', sid, { text })]);
+
+    it('does not count a broken parameter rewritten to another broken text of the same rule', () => {
+      const before = check([setText(12, '"a')]);
+      expect(before).toHaveLength(1);
+      expect(newLoadRuleIssues(before, check([setText(12, '"b & "c & "d')]))).toEqual([]);
+    });
+
+    it('counts a clean parameter turned broken', () => {
+      const introduced = newLoadRuleIssues(check([setText(12, '"a"')]), check([setText(12, '"a')]));
+      expect(introduced).toHaveLength(1);
+      expect(introduced[0].rule).toBe('expression-syntax');
+    });
+
+    it('counts a different rule at the same spot', () => {
+      const introduced = newLoadRuleIssues(check([setText(12, '"a')]), check([setText(12, '')]));
+      expect(introduced).toHaveLength(1);
+      expect(introduced[0].rule).toBe('empty-expression');
+    });
+
+    it('counts the same rule at another item', () => {
+      const before = check([setText(12, '"a')]);
+      const after = check([block(1, [cond('every-tick', 2)], [act('set-text', 12, { text: '"a' }), act('set-text', 13, { text: '"a' })])]);
+      expect(newLoadRuleIssues(before, after)).toHaveLength(1);
+    });
+
+    it('counts a second identical issue: two before, three after is one new', () => {
+      const twoActions = (n: number) =>
+        [block(1, [cond('every-tick', 2)], Array.from({ length: n }, () => ({ id: 'set-text', objectClass: 'Text', parameters: { text: '"a' } })))];
+      const before = check(twoActions(2));
+      expect(before).toHaveLength(2);
+      expect(newLoadRuleIssues(before, check(twoActions(3)))).toHaveLength(1);
+    });
   });
 
   it('keeps issues on SID-less events and ACEs stable when indices shift', () => {

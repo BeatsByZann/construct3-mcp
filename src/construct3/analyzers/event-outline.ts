@@ -47,8 +47,7 @@
  * numbers are 1-based. These are stated in tool notes and docs/API.md.
  */
 
-import { isActiveElseCondition } from '../event-shapes.js';
-import { BEHAVIOR_TYPE_KEY, LEGACY_BEHAVIOR_TYPE_KEY, isBehaviorName } from './legacy-behavior-keys.js';
+import { hasOnlyLegacyBehaviorKey } from './legacy-behavior-keys.js';
 
 const MAX_NODES = 100_000;
 const MAX_DEPTH = 50;
@@ -168,15 +167,6 @@ function aceTarget(ace: Raw): string {
   return typeof behavior === 'string' && behavior ? `${objectClass}[${behavior}]` : objectClass;
 }
 
-/**
- * The ACE names its behavior only under the legacy "behavior-type" key. Construct 3
- * does not read that key and fails to open the project (issue #16), so the outline
- * marks it instead of showing it like a working behavior ACE.
- */
-function hasOnlyLegacyBehaviorKey(ace: Raw): boolean {
-  return isBehaviorName(ace[LEGACY_BEHAVIOR_TYPE_KEY]) && !isBehaviorName(ace[BEHAVIOR_TYPE_KEY]);
-}
-
 const LEGACY_MARK = ' [legacy behavior-type]';
 
 /** Script text may be a single string or an array of lines. */
@@ -252,13 +242,10 @@ function describeAction(action: Raw, kind: OutlineItemKind): string {
   }
 }
 
-/**
- * Real sheets mark an else block with a System "else" first condition. A disabled
- * else condition is ignored when the event runs, so that block is an ordinary
- * block (its header still lists the condition, marked [disabled]).
- */
+/** Real sheets mark an else block with a System "else" first condition. */
 function isElseBlock(conditions: Raw[]): boolean {
-  return isActiveElseCondition(conditions[0]);
+  const first = conditions[0];
+  return first !== undefined && first.id === 'else' && first.objectClass === 'System';
 }
 
 function renderFunctionParams(node: Raw): string {

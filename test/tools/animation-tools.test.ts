@@ -122,7 +122,7 @@ describe('add_animation_to_sprite', () => {
   });
 
   it('errors on non-Sprite object', async () => {
-    const { server } = setup({
+    const { server, writer } = setup({
       objects: new Map([['Label', { name: 'Label', 'plugin-id': 'Text', sid: 1 }]]),
     });
     const result = await server.callTool('add_animation_to_sprite', {
@@ -130,7 +130,9 @@ describe('add_animation_to_sprite', () => {
       animationName: 'Walk',
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('not a Sprite');
+    expect(result.content[0].text)
+      .toBe('Object "Label" is not a Sprite. Only Sprite objects have animations. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
   it('errors on duplicate animation name', async () => {
@@ -240,7 +242,7 @@ describe('update_animation_properties', () => {
   });
 
   it('errors on non-Sprite', async () => {
-    const { server } = setup({
+    const { server, writer } = setup({
       objects: new Map([['Label', { name: 'Label', 'plugin-id': 'Text', sid: 1 }]]),
     });
     const result = await server.callTool('update_animation_properties', {
@@ -249,7 +251,9 @@ describe('update_animation_properties', () => {
       speed: 5,
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('not a Sprite');
+    expect(result.content[0].text)
+      .toBe('Object "Label" is not a Sprite. Only Sprite objects have animations. Nothing was changed.');
+    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 
   it('warns when isLooping:true and repeatCount>1 are set simultaneously', async () => {
@@ -574,9 +578,11 @@ describe('rename_animation', () => {
     const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('disk full. The rename was rolled back');
-    expect(writer.callsFor('restoreEntityFile').map(c => c.args[0])).toEqual(['/mock/backup/objectTypes/Hero.json.bak']);
+    // The object written before is the writer's to put back (undoToolCall), with its check for a save of the editor
+    expect(writer.callsFor('undoToolCall')).toHaveLength(1);
+    expect(writer.callsFor('restoreFailedWrite')).toHaveLength(0);
     const [forward, back] = writer.callsFor('renameImageFiles').map(c => c.args[0]);
-    expect(back).toEqual((forward as Array<{ from: string; to: string }>).map(r => ({ from: r.to, to: r.from })));
+    expect(back).toEqual((forward as Array<{ from: string; to: string }>).map(r => ({ from: r.to, to: r.from })).reverse());
     expect(back).toHaveLength(3);
   });
 
@@ -588,7 +594,7 @@ describe('rename_animation', () => {
     const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('verification failed. The rename was rolled back');
-    expect(writer.callsFor('restoreEntityFile')).toHaveLength(0);
+    expect(writer.callsFor('restoreFailedWrite')).toHaveLength(0);
     expect(writer.callsFor('renameImageFiles').map(c => c.args[0])).toEqual([
       [{ from: 'hero-walk-000.png', to: 'hero-run-000.png' }],
       [{ from: 'hero-run-000.png', to: 'hero-walk-000.png' }],
@@ -605,11 +611,32 @@ describe('rename_animation', () => {
     const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Post-write verification failed for "Hero". The rename was rolled back');
-    expect(writer.callsFor('restoreEntityFile').map(c => c.args[0])).toEqual(['/mock/backup/objectTypes/Hero.json.bak']);
+    expect(writer.callsFor('restoreFailedWrite').map(c => c.args[0])).toEqual(['/mock/backup/objectTypes/Hero.json.bak']);
     expect(writer.callsFor('renameImageFiles').map(c => c.args[0])).toEqual([
       [{ from: 'hero-walk-000.png', to: 'hero-run-000.png' }],
       [{ from: 'hero-run-000.png', to: 'hero-walk-000.png' }],
     ]);
+  });
+
+  it.each([
+    ['changed', 'was left as it is, since another write changed it after this call\'s write failed'],
+    ['unreadable', 'was left as it is, since it could not be read'],
+  ] as const)('names an object file the restore left as it is (%s) among the problems, not as restored', async (reason, clause) => {
+    const { server, writer } = setup({ objects: new Map([['Hero', walkSprite()]]) });
+    writer.imageFiles = ['hero-walk-000.png'];
+    writer.writeEntityFile = async () => {
+      throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
+    };
+    let restoreCalls = 0;
+    writer.restoreFailedWrite = async () => { restoreCalls++; return { restored: false, label: 'objectTypes/Hero.json', reason }; };
+
+    const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain(`The rename was rolled back only in part: its frame image files have their old names again; objectTypes/Hero.json ${clause} `
+      + '(objectTypes/Hero.json.bak holds the previous JSON).');
+    expect(text).not.toContain('was restored from its backup');
+    expect(restoreCalls).toBe(1);
   });
 
   it('writes no JSON when renaming the image files fails', async () => {
@@ -627,7 +654,7 @@ describe('rename_animation', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Renaming image files failed: EBUSY. The files renamed before were renamed back.');
     expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-    expect(writer.callsFor('restoreEntityFile')).toHaveLength(0);
+    expect(writer.callsFor('restoreFailedWrite')).toHaveLength(0);
   });
 
   it('names what could not be rolled back when the rollback fails', async () => {
@@ -639,10 +666,11 @@ describe('rename_animation', () => {
     writer.imageFiles = ['hero-walk-000.png'];
     const write = writer.writeEntityFile.bind(writer);
     writer.writeEntityFile = async (category: string, name: string, data: unknown, subfolder?: string) => {
-      if (category === 'layouts') throw new Error('disk full');
+      // Failed after replacing the layout file: it is restored from its backup
+      if (category === 'layouts') throw new EntityWriteError(new Error('disk full'), '/mock/backup/layouts/Level.json.bak');
       return write(category, name, data, subfolder);
     };
-    writer.restoreEntityFile = async () => { throw new Error('EPERM'); };
+    writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
     let renameCalls = 0;
     writer.renameImageFiles = async () => {
       if (++renameCalls === 2) throw new Error('EBUSY');
@@ -650,8 +678,9 @@ describe('rename_animation', () => {
 
     const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Walk', newName: 'Run' });
     expect(result.isError).toBe(true);
-    // Client-visible errors carry no absolute paths, so the file is named by its project-relative path
-    expect(result.content[0].text).toContain('disk full. Rolling back the rename failed for: objectTypes/Hero.json; image files (EBUSY).');
+    expect(result.content[0].text).toContain('disk full. The rename was rolled back only in part: restoring layouts/Level.json from its backup failed: '
+      + 'EPERM (layouts/Level.json.bak holds the previous JSON); renaming its frame image files back failed (EBUSY); '
+      + 'rename them back by hand: "images/hero-run-000.png" → "images/hero-walk-000.png". Check the project');
   });
 
   it('counts the event sheet strings on the object\'s families too', async () => {
@@ -712,39 +741,92 @@ describe('add_frame_to_animation', () => {
     const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
     expect(written.animations.items[0].frames).toHaveLength(2);
   });
-});
 
-describe('add_frame_to_animation index guard', () => {
-  it('rejects an index past the end of the animation', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
-    const result = await server.callTool('add_frame_to_animation', {
-      objectName: 'Hero', animationName: 'Animation 1', index: 5,
-    });
+  it('refuses an index past the frame count before touching anything', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
+    const result = await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 2 });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('out of range');
-    expect(writer.callsFor('writeImageFiles')).toHaveLength(0);
-    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
+    expect(result.content[0].text).toContain('Frame index 2 is out of range. Animation "Animation 1" has 1 frame(s)');
+    expect(writer.calls).toHaveLength(0);
   });
 
-  it('appends at the end without shifting anything', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
-    const result = await server.callTool('add_frame_to_animation', {
-      objectName: 'Hero', animationName: 'Animation 1',
-    });
-    expect(parseResult(result).success).toBe(true);
-    const files = writer.callsFor('writeImageFiles')[0].args[0] as Array<Record<string, unknown>>;
-    expect(files[0].frameIndex).toBe(2);
+  /** A rename that moves the entries of writer.imageFiles, as the real writer's does, and is recorded like the mock's. */
+  function renamingImages(writer: MockWriter): void {
+    writer.renameImageFiles = async (renames) => {
+      writer.calls.push({ method: 'renameImageFiles', args: [renames.map(r => ({ ...r }))] });
+      for (const { from, to } of renames) writer.imageFiles = writer.imageFiles.map(file => (file === from ? to : file));
+    };
+  }
+
+  it('renames the image files from the index on one index up, then writes the placeholder and the object', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
+    writer.imageFiles = ['hero-animation 1-000.png'];
+    renamingImages(writer);
+    await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
+    expect(writer.calls.map(c => c.method)).toEqual(['listImageFiles', 'renameImageFiles', 'listImageFiles', 'replaceFile', 'writeEntityFile']);
+    expect(writer.callsFor('renameImageFiles')[0].args[0]).toEqual([{ from: 'hero-animation 1-000.png', to: 'hero-animation 1-001.png' }]);
+    const [path, , options] = writer.callsFor('replaceFile')[0].args as [string, Buffer, { expected?: null }];
+    expect(path.endsWith('hero-animation 1-000.png')).toBe(true);
+    expect(options).toEqual({ expected: null });
   });
 
-  it('writes the placeholder into the freed slot when inserting mid-animation', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(3)]]) });
-    await server.callTool('add_frame_to_animation', {
-      objectName: 'Hero', animationName: 'Animation 1', index: 1,
-    });
-    const files = writer.callsFor('writeImageFiles')[0].args[0] as Array<Record<string, unknown>>;
-    expect(files[0].frameIndex).toBe(1);
-    const frames = writtenFrames(writer);
-    expect(frames.map((frame: any) => frame.imageSpriteId).slice(2)).toEqual([101, 102]);
+  it('names what could not be rolled back when the object file could not be restored', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
+    writer.imageFiles = ['hero-animation 1-000.png'];
+    renamingImages(writer);
+    let renameCalls = 0;
+    const renameImageFiles = writer.renameImageFiles.bind(writer);
+    writer.renameImageFiles = async (renames) => { renameCalls++; return renameImageFiles(renames); };
+    writer.writeEntityFile = async () => {
+      throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
+    };
+    writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
+
+    const result = await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
+    expect(result.isError).toBe(true);
+    // The mock reader hands back the object the tool changed, so after the failed restore it holds this call's frames and the images stay
+    expect(result.content[0].text).toContain('Post-write verification failed for "Hero". Restoring '
+      + 'objectTypes/Hero.json from its backup failed: EPERM; objectTypes/Hero.json.bak holds the previous JSON. '
+      + 'objectTypes/Hero.json holds this call\'s frames, so the image files keep the names this call gave them');
+    // The file is named by its project-relative path, never an absolute one
+    expect(result.content[0].text).not.toContain('/mock/backup');
+    // Nothing is renamed back: the one rename is the forward one
+    expect(renameCalls).toBe(1);
+  });
+
+  it('rename_animation names the reason when restoring the object file from its backup fails', async () => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
+    writer.writeEntityFile = async () => {
+      throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
+    };
+    writer.restoreFailedWrite = async () => { throw new Error('EPERM'); };
+
+    const result = await server.callTool('rename_animation', { objectName: 'Hero', animationName: 'Animation 1', newName: 'Walk' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('restoring objectTypes/Hero.json from its backup failed: EPERM (objectTypes/Hero.json.bak holds the previous JSON)');
+    expect(result.content[0].text).not.toContain('/mock/backup');
+  });
+
+  it.each([
+    ['changed', 'another write changed it after this call\'s write failed'],
+    ['unreadable', 'it could not be read'],
+  ] as const)('names an object file the restore left as it is (%s) in a note, not as restored', async (reason, why) => {
+    const { server, writer } = setup({ objects: new Map([['Hero', makeSpriteObj()]]) });
+    writer.imageFiles = ['hero-animation 1-000.png'];
+    renamingImages(writer);
+    writer.writeEntityFile = async () => {
+      throw new EntityWriteError(new Error('Post-write verification failed for "Hero"'), '/mock/backup/objectTypes/Hero.json.bak');
+    };
+    let restoreCalls = 0;
+    writer.restoreFailedWrite = async () => { restoreCalls++; return { restored: false, label: 'objectTypes/Hero.json', reason }; };
+
+    const result = await server.callTool('add_frame_to_animation', { objectName: 'Hero', animationName: 'Animation 1', index: 0 });
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain(`Post-write verification failed for "Hero". The object file was not restored: objectTypes/Hero.json (${why}; it was left as it is). `
+      + 'objectTypes/Hero.json holds this call\'s frames');
+    expect(text).not.toContain('the object file was restored from its backup');
+    expect(restoreCalls).toBe(1);
   });
 });
 
@@ -781,6 +863,20 @@ describe('delete_frame_from_animation', () => {
     const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
     expect(written.animations.items[0].frames).toHaveLength(1);
     expect(written.animations.items[0].frames[0].imageSpriteId).toBe(2);
+  });
+
+  it('keeps the deleted frame\'s image as .bak and renames the later ones one index down before writing the object', async () => {
+    const hero = makeSpriteObj();
+    hero.animations.items[0].frames = [0, 1, 2].map(() => ({ width: 100, height: 100, originX: 0.5, originY: 0.5 }));
+    const { server, writer } = setup({ objects: new Map([['Hero', hero]]) });
+    writer.imageFiles = ['hero-animation 1-000.png', 'hero-animation 1-001.png', 'hero-animation 1-002.png'];
+    const result = await server.callTool('delete_frame_from_animation', { objectName: 'Hero', animationName: 'Animation 1', frameIndex: 1 });
+    expect(parseResult(result).success).toBe(true);
+    expect(writer.calls.map(c => c.method)).toEqual(['listImageFiles', 'renameImageFiles', 'writeEntityFile']);
+    expect(writer.callsFor('renameImageFiles')[0].args[0]).toEqual([
+      { from: 'hero-animation 1-001.png', to: 'hero-animation 1-001.png.bak' },
+      { from: 'hero-animation 1-002.png', to: 'hero-animation 1-001.png' },
+    ]);
   });
 
   it('blocks deletion of last frame', async () => {
@@ -872,490 +968,6 @@ describe('replace_sprite_image', () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('valid PNG');
-  });
-});
-
-// ─── update_frame: tag, image points, collision polygon ──
-
-function makeFramedSprite(frameCount: number, extra: Record<string, unknown> = {}) {
-  return {
-    name: 'Hero',
-    'plugin-id': 'Sprite',
-    sid: 1,
-    isGlobal: false,
-    instanceVariables: [],
-    behaviorTypes: [],
-    effectTypes: [],
-    animations: {
-      items: [{
-        name: 'Animation 1',
-        sid: 10,
-        isLooping: false,
-        isPingPong: false,
-        repeatCount: 1,
-        repeatTo: 0,
-        speed: 0,
-        frames: Array.from({ length: frameCount }, (_unused, index) => ({
-          width: 100,
-          height: 100,
-          originX: 0.5,
-          originY: 0.5,
-          duration: 1,
-          tag: '',
-          imageSpriteId: 100 + index,
-          ...extra,
-        })),
-      }],
-      subfolders: [] as Array<Record<string, unknown>>,
-    },
-  };
-}
-
-function writtenFrames(writer: any, call = 0) {
-  const written = writer.callsFor('writeEntityFile')[call].args[2] as any;
-  return written.animations.items[0].frames;
-}
-
-describe('update_frame image points, tag and collision polygon', () => {
-  it('sets a frame tag', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0, tag: 'hitbox',
-    });
-    expect(parseResult(result).success).toBe(true);
-    expect(writtenFrames(writer)[0].tag).toBe('hitbox');
-  });
-
-  it('replaces the whole image point list', async () => {
-    const { server, writer } = setup({
-      objects: new Map([['Hero', makeFramedSprite(1, { imagePoints: [{ name: 'Old', x: 0, y: 0 }] })]]),
-    });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      imagePoints: [{ name: 'Muzzle', x: 0.25, y: 0.75 }],
-    });
-    expect(parseResult(result).success).toBe(true);
-    expect(writtenFrames(writer)[0].imagePoints).toEqual([{ name: 'Muzzle', x: 0.25, y: 0.75 }]);
-  });
-
-  it('rejects an image point outside the normalized 0-1 range', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      imagePoints: [{ name: 'Muzzle', x: 1.5, y: 0.5 }],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('out of range');
-    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-  });
-
-  it('rejects a negative image point coordinate', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      imagePoints: [{ name: 'Muzzle', x: 0.5, y: -0.01 }],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('normalized 0-1');
-  });
-
-  it('rejects duplicate image point names', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      imagePoints: [{ name: 'Muzzle', x: 0.1, y: 0.1 }, { name: 'Muzzle', x: 0.2, y: 0.2 }],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('appears twice');
-  });
-
-  it('adds image points to an existing list', async () => {
-    const { server, writer } = setup({
-      objects: new Map([['Hero', makeFramedSprite(1, { imagePoints: [{ name: 'Head', x: 0.5, y: 0 }] })]]),
-    });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      addImagePoints: [{ name: 'Feet', x: 0.5, y: 1 }],
-    });
-    expect(parseResult(result).success).toBe(true);
-    expect(writtenFrames(writer)[0].imagePoints).toEqual([
-      { name: 'Head', x: 0.5, y: 0 },
-      { name: 'Feet', x: 0.5, y: 1 },
-    ]);
-  });
-
-  it('rejects an added image point that collides with an existing name', async () => {
-    const { server } = setup({
-      objects: new Map([['Hero', makeFramedSprite(1, { imagePoints: [{ name: 'Head', x: 0.5, y: 0 }] })]]),
-    });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      addImagePoints: [{ name: 'Head', x: 0.1, y: 0.1 }],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('resulting image point list');
-  });
-
-  it('rejects an added image point outside the normalized 0-1 range', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      addImagePoints: [{ name: 'Far', x: 0.5, y: 2 }],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('out of range');
-  });
-
-  it('removes image points by name, and reports names that are absent', async () => {
-    const points = [{ name: 'Head', x: 0.5, y: 0 }, { name: 'Feet', x: 0.5, y: 1 }];
-    const { server, writer } = setup({
-      objects: new Map([['Hero', makeFramedSprite(1, { imagePoints: points })]]),
-    });
-    const removed = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0, removeImagePoints: ['Head'],
-    });
-    expect(parseResult(removed).success).toBe(true);
-    expect(writtenFrames(writer)[0].imagePoints).toEqual([{ name: 'Feet', x: 0.5, y: 1 }]);
-
-    const missing = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0, removeImagePoints: ['Nope'],
-    });
-    expect(missing.isError).toBe(true);
-    expect(missing.content[0].text).toContain('not found on frame 0');
-  });
-
-  it('rejects combining imagePoints with addImagePoints', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      imagePoints: [{ name: 'A', x: 0, y: 0 }],
-      addImagePoints: [{ name: 'B', x: 1, y: 1 }],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('do not combine');
-  });
-
-  it('writes a normalized collision polygon and toggles useCollisionPoly', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      collisionPoly: [0, 0, 1, 0, 1, 1, 0, 1],
-      useCollisionPoly: false,
-    });
-    const data = parseResult(result);
-    expect(data.success).toBe(true);
-    expect(data.warnings).toBeUndefined();
-    const frame = writtenFrames(writer)[0];
-    expect(frame.collisionPoly).toEqual({ points: [0, 0, 1, 0, 1, 1, 0, 1] });
-    expect(frame.useCollisionPoly).toBe(false);
-  });
-
-  it('rejects an odd-length collision polygon', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      collisionPoly: [0, 0, 1, 0, 1],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('must be even');
-  });
-
-  it('rejects a collision polygon with fewer than three points', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      collisionPoly: [0, 0, 1, 1],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('at least 3 points');
-  });
-
-  it('clears the collision polygon with an empty array', async () => {
-    const { server, writer } = setup({
-      objects: new Map([['Hero', makeFramedSprite(1, { collisionPoly: { points: [0, 0, 1, 0, 1, 1] } })]]),
-    });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0, collisionPoly: [],
-    });
-    expect(parseResult(result).success).toBe(true);
-    expect(writtenFrames(writer)[0].collisionPoly).toEqual({ points: [] });
-  });
-
-  it('warns when a collision polygon point falls outside 0-1', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('update_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-      collisionPoly: [0, 0, 1.5, 0, 1, 1],
-    });
-    const data = parseResult(result);
-    expect(data.success).toBe(true);
-    expect(data.warnings[0]).toContain('outside 0-1');
-  });
-});
-
-// ─── reorder_frames / reverse_frames ─────────────────────
-
-describe('reorder_frames', () => {
-  it('registers the tool', () => {
-    expect(setup().server.hasTool('reorder_frames')).toBe(true);
-  });
-
-  it('applies a full permutation to the frame list', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(3)]]) });
-    const result = await server.callTool('reorder_frames', {
-      objectName: 'Hero', animationName: 'Animation 1', order: [2, 0, 1],
-    });
-    expect(parseResult(result).success).toBe(true);
-    expect(writtenFrames(writer).map((frame: any) => frame.imageSpriteId)).toEqual([102, 100, 101]);
-  });
-
-  it('rejects a partial permutation', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(3)]]) });
-    const result = await server.callTool('reorder_frames', {
-      objectName: 'Hero', animationName: 'Animation 1', order: [1, 0],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('every frame exactly once');
-    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-  });
-
-  it('rejects a repeated frame index', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(3)]]) });
-    const result = await server.callTool('reorder_frames', {
-      objectName: 'Hero', animationName: 'Animation 1', order: [0, 1, 1],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('repeats frame index');
-    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-  });
-
-  it('rejects an out-of-range frame index', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(3)]]) });
-    const result = await server.callTool('reorder_frames', {
-      objectName: 'Hero', animationName: 'Animation 1', order: [0, 1, 7],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('out of range');
-  });
-
-  it('reports when no frame image files were found', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
-    const result = await server.callTool('reorder_frames', {
-      objectName: 'Hero', animationName: 'Animation 1', order: [1, 0],
-    });
-    expect(parseResult(result).warnings[0]).toContain('No frame image files');
-  });
-
-  it('errors for an unknown animation and lists the available names', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
-    const result = await server.callTool('reorder_frames', {
-      objectName: 'Hero', animationName: 'Nope', order: [1, 0],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Animation 1');
-  });
-});
-
-describe('reverse_frames', () => {
-  it('registers the tool', () => {
-    expect(setup().server.hasTool('reverse_frames')).toBe(true);
-  });
-
-  it('reverses the frame list', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(4)]]) });
-    const result = await server.callTool('reverse_frames', { objectName: 'Hero', animationName: 'Animation 1' });
-    expect(parseResult(result).success).toBe(true);
-    expect(writtenFrames(writer).map((frame: any) => frame.imageSpriteId)).toEqual([103, 102, 101, 100]);
-  });
-
-  it('rejects a non-Sprite object', async () => {
-    const { server } = setup({
-      objects: new Map([['Label', { name: 'Label', 'plugin-id': 'Text', sid: 5, isGlobal: false, instanceVariables: [], behaviorTypes: [], effectTypes: [] }]]),
-    });
-    const result = await server.callTool('reverse_frames', { objectName: 'Label', animationName: 'Animation 1' });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('not a Sprite');
-  });
-});
-
-// ─── duplicate_frame ─────────────────────────────────────
-
-describe('duplicate_frame', () => {
-  it('registers the tool', () => {
-    expect(setup().server.hasTool('duplicate_frame')).toBe(true);
-  });
-
-  it('inserts a copy after the source frame with a fresh imageSpriteId', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
-    const result = await server.callTool('duplicate_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0,
-    });
-    expect(parseResult(result).success).toBe(true);
-    const frames = writtenFrames(writer);
-    expect(frames).toHaveLength(3);
-    expect(frames[1].width).toBe(frames[0].width);
-    expect(frames[1].imageSpriteId).not.toBe(frames[0].imageSpriteId);
-    expect(frames[2].imageSpriteId).toBe(101);
-  });
-
-  it('honours insertAt', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(3)]]) });
-    await server.callTool('duplicate_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 2, insertAt: 0,
-    });
-    const frames = writtenFrames(writer);
-    expect(frames).toHaveLength(4);
-    expect(frames.slice(1).map((frame: any) => frame.imageSpriteId)).toEqual([100, 101, 102]);
-  });
-
-  it('does not copy an imageSpriteId onto a frame that has none', async () => {
-    const sprite = makeFramedSprite(1);
-    delete (sprite.animations.items[0].frames[0] as any).imageSpriteId;
-    const { server, writer } = setup({ objects: new Map([['Hero', sprite]]) });
-    await server.callTool('duplicate_frame', { objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0 });
-    const frames = writtenFrames(writer);
-    expect(frames).toHaveLength(2);
-    expect(frames[1].imageSpriteId).toBeUndefined();
-  });
-
-  it('rejects an out-of-range frameIndex', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
-    const result = await server.callTool('duplicate_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 5,
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('out of range');
-  });
-
-  it('rejects an insertAt beyond the end of the animation', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(2)]]) });
-    const result = await server.callTool('duplicate_frame', {
-      objectName: 'Hero', animationName: 'Animation 1', frameIndex: 0, insertAt: 3,
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('insertAt 3 is out of range');
-    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-  });
-});
-
-// ─── animation folders ───────────────────────────────────
-
-describe('create_animation_folder', () => {
-  it('registers the tool', () => {
-    expect(setup().server.hasTool('create_animation_folder')).toBe(true);
-  });
-
-  it('creates a nested animation folder', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('create_animation_folder', {
-      objectName: 'Hero', folderPath: 'Combat/Melee',
-    });
-    expect(parseResult(result).success).toBe(true);
-    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
-    expect(written.animations.subfolders[0].name).toBe('Combat');
-    expect(written.animations.subfolders[0].subfolders[0]).toMatchObject({ name: 'Melee', items: [], subfolders: [] });
-  });
-
-  it('rejects a folder path that already exists', async () => {
-    const sprite = makeFramedSprite(1);
-    sprite.animations.subfolders.push({ items: [], subfolders: [], name: 'Combat' });
-    const { server, writer } = setup({ objects: new Map([['Hero', sprite]]) });
-    const result = await server.callTool('create_animation_folder', { objectName: 'Hero', folderPath: 'Combat' });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('already exists');
-    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-  });
-
-  it('rejects a traversing folder path', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('create_animation_folder', { objectName: 'Hero', folderPath: '../escape' });
-    expect(result.isError).toBe(true);
-  });
-});
-
-describe('move_animation_to_folder', () => {
-  it('registers the tool', () => {
-    expect(setup().server.hasTool('move_animation_to_folder')).toBe(true);
-  });
-
-  it('moves an animation into an existing folder and back to the root', async () => {
-    const sprite = makeFramedSprite(1);
-    sprite.animations.subfolders.push({ items: [], subfolders: [], name: 'Combat' });
-    const { server, writer } = setup({ objects: new Map([['Hero', sprite]]) });
-
-    const moved = await server.callTool('move_animation_to_folder', {
-      objectName: 'Hero', animationName: 'Animation 1', folderPath: 'Combat',
-    });
-    expect(parseResult(moved).success).toBe(true);
-    const intoFolder = writer.callsFor('writeEntityFile')[0].args[2] as any;
-    expect(intoFolder.animations.items).toHaveLength(0);
-    expect(intoFolder.animations.subfolders[0].items[0].name).toBe('Animation 1');
-
-    const back = await server.callTool('move_animation_to_folder', {
-      objectName: 'Hero', animationName: 'Animation 1', folderPath: null,
-    });
-    expect(parseResult(back).success).toBe(true);
-  });
-
-  it('rejects a destination folder that does not exist', async () => {
-    const { server, writer } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('move_animation_to_folder', {
-      objectName: 'Hero', animationName: 'Animation 1', folderPath: 'Missing',
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('create_animation_folder');
-    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
-  });
-
-  it('rejects a move that would not change the folder', async () => {
-    const { server } = setup({ objects: new Map([['Hero', makeFramedSprite(1)]]) });
-    const result = await server.callTool('move_animation_to_folder', {
-      objectName: 'Hero', animationName: 'Animation 1', folderPath: null,
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('already in the animations root');
-  });
-
-  it('finds an animation that already sits inside a folder', async () => {
-    const sprite = makeFramedSprite(1);
-    const nested = sprite.animations.items.splice(0, 1);
-    sprite.animations.subfolders.push({ items: nested, subfolders: [], name: 'Combat' });
-    const { server, writer } = setup({ objects: new Map([['Hero', sprite]]) });
-    const result = await server.callTool('move_animation_to_folder', {
-      objectName: 'Hero', animationName: 'Animation 1', folderPath: null,
-    });
-    expect(parseResult(result).success).toBe(true);
-    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
-    expect(written.animations.items[0].name).toBe('Animation 1');
-    expect(written.animations.subfolders[0].items).toHaveLength(0);
-  });
-
-  it('moves an animation out of a first-level folder with an empty name to the root', async () => {
-    const sprite = makeFramedSprite(1);
-    const nested = sprite.animations.items.splice(0, 1);
-    sprite.animations.subfolders.push({ items: nested, subfolders: [], name: '' });
-    const { server, writer } = setup({ objects: new Map([['Hero', sprite]]) });
-    const result = await server.callTool('move_animation_to_folder', {
-      objectName: 'Hero', animationName: 'Animation 1', folderPath: null,
-    });
-    expect(result.isError).not.toBe(true);
-    expect(parseResult(result).warnings.join(' ')).toContain('from a folder with no name to the animations root');
-    const written = writer.callsFor('writeEntityFile')[0].args[2] as any;
-    expect(written.animations.items[0].name).toBe('Animation 1');
-    expect(written.animations.subfolders[0].items).toHaveLength(0);
-  });
-
-  it('rejects moving an animation to the folder it is already in', async () => {
-    const sprite = makeFramedSprite(1);
-    const nested = sprite.animations.items.splice(0, 1);
-    sprite.animations.subfolders.push({ items: nested, subfolders: [], name: 'Combat' });
-    const { server, writer } = setup({ objects: new Map([['Hero', sprite]]) });
-    const result = await server.callTool('move_animation_to_folder', {
-      objectName: 'Hero', animationName: 'Animation 1', folderPath: 'Combat',
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('already in folder "Combat"');
-    expect(writer.callsFor('writeEntityFile')).toHaveLength(0);
   });
 });
 

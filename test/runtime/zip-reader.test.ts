@@ -1,12 +1,16 @@
 /**
- * The .c3p zip reader, and the writer's compression option, round-tripped
- * against each other and against archives damaged or crafted to be unsafe.
+ * The .c3p zip reader, round-tripped against the project's zip writer and
+ * against archives built as Construct 3 saved them (r495.2: ZIP64 records,
+ * STORE and DEFLATE entries, backslash paths; r506-2: ZIP64, DEFLATE,
+ * backslash paths), damaged, or crafted to be unsafe. The archives are
+ * synthetic.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { deflateRawSync } from 'node:zlib';
-import { readZip, checkEntryPath } from '../../src/runtime/zip-reader.js';
-import { buildZip, crc32, tableCrc32 } from '../../src/runtime/zip-writer.js';
+import { readZip, readZipArchive, checkEntryPath, decodeCp437 } from '../../src/runtime/zip-reader.js';
+import { zipBuffer, crc32, tableCrc32 } from '../../src/runtime/zip-writer.js';
+import { zipWithDeflate, centralEntryOffsets, localOffsetOf } from './zip-fixtures.js';
 
 const json = Buffer.from(JSON.stringify({ name: 'Game', items: Array(50).fill('repeated text') }));
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -18,13 +22,47 @@ function centralEntries(zip: Buffer): number[] {
   return offsets;
 }
 
+/** One entry of a Construct-style archive; the optional fields change how it is written. */
+interface StyledEntry {
+  path: string;
+  data: Buffer;
+  /** The name bytes to write, when they are not the UTF-8 of `path` */
+  nameBytes?: Buffer;
+  /** The general purpose flags, when they are not UTF-8 name (0x800) plus sizes-after-data (0x4) */
+  flags?: number;
+  /** Extra field records written beside the ZIP64 one in the central entry */
+  extraField?: Buffer;
+  /** Write the extra field records before the ZIP64 one */
+  extraFirst?: boolean;
+  /** Store the data instead of compressing it */
+  store?: boolean;
+}
+
+/** An extra field record: its id, its size and its data. */
+function extraRecord(id: number, data: Buffer): Buffer {
+  const record = Buffer.alloc(4 + data.length);
+  record.writeUInt16LE(id, 0);
+  record.writeUInt16LE(data.length, 2);
+  data.copy(record, 4);
+  return record;
+}
+
+/** An Info-ZIP Unicode Path field (0x7075) for `nameBytes`, with the CRC-32 it carries and the UTF-8 name. */
+function unicodePathRecord(nameBytes: Buffer, unicodeName: string, crc = crc32(nameBytes)): Buffer {
+  const head = Buffer.alloc(5);
+  head.writeUInt8(1, 0);
+  head.writeUInt32LE(crc, 1);
+  return extraRecord(0x7075, Buffer.concat([head, Buffer.from(unicodeName)]));
+}
+
 /**
- * A ZIP64 archive shaped like the ones Construct r495.2 saves: every size and
+ * A ZIP64 archive shaped like the ones Construct r495.2 saved: every size and
  * offset in the local and central headers is the 0xFFFFFFFF placeholder, the
  * real values sit in each entry's ZIP64 extra field, and the end record points
- * to a ZIP64 end record through a locator. Entries are DEFLATE-compressed.
+ * to a ZIP64 end record through a locator. Entries are DEFLATE-compressed
+ * unless they ask to be stored.
  */
-function constructStyleZip64(entries: Array<{ path: string; data: Buffer }>): Buffer {
+function constructStyleZip64(entries: StyledEntry[]): Buffer {
   const parts: Buffer[] = [];
   const central: Buffer[] = [];
   let offset = 0;
@@ -35,27 +73,28 @@ function constructStyleZip64(entries: Array<{ path: string; data: Buffer }>): Bu
     values.forEach((v, i) => extra.writeBigUInt64LE(BigInt(v), 4 + i * 8));
     return extra;
   };
-  for (const { path, data } of entries) {
-    const name = Buffer.from(path);
-    const packed = deflateRawSync(data);
+  for (const { path, data, nameBytes, flags = 0x800 | 0x4, extraField = Buffer.alloc(0), extraFirst, store } of entries) {
+    const name = nameBytes ?? Buffer.from(path);
+    const packed = store ? data : deflateRawSync(data);
     const localExtra = zip64Extra([data.length, packed.length]);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(45, 4);
-    local.writeUInt16LE(0x800 | 0x4, 6);
-    local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(flags, 6);
+    local.writeUInt16LE(store ? 0 : 8, 8);
     local.writeUInt32LE(crc32(data), 14);
     local.writeUInt32LE(0xffffffff, 18);
     local.writeUInt32LE(0xffffffff, 22);
     local.writeUInt16LE(name.length, 26);
     local.writeUInt16LE(localExtra.length, 28);
-    const centralExtra = zip64Extra([data.length, packed.length, offset]);
+    const zip64Central = zip64Extra([data.length, packed.length, offset]);
+    const centralExtra = extraFirst ? Buffer.concat([extraField, zip64Central]) : Buffer.concat([zip64Central, extraField]);
     const header = Buffer.alloc(46);
     header.writeUInt32LE(0x02014b50, 0);
     header.writeUInt16LE(45, 4);
     header.writeUInt16LE(45, 6);
-    header.writeUInt16LE(0x800 | 0x4, 8);
-    header.writeUInt16LE(8, 10);
+    header.writeUInt16LE(flags, 8);
+    header.writeUInt16LE(store ? 0 : 8, 10);
     header.writeUInt32LE(crc32(data), 16);
     header.writeUInt32LE(0xffffffff, 20);
     header.writeUInt32LE(0xffffffff, 24);
@@ -90,44 +129,60 @@ function constructStyleZip64(entries: Array<{ path: string; data: Buffer }>): Bu
 }
 
 describe('readZip', () => {
-  it('reads back what the writer stores or compresses, with UTF-8 names and empty files', () => {
+  it('reads back what the writer stores, with UTF-8 names and empty files', () => {
     const entries = [
       { path: 'project.c3proj', data: json },
       { path: 'images/player-idle-000.png', data: png },
       { path: 'files/données.txt', data: Buffer.from('café') },
       { path: 'files/empty.txt', data: Buffer.alloc(0) },
     ];
-    for (const compress of [false, true]) {
-      expect(readZip(buildZip(entries, { compress }))).toEqual(entries);
-    }
+    expect(readZip(zipBuffer(entries))).toEqual(entries);
   });
 
-  it('compresses only the entries that get smaller, and marks only non-ASCII names as UTF-8', () => {
-    const zip = buildZip([
+  it('stores every entry and marks only non-ASCII names as UTF-8', () => {
+    const zip = zipBuffer([
       { path: 'project.c3proj', data: json },
       { path: 'a.png', data: png },
       { path: 'files/données.txt', data: Buffer.from('x') },
-    ], { compress: true });
-    const [c3proj, image, accented] = centralEntries(zip);
-    expect(zip.readUInt16LE(c3proj + 10)).toBe(8);
-    expect(zip.readUInt32LE(c3proj + 20)).toBeLessThan(json.length);
-    expect(zip.readUInt16LE(image + 10)).toBe(0);
-    expect(zip.readUInt16LE(c3proj + 8)).toBe(0);
-    expect(zip.readUInt16LE(accented + 8)).toBe(0x800);
-    // Without the option every entry is stored, as pack_project has always written.
-    const stored = buildZip([{ path: 'project.c3proj', data: json }]);
-    expect(centralEntries(stored).map(o => stored.readUInt16LE(o + 10))).toEqual([0]);
+    ]);
+    const offsets = centralEntries(zip);
+    expect(offsets.map(o => zip.readUInt16LE(o + 10))).toEqual([0, 0, 0]);
+    expect(offsets.map(o => zip.readUInt16LE(o + 8))).toEqual([0, 0, 0x800]);
+    expect(zip.readUInt32LE(offsets[0] + 20)).toBe(json.length);
   });
 
-  it('skips directory entries and reads past an archive comment', () => {
-    const zip = buildZip([{ path: 'project.c3proj', data: json }]);
+  it('uses a CRC given with an entry', () => {
+    const data = Buffer.from('some data');
+    expect(readZip(zipBuffer([{ path: 'a', data, crc: crc32(data) }]))).toEqual([{ path: 'a', data }]);
+    expect(() => readZip(zipBuffer([{ path: 'a', data, crc: (crc32(data) ^ 1) >>> 0 }]))).toThrow(/fails its CRC check/);
+  });
+
+  it('leaves directory entries out of readZip and reads past an archive comment', () => {
+    const zip = zipBuffer([{ path: 'project.c3proj', data: json }]);
     const comment = Buffer.from('saved by a tool');
     const withComment = Buffer.concat([zip, comment]);
     withComment.writeUInt16LE(comment.length, zip.length - 2);
     expect(readZip(withComment).map(e => e.path)).toEqual(['project.c3proj']);
 
-    const withDir = buildZip([{ path: 'images/', data: Buffer.alloc(0) }, { path: 'images/a.png', data: png }]);
+    const withDir = zipBuffer([{ path: 'images/', data: Buffer.alloc(0) }, { path: 'images/a.png', data: png }]);
     expect(readZip(withDir).map(e => e.path)).toEqual(['images/a.png']);
+  });
+
+  it('lists a repeated directory entry once', () => {
+    const zip = zipBuffer([
+      { path: 'files/', data: Buffer.alloc(0) },
+      { path: 'files\\', data: Buffer.alloc(0) },
+      { path: 'files/a.txt', data: Buffer.from('a') },
+    ]);
+    expect(readZipArchive(zip).directories).toEqual(['files/']);
+  });
+
+  it('lists directory entries apart from files', () => {
+    const zip = zipBuffer([{ path: 'files/', data: Buffer.alloc(0) }, { path: 'files/a.txt', data: Buffer.from('a') }]);
+    const archive = readZipArchive(zip);
+    expect(archive.directories).toEqual(['files/']);
+    expect(archive.files).toEqual([{ path: 'files/a.txt', data: Buffer.from('a') }]);
+    expect(readZip(zip)).toEqual([{ path: 'files/a.txt', data: Buffer.from('a') }]);
   });
 
   it('takes sizes from the central directory when the local header leaves them zero', () => {
@@ -161,24 +216,58 @@ describe('readZip', () => {
   it('refuses entry paths that would land outside the extraction folder', () => {
     for (const path of ['../evil.txt', 'images/../../evil.txt', '/etc/evil', 'C:/evil.txt', '\\evil.txt', '..\\evil.txt', 'images\\..\\..\\evil.png', 'a\0b']) {
       expect(() => checkEntryPath(path), path).toThrow();
-      expect(() => readZip(buildZip([{ path, data: png }])), path).toThrow();
+      expect(() => readZip(zipBuffer([{ path, data: png }])), path).toThrow();
     }
     expect(checkEntryPath('images/..hidden/ok.png')).toBe('images/..hidden/ok.png');
   });
 
-  it('reads backslashes, which Construct on Windows writes in every path, as folder separators', () => {
+  it('refuses paths that name their file ambiguously, before anything is read', () => {
+    const ambiguous = [
+      'images//a.png', 'images/./a.png', './a.png', 'images/a.png.', 'images/a.png ', 'images /a.png',
+      'images/a:b.png', 'aux.json', 'images/nul.png', 'files/COM1.txt',
+    ];
+    for (const path of ambiguous) {
+      expect(() => checkEntryPath(path), path).toThrow();
+    }
+    expect(checkEntryPath('images/auxiliary.png')).toBe('images/auxiliary.png');
+    expect(checkEntryPath('images/a.b.png')).toBe('images/a.b.png');
+
+    const archive = zipBuffer([{ path: 'images/a.png', data: png }, { path: 'images/./a.png', data: png }]);
+    expect(() => readZipArchive(archive)).toThrow(/images\/\.\/a\.png/);
+  });
+
+  it('reads backslashes as folder separators', () => {
     expect(checkEntryPath('objectTypes\\System Objects\\Keyboard.json')).toBe('objectTypes/System Objects/Keyboard.json');
-    const zip = buildZip([{ path: 'project.c3proj', data: json }, { path: 'images\\', data: Buffer.alloc(0) }, { path: 'images\\a.png', data: png }]);
+    const zip = zipBuffer([{ path: 'project.c3proj', data: json }, { path: 'images\\', data: Buffer.alloc(0) }, { path: 'images\\a.png', data: png }]);
     expect(readZip(zip).map(e => e.path)).toEqual(['project.c3proj', 'images/a.png']);
-    expect(() => readZip(buildZip([{ path: 'images\\A.png', data: png }, { path: 'images/a.png', data: png }]))).toThrow(/more than once/);
+    expect(() => readZip(zipBuffer([{ path: 'images\\A.png', data: png }, { path: 'images/a.png', data: png }]))).toThrow(/more than once/);
   });
 
   it('refuses two entries whose names differ only by case, which would collide on Windows', () => {
-    expect(() => readZip(buildZip([{ path: 'a/B.png', data: png }, { path: 'a/b.png', data: png }]))).toThrow(/more than once/);
+    expect(() => readZip(zipBuffer([{ path: 'a/B.png', data: png }, { path: 'a/b.png', data: png }]))).toThrow(/more than once/);
+  });
+
+  it('refuses an archive that spells one folder two ways', () => {
+    const zip = zipBuffer([{ path: 'Layouts/a.json', data: json }, { path: 'layouts/b.json', data: json }]);
+    expect(() => readZip(zip)).toThrow(/spells the folder "layouts" two ways/);
+  });
+
+  it('refuses two entries that name one file in two spellings', () => {
+    const cases = zipBuffer([{ path: 'eventSheets/Main.json', data: json }, { path: 'eventSheets/main.json', data: json }]);
+    expect(() => readZip(cases)).toThrow(/appears more than once/);
+    const normalized = zipBuffer([{ path: 'files/\u00e9.txt', data: json }, { path: 'files/e\u0301.txt', data: json }]);
+    expect(() => readZip(normalized)).toThrow(/appears more than once/);
+  });
+
+  it('refuses a file whose path is also a folder of another entry', () => {
+    const nested = zipBuffer([{ path: 'files/a', data: json }, { path: 'files/a/b.txt', data: json }]);
+    expect(() => readZip(nested)).toThrow(/is both a file and a folder/);
+    const directory = zipBuffer([{ path: 'files/a/', data: Buffer.alloc(0) }, { path: 'files/a', data: json }]);
+    expect(() => readZip(directory)).toThrow(/is both a file and a folder/);
   });
 
   it('refuses encrypted entries, other compression methods, bad CRCs and wrong sizes', () => {
-    const base = () => buildZip([{ path: 'project.c3proj', data: json }]);
+    const base = () => zipBuffer([{ path: 'project.c3proj', data: json }]);
     const [central] = centralEntries(base());
 
     const encrypted = base();
@@ -198,9 +287,24 @@ describe('readZip', () => {
     expect(() => readZip(badSize)).toThrow(/archive says/);
   });
 
+  it('refuses a stored entry whose stored size differs from its declared size before copying its bytes', () => {
+    const zip = zipBuffer([{ path: 'project.c3proj', data: json }]);
+    const [central] = centralEntries(zip);
+    // The stored extent is one byte short of the size the archive declares
+    zip.writeUInt32LE(json.length - 1, central + 20);
+    const from = vi.spyOn(Buffer, 'from');
+    try {
+      expect(() => readZip(zip)).toThrow(`Zip entry "project.c3proj" is ${json.length - 1} bytes, but the archive says ${json.length}`);
+      const copies = from.mock.calls.filter(([arg]) => arg instanceof Uint8Array && arg.length === json.length - 1);
+      expect(copies).toEqual([]);
+    } finally {
+      from.mockRestore();
+    }
+  });
+
   it('refuses what is not a zip, a truncated zip, and a ZIP64 placeholder with no ZIP64 field', () => {
     expect(() => readZip(json)).toThrow(/end-of-central-directory/);
-    const zip = buildZip([{ path: 'project.c3proj', data: json }]);
+    const zip = zipBuffer([{ path: 'project.c3proj', data: json }]);
     expect(() => readZip(zip.subarray(40))).toThrow();
 
     const [central] = centralEntries(zip);
@@ -209,7 +313,7 @@ describe('readZip', () => {
     expect(() => readZip(placeholder)).toThrow(/missing its ZIP64 sizes/);
   });
 
-  it('reads a ZIP64 archive laid out as Construct saves a .c3p', () => {
+  it('reads a ZIP64 archive with placeholder sizes, DEFLATE entries and backslash paths', () => {
     const entries = [
       { path: 'project.c3proj', data: json },
       { path: 'objectTypes\\System Objects\\Keyboard.json', data: Buffer.from('{"name":"Keyboard"}') },
@@ -224,6 +328,76 @@ describe('readZip', () => {
     damaged.writeUInt32LE(0, damaged.length - 22 - 20 - 56);
     expect(() => readZip(damaged)).toThrow(/ZIP64 end record is damaged/);
   });
+
+  it('reads stored entries and other extra fields in a ZIP64 archive', () => {
+    const timestamp = extraRecord(0x5455, Buffer.from([1, 0, 0, 0, 0]));
+    const ntfs = extraRecord(0x000a, Buffer.alloc(32));
+    const zip = constructStyleZip64([
+      { path: 'project.c3proj', data: json, extraField: Buffer.concat([timestamp, ntfs]) },
+      { path: 'images\\a.png', data: png, store: true, extraField: Buffer.concat([timestamp, ntfs]), extraFirst: true },
+      { path: 'files\\empty.txt', data: Buffer.alloc(0), store: true },
+    ]);
+    expect(readZip(zip)).toEqual([
+      { path: 'project.c3proj', data: json },
+      { path: 'images/a.png', data: png },
+      { path: 'files/empty.txt', data: Buffer.alloc(0) },
+    ]);
+  });
+
+  describe('names without the UTF-8 flag', () => {
+    const cafe = Buffer.concat([Buffer.from('files/caf'), Buffer.from([0x82]), Buffer.from('.txt')]);
+    const unflagged = (entry: Omit<StyledEntry, 'flags'>) => constructStyleZip64([{ ...entry, flags: 0x4 }]);
+
+    it('decodes an unflagged name by its Unicode Path field, else as UTF-8 when valid, else as code page 437', () => {
+      const data = Buffer.from('x');
+      const utf8 = unflagged({ path: 'files/donn\u00e9es.txt', data });
+      expect(readZip(utf8).map(e => e.path)).toEqual(['files/donn\u00e9es.txt']);
+
+      const cp437 = unflagged({ path: 'ignored', nameBytes: cafe, data });
+      expect(readZip(cp437).map(e => e.path)).toEqual(['files/caf\u00e9.txt']);
+
+      const withField = unflagged({
+        path: 'ignored', nameBytes: cafe, data, extraField: unicodePathRecord(cafe, 'files/cafe-unicode.txt'),
+      });
+      expect(readZip(withField).map(e => e.path)).toEqual(['files/cafe-unicode.txt']);
+
+      const forOtherName = unflagged({
+        path: 'ignored', nameBytes: cafe, data, extraField: unicodePathRecord(cafe, 'files/cafe-unicode.txt', (crc32(cafe) ^ 1) >>> 0),
+      });
+      expect(readZip(forOtherName).map(e => e.path)).toEqual(['files/caf\u00e9.txt']);
+
+      expect(decodeCp437(Buffer.from([0x80, 0x82, 0xe1]))).toBe('\u00c7\u00e9\u00df');
+    });
+
+    it('decodes all 128 high bytes of code page 437 to one character each', () => {
+      const high = Buffer.from(Array.from({ length: 128 }, (_, i) => 0x80 + i));
+      const decoded = decodeCp437(high);
+      expect(decoded).toHaveLength(128);
+      expect(decoded).not.toContain('undefined');
+      expect(new Set(decoded).size).toBe(128);
+    });
+
+    it('writes a decoded name back as UTF-8, with the flag', () => {
+      const entries = readZip(unflagged({ path: 'ignored', nameBytes: cafe, data: Buffer.from('x') }));
+      const zip = zipBuffer(entries);
+      expect(readZip(zip).map(e => e.path)).toEqual(['files/caf\u00e9.txt']);
+      expect(zip.readUInt16LE(centralEntries(zip)[0] + 8)).toBe(0x800);
+    });
+  });
+
+  describe('names with the UTF-8 flag', () => {
+    const invalid = Buffer.concat([Buffer.from('files/caf'), Buffer.from([0x82]), Buffer.from('.txt')]);
+
+    it('refuses a name that is not valid UTF-8, which would be renamed on write-back', () => {
+      const zip = constructStyleZip64([{ path: 'ignored', nameBytes: invalid, data: Buffer.from('x') }]);
+      expect(() => readZip(zip)).toThrow('has the UTF-8 flag, but its name is not valid UTF-8');
+    });
+
+    it('reads a valid UTF-8 name under the flag', () => {
+      const zip = constructStyleZip64([{ path: 'files/café.txt', data: Buffer.from('x') }]);
+      expect(readZip(zip).map(e => e.path)).toEqual(['files/café.txt']);
+    });
+  });
 });
 
 describe('crc32', () => {
@@ -235,10 +409,145 @@ describe('crc32', () => {
   });
 });
 
-describe('buildZip', () => {
+describe('the DEFLATE archive helper', () => {
+  it('writes method 8 in the central header and reads back byte for byte when undamaged', () => {
+    const zip = zipWithDeflate([
+      { path: 'a.txt', data: json, method: 8 },
+      { path: 'b.bin', data: png, method: 0 },
+    ]);
+    const [first, second] = centralEntryOffsets(zip);
+    expect(zip.readUInt16LE(first + 10)).toBe(8);
+    expect(zip.readUInt16LE(second + 10)).toBe(0);
+    const files = readZip(zip);
+    expect(files.map(f => f.path)).toEqual(['a.txt', 'b.bin']);
+    expect(files[0].data.equals(json)).toBe(true);
+    expect(files[1].data.equals(png)).toBe(true);
+  });
+
+  it('makes a damaged stream fail inflation, not the CRC check', () => {
+    const zip = zipWithDeflate([{ path: 'a.txt', data: json, method: 8, damage: true }]);
+    expect(zip.readUInt16LE(centralEntryOffsets(zip)[0] + 10)).toBe(8);
+    let thrown: (Error & { code?: string }) | undefined;
+    try {
+      readZip(zip);
+    } catch (error) {
+      thrown = error as Error & { code?: string };
+    }
+    expect(thrown?.code).toBe('Z_DATA_ERROR');
+    expect(thrown?.message).not.toContain('CRC');
+  });
+});
+
+describe('reading only the wanted entries', () => {
+  const only = (name: string) => (path: string) => path === name;
+  /** The `code` of the error `fn` throws. */
+  const codeOf = (fn: () => unknown): string | undefined => {
+    try {
+      fn();
+    } catch (error) {
+      return (error as { code?: string }).code;
+    }
+    return undefined;
+  };
+
+  it('returns only the wanted entry and does not inflate an unwanted damaged one', () => {
+    const zip = zipWithDeflate([
+      { path: 'a.txt', data: json, method: 8 },
+      { path: 'bad.bin', data: json, method: 8, damage: true },
+    ]);
+    const files = readZipArchive(zip, { wanted: only('a.txt') }).files;
+    expect(files.map(f => f.path)).toEqual(['a.txt']);
+    expect(files[0].data.equals(json)).toBe(true);
+    expect(codeOf(() => readZipArchive(zip, { wanted: only('bad.bin') }))).toBe('Z_DATA_ERROR');
+    expect(codeOf(() => readZip(zip))).toBe('Z_DATA_ERROR');
+  });
+
+  it('still refuses an unwanted unsafe path', () => {
+    const zip = zipBuffer([{ path: 'a.txt', data: json }, { path: '../escape.txt', data: json }]);
+    expect(() => readZipArchive(zip, { wanted: only('a.txt') })).toThrow('has an empty, "." or ".." path segment');
+  });
+
+  it('still refuses an unwanted entry whose local header is damaged', () => {
+    const zip = zipBuffer([{ path: 'a.txt', data: json }, { path: 'other.bin', data: png }]);
+    zip.writeUInt32LE(0, localOffsetOf(zip, centralEntryOffsets(zip)[1]));
+    expect(() => readZipArchive(zip, { wanted: only('a.txt') })).toThrow('Zip entry "other.bin" has a damaged local header');
+  });
+
+  it('still refuses an unwanted entry that runs past the end of the archive', () => {
+    const zip = zipBuffer([{ path: 'a.txt', data: json }, { path: 'other.bin', data: png }]);
+    zip.writeUInt32LE(zip.length, centralEntryOffsets(zip)[1] + 20);
+    expect(() => readZipArchive(zip, { wanted: only('a.txt') })).toThrow('Zip entry "other.bin" runs past the end of the archive');
+  });
+
+  it('still refuses an unwanted file beside a wanted file inside a folder of the same name', () => {
+    const zip = zipBuffer([{ path: 'a', data: png }, { path: 'a/addon.json', data: json }]);
+    expect(() => readZipArchive(zip, { wanted: only('a/addon.json') })).toThrow('The archive\'s "a" is both a file and a folder');
+  });
+});
+
+describe('bounded inflation', () => {
+  const MB = 1024 * 1024;
+
+  it('refuses a kept entry whose declared size is over the entry limit before inflating it', () => {
+    const zip = zipWithDeflate([{ path: 'aces.json', data: Buffer.alloc(1024, 0x20), method: 8, declaredSize: 10 * MB + 1 }]);
+    expect(() => readZipArchive(zip, { maxEntryBytes: 10 * MB })).toThrow('Zip entry "aces.json" is larger than 10MB');
+  });
+
+  it('stops inflating at the declared size instead of producing the whole output', () => {
+    const zip = zipWithDeflate([{ path: 'aces.json', data: Buffer.alloc(MB), method: 8, declaredSize: 100 }]);
+    let thrown: (Error & { cause?: { code?: string } }) | undefined;
+    try {
+      readZip(zip);
+    } catch (error) {
+      thrown = error as Error & { cause?: { code?: string } };
+    }
+    expect(thrown?.message).toBe('Zip entry "aces.json" is more than 100 bytes, but the archive says 100');
+    expect(thrown?.cause?.code).toBe('ERR_BUFFER_TOO_LARGE');
+  });
+
+  it('refuses a fifth kept entry before inflating it', () => {
+    const entries = Array.from({ length: 6 }, (_, i) => ({ path: `f${i}/addon.json`, data: json, method: 8 as const, damage: i >= 4 }));
+    expect(() => readZipArchive(zipWithDeflate(entries), { maxKept: 4 })).toThrow('The archive holds more than 4 addon definition files');
+    expect(readZipArchive(zipWithDeflate(entries.slice(0, 4)), { maxKept: 4 }).files).toHaveLength(4);
+  });
+
+  it('refuses kept entries whose declared sizes together pass the total before inflating the one that passes it', () => {
+    const nine = Buffer.alloc(9 * MB, 0x20);
+    const zip = zipWithDeflate([
+      { path: 'a/addon.json', data: nine, method: 8 },
+      { path: 'a/aces.json', data: nine, method: 8 },
+      { path: 'b/addon.json', data: nine, method: 8, damage: true },
+    ]);
+    expect(() => readZipArchive(zip, { maxKeptBytes: 20 * MB })).toThrow('together hold more than 20MB');
+    expect(readZipArchive(zip, { maxKeptBytes: 20 * MB, wanted: p => p !== 'b/addon.json' }).files).toHaveLength(2);
+  });
+});
+
+describe('entry count and path depth limits', () => {
+  it('refuses more listed entries than maxEntries, and reads that many', () => {
+    const zip = zipBuffer(Array.from({ length: 5 }, (_, i) => ({ path: `d${i}/`, data: Buffer.alloc(0) })));
+    expect(() => readZipArchive(zip, { maxEntries: 4 })).toThrow('The archive lists more than 4 entries');
+    expect(readZipArchive(zip, { maxEntries: 5 }).directories).toHaveLength(5);
+  });
+
+  it('refuses a path nested deeper than maxPathDepth before the folders are processed, for files and directories', () => {
+    const file = zipBuffer([{ path: 'a/b/c/x.bin', data: png }]);
+    expect(() => readZipArchive(file, { maxPathDepth: 2 })).toThrow('The archive holds a path more than 2 folders deep');
+    expect(readZipArchive(file, { maxPathDepth: 3 }).files).toHaveLength(1);
+    const directory = zipBuffer([{ path: 'a/b/c/', data: Buffer.alloc(0) }]);
+    expect(() => readZipArchive(directory, { maxPathDepth: 2 })).toThrow('more than 2 folders deep');
+  });
+
+  it('applies no limit without the options', () => {
+    const zip = zipBuffer([{ path: 'a/b/c/d/e/f/g/h/x.bin', data: png }]);
+    expect(readZip(zip)).toHaveLength(1);
+  });
+});
+
+describe('zipBuffer', () => {
   it('refuses more entries than a zip without ZIP64 can count', () => {
     const entries = Array.from({ length: 0x10000 }, (_, i) => ({ path: `f${i}`, data: Buffer.alloc(0) }));
-    expect(() => buildZip(entries)).toThrow(/65535/);
-    expect(readZip(buildZip(entries.slice(1)))).toHaveLength(0xffff);
+    expect(() => zipBuffer(entries)).toThrow('A zip without ZIP64 records holds at most 65535 entries; this one would hold 65536.');
+    expect(readZip(zipBuffer(entries.slice(1)))).toHaveLength(0xffff);
   });
 });

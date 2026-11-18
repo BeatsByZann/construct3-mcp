@@ -3,11 +3,12 @@
  * Extracted from mutations.ts to reduce duplication.
  */
 
-import { redactFsPaths } from '../error-messages.js';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { Construct3ProjectReader } from '../construct3/project-reader.js';
-import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
+import { entityFilePath, type Construct3ProjectReader, type EntityCategory } from '../construct3/project-reader.js';
+import { filesLeftClause, type Construct3ProjectWriter, type EntityOnDisk } from '../construct3/project-writer.js';
+import { StaleFileError } from '../construct3/disk-state.js';
+import { errorMessage } from '../construct3/error-text.js';
 import type { IdGenerator } from '../construct3/id-generator.js';
 import { RESERVED_NAMES } from '../construct3/templates.js';
 
@@ -49,13 +50,34 @@ export function validateSubfolder(subfolder: string): void {
   }
 }
 
-/** Validate a file item name (the folder path is supplied separately). */
-export function validateFileName(name: string): void {
-  if (!name || name.length === 0) throw new Error('File name cannot be empty');
-  if (name.length > 255) throw new Error('File name too long (max 255 characters)');
-  if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
-    throw new Error('File name must be a single path segment');
+/** Characters Windows cannot store in a file name, and control characters (":" would name an NTFS alternate data stream). */
+const UNSAFE_FILE_NAME_CHARACTERS = /[<>:"|?*\u0000-\u001f]/;
+
+/** Names Windows reserves for devices, with or without an extension. */
+const RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9\xb9\xb2\xb3]|lpt[1-9\xb9\xb2\xb3])(\..*)?$/i;
+
+/** The longest file name accepted: the writer stages `<name>.tmp` and backs up `<name>.bak`, and those must fit in 255 as well. */
+const MAX_FILE_NAME_LENGTH = 255 - '.tmp'.length;
+
+/**
+ * Validate a file item name, or one part of a subfolder path (`label`):
+ * one path segment that Windows, macOS and Linux all store as one plain file.
+ * The length is counted in UTF-16 units; a file system that limits 255 bytes
+ * of UTF-8 can still refuse a long non-ASCII name.
+ */
+export function validateFileName(name: string, label = 'File name'): void {
+  if (name.length === 0) throw new Error(`${label} cannot be empty`);
+  if (name.length > MAX_FILE_NAME_LENGTH) {
+    throw new Error(`${label} too long (max ${MAX_FILE_NAME_LENGTH} characters, so that the .tmp and .bak names fit in 255)`);
   }
+  if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+    throw new Error(`${label} must be a single path segment`);
+  }
+  if (UNSAFE_FILE_NAME_CHARACTERS.test(name)) {
+    throw new Error(`${label} must not contain < > : " | ? * or control characters (Windows cannot store them in a file name)`);
+  }
+  if (/[. ]$/.test(name)) throw new Error(`${label} must not end with a dot or a space (Windows drops them)`);
+  if (RESERVED_DEVICE_NAME.test(name)) throw new Error(`${label} "${name}" is reserved for a device on Windows`);
 }
 
 /**
@@ -113,30 +135,90 @@ export function toolResult(data: unknown, options: ToolResultOptions = {}) {
 /** Format an error tool result as MCP content. */
 export function toolError(message: string) {
   return {
-    content: [{ type: 'text' as const, text: redactFsPaths(message) }],
+    content: [{ type: 'text' as const, text: message }],
     isError: true as const,
   };
 }
 
 /**
- * Error for a delete_* handler whose file delete failed AFTER the entity was
- * already deregistered from project.c3proj. The file is now orphaned, and the
- * handler cannot retry it (the name is no longer registered), so tell the
- * caller exactly which file to clean up.
+ * Delete a registered object type, family, event sheet or layout (#ISSUE).
+ * The steps run in this order:
+ * - look up its project-bar folder, which cannot be found once the name has
+ *   left project.c3proj;
+ * - refuse when its file changed on disk since the server read it, before
+ *   anything is written;
+ * - take the name out of project.c3proj;
+ * - delete the file, backed up.
+ * `options.alsoChange` edits the parsed project.c3proj in the same update
+ * that takes the name out, so the registration and what `alsoChange` changes
+ * (the container memberships of a deleted object type) leave in one write,
+ * built from the file as it is right before that write.
+ * A failed step never leaves a name registered without its file. When a step
+ * fails, the writer puts back what the call changed (undoToolCall; after a
+ * refusal as stale it has done so already), and one Error is thrown that
+ * says what was put back and what is on disk now, read again
+ * (writer.entityOnDisk), never inferred from the undo alone. After the
+ * delete, the disk is read again too: project.c3proj saved during the delete
+ * (the editor saves the project it holds) may list the name again, and that
+ * is reported as an error, not a success. Returns the file's backup path.
+ * Runs inside the tool call.
  */
-export function orphanedFileError(
-  category: 'objectTypes' | 'eventSheets' | 'layouts' | 'families',
+export async function deleteRegisteredEntity(
+  writer: Construct3ProjectWriter,
+  category: EntityCategory,
   name: string,
-  subfolder: string | undefined,
-  error: unknown,
-) {
-  const relPath = `${category}/${subfolder ? subfolder + '/' : ''}${name}.json`;
-  const reason = error instanceof Error ? error.message : String(error);
-  const visibility = 'The file is now orphaned (validate_project reports it as info if its directory is readable)';
-  return toolError(
-    `Removed "${name}" from project.c3proj but could not delete ${relPath}: ${reason}. ` +
-    `${visibility}; delete it manually. A ${relPath}.bak backup may have been written next to it.`
-  );
+  options?: { alsoChange?: (project: Record<string, unknown>) => void },
+): Promise<string> {
+  const subfolder = writer.getSubfolderForEntity(category, name);
+  const file = entityFilePath(category, subfolder ?? '', name);
+  await writer.assertEntityFileCurrent(category, name, subfolder);
+  let backupPath: string;
+  try {
+    await writer.removeFromProject(category, name, { alsoChange: options?.alsoChange });
+    backupPath = await writer.deleteEntityFile(category, name, subfolder);
+  } catch (error) {
+    const undo = error instanceof StaleFileError ? undefined : await writer.undoToolCall();
+    // A refusal of the writer ends with a full stop already, and says what it put back; an fs error's message names absolute paths
+    const cause = errorMessage(error, writer.projectDir());
+    const sentences = [cause.endsWith('.') ? cause : `${cause}.`];
+    if (undo && undo.restored.length > 0) sentences.push(`Put back from its backup: ${undo.restored.join(', ')}.`);
+    if (undo && undo.left.length > 0) sentences.push(`Not all of it could be undone: ${filesLeftClause(undo.left)}.`);
+    const now = describeOnDisk(await writer.entityOnDisk(category, name, subfolder), name, file);
+    sentences.push(now.sentence);
+    if ((!now.consistent || (undo !== undefined && undo.left.length > 0)) && !cause.includes('Check the project')) {
+      sentences.push('Check the project (validate_project, git diff) before you run the tool again.');
+    }
+    throw new Error(sentences.join(' '));
+  }
+  const onDisk = await writer.entityOnDisk(category, name, subfolder);
+  if (onDisk.project === 'lists' && onDisk.file === 'absent') {
+    throw new Error(`${file} was deleted, but project.c3proj was saved again during the delete (saved in the Construct 3 editor, restored with git, or written by another program) ` +
+      `and lists "${name}" again. Put the file back from ${file}.bak, or remove "${name}" in the editor.`);
+  }
+  if (onDisk.project !== 'omits' || onDisk.file !== 'absent') {
+    throw new Error(`${file} was deleted, but the project is not as the delete left it: ${describeOnDisk(onDisk, name, file).sentence} ` +
+      'Check the project (validate_project, git diff).');
+  }
+  return backupPath;
+}
+
+/**
+ * A sentence on what entityOnDisk found after a delete, and whether the
+ * registration and the file agree (both there, or both gone).
+ */
+function describeOnDisk(onDisk: EntityOnDisk, name: string, file: string): { sentence: string; consistent: boolean } {
+  if (onDisk.project === 'missing') {
+    return { sentence: 'project.c3proj is missing: put it back from project.c3proj.bak (its last backup) before you open the project.', consistent: false };
+  }
+  if (onDisk.project === 'unreadable') return { sentence: 'project.c3proj could not be read.', consistent: false };
+  if (onDisk.file === 'unknown') return { sentence: `Whether ${file} is still on disk could not be checked.`, consistent: false };
+  const listed = onDisk.project === 'lists';
+  if (listed && onDisk.file === 'present') return { sentence: `project.c3proj still lists "${name}", and ${file} is on disk.`, consistent: true };
+  if (!listed && onDisk.file === 'absent') return { sentence: `project.c3proj no longer lists "${name}", and ${file} is gone.`, consistent: true };
+  if (listed) {
+    return { sentence: `project.c3proj lists "${name}", but ${file} is missing: put it back from ${file}.bak, or remove "${name}" in the Construct 3 editor.`, consistent: false };
+  }
+  return { sentence: `project.c3proj no longer lists "${name}", but ${file} is still on disk: check it and delete it by hand.`, consistent: false };
 }
 
 /**

@@ -54,6 +54,9 @@ import type { FileFolder, FileFolderSubfolder, FileItem, AssetUsageInfo } from '
 import { getProjectIndex } from './index-builder.js';
 import { countAnimationFrames } from './animations.js';
 import { getScriptSource, tokenizeScript, type ScriptToken } from './script-scan.js';
+import { createByNameTarget } from '../event-shapes.js';
+import { containerMemberships } from '../containers.js';
+import { nameKey } from '../names.js';
 
 export type AssetType = 'sound' | 'music' | 'image' | 'font' | 'video' | 'icon' | 'general' | 'all';
 
@@ -489,13 +492,10 @@ export async function getAssetUsage(
     if (Array.isArray(params)) {
       for (const value of params) visitValue(sheet, record, undefined, value);
     } else if (params && typeof params === 'object') {
-      const objectName = (params as Record<string, unknown>)['object-name'];
-      if (record.id === 'create-object-by-name' && typeof objectName === 'string') {
-        // System "Create object (by name)": a string expression naming the object type
-        const name = wholeC3Literal(objectName);
-        if (name !== null) pushMap(createdByName, name.toLowerCase(), sheet);
-        else createdByExpression.push(`"create-object-by-name" in event sheet "${sheet}" creates an object type named by an expression`);
-      }
+      // System "Create object (by name)": a string expression naming the object type
+      const created = createByNameTarget(record);
+      if (typeof created === 'string') pushMap(createdByName, created.toLowerCase(), sheet);
+      else if (created === null) createdByExpression.push(`"create-object-by-name" in event sheet "${sheet}" creates an object type named by an expression`);
       for (const [key, value] of Object.entries(params)) visitValue(sheet, record, key, value);
     }
   };
@@ -668,9 +668,7 @@ export async function getAssetUsage(
   }
 
   // ── Images (sprite animations and single images) ─────────
-  const containers = Array.isArray(project.containers) && project.containers.length > 0
-    ? JSON.stringify(project.containers).toLowerCase()
-    : '';
+  const memberships = containerMemberships(project);
   const assetUsages: AssetUsageInfo[] = [];
   for (const [objName, objData] of objectTypes) {
     // Tiled Background, 9-patch, Particles, Sprite font and other plugins save one `image` instead
@@ -699,14 +697,15 @@ export async function getAssetUsage(
       isGlobal: objData.isGlobal === true,
     };
     // Used by the same rule as find_orphaned_objects (events, directly or through a
-    // family; layout instances; object properties of other instances), or created by name
+    // family, Create object (by name) with a literal name included; layout
+    // instances; object properties of other instances)
     if (index.isObjectUsed(objName) || eventSheets.size > 0) {
       info.via = ['object'];
     } else if (namedAs !== undefined) {
       info.status = 'not-analysed';
       info.reason = `${namedAs === objName ? 'the object name' : `its family "${namedAs}"`} appears in event parameters or scripts, `
         + 'where object references are not all traced';
-    } else if (containers.includes(JSON.stringify(objName.toLowerCase()))) {
+    } else if (memberships.has(nameKey(objName))) {
       info.status = 'not-analysed';
       info.reason = 'the object type is in a container, whose other members create its instances';
     } else if (createdByExpression.length > 0) {
@@ -928,13 +927,6 @@ function c3StringPieces(expr: string): C3Piece[] {
     });
   }
   return pieces;
-}
-
-/** The text of an expression that is exactly one string literal, or null. */
-function wholeC3Literal(expr: string): string | null {
-  const s = expr.trim();
-  if (!s.startsWith('"') || c3StringEnd(s, 0) !== s.length - 1) return null;
-  return s.slice(1, -1).replace(/""/g, '"');
 }
 
 /** The expression with its string literals removed. */

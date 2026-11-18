@@ -5,535 +5,136 @@
  * delete_flowchart_output, reorder_flowchart_outputs,
  * connect_flowchart_nodes, disconnect_flowchart_nodes.
  *
- * Flowchart JSON files live in projectDir/flowcharts/[subfolder/]<name>.json.
- * The project.c3proj flowcharts container tracks their names, exactly like
- * timelines. JSON shape confirmed against a real Construct 3 r495 project.
- *
- * Field meanings confirmed from that sample:
- *   t   node type/title (equal to `c` on 1170 of 1539 sampled nodes)
- *   c   caption (NOT a color: node and output colors live in the sibling
- *       <name>.uistate.json, which these tools never write)
- *   s   start node; every one of the 31 sampled files has exactly one
- *   e   enabled
- *   ty  value type; observed values "dictionary" (1373 nodes) and "comment"
- *       (166 nodes)
- *   pi  observed 0, 1 and 2; meaning not determined
- *   pnSIDs/poSIDs  strictly parallel, one entry per incoming connection
- *                  (1295 of 1295 sampled pairs valid): poSIDs[i] is an
- *                  output of the node pnSIDs[i]
- *   nodeSIDs       distinct child node SIDs, in an order independent of the
- *                  outputs array order
- *
- * Comment nodes (all 166 sampled) have no outputs or connections, `t: ""`,
- * and six more keys after `prfnsid`, in this order:
- *   n   comment body as the editor's HTML (first line plain, later lines in
- *       <div>, blank lines as <div><br></div>, &nbsp; and &amp; entities)
- *   fo  font face ("Calibri" 115, "Arial" 38, "calibri" 13)
- *   fs  font size (36, 24, 32, 80, 18, 12)
- *   fb  bold, fi italic (booleans)
- *   fc  font color as "#rrggbb" (5 distinct lower-case values)
- * `c` on a comment node is a separate caption: it matched `n` on only 21.
- *
- * `pr`, `prfsid` and `prfnsid` identify preset-derived nodes. They are never
- * taken from tool input: new nodes get pr:false / prfsid:null / prfnsid:null,
- * and existing nodes keep whatever they carry. Every other unknown key is
- * preserved on read-modify-write.
+ * The data model is in construct3/flowchart-model.ts, the files and the
+ * project.c3proj registration in construct3/flowchart-files.ts. A tool that
+ * changes a flowchart reads its file, changes it in memory, and writes it
+ * back once through the project writer, or refuses before anything is
+ * written.
  */
 
 import { z } from 'zod';
-import { recordDelete } from '../construct3/change-journal.js';
-import { upgradeProjectShape } from '../construct3/project-shape.js';
-import { parseJsonText } from '../construct3/json-format.js';
-import { readFile, unlink, stat } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
-import type {
-  Construct3Project,
-  Flowchart,
-  FlowchartNode,
-  FlowchartOutput,
-  FlowchartsContainer,
-  Subfolder,
-  WriteResult,
-} from '../construct3/types.js';
-import { validateName, validateSubfolder, toolResult, toolError, notFoundError } from './shared.js';
-import { resolveProjectPath } from '../construct3/path-utils.js';
-import { atomicWriteJson, backupFile } from './timeline-tools.js';
-import { existingSpelling } from '../construct3/atomic-write.js';
+import { validateName, validateSubfolder, toolResult, toolError, folderCaseClashError } from './shared.js';
+import { withProjectSync } from './project-sync.js';
+import { unknownKeysErrorMap } from './event-helpers.js';
+import { refuse, stoppedBeforeWrite } from './refusals.js';
+import { StaleFileError } from '../construct3/disk-state.js';
+import { findFileIgnoringCase } from '../construct3/atomic-write.js';
+import { findFolderPathClash, findNameClash } from '../construct3/names.js';
+import {
+  DEFAULT_NODE_HEIGHT,
+  DEFAULT_NODE_WIDTH,
+  FLOWCHART_PLUGIN_ID,
+  VALUE_TYPES,
+  applyCommentFields,
+  changeValueType,
+  clearOtherStartNodes,
+  createFlowchartData,
+  createOutput,
+  defaultedWarning,
+  disconnectOutput,
+  findNode,
+  findOutput,
+  hasCommentInput,
+  locateFlowcharts,
+  nodeNotFoundMessage,
+  outputNotFoundMessage,
+  removeNodeReferences,
+  startNodeWarnings,
+  type FlowchartNode,
+  type FlowchartOutput,
+} from '../construct3/flowchart-model.js';
+import {
+  createFlowchartFile,
+  deleteFlowchartFiles,
+  describeError,
+  flowchartFilePath,
+  openFlowchart,
+  writeFlowchart,
+  type OpenedFlowchart,
+} from '../construct3/flowchart-files.js';
+import type { WriteResult } from '../construct3/types.js';
 
-type Reader = MutationToolDeps['reader'];
+/** The project reader the tools are registered with (flowchart-files.ts has its own narrower `Reader`). */
+type ProjectReader = MutationToolDeps['reader'];
 
-/** usedAddons id of the plugin that owns flowcharts. */
-const FLOWCHART_PLUGIN_ID = 'Flowchart';
+// ─── Answers ───────────────────────────────────────────────
 
-/** Canvas size C3 gives a new flowchart. */
-const DEFAULT_CANVAS_SIZE = 20000;
-
-/** Value types seen in the sample; no other value was observed. */
-const VALUE_TYPES = ['dictionary', 'comment'] as const;
-type ValueType = typeof VALUE_TYPES[number];
-
-/** Comment formatting keys, in the sampled order after `prfnsid`. */
-const COMMENT_KEYS = ['n', 'fo', 'fs', 'fb', 'fi', 'fc'] as const;
-
-/**
- * Formatting a new comment gets when the caller gives none: the most common
- * value of each key in the sample. Construct's own defaults were not sampled.
- */
-const COMMENT_DEFAULTS = { fo: 'Calibri', fs: 36, fb: true, fi: false, fc: '#39b530' };
-
-/** Most common node box in the sample (297x133 on 395 single-output nodes). */
-const DEFAULT_NODE_WIDTH = 300;
-const DEFAULT_NODE_HEIGHT = 133;
-
-// ─── Container helpers ─────────────────────────────────────
-
-function getFlowchartsContainer(project: Construct3Project): FlowchartsContainer {
-  return project.flowcharts ?? { items: [], subfolders: [] };
+/** The answer to an error thrown before the tool's first write. */
+function stoppedAnswer(error: unknown, reader: ProjectReader) {
+  if (error instanceof StaleFileError) return toolError(error.message);
+  return toolError(stoppedBeforeWrite(error, reader.getProjectDir()));
 }
 
-/** Collect all flowchart names from a container (root + all subfolders). */
-function collectFlowchartNames(container: FlowchartsContainer): string[] {
-  const names: string[] = [...container.items];
-  const walk = (subfolders: Subfolder[]) => {
-    for (const sf of subfolders) {
-      names.push(...sf.items);
-      walk(sf.subfolders);
-    }
-  };
-  walk(container.subfolders);
-  return names;
-}
-
-/**
- * Slash-separated subfolder path holding `name`: '' for the container root,
- * or null when the name is not registered at all.
- */
-function locateFlowchart(container: FlowchartsContainer, name: string): string | null {
-  if (container.items.includes(name)) return '';
-  const walk = (subfolders: Subfolder[], prefix: string): string | null => {
-    for (const sf of subfolders) {
-      const path = prefix ? `${prefix}/${sf.name}` : sf.name;
-      if (sf.items.includes(name)) return path;
-      const deeper = walk(sf.subfolders, path);
-      if (deeper !== null) return deeper;
-    }
-    return null;
-  };
-  return walk(container.subfolders, '');
-}
-
-function hasFlowchartPlugin(project: Construct3Project): boolean {
-  const addons = project.usedAddons;
-  if (!Array.isArray(addons)) return false;
-  return addons.some(a => a && a.type === 'plugin' && a.id === FLOWCHART_PLUGIN_ID);
-}
-
-// ─── File helpers ──────────────────────────────────────────
-
-function flowchartFilePath(projectDir: string, name: string, subfolder?: string): string {
-  if (subfolder) {
-    return resolveProjectPath(projectDir, 'flowcharts', ...subfolder.split('/'), `${name}.json`);
+/** The folders of a flowchart registered under exactly this name, or the sentence that says why it is not found. */
+function lookupFlowchart(reader: ProjectReader, name: string): { folders: string[] } | { refusal: string } {
+  const { flowcharts, unresolved } = locateFlowcharts(reader.getProject().flowcharts);
+  const folders = flowcharts.get(name);
+  if (folders) return { folders };
+  if (unresolved.has(name)) {
+    return { refusal: `Flowchart "${name}" is registered in project.c3proj in a folder without a name, so its file cannot be resolved. The flowchart tools do not read, change or delete it.` };
   }
-  return resolveProjectPath(projectDir, 'flowcharts', `${name}.json`);
-}
-
-/** Sibling editor-state file C3 writes next to a flowchart. */
-function uistateFilePath(flowchartPath: string): string {
-  return flowchartPath.replace(/\.json$/, '.uistate.json');
-}
-
-async function readJsonFile<T>(filePath: string): Promise<T> {
-  const content = await readFile(filePath, 'utf-8');
-  return parseJsonText(content) as T;
+  const registered = findNameClash(name, flowcharts.keys());
+  if (registered !== undefined) {
+    return { refusal: `Flowchart "${name}" not found: names are matched with their letter case. Did you mean "${registered}"?` };
+  }
+  return { refusal: `Flowchart "${name}" not found. Use list_flowcharts to see all available names.` };
 }
 
 /**
- * Write JSON with C3's tab indentation, via a temp file and a rename, and
- * record it in the change journal. An existing file keeps its text style (line
- * endings, trailing whitespace, BOM); a new file follows the style of
- * `projectPath` (see atomicWriteJson in timeline-tools.ts).
+ * Why a flowchart cannot be created in this `flowcharts` entry of
+ * project.c3proj, as a sentence, or undefined: a name registered in a
+ * folder without a name, a name registered already or differing only in
+ * case (in any folder), a folder differing only in case. It runs before the
+ * create and again inside the update that registers the flowchart, on every
+ * round, so a save of the editor in between is checked too.
  */
-async function writeJsonFile(filePath: string, data: unknown, projectPath?: string): Promise<void> {
-  await atomicWriteJson(filePath, data, projectPath);
-}
-
-/** Add a flowchart name to the project.c3proj flowcharts container. */
-async function addFlowchartToProject(
-  projectPath: string,
-  name: string,
-  subfolder?: string,
-): Promise<void> {
-  const project = await readJsonFile<Record<string, unknown>>(projectPath);
-
-  if (!project.flowcharts) project.flowcharts = { items: [], subfolders: [] };
-  const container = project.flowcharts as FlowchartsContainer;
-  if (!Array.isArray(container.items)) container.items = [];
-  if (!Array.isArray(container.subfolders)) container.subfolders = [];
-
-  if (subfolder) {
-    let cur: FlowchartsContainer | Subfolder = container;
-    for (const part of subfolder.split('/')) {
-      let found: Subfolder | undefined = cur.subfolders.find(sf => sf.name === part);
-      if (!found) {
-        // Key order matches the sample: items, subfolders, name.
-        found = { items: [], subfolders: [], name: part };
-        cur.subfolders.push(found);
-      }
-      cur = found;
-    }
-    if (!cur.items.includes(name)) cur.items.push(name);
-  } else {
-    if (!container.items.includes(name)) container.items.push(name);
+function createRefusal(container: unknown, name: string, subfolder: string | undefined): string | undefined {
+  const located = locateFlowcharts(container as Parameters<typeof locateFlowcharts>[0]);
+  if (located.unresolved.has(name)) {
+    return `Flowchart "${name}" is registered in project.c3proj in a folder without a name, so its file cannot be resolved; creating it again would register the name twice. Choose another name, or fix the folder in project.c3proj first.`;
   }
-
-  upgradeProjectShape(project as unknown as Record<string, unknown>);
-  await writeJsonFile(projectPath, project);
-}
-
-/** Remove a flowchart name from the project.c3proj flowcharts container. */
-async function removeFlowchartFromProject(projectPath: string, name: string): Promise<void> {
-  const project = await readJsonFile<Record<string, unknown>>(projectPath);
-  const container = project.flowcharts as FlowchartsContainer | undefined;
-  if (!container) return;
-
-  const idx = container.items.indexOf(name);
-  if (idx !== -1) {
-    container.items.splice(idx, 1);
-  } else {
-    const removeFrom = (subfolders: Subfolder[]): boolean => {
-      for (const sf of subfolders) {
-        const i = sf.items.indexOf(name);
-        if (i !== -1) { sf.items.splice(i, 1); return true; }
-        if (removeFrom(sf.subfolders)) return true;
-      }
-      return false;
-    };
-    removeFrom(container.subfolders);
+  const existing = findNameClash(name, [...located.flowcharts.keys(), ...located.unresolved]);
+  if (existing === name) return `Flowchart "${name}" already exists.`;
+  if (existing !== undefined) {
+    return `"${name}" differs only in case from the existing flowchart "${existing}". Flowchart names are matched with their letter case here, and on Windows and macOS two such names in one folder are one file. Choose a different name.`;
   }
-
-  upgradeProjectShape(project as unknown as Record<string, unknown>);
-  await writeJsonFile(projectPath, project);
-}
-
-// ─── Flowchart open/save ───────────────────────────────────
-
-type OpenResult =
-  | { ok: true; data: Flowchart; filePath: string }
-  | { ok: false; error: ReturnType<typeof toolError> };
-
-/** Locate a registered flowchart and parse its file. */
-async function openFlowchart(reader: Reader, name: string): Promise<OpenResult> {
-  const container = getFlowchartsContainer(reader.getProject());
-  const subfolder = locateFlowchart(container, name);
-  if (subfolder === null) {
-    return { ok: false, error: notFoundError('Flowchart', name, [], 'list_flowcharts') };
-  }
-
-  let filePath: string;
-  try {
-    filePath = flowchartFilePath(reader.getProjectDir(), name, subfolder);
-  } catch (e: unknown) {
-    return { ok: false, error: toolError(`Flowchart "${name}": ${e instanceof Error ? e.message : String(e)}`) };
-  }
-
-  try {
-    const data = await readJsonFile<Flowchart>(filePath);
-    if (!Array.isArray(data.nodes)) data.nodes = [];
-    return { ok: true, data, filePath };
-  } catch (e: unknown) {
-    const relative = `flowcharts/${subfolder ? subfolder + '/' : ''}${name}.json`;
-    return {
-      ok: false,
-      error: toolError(
-        `Flowchart "${name}" is registered in the project but ${relative} could not be read: ` +
-        `${e instanceof Error ? e.message : String(e)}`
-      ),
-    };
-  }
-}
-
-/** Back up and rewrite a flowchart file; returns the backup path. */
-async function saveFlowchart(filePath: string, data: Flowchart): Promise<string> {
-  const backupPath = await backupFile(filePath);
-  await writeJsonFile(filePath, data);
-  return backupPath;
-}
-
-// ─── Node/output lookup ────────────────────────────────────
-
-function findNode(data: Flowchart, sid: number): FlowchartNode | undefined {
-  return data.nodes.find(n => n.sid === sid);
-}
-
-function findOutput(
-  data: Flowchart,
-  outputSid: number,
-): { node: FlowchartNode; output: FlowchartOutput; index: number } | undefined {
-  for (const node of data.nodes) {
-    if (!Array.isArray(node.outputs)) continue;
-    const index = node.outputs.findIndex(o => o.sid === outputSid);
-    if (index !== -1) return { node, output: node.outputs[index], index };
+  if (subfolder !== undefined) {
+    const folderClash = findFolderPathClash(container as Parameters<typeof findFolderPathClash>[0], subfolder);
+    if (folderClash !== undefined) return folderCaseClashError(subfolder, folderClash);
   }
   return undefined;
 }
 
-function sidHint(sids: number[]): string {
-  if (sids.length === 0) return '';
-  const shown = sids.slice(0, 5).join(', ');
-  return sids.length > 5 ? `${shown}, ... (${sids.length} total)` : shown;
-}
-
-function nodeNotFound(data: Flowchart, flowchartName: string, nodeSid: number) {
-  const hint = sidHint(data.nodes.map(n => n.sid));
-  return toolError(
-    `Node ${nodeSid} not found in flowchart "${flowchartName}".` +
-    (hint ? `\nNode SIDs in this flowchart: ${hint}` : '\nThis flowchart has no nodes.')
-  );
-}
-
-function outputNotFound(data: Flowchart, flowchartName: string, outputSid: number) {
-  const sids: number[] = [];
-  for (const n of data.nodes) for (const o of n.outputs ?? []) sids.push(o.sid);
-  const hint = sidHint(sids);
-  return toolError(
-    `Output ${outputSid} not found in flowchart "${flowchartName}".` +
-    (hint ? `\nOutput SIDs in this flowchart: ${hint}` : '\nThis flowchart has no outputs.')
-  );
-}
-
-// ─── Start-node invariant ──────────────────────────────────
-
 /**
- * C3 keeps exactly one start node per flowchart (verified: 1 of N in all 31
- * sampled files). Clear `s` on every node except `keepSid`.
+ * The object schema of a tool that writes: strict, so an argument the tool
+ * does not take is refused instead of dropped.
  */
-function clearOtherStartNodes(data: Flowchart, keepSid: number): number {
-  let cleared = 0;
-  for (const node of data.nodes) {
-    if (node.sid !== keepSid && node.s === true) {
-      node.s = false;
-      cleared++;
-    }
-  }
-  return cleared;
-}
-
-/** Warn when the file no longer satisfies the one-start-node invariant. */
-function startNodeWarnings(data: Flowchart): string[] {
-  const starts = data.nodes.filter(n => n.s === true);
-  if (data.nodes.length > 0 && starts.length === 0) {
-    return ['This flowchart has no start node. Set isStart on one node so Construct 3 knows where execution begins.'];
-  }
-  if (starts.length > 1) {
-    return [`This flowchart has ${starts.length} start nodes (${starts.map(n => n.sid).join(', ')}); Construct 3 expects exactly one.`];
-  }
-  return [];
-}
-
-// ─── Connection helpers ────────────────────────────────────
-
-/**
- * Remove the incoming-connection entry for `outputSid` from `target`, keeping
- * pnSIDs and poSIDs parallel.
- */
-function removeIncoming(target: FlowchartNode, outputSid: number): void {
-  const len = Math.max(target.pnSIDs?.length ?? 0, target.poSIDs?.length ?? 0);
-  for (let i = len - 1; i >= 0; i--) {
-    if (target.poSIDs[i] === outputSid) {
-      target.pnSIDs.splice(i, 1);
-      target.poSIDs.splice(i, 1);
-    }
-  }
-}
-
-/** Drop `childSid` from `parent.nodeSIDs` unless another output still points at it. */
-function pruneChildLink(parent: FlowchartNode, childSid: number): void {
-  if (parent.outputs.some(o => o.cnSID === childSid)) return;
-  for (let i = parent.nodeSIDs.length - 1; i >= 0; i--) {
-    if (parent.nodeSIDs[i] === childSid) parent.nodeSIDs.splice(i, 1);
-  }
-}
-
-/**
- * Undo whatever connection `output` holds, leaving other connections between
- * the same two nodes intact. Returns the former target SID, or null when the
- * output was already unconnected.
- */
-function disconnectOutput(data: Flowchart, node: FlowchartNode, output: FlowchartOutput): number | null {
-  const targetSid = output.cnSID;
-  if (targetSid === null || targetSid === undefined) return null;
-  output.cnSID = null;
-  const target = findNode(data, targetSid);
-  if (target) removeIncoming(target, output.sid);
-  pruneChildLink(node, targetSid);
-  return targetSid;
-}
-
-/**
- * Remove every reference to a node that has already been spliced out of
- * data.nodes: other nodes' nodeSIDs, their parallel pnSIDs/poSIDs entries,
- * and outputs whose cnSID pointed at it.
- */
-function removeNodeReferences(data: Flowchart, removed: FlowchartNode): void {
-  const removedOutputSids = new Set((removed.outputs ?? []).map(o => o.sid));
-
-  for (const node of data.nodes) {
-    if (Array.isArray(node.nodeSIDs)) {
-      for (let i = node.nodeSIDs.length - 1; i >= 0; i--) {
-        if (node.nodeSIDs[i] === removed.sid) node.nodeSIDs.splice(i, 1);
-      }
-    }
-
-    if (Array.isArray(node.pnSIDs) && Array.isArray(node.poSIDs)) {
-      const len = Math.max(node.pnSIDs.length, node.poSIDs.length);
-      for (let i = len - 1; i >= 0; i--) {
-        if (node.pnSIDs[i] === removed.sid || removedOutputSids.has(node.poSIDs[i])) {
-          node.pnSIDs.splice(i, 1);
-          node.poSIDs.splice(i, 1);
-        }
-      }
-    }
-
-    for (const output of node.outputs ?? []) {
-      if (output.cnSID === removed.sid) output.cnSID = null;
-    }
-  }
-}
-
-// ─── Factories ─────────────────────────────────────────────
-
-function createFlowchartData(sid: number, name: string): Flowchart {
-  // Key order matches a real r495 flowchart file.
-  return {
-    sid,
-    nodes: [],
-    'preset-nodes': { items: [], subfolders: [] },
-    name,
-    w: DEFAULT_CANVAS_SIZE,
-    h: DEFAULT_CANVAS_SIZE,
-  };
-}
-
-function createOutput(sid: number, name: string, value: string, enable: boolean, isDefault: boolean): FlowchartOutput {
-  return { sid, cnSID: null, name, value, enable, default: isDefault };
-}
-
-// ─── Comment nodes ─────────────────────────────────────────
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/**
- * Spaces as the editor's HTML keeps them: a run alternates &nbsp; and a
- * space starting with &nbsp;, ends in &nbsp; at the end of a line, and a lone
- * space at the start or end of a line is &nbsp;. Counting a tag as a line
- * boundary, this matches 7,888 of the 7,922 space runs in the C3-ACE comment
- * bodies; the rest are left over from edits inside styled spans.
- */
-function encodeSpaces(line: string): string {
-  return line.replace(/ +/g, (run: string, offset: number) => {
-    const atStart = offset === 0;
-    const atEnd = offset + run.length === line.length;
-    if (run.length === 1) return atStart || atEnd ? '&nbsp;' : ' ';
-    let out = '';
-    for (let i = 0; i < run.length; i++) out += i % 2 === 0 ? '&nbsp;' : ' ';
-    if (atEnd && run.length % 2 === 0) out = out.slice(0, -1) + '&nbsp;';
-    return out;
-  });
-}
-
-/** Plain text as the editor stores a comment body: later lines in <div>, blank lines as <div><br></div>. */
-export function commentTextToHtml(text: string): string {
-  const lines = text.split(/\r?\n/);
-  return lines.map((line, i) => {
-    const escaped = encodeSpaces(escapeHtml(line));
-    if (i === 0) return escaped;
-    return `<div>${escaped === '' ? '<br>' : escaped}</div>`;
-  }).join('');
-}
-
-interface CommentInput {
-  commentText?: string;
-  commentHtml?: string;
-  font?: string;
-  fontSize?: number;
-  bold?: boolean;
-  italic?: boolean;
-  fontColor?: string;
-}
-
-function hasCommentInput(args: CommentInput): boolean {
-  return args.commentText !== undefined || args.commentHtml !== undefined || args.font !== undefined
-    || args.fontSize !== undefined || args.bold !== undefined || args.italic !== undefined || args.fontColor !== undefined;
-}
-
-/**
- * Write the comment keys, keeping them after every other key in the sampled
- * order. Missing keys are filled from `fallbackText` and COMMENT_DEFAULTS;
- * returns the names of keys that were defaulted.
- */
-function applyCommentFields(node: FlowchartNode, args: CommentInput, fallbackText: string): string[] {
-  const current: Record<string, unknown> = {};
-  for (const key of COMMENT_KEYS) {
-    if (key in node) current[key] = node[key];
-    delete node[key];
-  }
-  if (args.commentHtml !== undefined) current.n = args.commentHtml;
-  else if (args.commentText !== undefined) current.n = commentTextToHtml(args.commentText);
-  if (args.font !== undefined) current.fo = args.font;
-  if (args.fontSize !== undefined) current.fs = args.fontSize;
-  if (args.bold !== undefined) current.fb = args.bold;
-  if (args.italic !== undefined) current.fi = args.italic;
-  if (args.fontColor !== undefined) current.fc = args.fontColor.toLowerCase();
-  const defaulted: string[] = [];
-  if (current.n === undefined) current.n = commentTextToHtml(fallbackText);
-  for (const [key, value] of Object.entries(COMMENT_DEFAULTS)) {
-    if (current[key] === undefined) { current[key] = value; defaulted.push(key); }
-  }
-  for (const key of COMMENT_KEYS) node[key] = current[key];
-  return defaulted;
-}
-
-function defaultedWarning(defaulted: string[]): string[] {
-  if (defaulted.length === 0) return [];
-  return [`Comment formatting ${defaulted.join(', ')} took the values most common in the sampled flowcharts (Calibri, 36, bold, not italic, #39b530); Construct's own defaults were not sampled.`];
-}
-
-/**
- * Change a node's value type, keeping it valid for the new type: a comment
- * has no outputs or connections and an empty `t`; a dictionary node has no
- * comment keys and a `t` (the caption when it was empty).
- */
-function changeValueType(node: FlowchartNode, to: ValueType, args: CommentInput & { nodeType?: string }): { ok: true; warnings: string[] } | { ok: false; error: string } {
-  if (node.ty === to) return { ok: true, warnings: [] };
-  if (!(VALUE_TYPES as readonly string[]).includes(node.ty)) {
-    return { ok: false, error: `Node ${node.sid} has value type "${node.ty}", which these tools do not convert.` };
-  }
-  if (to === 'comment') {
-    const outputs = node.outputs?.length ?? 0;
-    const incoming = node.pnSIDs?.length ?? 0;
-    if (outputs > 0 || incoming > 0 || (node.nodeSIDs?.length ?? 0) > 0) {
-      return { ok: false, error: `Node ${node.sid} has ${outputs} output(s) and ${incoming} incoming connection(s); a comment node has none. Delete its outputs and disconnect the nodes that lead to it first.` };
-    }
-    node.ty = 'comment';
-    if (args.nodeType === undefined) node.t = '';
-    return { ok: true, warnings: defaultedWarning(applyCommentFields(node, args, node.c)) };
-  }
-  for (const key of COMMENT_KEYS) delete node[key];
-  node.ty = 'dictionary';
-  if (args.nodeType === undefined && node.t === '') node.t = node.c;
-  return { ok: true, warnings: [] };
+function strictArguments<Shape extends z.ZodRawShape>(tool: string, shape: Shape) {
+  const keys = Object.keys(shape);
+  const list = keys.length === 1 ? keys[0] : `${keys.slice(0, -1).join(', ')} and ${keys[keys.length - 1]}`;
+  return z.object(shape, { errorMap: unknownKeysErrorMap(`the arguments of ${tool}`, `${tool} takes ${list}.`) }).strict();
 }
 
 // ─── Zod fragments ─────────────────────────────────────────
+
+const createShape = {
+  name: z.string().max(200).describe('Flowchart name'),
+  subfolder: z.string().max(500).optional().describe('Subfolder within flowcharts/ (e.g. "AI Graph/State Machines")'),
+};
+
+const deleteShape = {
+  name: z.string().max(200).describe('Flowchart name to delete'),
+};
 
 const outputInput = z.object({
   name: z.string().min(1).max(200).describe('Output pin name'),
   value: z.string().max(1000).optional().describe('Output value (default: empty string)'),
   enabled: z.boolean().optional().describe('Enable the output (default: true)'),
   isDefault: z.boolean().optional().describe('Mark the output as the default (default: false)'),
-});
+}, {
+  errorMap: unknownKeysErrorMap('an output of add_flowchart_node', 'An output has name, value, enabled and isDefault.'),
+}).strict();
 
 const commentFields = {
   commentText: z.string().max(20000).optional().describe('Comment node: body as plain text, stored as the editor\'s HTML (the "n" field)'),
@@ -545,9 +146,105 @@ const commentFields = {
   fontColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().describe('Comment node: font color as "#rrggbb" ("fc")'),
 };
 
+const addNodeShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  caption: z.string().max(500).describe('Node caption (the "c" field)'),
+  nodeType: z.string().max(200).optional().describe('Node type/title (the "t" field; defaults to the caption)'),
+  x: z.number().finite().describe('Canvas X position'),
+  y: z.number().finite().describe('Canvas Y position'),
+  width: z.number().finite().positive().optional().default(DEFAULT_NODE_WIDTH).describe(`Box width (default: ${DEFAULT_NODE_WIDTH})`),
+  height: z.number().finite().positive().optional().default(DEFAULT_NODE_HEIGHT).describe(`Box height (default: ${DEFAULT_NODE_HEIGHT})`),
+  isStart: z.boolean().optional().default(false).describe('Make this the start node; clears the flag on every other node (default: false)'),
+  enabled: z.boolean().optional().default(true).describe('Enable the node (default: true)'),
+  valueType: z.enum(VALUE_TYPES).optional().default('dictionary').describe('Value type ("ty"): "dictionary" or "comment" (default: dictionary). A comment node takes no outputs and the comment fields below'),
+  outputs: z.array(outputInput).max(100).optional().describe('Output pins to create on the node'),
+  ...commentFields,
+};
+
+const updateNodeShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  nodeSid: z.number().int().describe('SID of the node to update'),
+  caption: z.string().max(500).optional().describe('New caption (the "c" field)'),
+  nodeType: z.string().max(200).optional().describe('New node type/title (the "t" field)'),
+  tags: z.string().max(500).optional().describe('Writes a "tags" key. NOT OBSERVED in any r495 sample flowchart; use at your own risk'),
+  isStart: z.boolean().optional().describe('Make this the start node (clears the flag on every other node), or clear it'),
+  enabled: z.boolean().optional().describe('Enable/disable the node'),
+  parentIndex: z.number().int().min(0).optional().describe('The "pi" field; observed values 0, 1 and 2, meaning not determined'),
+  x: z.number().finite().optional().describe('New canvas X position'),
+  y: z.number().finite().optional().describe('New canvas Y position'),
+  width: z.number().finite().positive().optional().describe('New box width'),
+  height: z.number().finite().positive().optional().describe('New box height'),
+  valueType: z.enum(VALUE_TYPES).optional().describe('New value type ("ty"). To "comment": the node must have no outputs or connections; its caption becomes the comment body unless one is given, and "t" is cleared. To "dictionary": the comment fields are removed and an empty "t" takes the caption'),
+  ...commentFields,
+};
+
+const deleteNodeShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  nodeSid: z.number().int().describe('SID of the node to delete'),
+};
+
+const addOutputShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  nodeSid: z.number().int().describe('SID of the node to add the output to'),
+  name: z.string().min(1).max(200).describe('Output pin name'),
+  value: z.string().max(1000).optional().default('').describe('Output value (default: empty string)'),
+  enabled: z.boolean().optional().default(true).describe('Enable the output (default: true)'),
+  isDefault: z.boolean().optional().default(false).describe('Mark the output as the default (default: false)'),
+  index: z.number().int().min(0).optional().describe('Insertion index in the outputs array (default: append)'),
+};
+
+const updateOutputShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  outputSid: z.number().int().describe('SID of the output to update'),
+  name: z.string().min(1).max(200).optional().describe('New output pin name'),
+  value: z.string().max(1000).optional().describe('New output value'),
+  enabled: z.boolean().optional().describe('Enable/disable the output'),
+  isDefault: z.boolean().optional().describe('Mark/unmark the output as the default'),
+};
+
+const deleteOutputShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  outputSid: z.number().int().describe('SID of the output to delete'),
+};
+
+const reorderShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  nodeSid: z.number().int().describe('SID of the node whose outputs to reorder'),
+  outputSids: z.array(z.number().int()).min(1).max(200).describe('The node\'s output SIDs in their new order'),
+};
+
+const connectShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  outputSid: z.number().int().describe('SID of the source output pin'),
+  targetNodeSid: z.number().int().describe('SID of the node to connect to'),
+};
+
+const disconnectShape = {
+  flowchartName: z.string().max(200).describe('Flowchart name'),
+  outputSid: z.number().int().describe('SID of the output pin to disconnect'),
+};
+
 // ─── Registration ──────────────────────────────────────────
 
-export function registerFlowchartTools({ server, reader, idGen }: MutationToolDeps) {
+export function registerFlowchartTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
+  const server = withProjectSync(mcpServer, reader);
+
+  /** Open a registered flowchart for a tool that changes it: the flowchart, or the tool result that refuses. */
+  async function openForChange(name: string): Promise<{ flowchart: OpenedFlowchart } | { result: ReturnType<typeof toolError> }> {
+    const found = lookupFlowchart(reader, name);
+    if ('refusal' in found) return { result: refuse(found.refusal) };
+    const opened = await openFlowchart(reader, name, found.folders);
+    if (!opened.ok) return { result: refuse(opened.refusal) };
+    return { flowchart: opened.flowchart };
+  }
+
+  /** Write a changed flowchart back and answer with `result` (plus the backup file and `extra`), or with the write's failure. */
+  async function saveAndReport(flowchart: OpenedFlowchart, result: WriteResult, extra: Record<string, unknown> = {}) {
+    const written = await writeFlowchart(reader, writer, flowchart);
+    if (!written.ok) return toolError(written.message);
+    return toolResult({ ...result, backupFile: written.backupFile, ...extra });
+  }
+
   // ─── list_flowcharts ────────────────────────────────────
 
   server.tool(
@@ -556,11 +253,11 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
     {},
     async () => {
       try {
-        const names = collectFlowchartNames(getFlowchartsContainer(reader.getProject()));
+        const names = [...locateFlowcharts(reader.getProject().flowcharts).flowcharts.keys()];
         return toolResult({ flowcharts: names, count: names.length });
       } catch (error) {
         console.error('[list_flowcharts] failed:', error);
-        return toolError(`Error listing flowcharts: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing flowcharts: ${describeError(error, reader.getProjectDir())}.`);
       }
     }
   );
@@ -575,189 +272,138 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
     },
     async (args) => {
       try {
-        const opened = await openFlowchart(reader, args.name);
-        if (!opened.ok) return opened.error;
-        return toolResult(opened.data);
+        const found = lookupFlowchart(reader, args.name);
+        if ('refusal' in found) return toolError(found.refusal);
+        const opened = await openFlowchart(reader, args.name, found.folders);
+        if (!opened.ok) return toolError(opened.refusal);
+        return toolResult(opened.flowchart.data);
       } catch (error) {
         console.error('[get_flowchart_details] failed:', error);
-        return toolError(`Error getting flowchart details: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error getting flowchart details: ${describeError(error, reader.getProjectDir())}.`);
       }
     }
   );
 
   // ─── create_flowchart ───────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'create_flowchart',
-    'Create a new, empty flowchart file and register it in project.c3proj. Warns when the Flowchart plugin is not in the project: the editor loads the flowchart anyway, but a Flowchart object is needed to use it at runtime.',
     {
-      name: z.string().max(200).describe('Flowchart name'),
-      subfolder: z.string().max(500).optional().describe('Subfolder within flowcharts/ (e.g. "AI Graph/State Machines")'),
+      description: 'Create a new, empty flowchart file and register it in project.c3proj. Warns when the Flowchart plugin is not in the project: in Construct 3 r506-2 (Free edition, guest) the editor loaded the flowchart anyway, but a Flowchart object is needed to use it at runtime.',
+      inputSchema: strictArguments('create_flowchart', createShape),
     },
     async (args) => {
       try {
-        validateName(args.name);
-        if (args.subfolder !== undefined) validateSubfolder(args.subfolder);
+        try {
+          validateName(args.name);
+          if (args.subfolder !== undefined) validateSubfolder(args.subfolder);
+        } catch (error) {
+          return refuse(describeError(error));
+        }
 
-        const project = reader.getProject();
+        // Taken before the checks: generating a SID loads project.c3proj again when a file
+        // the generator scanned changed on disk, and the checks must use the project that
+        // assertProjectFileCurrent (in createFlowchartFile) then compares with the disk
+        const sid = await idGen.generateSid(reader);
+
+        // The same checks run again inside the registration's project update, on the project it reads
+        const check = (container: unknown) => createRefusal(container, args.name, args.subfolder);
+        const refusal = check(reader.getProject().flowcharts);
+        if (refusal !== undefined) return refuse(refusal);
+
+        const folders = args.subfolder === undefined ? [] : args.subfolder.split('/');
+        const onDisk = await findFileIgnoringCase(flowchartFilePath(reader.getProjectDir(), args.name, folders));
+        if (onDisk !== undefined) {
+          return refuse(`The file ${writer.projectRelative(onDisk)} already exists: it is not a registered flowchart, or it is registered under a name that differs only in case. It was left unchanged. Choose another name, or, if the file is a leftover of a deleted flowchart, check it and remove it first.`);
+        }
+
         const warnings: string[] = [];
-        if (!hasFlowchartPlugin(project)) {
-          // A load check on r495.2 showed the editor opens a project whose flowchart
-          // has no Flowchart plugin (it even prunes the unused plugin), so this is
-          // advisory: the plugin is only needed to drive the flowchart at runtime.
+        // Read once, and last before the write; a missing or damaged usedAddons is only the warning
+        const addons: unknown = reader.getUsedAddons();
+        const hasPlugin = Array.isArray(addons) && addons.some(a => typeof a === 'object' && a !== null
+          && (a as { type?: unknown }).type === 'plugin' && (a as { id?: unknown }).id === FLOWCHART_PLUGIN_ID);
+        if (!hasPlugin) {
+          // Construct 3 r506-2 (Free edition, guest) opened and drew the flowcharts of a project
+          // whose usedAddons had no Flowchart plugin, so this is advisory.
           warnings.push(
-            `The Flowchart plugin is not listed in this project's usedAddons. The editor loads the flowchart, ` +
+            `The Flowchart plugin is not listed in this project's usedAddons. In Construct 3 r506-2 (Free edition, guest) the editor loaded the flowchart, ` +
             `but add a Flowchart object in the Construct 3 editor before using it at runtime; this tool does not register plugins.`
           );
         }
 
-        const existing = collectFlowchartNames(getFlowchartsContainer(project));
-        if (existing.includes(args.name)) {
-          return toolError(`Flowchart "${args.name}" already exists.`);
-        }
-
-        const sid = await idGen.generateSid(reader);
-        const data = createFlowchartData(sid, args.name);
-
-        const filePath = flowchartFilePath(reader.getProjectDir(), args.name, args.subfolder);
-        const backupPath = await backupFile(filePath);
-        const projectPath = reader.getProjectPath();
-        await writeJsonFile(filePath, data, projectPath);
-
-        await backupFile(projectPath);
-        await addFlowchartToProject(projectPath, args.name, args.subfolder);
-        await reader.reloadProject();
-
-        const result: WriteResult = {
+        const created = await createFlowchartFile(reader, writer, args.name, folders, createFlowchartData(sid, args.name), check);
+        if (!created.ok) return toolError(created.message);
+        return toolResult({
           success: true,
           entity: args.name,
           category: 'flowchart',
           action: 'created',
           generatedSid: sid,
-          backupFile: backupPath,
-          warnings: warnings.length > 0 ? warnings : undefined,
-        };
-        return toolResult(result);
+          ...(warnings.length > 0 ? { warnings } : {}),
+        });
       } catch (error) {
         console.error('[create_flowchart] failed:', error);
-        return toolError(`Error creating flowchart: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── delete_flowchart ───────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'delete_flowchart',
-    'Delete a flowchart: remove its file (keeping a .bak) and its project.c3proj registration',
     {
-      name: z.string().max(200).describe('Flowchart name to delete'),
+      description: 'Delete a flowchart: remove its file (keeping a .bak) and its project.c3proj registration',
+      inputSchema: strictArguments('delete_flowchart', deleteShape),
     },
     async (args) => {
       try {
-        const container = getFlowchartsContainer(reader.getProject());
-        const subfolder = locateFlowchart(container, args.name);
-        if (subfolder === null) {
-          return notFoundError('Flowchart', args.name, [], 'list_flowcharts');
-        }
-
-        // The file as spelled on disk: the backup, the delete and the journal all use that name.
-        const filePath = await existingSpelling(flowchartFilePath(reader.getProjectDir(), args.name, subfolder));
-        const backupPath = await backupFile(filePath);
-
-        // Delete the file first: a failure here leaves the registration intact
-        // and the call retryable, rather than stranding a dangling name.
-        try {
-          await unlink(filePath);
-          recordDelete(filePath);
-        } catch (e: unknown) {
-          if (!(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === 'ENOENT')) {
-            throw e;
-          }
-        }
-
-        // The sibling editor-state file is derived from this flowchart.
-        const warnings: string[] = [];
-        const uistatePath = await existingSpelling(uistateFilePath(filePath));
-        try {
-          await stat(uistatePath);
-          await backupFile(uistatePath);
-          await unlink(uistatePath);
-          recordDelete(uistatePath);
-          warnings.push(`Also deleted the sibling editor-state file ${args.name}.uistate.json (a .bak was written).`);
-        } catch { /* no uistate file, nothing to do */ }
-
-        const projectPath = reader.getProjectPath();
-        await backupFile(projectPath);
-        await removeFlowchartFromProject(projectPath, args.name);
-        await reader.reloadProject();
-
-        const result: WriteResult = {
+        const found = lookupFlowchart(reader, args.name);
+        if ('refusal' in found) return refuse(found.refusal);
+        const deleted = await deleteFlowchartFiles(reader, writer, args.name, found.folders);
+        if (!deleted.ok) return toolError(deleted.message);
+        return toolResult({
           success: true,
           entity: args.name,
           category: 'flowchart',
           action: 'deleted',
-          backupFile: backupPath,
-          ...(warnings.length > 0 ? { warnings } : {}),
-        };
-        return toolResult(result);
+          backupFile: deleted.backupFile,
+          ...(deleted.warnings.length > 0 ? { warnings: deleted.warnings } : {}),
+        });
       } catch (error) {
         console.error('[delete_flowchart] failed:', error);
-        return toolError(`Error deleting flowchart: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── add_flowchart_node ─────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'add_flowchart_node',
-    'Add a node to a flowchart. Outputs are created unconnected; use connect_flowchart_nodes to wire them.',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      caption: z.string().max(500).describe('Node caption (the "c" field)'),
-      nodeType: z.string().max(200).optional().describe('Node type/title (the "t" field; defaults to the caption)'),
-      x: z.number().describe('Canvas X position'),
-      y: z.number().describe('Canvas Y position'),
-      width: z.number().positive().optional().default(DEFAULT_NODE_WIDTH).describe(`Box width (default: ${DEFAULT_NODE_WIDTH})`),
-      height: z.number().positive().optional().default(DEFAULT_NODE_HEIGHT).describe(`Box height (default: ${DEFAULT_NODE_HEIGHT})`),
-      isStart: z.boolean().optional().default(false).describe('Make this the start node; clears the flag on every other node (default: false)'),
-      enabled: z.boolean().optional().default(true).describe('Enable the node (default: true)'),
-      valueType: z.enum(VALUE_TYPES).optional().default('dictionary').describe('Value type ("ty"): "dictionary" or "comment" (default: dictionary). A comment node takes no outputs and the comment fields below'),
-      outputs: z.array(outputInput).max(100).optional().describe('Output pins to create on the node'),
-      ...commentFields,
+      description: 'Add a node to a flowchart. Outputs are created unconnected; use connect_flowchart_nodes to wire them.',
+      inputSchema: strictArguments('add_flowchart_node', addNodeShape),
     },
     async (args) => {
       try {
         const isComment = args.valueType === 'comment';
-        if (isComment && args.isStart) {
-          return toolError('A comment node cannot be the start node (none of the 166 sampled comment nodes is).');
-        }
-        if (isComment && (args.outputs?.length ?? 0) > 0) {
-          return toolError('A comment node has no outputs; omit outputs or use valueType "dictionary".');
-        }
+        if (isComment && args.isStart) return refuse('A comment node cannot be the start node.');
+        if (isComment && (args.outputs?.length ?? 0) > 0) return refuse('A comment node has no outputs; omit outputs or use valueType "dictionary".');
         if (!isComment && hasCommentInput(args)) {
-          return toolError('commentText, commentHtml, font, fontSize, bold, italic and fontColor apply to comment nodes only (valueType "comment").');
+          return refuse('commentText, commentHtml, font, fontSize, bold, italic and fontColor apply to comment nodes only (valueType "comment").');
         }
-        if (args.commentText !== undefined && args.commentHtml !== undefined) {
-          return toolError('Give commentText or commentHtml, not both.');
-        }
+        if (args.commentText !== undefined && args.commentHtml !== undefined) return refuse('Give commentText or commentHtml, not both.');
 
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const nodeSid = await idGen.generateSid(reader);
         const outputs: FlowchartOutput[] = [];
         for (const spec of args.outputs ?? []) {
-          const outSid = await idGen.generateSid(reader);
-          outputs.push(createOutput(
-            outSid,
-            spec.name,
-            spec.value ?? '',
-            spec.enabled ?? true,
-            spec.isDefault ?? false,
-          ));
+          outputs.push(createOutput(await idGen.generateSid(reader), spec.name, spec.value ?? '', spec.enabled ?? true, spec.isDefault ?? false));
         }
 
         const node: FlowchartNode = {
@@ -786,47 +432,30 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
 
         data.nodes.push(node);
         if (args.isStart) clearOtherStartNodes(data, nodeSid);
-
         warnings.push(...startNodeWarnings(data));
-        const backupPath = await saveFlowchart(filePath, data);
 
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${nodeSid}`,
           category: 'flowchart-node',
           action: 'created',
           generatedSid: nodeSid,
-          backupFile: backupPath,
           ...(warnings.length > 0 ? { warnings } : {}),
-        };
-        return toolResult({ ...result, outputSids: outputs.map(o => o.sid) });
+        }, { outputSids: outputs.map(o => o.sid) });
       } catch (error) {
         console.error('[add_flowchart_node] failed:', error);
-        return toolError(`Error adding flowchart node: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── update_flowchart_node ──────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'update_flowchart_node',
-    'Update properties of an existing flowchart node. Connections, preset links and unknown keys are preserved.',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      nodeSid: z.number().int().describe('SID of the node to update'),
-      caption: z.string().max(500).optional().describe('New caption (the "c" field)'),
-      nodeType: z.string().max(200).optional().describe('New node type/title (the "t" field)'),
-      tags: z.string().max(500).optional().describe('Writes a "tags" key. NOT OBSERVED in any r495 sample flowchart; use at your own risk'),
-      isStart: z.boolean().optional().describe('Make this the start node (clears the flag on every other node), or clear it'),
-      enabled: z.boolean().optional().describe('Enable/disable the node'),
-      parentIndex: z.number().int().min(0).optional().describe('The "pi" field; observed values 0, 1 and 2, meaning not determined'),
-      x: z.number().optional().describe('New canvas X position'),
-      y: z.number().optional().describe('New canvas Y position'),
-      width: z.number().positive().optional().describe('New box width'),
-      height: z.number().positive().optional().describe('New box height'),
-      valueType: z.enum(VALUE_TYPES).optional().describe('New value type ("ty"). To "comment": the node must have no outputs or connections; its caption becomes the comment body unless one is given, and "t" is cleared. To "dictionary": the comment fields are removed and an empty "t" takes the caption'),
-      ...commentFields,
+      description: 'Update properties of an existing flowchart node. Connections, preset links and unknown keys are preserved.',
+      inputSchema: strictArguments('update_flowchart_node', updateNodeShape),
     },
     async (args) => {
       try {
@@ -836,32 +465,31 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
           args.width !== undefined || args.height !== undefined ||
           args.valueType !== undefined || hasCommentInput(args);
         if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: caption, nodeType, tags, isStart, enabled, parentIndex, x, y, width, height, valueType, commentText, commentHtml, font, fontSize, bold, italic, fontColor.');
+          return refuse('No updates provided. Specify at least one of: caption, nodeType, tags, isStart, enabled, parentIndex, x, y, width, height, valueType, commentText, commentHtml, font, fontSize, bold, italic, fontColor.');
         }
-        if (args.commentText !== undefined && args.commentHtml !== undefined) {
-          return toolError('Give commentText or commentHtml, not both.');
-        }
+        if (args.commentText !== undefined && args.commentHtml !== undefined) return refuse('Give commentText or commentHtml, not both.');
 
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const node = findNode(data, args.nodeSid);
-        if (!node) return nodeNotFound(data, args.flowchartName, args.nodeSid);
+        if (!node) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.nodeSid));
 
         const finalType = args.valueType ?? node.ty;
         if (finalType === 'comment' && (args.isStart ?? node.s) === true) {
-          return toolError(`Node ${node.sid} would be a comment and the start node; a comment node cannot be the start node. Make another node the start node first.`);
+          return refuse(`Node ${node.sid} would be a comment and the start node; a comment node cannot be the start node. Make another node the start node first.`);
         }
         if (hasCommentInput(args) && finalType !== 'comment') {
-          return toolError(`Node ${node.sid} is a "${finalType}" node; commentText, commentHtml, font, fontSize, bold, italic and fontColor apply to comment nodes only.`);
+          return refuse(`Node ${node.sid} is a "${finalType}" node; commentText, commentHtml, font, fontSize, bold, italic and fontColor apply to comment nodes only.`);
         }
 
         const warnings: string[] = [];
         if (args.caption !== undefined) node.c = args.caption;
         if (args.valueType !== undefined && args.valueType !== node.ty) {
           const changed = changeValueType(node, args.valueType, args);
-          if (!changed.ok) return toolError(changed.error);
+          if (!changed.ok) return refuse(changed.error);
           warnings.push(...changed.warnings);
         } else if (finalType === 'comment' && hasCommentInput(args)) {
           warnings.push(...defaultedWarning(applyCommentFields(node, args, node.c)));
@@ -883,303 +511,256 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
         }
 
         warnings.push(...startNodeWarnings(data));
-        const backupPath = await saveFlowchart(filePath, data);
-
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${node.sid}`,
           category: 'flowchart-node',
           action: 'updated',
-          backupFile: backupPath,
           ...(warnings.length > 0 ? { warnings } : {}),
-        };
-        return toolResult(result);
+        });
       } catch (error) {
         console.error('[update_flowchart_node] failed:', error);
-        return toolError(`Error updating flowchart node: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── delete_flowchart_node ──────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'delete_flowchart_node',
-    'Delete a flowchart node and every reference to it: other nodes\' nodeSIDs, pnSIDs and poSIDs entries, and outputs that pointed at it',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      nodeSid: z.number().int().describe('SID of the node to delete'),
+      description: 'Delete a flowchart node and every reference to it: other nodes\' nodeSIDs, pnSIDs and poSIDs entries, and outputs that pointed at it',
+      inputSchema: strictArguments('delete_flowchart_node', deleteNodeShape),
     },
     async (args) => {
       try {
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const index = data.nodes.findIndex(n => n.sid === args.nodeSid);
-        if (index === -1) return nodeNotFound(data, args.flowchartName, args.nodeSid);
+        if (index === -1) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.nodeSid));
 
         const [removed] = data.nodes.splice(index, 1);
         removeNodeReferences(data, removed);
 
         const warnings: string[] = [];
-        if (removed.s === true) {
-          warnings.push(`Node ${removed.sid} was the start node.`);
-        }
+        if (removed.s === true) warnings.push(`Node ${removed.sid} was the start node.`);
         warnings.push(...startNodeWarnings(data));
 
-        const backupPath = await saveFlowchart(filePath, data);
-
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${removed.sid}`,
           category: 'flowchart-node',
           action: 'deleted',
-          backupFile: backupPath,
           ...(warnings.length > 0 ? { warnings } : {}),
-        };
-        return toolResult(result);
+        });
       } catch (error) {
         console.error('[delete_flowchart_node] failed:', error);
-        return toolError(`Error deleting flowchart node: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── add_flowchart_output ───────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'add_flowchart_output',
-    'Add an output pin to a flowchart node. The pin is created unconnected.',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      nodeSid: z.number().int().describe('SID of the node to add the output to'),
-      name: z.string().min(1).max(200).describe('Output pin name'),
-      value: z.string().max(1000).optional().default('').describe('Output value (default: empty string)'),
-      enabled: z.boolean().optional().default(true).describe('Enable the output (default: true)'),
-      isDefault: z.boolean().optional().default(false).describe('Mark the output as the default (default: false)'),
-      index: z.number().int().min(0).optional().describe('Insertion index in the outputs array (default: append)'),
+      description: 'Add an output pin to a flowchart node. The pin is created unconnected.',
+      inputSchema: strictArguments('add_flowchart_output', addOutputShape),
     },
     async (args) => {
       try {
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const node = findNode(data, args.nodeSid);
-        if (!node) return nodeNotFound(data, args.flowchartName, args.nodeSid);
-        if (node.ty === 'comment') {
-          return toolError(`Node ${node.sid} is a comment node, and a comment node has no outputs.`);
-        }
+        if (!node) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.nodeSid));
+        if (node.ty === 'comment') return refuse(`Node ${node.sid} is a comment node, and a comment node has no outputs.`);
         if (!Array.isArray(node.outputs)) node.outputs = [];
 
         if (args.index !== undefined && args.index > node.outputs.length) {
-          return toolError(`Index ${args.index} is out of range: node ${node.sid} has ${node.outputs.length} output(s), so the highest valid index is ${node.outputs.length}.`);
+          return refuse(`Index ${args.index} is out of range: node ${node.sid} has ${node.outputs.length} output(s), so the highest valid index is ${node.outputs.length}.`);
         }
 
         const outputSid = await idGen.generateSid(reader);
         const output = createOutput(outputSid, args.name, args.value, args.enabled, args.isDefault);
-        if (args.index === undefined) {
-          node.outputs.push(output);
-        } else {
-          node.outputs.splice(args.index, 0, output);
-        }
+        if (args.index === undefined) node.outputs.push(output);
+        else node.outputs.splice(args.index, 0, output);
 
-        const backupPath = await saveFlowchart(filePath, data);
-
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${node.sid}/${outputSid}`,
           category: 'flowchart-output',
           action: 'created',
           generatedSid: outputSid,
-          backupFile: backupPath,
-        };
-        return toolResult(result);
+        });
       } catch (error) {
         console.error('[add_flowchart_output] failed:', error);
-        return toolError(`Error adding flowchart output: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── update_flowchart_output ────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'update_flowchart_output',
-    'Update an output pin. Its connection (cnSID) is preserved; use connect/disconnect_flowchart_nodes to change that.',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      outputSid: z.number().int().describe('SID of the output to update'),
-      name: z.string().min(1).max(200).optional().describe('New output pin name'),
-      value: z.string().max(1000).optional().describe('New output value'),
-      enabled: z.boolean().optional().describe('Enable/disable the output'),
-      isDefault: z.boolean().optional().describe('Mark/unmark the output as the default'),
+      description: 'Update an output pin. Its connection (cnSID) is preserved; use connect/disconnect_flowchart_nodes to change that.',
+      inputSchema: strictArguments('update_flowchart_output', updateOutputShape),
     },
     async (args) => {
       try {
         const hasUpdates = args.name !== undefined || args.value !== undefined ||
           args.enabled !== undefined || args.isDefault !== undefined;
-        if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: name, value, enabled, isDefault.');
-        }
+        if (!hasUpdates) return refuse('No updates provided. Specify at least one of: name, value, enabled, isDefault.');
 
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const found = findOutput(data, args.outputSid);
-        if (!found) return outputNotFound(data, args.flowchartName, args.outputSid);
+        if (!found) return refuse(outputNotFoundMessage(data, args.flowchartName, args.outputSid));
 
         if (args.name !== undefined) found.output.name = args.name;
         if (args.value !== undefined) found.output.value = args.value;
         if (args.enabled !== undefined) found.output.enable = args.enabled;
         if (args.isDefault !== undefined) found.output.default = args.isDefault;
 
-        const backupPath = await saveFlowchart(filePath, data);
-
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${found.node.sid}/${args.outputSid}`,
           category: 'flowchart-output',
           action: 'updated',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
+        });
       } catch (error) {
         console.error('[update_flowchart_output] failed:', error);
-        return toolError(`Error updating flowchart output: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── delete_flowchart_output ────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'delete_flowchart_output',
-    'Delete an output pin, first undoing any connection it holds',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      outputSid: z.number().int().describe('SID of the output to delete'),
+      description: 'Delete an output pin, first undoing any connection it holds',
+      inputSchema: strictArguments('delete_flowchart_output', deleteOutputShape),
     },
     async (args) => {
       try {
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const found = findOutput(data, args.outputSid);
-        if (!found) return outputNotFound(data, args.flowchartName, args.outputSid);
+        if (!found) return refuse(outputNotFoundMessage(data, args.flowchartName, args.outputSid));
 
         const formerTarget = disconnectOutput(data, found.node, found.output);
         found.node.outputs.splice(found.index, 1);
 
-        const backupPath = await saveFlowchart(filePath, data);
-
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${found.node.sid}/${args.outputSid}`,
           category: 'flowchart-output',
           action: 'deleted',
-          backupFile: backupPath,
           ...(formerTarget !== null
             ? { warnings: [`The output was connected to node ${formerTarget}; that connection was removed too.`] }
             : {}),
-        };
-        return toolResult(result);
+        });
       } catch (error) {
         console.error('[delete_flowchart_output] failed:', error);
-        return toolError(`Error deleting flowchart output: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── reorder_flowchart_outputs ──────────────────────────
 
-  server.tool(
+  server.registerTool(
     'reorder_flowchart_outputs',
-    'Reorder a node\'s output pins. outputSids must be a permutation of the node\'s current output SIDs. Output array order is execution order in Construct 3, so this changes behavior.',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      nodeSid: z.number().int().describe('SID of the node whose outputs to reorder'),
-      outputSids: z.array(z.number().int()).min(1).max(200).describe('The node\'s output SIDs in their new order'),
+      description: 'Reorder a node\'s output pins. outputSids must be a permutation of the node\'s current output SIDs. The new order is the order of the outputs array in the flowchart file. Whether Construct 3 runs the outputs in that order was not observed, so check the flowchart\'s behavior after a reorder.',
+      inputSchema: strictArguments('reorder_flowchart_outputs', reorderShape),
     },
     async (args) => {
       try {
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const node = findNode(data, args.nodeSid);
-        if (!node) return nodeNotFound(data, args.flowchartName, args.nodeSid);
+        if (!node) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.nodeSid));
 
         const current = (node.outputs ?? []).map(o => o.sid);
-        const sorted = (a: number[]) => [...a].sort((x, y) => x - y).join(',');
+        const repeated = current.find((sid, index) => current.indexOf(sid) !== index);
+        if (repeated !== undefined) {
+          return refuse(`Node ${node.sid} holds output SID ${repeated} more than once, so its outputs cannot be reordered without losing one. Fix the flowchart file first.`);
+        }
+        const sorted = (sids: number[]) => [...sids].sort((x, y) => x - y).join(',');
         if (args.outputSids.length !== current.length || sorted(args.outputSids) !== sorted(current)) {
-          return toolError(
+          return refuse(
             `outputSids must be a permutation of node ${node.sid}'s outputs. ` +
             `Expected exactly these ${current.length} SID(s): ${current.join(', ')}; got ${args.outputSids.join(', ')}.`
           );
         }
 
         const bySid = new Map(node.outputs.map(o => [o.sid, o]));
-        node.outputs = args.outputSids.map(sid => bySid.get(sid)!);
+        node.outputs = args.outputSids.map(sid => bySid.get(sid) as FlowchartOutput);
 
-        const backupPath = await saveFlowchart(filePath, data);
-
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${node.sid}`,
           category: 'flowchart-output',
           action: 'reordered',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
+        });
       } catch (error) {
         console.error('[reorder_flowchart_outputs] failed:', error);
-        return toolError(`Error reordering flowchart outputs: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── connect_flowchart_nodes ────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'connect_flowchart_nodes',
-    'Connect an output pin to a target node: sets the output\'s cnSID and updates the target\'s pnSIDs/poSIDs and the source\'s nodeSIDs',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      outputSid: z.number().int().describe('SID of the source output pin'),
-      targetNodeSid: z.number().int().describe('SID of the node to connect to'),
+      description: 'Connect an output pin to a target node: sets the output\'s cnSID and updates the target\'s pnSIDs/poSIDs and the source\'s nodeSIDs',
+      inputSchema: strictArguments('connect_flowchart_nodes', connectShape),
     },
     async (args) => {
       try {
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const found = findOutput(data, args.outputSid);
-        if (!found) return outputNotFound(data, args.flowchartName, args.outputSid);
+        if (!found) return refuse(outputNotFoundMessage(data, args.flowchartName, args.outputSid));
         const { node, output } = found;
 
         const target = findNode(data, args.targetNodeSid);
-        if (!target) return nodeNotFound(data, args.flowchartName, args.targetNodeSid);
+        if (!target) return refuse(nodeNotFoundMessage(data, args.flowchartName, args.targetNodeSid));
 
         if (node.ty === 'comment' || target.ty === 'comment') {
-          return toolError(`Cannot connect ${node.ty === 'comment' ? `from comment node ${node.sid}` : `to comment node ${target.sid}`}: a comment node has no connections.`);
+          return refuse(`Cannot connect ${node.ty === 'comment' ? `from comment node ${node.sid}` : `to comment node ${target.sid}`}: a comment node has no connections.`);
         }
-
         if (node.sid === args.targetNodeSid) {
-          return toolError(
-            `Cannot connect node ${node.sid} to itself: output ${args.outputSid} belongs to that same node.`
-          );
+          return refuse(`Cannot connect node ${node.sid} to itself: output ${args.outputSid} belongs to that same node.`);
         }
-
         if (output.cnSID !== null && output.cnSID !== undefined) {
-          return toolError(
-            `Output ${args.outputSid} is already connected to node ${output.cnSID}. ` +
-            `Call disconnect_flowchart_nodes first.`
-          );
+          return refuse(`Output ${args.outputSid} is already connected to node ${output.cnSID}. Call disconnect_flowchart_nodes first.`);
         }
 
         output.cnSID = target.sid;
@@ -1191,59 +772,50 @@ export function registerFlowchartTools({ server, reader, idGen }: MutationToolDe
         if (!Array.isArray(node.nodeSIDs)) node.nodeSIDs = [];
         if (!node.nodeSIDs.includes(target.sid)) node.nodeSIDs.push(target.sid);
 
-        const backupPath = await saveFlowchart(filePath, data);
-
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${node.sid}/${args.outputSid}`,
           category: 'flowchart-connection',
           action: 'connected',
-          backupFile: backupPath,
-        };
-        return toolResult(result);
+        });
       } catch (error) {
         console.error('[connect_flowchart_nodes] failed:', error);
-        return toolError(`Error connecting flowchart nodes: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );
 
   // ─── disconnect_flowchart_nodes ─────────────────────────
 
-  server.tool(
+  server.registerTool(
     'disconnect_flowchart_nodes',
-    'Disconnect an output pin, leaving any other connection between the same two nodes intact',
     {
-      flowchartName: z.string().max(200).describe('Flowchart name'),
-      outputSid: z.number().int().describe('SID of the output pin to disconnect'),
+      description: 'Disconnect an output pin, leaving any other connection between the same two nodes intact',
+      inputSchema: strictArguments('disconnect_flowchart_nodes', disconnectShape),
     },
     async (args) => {
       try {
-        const opened = await openFlowchart(reader, args.flowchartName);
-        if (!opened.ok) return opened.error;
-        const { data, filePath } = opened;
+        const opened = await openForChange(args.flowchartName);
+        if ('result' in opened) return opened.result;
+        const { flowchart } = opened;
+        const { data } = flowchart;
 
         const found = findOutput(data, args.outputSid);
-        if (!found) return outputNotFound(data, args.flowchartName, args.outputSid);
-
+        if (!found) return refuse(outputNotFoundMessage(data, args.flowchartName, args.outputSid));
         if (found.output.cnSID === null || found.output.cnSID === undefined) {
-          return toolError(`Output ${args.outputSid} is not connected to anything.`);
+          return refuse(`Output ${args.outputSid} is not connected to anything.`);
         }
 
         const formerTarget = disconnectOutput(data, found.node, found.output);
-        const backupPath = await saveFlowchart(filePath, data);
-
-        const result: WriteResult = {
+        return await saveAndReport(flowchart, {
           success: true,
           entity: `${args.flowchartName}/${found.node.sid}/${args.outputSid}`,
           category: 'flowchart-connection',
           action: 'disconnected',
-          backupFile: backupPath,
-        };
-        return toolResult({ ...result, formerTargetNodeSid: formerTarget });
+        }, { formerTargetNodeSid: formerTarget });
       } catch (error) {
         console.error('[disconnect_flowchart_nodes] failed:', error);
-        return toolError(`Error disconnecting flowchart nodes: ${error instanceof Error ? error.message : String(error)}`);
+        return stoppedAnswer(error, reader);
       }
     }
   );

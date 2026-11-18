@@ -1,15 +1,14 @@
 /**
  * What a timeline property track stores for each kind of property.
  *
- * Sampled from Construct 3 r495.2 (2026-09-17):
- * - A disposable project whose Box instance had known values (x 324, y 216,
- *   width 50, height 60, angle 0.5, opacity 0.7, color [0.25, 0.5, 0.75],
- *   z 5, a 1x1 frame, instance variables hp 7, tag "start", on true). Every
- *   property in the editor's "Add properties" picker was added to its track
- *   and the project was saved.
- * - 2,215 keyframes from 21 Construct timeline examples.
+ * Checked against test/fixtures/timeline-properties, a project saved by the
+ * Construct 3 r495.2 editor whose Box instance has known values (x 324, y 216,
+ * width 50, height 60, angle 0.5, opacity 0.7, color [0.25, 0.5, 0.75], z 5, a
+ * 1x1 frame, instance variables hp 7, tag "start", on true). Every property in
+ * the editor's "Add properties" picker was added to its track and the project
+ * was saved (`expected-Sampling-r495.json`).
  *
- * Rules the samples fixed:
+ * Rules the fixture fixes:
  * - World properties use `source: { type: 'world-instance', uid: <instance UID> }`
  *   and the ten names in WORLD_PROPERTIES. A new track's keyframes hold the
  *   instance's current value as `aValue`.
@@ -17,9 +16,9 @@
  *   and plugin properties use `source: { type: 'plugin', uid: <plugin id> }`;
  *   the track's `property` is the variable name or the plugin property id.
  * - Numbers: `rValue` is the offset from the instance's own value
- *   (`aValue - base`), and `value` repeats `aValue` when the effective result
- *   mode is "absolute" and `rValue` otherwise. This held for every sampled
- *   numeric keyframe.
+ *   (`aValue - base`), and `value` equals `rValue` under the "default" result
+ *   mode. The tools write `value` as `aValue` under "absolute"; no fixture
+ *   holds an absolute-mode track, so check the result in the Construct 3 editor.
  * - Strings and booleans: `value`, `rValue` and `aValue` are all the value.
  * - Color: `value` and `aValue` are the [r, g, b, a] array; there is no `rValue`.
  * - Only offsetX and offsetY use `pathMode: 'default'` and a `cubic-bezier`
@@ -52,7 +51,7 @@ export interface PropertySpec {
   base?: TimelineValue;
   /** Key this property adds to the instance track's `virtualPosition`. */
   virtualKey?: string;
-  /** False for a name that matched no sampled rule. */
+  /** False for a name that matched no property rule. */
   verified: boolean;
   /** Position among an instance track's property tracks; the editor keeps them in this order. */
   order: number;

@@ -6,64 +6,60 @@ The Construct3 MCP Server is a TypeScript application implementing the Model Con
 
 ```
                         MCP Protocol (stdio)
-                              |
-+-----------------------------v----------------------------------+
-|  Construct3 MCP Server (1.9.1, fork)                           |
-|                                                                |
-|  +----------------------------------------------------------+  |
-|  |  MCP Protocol Layer                                      |  |
-|  |  Resources (9) - Tools (190, 23 files) - Prompts (7)     |  |
-|  |  Every tool runs through the session's gate              |  |
-|  +----------+-----------------------------------------------+  |
-|             |                                                  |
-|  +----------v-----------------------------------------------+  |
-|  |  Business Logic Layer                                    |  |
-|  |  ProjectSession - ProjectReader - ProjectWriter          |  |
-|  |  IdGenerator - Templates - References - Analyzers (15)   |  |
-|  |  ACE catalogue - Addon definitions - Expression checker  |  |
-|  |  Change journal - Project shape - Load-time rules        |  |
-|  +----------+-----------------------------------------------+  |
-|             |                                                  |
-|  +----------v-----------------------------------------------+  |
-|  |  File System Layer                                       |  |
-|  |  Stamp check - Backup - Validate - Atomic write - Verify |  |
-|  |  Text style (line endings, BOM) - .c3p write-back        |  |
-|  +----------+-----------------------------------------------+  |
-|             |                                                  |
-|  +----------v-----------------------------------------------+  |
-|  |  Runtime Layer                                           |  |
-|  |  Bridge script - CDP client - Preview server             |  |
-|  +----------------------------------------------------------+  |
-+-------------+--------------------------------------------------+
-              |
-+-------------v-----------------+     +---------------------------+
-|  Construct 3 project files    |     |  Exported game in Chrome  |
-|  project.c3proj, objectTypes/ |     |  or Edge, over loopback   |
-|  eventSheets/, layouts/, ...  |     |  HTTP and CDP             |
-|  or one .c3p archive          |     +---------------------------+
-+-------------------------------+
+                              │
+┌─────────────────────────────▼──────────────────────────────────┐
+│  Construct3 MCP Server                                         │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  MCP Protocol Layer                                      │  │
+│  │  Resources (9) · Query Tools (9) · Analysis (11)         │  │
+│  │  Mutations (141) · Runtime (19) · Prompts (7)            │  │
+│  └──────────┬───────────────────────────────────────────────┘  │
+│             │                                                  │
+│  ┌──────────▼───────────────────────────────────────────────┐  │
+│  │  Business Logic Layer                                    │  │
+│  │  ProjectReader · ProjectWriter · IdGenerator             │  │
+│  │  Templates · Analyzers (18) · Cross-Reference Index      │  │
+│  │  Runtime bridge · CDP client · Preview server            │  │
+│  │  ZIP writer · PNG generator                              │  │
+│  └──────────┬───────────────────────────────────────────────┘  │
+│             │                                                  │
+│  ┌──────────▼───────────────────────────────────────────────┐  │
+│  │  File System Layer                                       │  │
+│  │  JSON parsing · Backup · Validate · Write · Verify       │  │
+│  │  Text style (line endings, BOM) · Path checks            │  │
+│  └──────────┬───────────────────────────────────────────────┘  │
+└─────────────┼──────────────────────────────────────────────────┘
+              │
+┌─────────────▼──────────────────┐
+│  Construct 3 Project Files     │
+│  project.c3proj                │
+│  objectTypes/*.json            │
+│  eventSheets/*.json            │
+│  layouts/*.json                │
+│  families/*.json               │
+│  timelines/*.json              │
+│  images/*.png · scripts/*.js   │
+└────────────────────────────────┘
 ```
 
-The server registers 190 tools, 9 resources and 7 prompts. The per-layer counts in [MCP Layers](#9-mcp-layers) follow the module that registers each tool, so read-only tools such as `list_addons`, `list_timelines`, `get_timeline_details`, `list_effects` and `list_flowcharts` count as mutation tools: they live in the modules of their area.
+The server registers 186 tools, 9 resources and 7 prompts. The layer counts follow the module that registers each tool, so the read-only `list_containers`, `list_addons`, `list_effects`, `list_timelines`, `get_timeline_details`, `list_timeline_tracks`, `list_eases`, `list_flowcharts`, `get_flowchart_details`, `get_tilemap_data`, `list_tilemap_brushes`, `list_templates` and `list_changes`, and `load_addon_definitions`, which writes nothing to the project, count as mutations: they live in the container, project, effect, timeline, flowchart, tilemap, template and change modules.
 
 ## Core Components
 
 ### 1. Entry Point (`src/index.ts`)
 
-Resolves the project path (first CLI argument, then `C3_PROJECT_PATH`, then the working directory; a directory is searched for a `.c3proj` file), loads the project, creates all core instances, and registers handlers:
+Resolves the project path (first CLI argument, then `C3_PROJECT_PATH`, then the working directory; a directory is searched for a `.c3proj` file; a `.c3p` file is opened through a working folder, `project-source.ts` and `c3p-archive.ts`), loads the project, creates all core instances, and registers handlers:
 
 ```
-session  = ProjectSession.start(path)   folder, .c3proj or .c3p (unpacked to a working folder)
-session.install(server)                 every tool handler runs through the session's gate
-reader   → registerProjectResources, registerQueryTools, registerWorkflowPrompts,
-           registerAnalysisTools, registerUsageTools
-(none)   → registerDocsResources (docs index, manual topics, pitfalls)
-writer   → registerMutationTools (object, event, layout, project, animation, timeline,
-           file, effect, flowchart, container, rename, template, tilemap, structure,
-           replace tools; also needs reader + idGen)
-session  → registerSessionTools (get_open_project, open_project, reload_project,
-           list_changes, revert_last_change)
-runtime  → registerRuntimeTools (bridge, preview server, CDP connections; needs reader + writer)
+reader  → registerProjectResources, registerQueryTools, registerWorkflowPrompts,
+          registerAnalysisTools, registerUsageTools
+(none)  → registerDocsResources (docs index, manual topics, pitfalls)
+writer  → registerMutationTools (also needs reader + idGen)
+          registerRuntimeTools (also needs reader); returns a controller whose
+          close() index.ts calls on SIGINT, SIGTERM and the end of stdin, ending
+          game connections, preview servers and the browsers they launched
+idGen   → shared between writer and mutations
 ```
 
 ### 2. Project Reader (`src/construct3/project-reader.ts`)
@@ -89,6 +85,12 @@ class Construct3ProjectReader {
   readAllLayouts(): Promise<Map<string, Layout>>
   readAllFamilies(): Promise<Map<string, Record<string, unknown>>>
 
+  // Files the bulk reads skipped
+  getReadFailures(category): Map<string, ReadFailure>          // name → { code, message }
+  scanEntityIdsRaw(category, name): Promise<{ highestUid, sids }> // text scan, no size limit
+  searchEntityTextRaw(category, name, terms): Promise<Set<string>> // streamed name search, no size limit
+  getEntityRelativePath(category, name): string                 // e.g. "layouts/Levels/Title.json"
+
   // Query
   listObjectTypes(): Promise<string[]>
   listEventSheets(): Promise<string[]>
@@ -107,6 +109,15 @@ class Construct3ProjectReader {
 
   // Cache management (called by writer after modifications)
   invalidateCaches(): void
+
+  // Changes on disk (#51)
+  syncWithDisk(): Promise<boolean>        // full check, for scripts that use the reader directly
+  checkProjectFile(): Promise<boolean>    // start of a tool call: project.c3proj
+  ensureCachesFresh(): Promise<void>      // first cache use in a tool call: the files the caches hold
+  getDiskEpoch(): number                  // moves on every external change found
+  stateAsRead(path): FileState | undefined
+  noteOwnWrite(path, state): void
+  projectFileChanged(): Promise<boolean>
 }
 ```
 
@@ -114,11 +125,15 @@ class Construct3ProjectReader {
 - **Lazy loading**: Entity files read on demand; the bulk `readAll*()` results are cached
 - **Path mapping**: Built at load time from c3proj container structures (handles subfolders)
 - **Fuzzy matching**: `findNearestName()` provides "Did you mean?" suggestions
-- **Bounded reads**: Entity and script files over 10MB are refused; a leading BOM is stripped before parsing
+- **Bounded reads**: Entity files, script files and the other text files the analysis tools read (project files, flowcharts, timelines) over the size limit (`file-size-limit.ts`, `C3MCP_MAX_FILE_MB`, 10MB by default) are refused; a leading BOM is stripped before parsing
+- **Typed read failures**: The per-entity readers throw a `ProjectReadError` with a code (`E_FILE_TOO_LARGE`, `E_FILE_NOT_FOUND`, `E_INVALID_JSON`, `E_READ_ERROR`); the bulk `readAll*()` reads skip such files and record the code per name (`getReadFailures()`), so the ID generator and `validate_project` branch on the code, never on message text. A bulk read stores its failures together with its cached map when it finishes, and callers take them right after the read: a project reload by a concurrent tool call (`invalidateCaches()`) can then drop both, but never leave a cached map without the failures that go with it
+- **Disk state** (`disk-state.ts`, #51): every file read records its state (modification time, size, file id; `null` for a missing file). The reader keeps the states its cached data (bulk caches, and what the project index and the ID generator built from them) came from. `checkProjectFile()` runs at the start of each tool call, resource read and prompt; `ensureCachesFresh()` compares the other files the first time the call uses a bulk cache, the index or the ID generator, and a write checks them before it falls back to the last state the reader saw. A change the server did not make drops the caches and the recorded states, reloads `project.c3proj` and moves the disk epoch, on which the index and the ID generator rebuild. A `project.c3proj` that changed and cannot be parsed is reported to the call and retried on the next one, never served from the old state. A bulk read caches its result only when no invalidation ran while it read. The check is one file status per file, run in parallel: measured about 20 to 35 µs per file on Windows, so a call that uses cached data pays about 7 to 25 ms on a project of 355 files and about 60 to 110 ms on one of 3,000 files (a call that uses no cached data pays one status, for `project.c3proj`)
+- **Raw ID scan**: `scanEntityIdsRaw()` streams a skipped layout or object type without the size limit and without parsing (`scanFileIds` in `raw-text-search.ts`, 1MB chunks, UTF-8 or UTF-16LE after its byte order mark; unlike the raw text search it drops NUL characters and reads UTF-16BE as UTF-8 instead of rejecting the file, since its entries are ASCII) and collects its `"uid"`, `"parent-uid"` (the parent a hierarchy link names) and `"sid"` values with a linear regex, keeping between chunks only the start of an entry a chunk boundary cut off; it records the file's state like a parsed read (the ID generator keeps what it finds), and the path goes through the same path map and `resolveProjectPath()` check as the parsed readers
+- **Raw text search**: `searchEntityTextRaw()` searches a skipped file for names (whole words, ignoring case), numbers and bounded patterns (`raw-text-search.ts`), through the same path check. It streams the file in 1MB chunks with an overlap, so memory does not grow with the file, and stops once every term was found; fs errors propagate unwrapped (ENOENT: no file, so no uses). The reference checks use it for the files the index could not parse (`unscanned-uses.ts`)
 
 ### 3. Project Writer (`src/construct3/project-writer.ts`)
 
-Safe write operations with the safety pipeline: **backup → validate → write → verify → invalidate**.
+Safe write operations with the safety pipeline for entity files: **backup -> validate -> write -> verify -> invalidate**. The other project-file methods back up, write and read back the bytes (see Safety guarantees).
 
 ```typescript
 class Construct3ProjectWriter {
@@ -126,6 +141,8 @@ class Construct3ProjectWriter {
   writeEntityFile(category, name, data, subfolder?, { createOnly? }): Promise<string>
   entityFileRefusal(category, name, subfolder?): Promise<string | undefined>  // file already on disk, ignoring case
   deleteEntityFile(category, name, subfolder?): Promise<string>
+  assertEntityFileCurrent(category, name, subfolder?): Promise<void>  // StaleFileError when the file changed on disk since it was read; writes nothing (the delete tools call it first)
+  entityOnDisk(category, name, subfolder?): Promise<EntityOnDisk>     // read again: project.c3proj missing, unreadable, lists or omits the name; the file present, absent or unknown
 
   // c3proj container updates
   addToProject(category, name, subfolder?): Promise<void>
@@ -136,10 +153,34 @@ class Construct3ProjectWriter {
 
   // Addon management
   ensureAddonRegistered(type, id): Promise<string | undefined>
+  checkAddonRegistrable(type, id): void                         // throws like ensureAddonRegistered, writes nothing
 
-  // Placeholder images
+  // project.c3proj changed on disk during the tool call: StaleFileError (for the tools that
+  // update project.c3proj themselves, before their first write)
+  assertProjectFileCurrent(): Promise<void>
+
+  // For the tools that write project files themselves (runtime bridge): a SID from the ID
+  // generator (taken before project.c3proj is read: the first request may scan the whole
+  // project), and afterwards the reader, index and ID generator brought in line with the files
+  // (project.c3proj only while it holds the text written)
+  generateSid(): Promise<number>
+  afterDirectWrites(writes: DirectWrite[]): Promise<void>   // { path, text } (text null: deleted)
+
+  // Other project files (timelines, flowcharts, bridge files, images, and project.c3proj for the tools that update it), each under its one lock:
+  replaceFile(path, content, { expected? }): Promise<string | undefined>  // backup once per call, temp-file write, read-back of the bytes
+  deleteFile(path): Promise<string | undefined>                           // backup once per call, then delete
+  restoreForCall(path, content | null): Promise<void>                     // put back a file this call wrote; no new backup
+  updateProject(change): Promise<string | undefined>                      // project.c3proj under the project lock; a change saved meanwhile is merged
+
+  // Placeholder images and frame image files in images/
   writeImageFile(objectName, animationName, frameIndex, pluginId?, width?, height?): Promise<string>
   writeImageFiles(files): Promise<string[]>
+  listImageFiles(): Promise<string[]>
+  renameImageFiles(renames): Promise<void>
+  putBackImage(path): Promise<'removed' | 'restored' | false>   // put back an image this call wrote: from its backup, or removed
+
+  // Runs the animation tools one at a time
+  withAnimationLock(fn): Promise<T>
 
   // Helpers
   getSubfolderForEntity(category, name): string | undefined
@@ -148,20 +189,22 @@ class Construct3ProjectWriter {
 
 **Safety guarantees:**
 - **Path traversal protection**: All paths resolved through `resolveProjectPath()` (`path-utils.ts`) and checked against the project directory
-- **Pre-write validation**: JSON round-trip test, null/type checks, 5MB size limit
-- **Stamp check**: for writes through the project writer and the rename tools, the file must still have the size and modification time the server last saw, or the write is refused (`ExternalChangeError`) until `reload_project`
-- **Journal record**: every write, create, delete and move is recorded for the call's changed-files line and `revert_last_change`, with one backup per file per call; at the end of the call the content hash of each changed file and backup is kept, and a revert refuses when any of them changed since
-- **Backup**: `.bak` file created before every overwrite or delete, under the file's name on disk
-- **Project shape**: `project.c3proj` is put in the shape Construct r495.2 saves before it is written (`project-shape.ts`)
-- **Atomic write**: Content goes to a `.tmp` file that is then renamed into place; an existing file keeps its name on disk, including its case (`atomic-write.ts`)
+- **Pre-write validation**: JSON round-trip test, null/type checks, the size limit, counted on the UTF-8 text as written
+- **Backup**: `.bak` file created before every overwrite or delete, once per tool call: inside a tool call scope (`runInToolCall`, opened by `withProjectSync` for every handler) a file the call already backed up, or found missing before its first write, is not backed up again, so the `.bak` holds the state from before the call; when `project.c3proj` changed on disk after the writer update read it, and the call has not written it yet, the update backs it up again, so undoing the call keeps that change
+- **No write over changes it did not read**: before replacing or deleting an entity file the writer compares its state on disk with the state the tool call read it in (`stateAsRead`); a difference throws a `StaleFileError` and nothing is written. The check and the write run under a lock per file, so of two parallel calls writing one file the second sees the first one's write; a create (`createOnly`) checks again under that lock that no file exists, so of two parallel creates of one entity the second is refused
+- **`project.c3proj` changes are merged**: the writer's own updates (`addToProject`, `removeFromProject`, `updateProjectProperties`, addon auto-registration, all through `updateProjectFile`) mostly run after the tool call wrote other files, so they do not refuse (the delete tools deregister first: they check the entity file first, with `assertEntityFileCurrent`, and undo the call when a step fails; `deleteRegisteredEntity` in `tools/shared.ts` takes an `alsoChange` option that `removeFromProject` applies to the same parsed file in the same update, which is how `delete_object` takes the object type out of its containers in the write that deregisters it): under the project lock they take a change made on disk since the file was loaded in (`reader.checkProjectFile()`: reload, caches dropped, disk epoch moved), read the file right before the write and change only their entry, and read it again when its state changed between that read and the write (refused only after three such rounds). The addon tools merge a `project.c3proj` changed during the call through `updateProject`, as the writer's own updates do, instead of refusing it. The timeline tools (`create_timeline`, `delete_timeline`) still refuse one changed before their first write (`assertProjectFileCurrent`), and merge through `updateProject` for the update that follows. `create_flowchart` and `delete_flowchart` do the same. The runtime tools, which decide on the loaded project and then update `project.c3proj` themselves, refuse one changed during the call (`assertProjectFileCurrent`) before their first write; they check again right before they write `project.c3proj` and undo their earlier writes on a refusal
+- **Undo on refusal**: the tool call scope records each file the call changed through the writer (entity files and `project.c3proj`) with its backup; `project.c3proj` counts from the moment it was replaced, also when the check after its write fails, and is put back only while it still holds the call's text. When a later write of the call is refused as stale, the writer puts those files back from their backups, last change first, and removes a file the call created, before it reports the refusal, so the call changes nothing (a `move_events_between_sheets` whose source changed after the target was written leaves no copy behind). A file that changed on disk again since the call wrote it, or whose backup another call replaced meanwhile, is left as it is and named in the message. The delete tools also undo the call when a step fails for another reason (`undoToolCall`). Image files are not part of this, and files written through `replaceFile` or `deleteFile` keep a `.bak` but are not put back by `undoCallChanges` when a later write of the call is refused (`create_flowchart` and `delete_flowchart` undo only their own registration with a second `updateProject` on the project as it is, never from the call's backup, and remove or restore their flowchart file with `restoreForCall` once `project.c3proj` on disk agrees); the animation tools roll their image renames back themselves, and the frame tools do so only while the object file, read again, holds the frames from before the call (`recoverFrameChange`)
+- **Atomic write**: Content goes to a temp file in the same folder, `.c3mcp-<16 hex digits>.tmp`, created exclusively so it never writes over another file (a file an earlier write left there included), and is then renamed into place; an existing file keeps its name on disk, including its case (`atomic-write.ts`). The write's own names (`.tmp`, `.link`, `.old`) have the same length whatever the file is called; a name found to exist is never written over, and another one is drawn, up to five times. When the rename fails with `EEXIST` and the path is a regular file, the folder is first checked for hard links (a `.link` name for the temp file, removed again), the file is renamed aside to a `.old` name and the temp file is linked into its place; when that link fails, the file is linked back: the same file, with its modification time, size and file id, so the writer's `stateAsRead` check still matches it. Links never replace an existing name, so a file another write put at the name meanwhile is left as it is. When the folder cannot make hard links, the file is not moved and the write fails. When putting the file back fails or the name was taken, nothing is removed and the error names both files. A directory at the path gets the `EEXIST` error as it is
 - **No overwrite on create**: Create tools pass `createOnly`, so a new entity is never written over a file that already exists, also one whose name differs only in case
-- **Post-write verification**: File read back, compared with the text that was written, and re-parsed; different content that still parses is reported as a concurrent write. A failure once the backup exists (while or after replacing the file) throws an `EntityWriteError` carrying the backup path, so a change that spans several files can restore this one too (`restoreEntityFile`, which records no extra journal change)
-- **Project lock**: The writer's read-modify-writes of `project.c3proj` (`addToProject`, `removeFromProject`, `updateProjectProperties`, file registration, addon auto-registration) share one lock, so parallel writer calls cannot lose each other's updates
+- **Post-write verification**: File read back, compared with the text that was written, and re-parsed; different content that still parses is reported as a concurrent write. A failure once the backup exists (while or after replacing the file) throws an `EntityWriteError` carrying the backup path, so a change that spans several files can roll this one back too (`restoreFailedWrite`, which puts the backup back only while the file holds the failed write's own text, and otherwise leaves it and names it); its `changedByOtherWrite` tells a concurrent write (a `ConcurrentWriteError` cause) from other failures, so the caller does not restore an old backup over another write's content
+- **Project lock**: The writer's read-modify-writes of `project.c3proj` (`addToProject`, `removeFromProject`, `updateProjectProperties`, addon auto-registration, and `updateProject`, which the timeline, flowchart and addon tools use) share one lock, so parallel writer calls cannot lose each other's updates
+- **Animation lock**: The animation tools run each call under `withAnimationLock()` and read the object inside it, so parallel calls cannot move each other's frame image files or write a Sprite's object file without each other's frames. `delete_object` takes it around its image renames, its delete and its rollback. Other tools that write an object file do not take it
 - **Text style**: An existing file keeps its line endings, trailing whitespace and BOM; a new file follows `project.c3proj` (`json-format.ts`)
-- **Cache invalidation**: Reader caches, project index, and ID generator all reset
-- **Image rollback**: `writeImageFiles()` deletes the images it already wrote when a later one fails
+- **Save shape**: An update of `project.c3proj` through the writer's update path (`updateProjectFile`) that writes brings the file towards a fixed save shape (`project-shape.ts`, called after the change function returned and before the text is built): scripts carry `script-info` and an empty `models3d` folder is added (after `flowcharts`), whatever release saved the file; for a file without `flowcharts` the folder goes before `properties`, a placement inferred, not recorded; for a project saved by release 49501 or older, `uidAllocationMode` also follows `preloadSounds` and `scriptsType` ends `properties`. The shape leaves settings such as `zAxisScale` as saved (in one recorded check, Construct 3 r506-2, Free edition, guest, updated a legacy Z axis scale itself when it opened a release-44903 project saved with that value), never prunes `usedAddons` (`unregister_addon` still removes the entry it is asked to) and never changes `savedWithRelease`. An update that writes nothing is not reshaped; `inject_runtime_bridge`, which writes `project.c3proj` with its own text, does not reshape the file
+- **Cache invalidation**: Reader caches and project index reset (for the written project only); the file's new state is recorded as the server's own (`noteOwnWrite`), and the ID generator adds the IDs in the written text (`noteWrittenText`) instead of scanning again
+- **Image rollback**: `writeImageFiles()` puts back the images it already wrote when a later one fails (`putBackImage()`: from their backup, or removed); `renameImageFiles()` renames files in order (a name an earlier rename freed can be reused, so frame images can move along a chain), refuses to replace a file, and renames everything back when one rename fails; the frame tools write a new frame's image create-only, and after a failed object write they put it back through `putBackImage()` only while the object file, read again, holds the frames from before the call; when it holds this call's frames the images stay with them (a write made on top of this one that kept them lets the call succeed with a warning), and when it holds neither or cannot be read they stay where the call left them and the error says recovery is unresolved and where they are; a rollback that can only be done in part lists what was undone and what was not (`recoverFrameChange`)
 
-The timeline and ease tools, `register_addon` / `unregister_addon`, the flowchart, container, tilemap brush, rename and duplicate tools and the runtime tools' bridge script write outside the writer, with fewer of these steps: they back up and journal each file, but do not read it back; the README's Safety Model lists the differences. All of them except the runtime tools' bridge script (a script, not JSON) keep an overwritten file's text style through `json-format.ts` and `atomic-write.ts`, like the writer. A tilemap brush file is one line of compact JSON as Construct 3 writes it, so the brush tools keep an existing file's layout (compact, or its indent string), line endings, trailing whitespace and BOM, and write a new file compact. None of them takes the project lock, and several use the same `project.c3proj.tmp` file as the writer, so running them in parallel with other writes can lose or fail a `project.c3proj` update. Run them one at a time.
+Every write, delete and restore of a project file through the writer takes one lock: the project lock for `project.c3proj` (`underLockOf`), the file's own lock otherwise, so two of them on one file are serialized. Renaming image files (`renameImageFiles`) makes no backup and takes the lock of each target file in turn, never two at once, checking there that no other file has the name; every rename of image files runs under the animation lock (the animation tools hold it for their whole call; `delete_object` holds it around its renames, its delete and its rollback, and checks references outside it). The tools differ in the steps they run around those writes; the README's Safety Model lists the differences. `clone_project` writes the bridge into its new copy directly, since the copy is outside the open project.
 
 ### 4. ID Generator (`src/construct3/id-generator.ts`)
 
@@ -175,13 +218,16 @@ class IdGenerator {
   generateImageSpriteId(reader): Promise<number> // 7-digit random, collision-checked
   addSid(sid): void                              // Register newly created SID
   addUid(uid): void                              // Register newly created UID
-  reset(): void                                  // Force re-scan on next use
+  noteWrittenText(text): void                    // Add the IDs of a file the server wrote
+  reset(): void                                  // Forget everything, scan from scratch on next use
 }
 ```
 
 **SID strategy**: Random 15-digit integer (100,000,000,000,000 – 999,999,999,999,999), checked against a set of all existing SIDs scanned from the entire project. Retry up to 100 times on collision.
 
-**UID strategy**: Find highest existing UID across all layout instances and singleglobal-inst entries, then increment.
+**UID strategy**: Find highest existing UID across all layout instances and singleglobal-inst entries, then increment. Registered layouts and object types that are missing from the bulk reads (over the size limit (10MB by default), invalid JSON) are scanned as text (`scanEntityIdsRaw`) for their UIDs and SIDs; the generator goes by the registered names, so a skipped file is scanned even when its failure record is gone. A registered file that does not exist holds no IDs and is ignored; when a file exists but even the text scan fails, `generateUid()` throws with the file names and why each could not be scanned instead of risking a duplicate UID (SIDs, being random, are still generated). Each later `generateUid()` first scans those files again: a lock (virus scanner, sync client) may be gone or the file fixed, which does not always change its state on disk, and a file that was deleted or unregistered meanwhile holds no UIDs any more.
+
+**When it scans** (#38, #51): on first use, and again when the reader's disk epoch moved (a change on disk the server did not make). The server's own writes do not trigger a scan: the writer passes each written text to `noteWrittenText()`, which adds every `"sid"`, `"uid"`, `"parent-uid"` and `"imageSpriteId"` value in it (the same scan as for skipped files, `scanIdsInText`). A scan adds what it finds to what the generator already knows (nothing is removed, the highest UID never goes down), so an ID handed out earlier, also one whose file was reset on disk since, is never handed out again. Parallel first callers share one scan.
 
 **imageSpriteId strategy**: Random 7-digit integer, checked against the IDs of all existing animation frames. Links an animation frame to its image file.
 
@@ -203,85 +249,128 @@ Supporting modules next to the templates:
 | Module | Purpose |
 |--------|---------|
 | `construct3/event-shapes.ts` | The event shapes the editor saves: System else condition, OR blocks, positional function calls, script lines |
+| `construct3/disk-state.ts` | File states (modification time, size, file id), the tool call scope (`AsyncLocalStorage`: states the call read, files it backed up and changed, the state each had before the call (`before`), its changes and renames in order (`steps`), files whose state afterwards is not the call's (`unowned`), readers it checked), `StaleFileError` |
+| `construct3/change-journal.ts` | The change journal, kept per project in memory (the last 50 calls): records a call's changes from its tool call scope when the call ends (`recordToolCall`, called by `project-sync.ts`) and lists them for `list_changes`. `revert_last_change` puts a call's files back from their backups, last change first, through the writer's revert port (`putBackChange`, `renameBack`, `afterRevert`). A step reports the state it left, read under the file's lock; a restored file that cannot be read back counts as done with an unknown state. A revert refuses, restoring nothing, when a file or backup changed since the call, and stops at the first step it cannot undo, so the next revert resumes there |
 | `construct3/atomic-write.ts` | Temp-file-and-rename writes that keep an existing file's name on disk; case-insensitive file lookup |
 | `construct3/names.ts` | Name comparison the way the editor does it (ignoring case) for names and project-bar folders |
-| `construct3/event-variable-names.ts` | The editor's rules for event variable and function parameter names: scope, System expression names, characters it refuses |
+| `construct3/file-registration.ts` | Edits of the `rootFileFolders` entries of scripts and Project Files (register, repair, remove, main script), the directory of each family, and the letter-case helpers for names and subfolders |
+| `construct3/data-file-body.ts` | Bodies of the data files `create_data_file` writes (Array, Dictionary, JSON, text) and the MIME type of a Project File by its extension |
+| `construct3/event-variable-names.ts` | The editor's rules for event variable and function parameter names (scope, System expression names, characters it refuses) and for function names (unique in the project ignoring case, characters only with a return type) |
+| `construct3/fs-errors.ts` | fs errors in messages: the code and the path in the project |
 | `construct3/instance-behaviors.ts` | The behavior entries every layout instance carries (object and family behaviors, with default property values) |
-| `construct3/animation-rename.ts` | Sprite animations in animation folders (the one walk every animation tool finds animations through), and what renaming one changes: frame image file names, `initial-animation` of layout instances, event sheet strings naming it (counted for a warning) |
+| `construct3/instance-variables.ts` | The instance variable values and effect entries every layout instance carries (object and family variables, family first), kept in step when variables, members or families change |
+| `construct3/hierarchy.ts` | Hierarchy (scene graph) links between the instances of a layout: removing links to deleted instances, the UIDs links name, links that do not hold up |
+| `construct3/containers.ts` | Containers in `project.c3proj`: the member names of each, the containers an object is in (read by name, ignoring case), taking a deleted object type out of every container in the update that deregisters it, and removing a container left with fewer than two members |
+| `construct3/layer-references.ts` | Event sheet strings that name a layer: `"layer"` parameters that are the quoted name (rewritten by a rename) and other string literals (reported) |
+| `construct3/object-images.ts` | The frame and single image files of an object type in `images/`, kept as `.bak` when the object is deleted |
+| `construct3/animation-rename.ts` | Sprite animations in animation folders, and what renaming one changes: frame image file names, `initial-animation` of layout instances, event sheet strings naming it (counted for a warning); the frame image files that move on frame insert, delete, reorder and duplicate |
+| `construct3/file-size-limit.ts` | The size limit for the project files the server reads and writes: `C3MCP_MAX_FILE_MB` (whole megabytes, 1 to 128; 10 by default), read at each use; the reader refuses a larger file, the writer a larger generated text |
+| `construct3/c3p-archive.ts` | A `.c3p` project's session folder: the archive unpacked into a `project/` folder (the working folder the server loads) and a `held/` folder (entries the packer leaves out, `*.tmp` and `*.bak` files, which no tool writes); the refresh into a fresh folder that is published by rename (retried on a transient lock), the write-back (the archive built in memory and read back, staged beside the archive, moved aside by rename, compared by content with the session's own last version, then placed with a link or an exclusive copy, which fail when a file is there, and read again), the conflict that sticks until the server stops, the close, and the session folders a killed process left |
 | `construct3/json-format.ts` | On-disk text style: detects and reapplies line endings, trailing newline and BOM |
-| `construct3/layers.ts` | The layer tree of a layout: walks every layer and nested sub-layer and their instances (non-world instances included), finds layers and instances, compares layer names ignoring case; the analyzers and every layout, layer, template, effect, usage and timeline tool walk layers through it, so there is one layer walk in the code |
+| `construct3/project-shape.ts` | The save shape of `project.c3proj`: script `script-info`, the empty `models3d` folder, and for projects saved by release 49501 or older the order of `uidAllocationMode` and `scriptsType`; applied by `updateProjectFile` to every update that writes |
+| `construct3/layers.ts` | The layer tree of a layout: walks every layer and nested sub-layer and their instances (non-world instances included), finds layers and instances, compares layer names ignoring case; every walk over layers or layout instances goes through it |
 | `construct3/path-utils.ts` | `resolveProjectPath()`: joins path segments and rejects paths that leave the project folder |
 | `construct3/png-generator.ts` | Zero-dependency placeholder PNGs and C3 image file names (all lowercase) |
-| `construct3/timeline-folders.ts` | The editor's Transitions folder in the timelines container (first nameless first-level folder wherever it sits, files in `timelines/transitions/`): finding it and creating it, shared by the timeline and ease tools, the ease parameter code and `validate_project` |
-| `construct3/ease-params.ts` | Custom eases embedded in event parameters, as Construct r495.2 saves them |
-| `construct3/tilemap-data.ts` | Codec for a Tilemap instance's tile data |
-| `construct3/timeline-model.ts` | Track kinds, track and property-track folders, and custom eases in timeline files (the Transitions folder of the project itself is in `timeline-folders.ts`) |
-| `construct3/timeline-properties.ts` | What a property track stores for each kind of property |
-| `construct3/file-registration.ts` | Script and project file registration helpers |
+| `construct3/project-source.ts` | The project path: a folder or a `.c3proj` is used as it is, a file ending in `.c3p` is opened through `c3p-archive.ts` (a folder whose name ends in `.c3p` stays a folder project), and the start of the server on it is undone (the archive closed) when it fails |
+| `construct3/raw-text-search.ts` | Streamed text search in files the reader skips: whole-word names ignoring case (as JSON writes them in a string), whole numbers, bounded patterns; one alternation of literals, word boundaries checked where a literal matched. Also the streamed UID/SID scan of the ID generator (`RawIdScan`, `scanFileIds`) |
+| `construct3/timeline-folders.ts` | The editor's Transitions folder in the timelines container (first nameless first-level folder, files in `timelines/transitions/`), shared by the timeline tools and `validate_project` |
+| `construct3/timeline-model.ts` | Track kinds (instance, value, audio, and untyped tracks from older releases), track folders and custom eases inside timeline files: the shapes the fixtures show, builders for new tracks and keyframes, and the lookups the timeline tools share |
+| `construct3/timeline-properties.ts` | What a property track stores for each kind of property: the world properties, instance variables and plugin properties, the absolute and relative values of a keyframe, and the order of property tracks |
+| `construct3/timeline-result-modes.ts` | The result mode in force for a keyframe, how stored values follow a result mode change, and the tracks the tools must not recompute |
+| `construct3/ease-params.ts` | Custom eases inside event sheet ease parameters (the Tween ease parameter): loading the project's custom eases, reading the ease name of a parameter, building the object that embeds an ease, and walking the ease parameters of an event sheet |
+| `construct3/flowchart-model.ts` | The flowchart file's types and the in-memory changes of the flowchart tools (locating registered flowcharts, nodes, outputs, connections, comment nodes); no file access |
+| `construct3/flowchart-files.ts` | Reading a flowchart through the reader, writing it through `replaceFile` with the state it was read in, creating and deleting it together with its `project.c3proj` entry |
+| `construct3/custom-actions.ts` | Custom action definitions (on an object type or a family, named by `aceName`) and calls, the definition a call runs (the object's own, else its family's), and the scan for a second definition of one name on one owner, with its traversal limit |
+| `construct3/entity-copies.ts` | Copying an entity: fresh SIDs, fresh UIDs for a layout copy's instances, hierarchy links and replica lists mapped through them, an object type's image copies, and the checks that refuse a copy that cannot be faithful (duplicate tools) |
+| `construct3/entity-name-references.ts` | Where an event sheet or a layout is named (include events, layout event sheet bindings, the `"layout"` parameter of System conditions and actions, timelines), for `rename_event_sheet` and `rename_layout` |
+| `construct3/object-name-references.ts` | Where an object type or a family is named (condition and action objects, custom action owners and calls, object parameters, expressions, layouts, families, containers, timelines), for `rename_object_type` and `rename_family` |
+| `construct3/event-strings.ts` | The strings of an event sheet that can name something (string parameters, script lines, include keys) at any depth, shared by the two reference modules above |
+| `construct3/error-text.ts` | Error text without absolute paths: a path inside the project folder becomes project-relative (written with `/`), any other absolute path `<a path outside the project>`; fs errors are worded from their `code` and `path` |
+| `construct3/instance-templates.ts` | The `template` block of a layout instance (template, replica or neither), an object type's default template, and the search for a template instance by name |
+| `construct3/project-tree.ts` | Project Bar trees (`{ items, subfolders }`): finding, creating and registering folders and items, and the folder path checks of the move and duplicate tools |
+| `construct3/script-files.ts` | The script files a project registers, with their paths in `scripts/`: the one walk the index, the runtime-trap check and the usage queries share, with its depth limit |
+| `construct3/tilemap-data.ts` | Codec for a Tilemap instance's tile data (`ownData.tilemapData`) as Construct 3 r506-2 saves it |
 | `construct3/types.ts` | TypeScript types for project files and analysis results |
-| `runtime/bridge.ts` | Generates the injectable runtime bridge script (`globalThis.__c3bridge`) |
-| `runtime/zip-writer.ts` | Zero-dependency ZIP writer used to pack `.c3p` files |
-| `runtime/cdp-client.ts` | Persistent Chrome DevTools Protocol connections, bridge calls, input and screenshots |
-| `runtime/preview-server.ts` | Serves an exported game over loopback HTTP and launches Chrome or Edge on it |
-| `runtime/project-files.ts` | The files a folder project packs into a `.c3p` and writes back to one |
-| `runtime/zip-reader.ts` | Dependency-free `.c3p` reader (ZIP64, backslash paths, DEFLATE) |
+| `runtime/bridge.ts` | Generates the injectable runtime bridge script (`globalThis.__c3bridge`): command queue, results with cancel and a 60 s expiry, event subscriptions, layer coordinate conversion |
+| `runtime/cdp-client.ts` | Chrome DevTools Protocol client over Node's built-in WebSocket (Node.js 22+): connects to the game's page (trying the pages the browser lists, narrowed by `pageUrl`/`urlContains`, and refusing when more than one has a ready bridge), reaches a bridge on the page or in a dedicated worker (`Target.setAutoAttach`, flat sessions), marks the bridge's global scope so a reload closes the connection, runs bridge commands, conditions, input and screenshots |
+| `runtime/preview-server.ts` | Serves an exported game on 127.0.0.1 (Host check, no links out of the folder, each file opened once per request and closed on an abort, a port in use refused, optional COOP/COEP) and launches Chrome or Edge with a fresh profile and `--remote-debugging-port=0` (the port read back from `DevToolsActivePort`); a failed start is an error of the call; removes profiles on stop and leftovers of ended runs |
+| `runtime/project-files.ts` | The files of a folder project that are packed (`isPackedProjectFile`, `collectProjectFiles`): used by `pack_project` and by the write-back of a single-file project |
+| `runtime/zip-reader.ts` | Zero-dependency ZIP reader for `.c3p` archives: ZIP64, STORE and DEFLATE entries, backslash paths, UTF-8 names; refuses encrypted entries, other compression methods, unsafe paths and entries that would land on one file. Shape counted on three archives saved by r495.2 (ZIP64, STORE and DEFLATE, a UTF-8 flag on every entry, backslashes), and on record for a save by r506-2 (ZIP64 central directory, DEFLATE, backslashes) |
+| `runtime/zip-writer.ts` | ZIP writer for `.c3p` files: `pack_project` and the write-back of a single-file project (stored entries, UTF-8 names marked) |
 
 ### 6. Analyzers (`src/construct3/analyzers/`)
 
-A shared cross-reference index and fifteen analysis modules, several of which build on the index:
+A shared cross-reference index and eighteen analysis modules, several of which build on the index:
 
 | Module | Purpose |
 |--------|---------|
-| `index-builder.ts` | Builds and caches the project-wide cross-reference index |
+| `index-builder.ts` | Builds the project-wide cross-reference index and caches it per reader |
 | `event-flow.ts` | Include hierarchy and layout bindings (Mermaid output); function definitions and call sites |
-| `object-deps.ts` | Object usage across event sheets, layouts, families; objects not referenced anywhere |
+| `object-deps.ts` | Object usage across event sheets, layouts, families; objects not referenced anywhere, and apart from them the objects whose own object type file could not be parsed (`unanalysedObjects`: their SID is unknown) |
 | `asset-usage.ts` | Sound, music, image, font, video, icon and project file usage (used, unused or not analysed); images follow the index's object usage |
 | `animations.ts` | Sprite animation trees as the editor saves them (items and animation subfolders); frame counts for the asset and performance analyses |
 | `performance.ts` | Heuristic performance audit (info/warning/critical) |
-| `integrity.ts` | `validate_project`: 30 checks, the upstream integrity and load-time checks plus the object image, legacy event key, ACE definition, expression and addon definition checks |
+| `integrity.ts` | Project integrity checks behind `validate_project` |
 | `load-rules.ts` | Rules the Construct 3 editor enforces when it opens a project (expression syntax, empty parameters, trigger and else placement, name and SID clashes, family plugins); used by `validate_project` and the pre-write checks |
 | `legacy-behavior-keys.ts` | Scan and repair of the legacy `"behavior-type"` key |
 | `legacy-event-shapes.ts` | Scan and repair of event shapes older versions wrote (block `isElse`, condition `isOr`, old function calls, one-string scripts) |
-| `delete-references.ts` | Calls, function map registrations and variable uses that deleting an event would leave pointing at nothing (`delete_event_from_sheet`) |
+| `delete-references.ts` | Calls, function map registrations and variable uses that deleting an event or a whole event sheet would leave pointing at nothing (`delete_event_from_sheet`, `delete_event_sheet`) |
+| `variable-renames.ts` | The uses of one event variable that find it (through the walk and lookup of `delete-references.ts`), which of them a rename can update (the parameter types come from the ACE catalogue through `parameterTypeResolver`), and the analysis of what `update_event_variable`'s rename changes |
+| `unscanned-uses.ts` | Possible uses in registered files the bulk reads skipped (over the size limit (10MB by default), not valid JSON): the index lists these files (`unscannedFiles`), and the reference checks and `find_orphaned_objects` / `get_object_dependencies` search them as text; a match or an unreadable file refuses without force |
 | `behavior-refs.ts` | Behavior name checks against objects and families |
+| `effect-uses.ts` | Conditions and actions that name an effect of their object (`"effect"` parameters), for the family effect checks of `delete_family` and `update_family` |
 | `group-settings.ts` | Event group settings (`get_group_settings`) |
 | `event-outline.ts` | Editor event numbers, `locate_event` and the paged `get_eventsheet_outline` |
 | `runtime-traps.ts` | Signal pairing and order, script/function-parameter traps (`find_runtime_traps`) |
 | `script-scan.ts` | Lightweight JS/TS scanner for script actions, used by the runtime trap checks |
 
-The cross-reference index (`ProjectIndex`) is cached and reset when writes occur via `resetProjectIndex()`.
+The cross-reference index (`ProjectIndex`) is cached per reader, so projects opened side by side in one process (scripts, tests, embeddings) each keep their own; a write through the writer or the event tools resets the index of its project only, via `resetProjectIndex(reader)`, and the index rebuilds when the reader's disk epoch moved (a change on disk the server did not make). It records the registered files its bulk reads skipped (`unscannedFiles`, not files that do not exist), which nothing in it covers.
 
-### 7. Validation (`ace-catalog.ts`, `addon-definitions.ts`, `expression-check.ts`)
-
-| Module | Purpose |
-|--------|---------|
-| `ace-catalog.ts`, `ace-catalog-data.ts` | Conditions, actions and expressions of built-in plugins and behaviors, generated from Construct r495.2's own definitions by `scripts/build-ace-catalog.mjs` |
-| `addon-definitions.ts` | Registry of third-party addon definitions read from `addon.json` and `aces.json` (a folder or a `.c3addon`), loaded by `load_addon_definitions` or `C3_ADDON_DEFINITIONS` |
-| `expression-check.ts` | Tokenizer and parser for Construct expressions; resolves object, family, member, function and variable names against the project and the catalogue |
-
-### 8. Session, change journal and project shape
-
-| Module | Purpose |
-|--------|---------|
-| `project-session.ts` | The project served: a folder, or a `.c3p` unpacked to a working folder; `open_project` switches it |
-| `c3p-project.ts` | The tool gate: runs each call inside a journal entry, appends the changed-files line, and writes a `.c3p` back after a call that changed files |
-| `change-journal.ts` | Per-file size and modification stamps, the record of what each call wrote, created, deleted or moved, the helpers tools use to back up and record their own writes, and `revert_last_change` with its end-of-call content hashes |
-| `project-shape.ts` | Brings `project.c3proj` to the shape Construct r495.2 saves (script metadata key, `models3d`, and for older releases property order and `zAxisScale`), never pruning `usedAddons` |
-| `references.ts` | Reference scanning and rewriting for the rename tools |
-
-### 9. MCP Layers
+### 7. MCP Layers
 
 | Layer | File(s) | Count | Purpose |
 |-------|---------|-------|---------|
 | Resources | `resources/project.ts` (6), `resources/docs.ts` (3; the pitfalls text lives in `resources/pitfalls.ts`) | 9 | Read-only data access, Construct 3 docs, curated pitfalls |
-| Query tools | `tools/query.ts`, `tools/usage-tools.ts` | 15 | List, search, get details, usage queries |
-| Analysis tools | `tools/analysis.ts` | 11 | Flow, functions, dependencies, orphans, assets, performance, validation, addon definitions, group settings, event locating, runtime traps |
-| Session tools | `tools/session-tools.ts` | 5 | Which project is served, reload, change journal and revert |
-| Mutation tools | `tools/*-tools.ts` (18 files, registered by `tools/mutations.ts`) | 140 | Safe create, update, delete, rename, move and replace |
-| Runtime tools | `tools/runtime-tools.ts`, `runtime/cdp-client.ts`, `runtime/preview-server.ts`, `runtime/bridge.ts` | 19 | Bridge injection, preview checks, clone and `.c3p` packing, serving an export and launching Chrome on it, persistent CDP connections, live game calls, condition waits, event subscriptions, input dispatch (viewport, canvas or layout coordinates) and screenshots |
+| Query Tools | `tools/query.ts` | 9 | List, search, get details |
+| Analysis Tools | `tools/analysis.ts` | 11 | Deep analysis, validation, event locating, runtime traps |
+| Usage Tools | `tools/usage-tools.ts` | 6 | Read-only project settings, instance counts, text search and usage queries that say how complete their answer is |
+| Mutation Tools | `tools/mutations.ts` calls `object-tools.ts` (8), `event-tools.ts` (19), `layout-tools.ts` (9), `bulk-instance-tools.ts` (3), `layer-rename.ts` (1), `layer-order.ts` (4), `animation-tools.ts` (14), `effect-tools.ts` (5), `container-tools.ts` (4), `timeline-tools.ts` (5), `timeline-instance-tools.ts` (7), `timeline-track-tools.ts` (7), `timeline-ease-tools.ts` (4), `flowchart-tools.ts` (13), `tilemap-data-tools.ts` (3), `tilemap-brush-tools.ts` (4), `project-tools.ts` (6), `file-tools.ts` (6), `template-tools.ts` (3), `hierarchy-tools.ts` (2), `object-rename.ts` (2), `replace-tools.ts` (2), `structure-tools.ts` (1), `duplicate-tools.ts` (5), `entity-rename.ts` (2), `change-tools.ts` (2) | 141 | Safe create, update, delete; list and revert the change journal |
+| Runtime Tools | `tools/runtime-tools.ts` | 19 | Runtime bridge (inject, remove, commands), game connection, bridge calls, conditions, event buffers, input, canvas, screenshots, preview server, preview checks, project clone, `.c3p` packing |
 | Prompts | `prompts/workflows.ts` | 7 | Workflow templates |
 
-`tools/mutations.ts` only calls the domain modules' `register*Tools()` functions. Shared tool code lives in `tools/shared.ts` (name and subfolder validation, `toolResult` / `toolError`, not-found suggestions, the editor reload note) and `tools/event-helpers.ts` (event Zod schemas, builders, validators and the load-time pre-write check).
+`tools/mutations.ts` only calls the domain modules' `register*Tools()` functions. Every `register*` function that gets the reader registers through `withProjectSync(server, reader)` (`tools/project-sync.ts`), which wraps each tool, resource and prompt handler: it opens a tool call scope and runs `reader.checkProjectFile()` before the handler; a tool whose `project.c3proj` changed and cannot be read returns that as a tool error. Shared tool code lives in `tools/shared.ts` (name and subfolder validation, `toolResult` / `toolError`, not-found suggestions, the editor reload note), `tools/event-helpers.ts` (event Zod schemas, builders, validators and the load-time pre-write check) and `tools/instance-sync.ts` (the sync of layout instances with their object types and families; `object-tools.ts` and `effect-tools.ts` are its callers). More shared tool modules: `tools/refusals.ts` (the refusal vocabulary: a refusal made before anything was written ends once with "Nothing was changed.", with no absolute path), `tools/registered-names.ts` (names taken from the caller are matched with their letter case as registered), `tools/call-rollback.ts` (the rollback of a tool call whose write failed), `tools/rename-files.ts` (the side writes of a rename, `createFileForCall`, and their rollback), `tools/side-files.ts` (the rollback of a Project Bar move or copy), `tools/timeline-kit.ts` and `tools/timeline-writes.ts` (what the timeline tool modules share for lookups, writes and refusals) and `tools/tilemap-support.ts` (the same for the tilemap tool modules). A tool call that opens the wrapper's scope is recorded in the change journal (`change-journal.ts`) when it ends, and a result that is not an error then ends with the line naming the files it changed (`project-sync.ts`).
+
+When the project is a `.c3p`, `index.ts` wraps the server once more with `withArchiveSync(server, archive)` (`tools/archive-sync.ts`), outside `withProjectSync`. A call that starts while no call runs first lets the archive refresh the working folder when the archive changed on disk, and is refused without running when it cannot be read again. After the last running call finishes, and a tool call has run since the last write-back, the archive is written back; new calls wait until that is done. A tool result gets one note about the call's own archive work (the write-back, else the refresh, else a standing conflict; a write-back failure no tool result carried is added to the next one), and `close()` waits for the running calls, refuses new ones and closes the archive once, which is what stopping the server runs.
+
+### 8. Validation (`src/construct3/`)
+
+Conditions, actions and the expressions in their parameters are checked against definitions of what Construct defines, which the server does not ship: it builds them for the project's release when a check first needs them. Seven pieces do this, on the shared types of `ace-types.ts` (catalogue, addon definition, the project data the checks read):
+
+| Module | Purpose |
+|--------|---------|
+| `ace-catalog-source.ts` | Builds a catalogue from the three files the server requests for a release (the common ACEs are read out of `main.js`), with the fetch rules, the cache file (read, write, default folder) and the entry of the developer script `scripts/build-ace-catalog.mjs` |
+| `ace-catalog-provider.ts` | Hands out the catalogue of a release: a local folder, else the cache file, else a fetch that is then cached; the fallback release; one attempt per release per process |
+| `ace-catalog.ts` | Checks one condition or action against a catalogue or an addon's definitions (`checkAce`), a whole event tree (`checkEventAces`), and tells which ACEs an event tool changed |
+| `addon-definitions.ts` | The registry of third-party addon definitions, and the reading of addon folders and `.c3addon` archives inside the allowed roots |
+| `expression-check.ts` | Parses the expression strings of ACE parameters and resolves their names against the project, the catalogue and the registry |
+| `event-change-check.ts` | The warnings `add_event_block`, `update_event_block_action` and `update_event_block` add for the ACEs and expressions they wrote |
+| `analyzers/integrity.ts` | The checks of `validate_project` that put the other modules to use: `ace-` and `expression-` warnings and their info issues |
+
+The catalogue and the addon registry are always arguments of the checks: `ace-catalog.ts` and `expression-check.ts` hold neither. The registry belongs to one project reader (`addonDefinitionsOf(reader)` keeps it in a `WeakMap`) and keeps the roots it may read from, so projects opened side by side in one process keep their own definitions, and a catalogue provider can be set for a single reader (`setAceCatalogProvider`), which is how tests give a reader a provider with an injected fetch. The default provider (`defaultAceCatalogProvider`) is one per process, because the catalogue of a release does not depend on the project. `src/index.ts` sets the registry's roots and loads `C3_ADDON_DEFINITIONS` when it opens the project; it never calls the provider, so the server makes no request at start.
+
+The path of a catalogue:
+
+```
+check -> aceCatalogProviderFor(reader).catalogFor(project.savedWithRelease)
+  -> the release (49502 is r495-2), tried once per process
+  -> C3_ACE_SOURCE_DIR set?  read <dir>/<release>/ (never fetch, never cache)
+  -> else cache file <cache>/<release>.json, used when format, release, shape and digest match
+  -> else fetch plugins/allAces.json, behaviors/allAces.json, main.js from editor.construct.net
+      (one host, HTTPS, redirects only to the same file of the same release),
+      build the catalogue, write the cache file through a temp file and a rename
+  -> release not served (or none recorded) -> the same path for the fallback release r495-2
+  -> nothing -> a failed lookup with a reason; validate_project reports one info issue
+```
 
 ## Data Flow
 
@@ -310,28 +399,30 @@ Claude → create_object({ name: "Enemy", pluginId: "Sprite" })
   → writer.writeEntityFile("objectTypes", "Enemy", data, undefined, { createOnly: true })
       → validateJsonData(data)      ← pre-write check
       → resolveJsonTextStyle(...)   ← keep the file's line endings and BOM
-      → createBackup(filePath)      ← refuse if changed on disk since last seen, then .bak copy
-      → atomicWrite(filePath, text) ← temp file, then rename
-      → verifyWrittenFile(filePath) ← post-write read-back
-      → invalidateAll()             ← clear all caches
+      → under the file's lock:
+        → entityFileRefusal         ← createOnly: still no file there (a parallel create is refused)
+        → assertUnchangedSinceRead  ← refuse a file changed on disk since the call read it
+        → createBackup(filePath)    ← .bak copy, once per tool call
+        → atomicWrite(filePath, text) ← temp file, then rename
+        → verifyWrittenFile(filePath) ← post-write read-back, returns the file's new state
+        → afterOwnWrite()           ← record the state, clear reader caches and index, IDs to the ID generator
   → writer.addToProject("objectTypes", "Enemy")
       → take the project lock
-      → createBackup(c3proj)
-      → add "Enemy" to objectTypes.items
-      → upgradeProjectShape(project) ← r495.2 save shape
-      → validate + atomic write (text style kept) + verify, then reader.reloadProject() + invalidateAll()
+      → reader.checkProjectFile()  ← take in a change made on disk since it was loaded
+      → read c3proj, add "Enemy" to objectTypes.items
+      → createBackup(c3proj)        ← once per tool call: skipped when a new plugin's registration backed it up already
+      → compare its state with the one read ← changed meanwhile: read and add again
+      → validate + atomic write + verify, then reader.reloadProject()
   → toolResult(WriteResult)         ← adds the editorNote
-  → the gate appends "Changed N file(s): ..." from the journal entry
-    and, for a .c3p, writes the archive back
 ```
 
-Event sheet writes (`add_event_block`, `update_event_block`, `add_event_to_sheet`, `update_event_block_action`, `move_event_block`, `move_event_block_items`, `move_events_between_sheets`) run one more step before `writeEntityFile`: `checkLoadRulesBeforeWrite()` (for `move_events_between_sheets`, `checkLoadRulesBeforeSheetPairWrite()`) compares the sheet's editor load-time issues before and after the change. A new error refuses the write; new warnings are returned with the result.
+Event sheet writes (`add_event_block`, `update_event_block`, `add_event_to_sheet`, `add_custom_action`, `update_event_block_action`, `delete_event_from_sheet`, `move_events_between_sheets`, `move_event_block`, `move_event_block_items`, `update_script_event` when it removes a script event, and `replace_object_in_events` and `replace_in_expressions` for every sheet they change) run one more step before `writeEntityFile`: `checkLoadRulesBeforeWrite()` (for `move_events_between_sheets`, which writes two sheets, `checkLoadRulesBeforeSheetPairWrite()`) compares the sheet's editor load-time issues before and after the change; an expression issue is identified by where it sits (sheet, event, condition or action, parameter) and its rule, not by the expression text, so rewriting an expression that was already broken is not a new issue. A new error refuses the write; new warnings are returned with the result.
 
 ### Analysis Flow
 
 ```
 Claude → get_object_dependencies({ object: "Player" })
-  → getProjectIndex(reader) (builds or returns cached index)
+  → getProjectIndex(reader) (builds or returns the index cached for this reader)
       → reader.readAllEventSheets()
       → reader.readAllLayouts()
       → reader.readAllFamilies()
@@ -348,16 +439,6 @@ Uses `StdioServerTransport` from MCP SDK:
 - **Input**: JSON-RPC 2.0 messages on stdin
 - **Output**: JSON-RPC 2.0 responses on stdout
 - **Logging**: stderr for debug/error messages
-
-Live runtime tools maintain separate outbound CDP WebSocket connections. The
-server discovers page targets from `/json/list` or accepts a direct page
-endpoint, evaluates only the bridge submit/get-result protocol, and terminates
-all retained sockets when the MCP transport or process closes. Condition waits
-reuse those connections, polling bridge values or an explicitly requested page
-expression until a comparison succeeds or the bounded timeout returns the last
-observed value. Input simulation uses the same retained page socket to send
-CDP `Input` and touch-emulation commands without adding a browser-automation
-dependency.
 
 ## Error Handling
 
@@ -384,11 +465,11 @@ The mutation tools provide extra context:
 - **Name clash checks**: Names the editor compares ignoring case (event sheets, layouts, object types and families in one name space, layers, animations, event variables, project-bar folders) are refused when they differ from an existing one only in case (`names.ts`)
 - **Input validation**: Zod schemas on all tool parameters with length limits
 - **Addon gating**: Unknown third-party plugins/behaviors blocked from auto-registration
-- **Load-time gate**: The event-editing tools listed under Write Flow reject writes that add an error the editor would refuse at load
-- **Size limits**: 5MB maximum for any generated JSON file, 10MB for entity and script files read
-- **Loopback by default**: `connect_to_game` accepts only this machine unless `allowRemoteHost` is set, and `serve_preview` binds to loopback, because the bridge runs script in the page it reaches
-- **Path redaction**: absolute filesystem paths are removed from error text returned to the client
+- **Load-time gate**: The five event-editing tools listed under Write Flow reject writes that add an error the editor would refuse at load
+- **Size limits**: one limit for reading entity and script files, the project files, flowcharts and timelines that the analysis tools read, and for writing entity files and `project.c3proj`: 10MB unless the server's `C3MCP_MAX_FILE_MB` sets another whole number of megabytes from 1 to 128, counted on the text as written. `replaceFile` writes (images, timelines, scripts) are not checked. The UID/SID text scan of skipped layouts and object types (again after each change on disk the server did not make) and the name search of the reference checks stream skipped files without a limit
+- **Network use**: the server's one request of its own is to editor.construct.net, for the definitions of a Construct release, the first time a check needs them in a process (never at start, and never when `C3_ACE_SOURCE_DIR` is set); see Validation above
+- **Addon definitions**: `load_addon_definitions` reads only inside the project folder (for a `.c3p`, the folder that holds it) and the roots named in `C3_ADDON_DEFINITIONS`, judged by real path, and bounds what it reads (10MB per definition file, 25MB per archive)
 
 ---
 
-**Last Updated**: 2026-09-28
+**Last Updated**: 2026-11-04

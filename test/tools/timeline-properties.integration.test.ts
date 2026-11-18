@@ -14,12 +14,13 @@ import { Construct3ProjectWriter } from '../../src/construct3/project-writer.js'
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { MockServer } from '../mocks/mock-server.js';
 import { registerTimelineTools } from '../../src/tools/timeline-tools.js';
+import type { MutationToolDeps } from '../../src/tools/shared.js';
 import type { Timeline, TimelineInstanceTrack } from '../../src/construct3/types.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'timeline-properties');
 const BOX = 1;
 
-/** The editor's picker order in the sampling session. */
+/** The order the editor's "Add properties" picker added them in (see the fixture README). */
 const EDITOR_ADD_ORDER = [
   'offsetZElevation', 'offsetWidth', 'offsetHeight', 'offsetAngle', 'offsetOpacity', 'offsetColor',
   'offsetScaleX', 'offsetScaleY', 'initial-animation', 'initial-frame', 'enable-collisions', 'hp', 'tag', 'on',
@@ -51,7 +52,7 @@ describe('timeline property tracks against the r495.2 editor', () => {
     const idGen = new IdGenerator();
     const writer = new Construct3ProjectWriter(reader, idGen);
     server = new MockServer();
-    registerTimelineTools({ server, reader, writer, idGen } as any);
+    registerTimelineTools({ server, reader, writer, idGen } as unknown as MutationToolDeps);
   }
 
   async function track(): Promise<TimelineInstanceTrack> {
@@ -172,14 +173,17 @@ describe('timeline property tracks against the r495.2 editor', () => {
     expect(await readFile(join(tmpDir, 'timelines', 'Sampling.json'), 'utf-8')).toBe(before);
   });
 
-  it('still accepts an unsampled name with a warning and both numbers', async () => {
-    const added = parseResult(await server.callTool('add_property_track', { timelineName: 'Sampling', instanceUid: BOX, property: 'offsetOriginX' }));
-    expect(added.warnings.join(' ')).toContain('offsetOriginX');
-    const refused = await server.callTool('set_keyframe', { timelineName: 'Sampling', instanceUid: BOX, time: 1, values: { offsetOriginX: { absolute: 1 } } });
-    expect(refused.isError).toBe(true);
-    const ok = await server.callTool('set_keyframe', { timelineName: 'Sampling', instanceUid: BOX, time: 1, values: { offsetOriginX: { absolute: 1, relative: 0.5 } } });
-    expect(ok.isError).not.toBe(true);
-    const t = await track();
-    expect(t.propertyTracks.at(-1)!.propertyKeyframes.find(kf => kf.time === 1)).toMatchObject({ value: 0.5, rValue: 0.5, aValue: 1 });
+  it('refuses a name that matches no known property in add_property_track and set_keyframe, leaving the file as it was', async () => {
+    const path = join(tmpDir, 'timelines', 'Sampling.json');
+    const before = await readFile(path, 'utf-8');
+    const added = await server.callTool('add_property_track', { timelineName: 'Sampling', instanceUid: BOX, property: 'offsetOriginX' });
+    expect(added.isError).toBe(true);
+    expect(added.content[0].text).toContain('Property "offsetOriginX" matches no world property, instance variable or plugin property');
+    expect(added.content[0].text).toMatch(/Nothing was changed\.$/);
+    const set = await server.callTool('set_keyframe', { timelineName: 'Sampling', instanceUid: BOX, time: 1, values: { offsetOriginX: { absolute: 1, relative: 0.5 } } });
+    expect(set.isError).toBe(true);
+    expect(set.content[0].text).toContain('Property "offsetOriginX" matches no world property, instance variable or plugin property');
+    expect(set.content[0].text).toMatch(/Nothing was changed\.$/);
+    expect(await readFile(path, 'utf-8')).toBe(before);
   });
 });

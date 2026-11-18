@@ -1,22 +1,25 @@
 /**
- * Project metadata tools: update_project_metadata, update_project_properties,
- * list_addons, register_addon, unregister_addon.
+ * Project metadata tools: update_project_metadata, update_project_properties, list_addons, register_addon, unregister_addon, load_addon_definitions.
  */
 
 import { z } from 'zod';
-import { backupOnce, recordWrite } from '../construct3/change-journal.js';
-import { upgradeProjectShape } from '../construct3/project-shape.js';
-import { readFile } from 'fs/promises';
 import type { MutationToolDeps } from './shared.js';
 import type { WriteResult, Addon } from '../construct3/types.js';
-import { toolResult, toolError, notFoundError, boundedRecord } from './shared.js';
+import { toolResult, toolError, boundedRecord } from './shared.js';
 import { KNOWN_SCIRRA_PLUGINS, KNOWN_SCIRRA_BEHAVIORS } from '../construct3/templates.js';
 import { PROJECT_PROPERTY_KEYS, PROJECT_TOP_LEVEL_KEYS } from '../construct3/project-writer.js';
-import { loadAddonDefinitions, loadedAddonDefinitions } from '../construct3/addon-definitions.js';
-import { jsonTextStyleOf, parseJsonText, serializeJson } from '../construct3/json-format.js';
-import { atomicReplace } from '../construct3/atomic-write.js';
+import { nameKey } from '../construct3/names.js';
+import { withProjectSync } from './project-sync.js';
+import { addonDefinitionsOf, type AddonDefinitions } from '../construct3/addon-definitions.js';
+import type { AddonDefinition } from '../construct3/ace-types.js';
+import { unknownKeysErrorMap } from './event-helpers.js';
+import { errorMessage } from '../construct3/error-text.js';
 
-export function registerProjectTools({ server, reader, writer }: MutationToolDeps) {
+/** How many registered layout names a refusal of an unknown firstLayout lists. */
+const MAX_LISTED_LAYOUTS = 20;
+
+export function registerProjectTools({ server: mcpServer, reader, writer }: MutationToolDeps) {
+  const server = withProjectSync(mcpServer, reader);
   server.tool(
     'update_project_metadata',
     'Update project metadata (name, version, author, description)',
@@ -50,31 +53,40 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
         return toolResult(result);
       } catch (error) {
         console.error('[update_project_metadata] failed:', error);
-        return toolError(`Error updating project metadata: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating project metadata: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
 
   // ─── update_project_properties ────────────────────────────
 
-  server.tool(
+  // Registered with a strict object schema, so unknown arguments are refused
+  // (server.tool() with a raw shape would drop them; see Strict Input in event-helpers.ts).
+  server.registerTool(
     'update_project_properties',
-    'Update project settings: any key of project.properties plus the top-level firstLayout, viewport size, worker mode and functions name. Use update_project_metadata for name, version, author and description.',
     {
-      properties: boundedRecord(60, 3).optional().describe('Values merged into project.properties, keyed by Construct property name (e.g. fullscreenMode, sampling, zFar); unknown keys are rejected'),
-      firstLayout: z.string().max(200).optional().describe('Startup layout name (validated for existence)'),
-      viewportWidth: z.number().int().positive().max(100_000).optional().describe('Project viewport width in pixels'),
-      viewportHeight: z.number().int().positive().max(100_000).optional().describe('Project viewport height in pixels'),
-      useWorker: z.string().max(50).optional().describe('Worker mode; Construct writes values such as "dom" or "auto"'),
-      functionsName: z.string().max(200).optional().describe('Script-interface name for functions (a JavaScript identifier, e.g. "Fn")'),
+      description: 'Update project settings: any key of project.properties plus the top-level firstLayout, viewport size, worker mode and functions name, in one write of project.c3proj. Use update_project_metadata for name, version, author and description. Unknown arguments are refused, never dropped.',
+      inputSchema: z.object({
+        properties: boundedRecord(60, 3).optional().describe('Values merged into project.properties, keyed by Construct property name (e.g. fullscreenMode, sampling, zFar); unknown keys are rejected'),
+        firstLayout: z.string().max(200).optional().describe('Startup layout name; it must be a layout of the project (letter case is ignored, the registered spelling is written)'),
+        viewportWidth: z.number().int().positive().max(100_000).optional().describe('Project viewport width in pixels'),
+        viewportHeight: z.number().int().positive().max(100_000).optional().describe('Project viewport height in pixels'),
+        useWorker: z.string().max(50).optional().describe('Worker mode; Construct writes values such as "dom" or "auto"'),
+        functionsName: z.string().max(200).optional().describe('Script-interface name for functions (a JavaScript identifier, e.g. "Fn")'),
+      }, {
+        errorMap: unknownKeysErrorMap(
+          'the arguments of update_project_properties',
+          'update_project_properties takes properties, firstLayout, viewportWidth, viewportHeight, useWorker and functionsName; project.properties keys go inside "properties".',
+        ),
+      }).strict(),
     },
     async (args) => {
       try {
-        const updates: Record<string, unknown> = {};
+        // Settings of project.properties and settings at the top level of project.c3proj
+        const propertyUpdates: Record<string, unknown> = {};
+        const topLevelUpdates: Record<string, unknown> = {};
 
         if (args.properties !== undefined) {
-          // The writer routes any non-top-level key into project.properties;
-          // validate here so the caller gets the key list instead of a throw.
           const invalid = Object.keys(args.properties).filter(k => !PROJECT_PROPERTY_KEYS.includes(k));
           if (invalid.length > 0) {
             return toolError(
@@ -83,33 +95,47 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
               `Top-level settings (${PROJECT_TOP_LEVEL_KEYS.join(', ')}) have their own parameters here or in update_project_metadata.`
             );
           }
-          Object.assign(updates, args.properties);
+          Object.assign(propertyUpdates, args.properties);
         }
 
         if (args.firstLayout !== undefined) {
           const layouts = await reader.listLayouts();
-          if (!layouts.includes(args.firstLayout)) {
-            return notFoundError('Layout', args.firstLayout, reader.findNearestName(args.firstLayout, 'layouts'), 'list_layouts');
+          const key = nameKey(args.firstLayout);
+          const registered = layouts.find(name => nameKey(name) === key);
+          if (registered === undefined) {
+            const listed = layouts.slice(0, MAX_LISTED_LAYOUTS).join(', ');
+            const more = layouts.length > MAX_LISTED_LAYOUTS ? `, and ${layouts.length - MAX_LISTED_LAYOUTS} more` : '';
+            return toolError(
+              `Layout "${args.firstLayout}" is not a layout of this project, so firstLayout cannot name it. ` +
+              (layouts.length > 0 ? `The project's layouts are: ${listed}${more}. ` : 'The project has no layouts. ') +
+              'Nothing was changed.'
+            );
           }
-          updates.firstLayout = args.firstLayout;
+          topLevelUpdates.firstLayout = registered;
         }
 
-        if (args.viewportWidth !== undefined) updates.viewportWidth = args.viewportWidth;
-        if (args.viewportHeight !== undefined) updates.viewportHeight = args.viewportHeight;
-        if (args.useWorker !== undefined) updates.useWorker = args.useWorker;
+        if (args.viewportWidth !== undefined) topLevelUpdates.viewportWidth = args.viewportWidth;
+        if (args.viewportHeight !== undefined) topLevelUpdates.viewportHeight = args.viewportHeight;
+        if (args.useWorker !== undefined) topLevelUpdates.useWorker = args.useWorker;
 
         if (args.functionsName !== undefined) {
           if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(args.functionsName)) {
             return toolError(`functionsName "${args.functionsName}" is not a valid JavaScript identifier; scripts address functions through this name.`);
           }
-          updates.functionsName = args.functionsName;
+          topLevelUpdates.functionsName = args.functionsName;
         }
 
-        if (Object.keys(updates).length === 0) {
+        if (Object.keys(propertyUpdates).length === 0 && Object.keys(topLevelUpdates).length === 0) {
           return toolError('No updates provided. Specify at least one of: properties, firstLayout, viewportWidth, viewportHeight, useWorker, functionsName.');
         }
 
-        const backupPath = await writer.updateProjectProperties(updates);
+        // One update of project.c3proj through the writer: backed up once per call, and a change saved in the editor meanwhile is merged into
+        const backupPath = await writer.updateProject(project => {
+          Object.assign(project, topLevelUpdates);
+          if (Object.keys(propertyUpdates).length > 0) {
+            project.properties = Object.assign(project.properties ?? {}, propertyUpdates);
+          }
+        });
 
         const result: WriteResult = {
           success: true,
@@ -121,7 +147,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
         return toolResult(result);
       } catch (error) {
         console.error('[update_project_properties] failed:', error);
-        return toolError(`Error updating project properties: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating project properties: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -144,38 +170,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
         });
       } catch (error) {
         console.error('[list_addons] failed:', error);
-        return toolError(`Error listing addons: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  );
-
-  // ─── load_addon_definitions ───────────────────────────────
-  server.tool(
-    'load_addon_definitions',
-    'Load a third-party addon\'s conditions and actions (its addon.json and aces.json) so validate_project and the event tools check that addon\'s ACEs like the built-in ones. Without a path, list the definitions loaded so far.',
-    {
-      path: z.string().min(1).max(4096).optional().describe('An unpacked addon folder, a .c3addon file, or a folder holding several of either'),
-    },
-    async ({ path }) => {
-      try {
-        const summary = (d: ReturnType<typeof loadedAddonDefinitions>[number]) => ({
-          id: d.id, type: d.type, name: d.name, version: d.version, source: d.source, counts: d.counts,
-        });
-        if (path === undefined) {
-          // Addon definitions are loaded into the server, not written to the project
-          return toolResult({ success: true, loaded: loadedAddonDefinitions().map(summary) }, { projectWritten: false });
-        }
-        const report = await loadAddonDefinitions(path);
-        const warnings = report.skipped.map(s => `${s.path}: ${s.reason}`);
-        return toolResult({
-          success: report.loaded.length > 0,
-          loaded: report.loaded,
-          nowLoaded: loadedAddonDefinitions().map(d => `${d.type}:${d.id}`),
-          warnings: warnings.length > 0 ? warnings : undefined,
-        }, { projectWritten: false });
-      } catch (error) {
-        console.error('[load_addon_definitions] failed:', error);
-        return toolError(`Error loading addon definitions: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error listing addons: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -195,20 +190,14 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
     async (args) => {
       try {
         const addons = reader.getUsedAddons();
-        const already = addons.some(a => a.type === args.type && a.id === args.id);
-        if (already) {
-          return toolResult({
-            success: true,
-            entity: args.id,
-            category: 'addon',
-            action: 'already_registered',
-            warnings: [`Addon "${args.id}" (${args.type}) is already registered in usedAddons.`],
-          }, { projectWritten: false });
-        }
-
-        const projectPath = reader.getProjectPath();
-        const content = await readFile(projectPath, 'utf-8');
-        const project = parseJsonText(content);
+        const alreadyRegistered = () => toolResult({
+          success: true,
+          entity: args.id,
+          category: 'addon',
+          action: 'already_registered',
+          warnings: [`Addon "${args.id}" (${args.type}) is already registered in usedAddons.`],
+        }, { projectWritten: false });
+        if (addons.some(a => a.type === args.type && a.id === args.id)) return alreadyRegistered();
 
         const newAddon: Addon = {
           type: args.type,
@@ -217,13 +206,14 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
           author: args.author,
           bundled: args.bundled,
         };
-        project.usedAddons.push(newAddon);
-
-        upgradeProjectShape(project);
-        await backupOnce(projectPath);
-        await atomicReplace(projectPath, serializeJson(project, jsonTextStyleOf(content)));
-        await recordWrite(projectPath, true);
-        await reader.reloadProject();
+        // Through the writer: backed up once per call, and a change saved on disk meanwhile is merged into
+        const backup = await writer.updateProject(project => {
+          // Checked again in the file as it is now: the editor may have registered it meanwhile
+          if ((project.usedAddons as Addon[]).some(a => a.type === args.type && a.id === args.id)) return false;
+          project.usedAddons.push(newAddon);
+        });
+        // Nothing was written: the editor got there first
+        if (backup === undefined) return alreadyRegistered();
 
         const result: WriteResult = {
           success: true,
@@ -234,7 +224,7 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
         return toolResult(result);
       } catch (error) {
         console.error('[register_addon] failed:', error);
-        return toolError(`Error registering addon: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error registering addon: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -252,10 +242,8 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
     async (args) => {
       try {
         const addons = reader.getUsedAddons();
-        const idx = addons.findIndex(a => a.type === args.type && a.id === args.id);
-        if (idx === -1) {
-          return toolError(`Addon "${args.id}" (${args.type}) is not registered in this project.`);
-        }
+        const notRegistered = () => toolError(`Addon "${args.id}" (${args.type}) is not registered in this project.`);
+        if (!addons.some(a => a.type === args.type && a.id === args.id)) return notRegistered();
 
         // Warn if removing a known built-in
         const knownMap = args.type === 'plugin' ? KNOWN_SCIRRA_PLUGINS : (args.type === 'behavior' ? KNOWN_SCIRRA_BEHAVIORS : {});
@@ -263,20 +251,14 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
           return toolError(`"${args.id}" is a known Scirra built-in ${args.type}. Use force=true if you really want to unregister it.`);
         }
 
-        const projectPath = reader.getProjectPath();
-        const content = await readFile(projectPath, 'utf-8');
-        const project = parseJsonText(content);
-
-        const projIdx = (project.usedAddons as Addon[]).findIndex(a => a.type === args.type && a.id === args.id);
-        if (projIdx !== -1) {
+        // Through the writer: backed up once per call, and a change saved on disk meanwhile is merged into
+        const backup = await writer.updateProject(project => {
+          const projIdx = (project.usedAddons as Addon[]).findIndex(a => a.type === args.type && a.id === args.id);
+          if (projIdx === -1) return false;
           project.usedAddons.splice(projIdx, 1);
-        }
-
-        upgradeProjectShape(project);
-        await backupOnce(projectPath);
-        await atomicReplace(projectPath, serializeJson(project, jsonTextStyleOf(content)));
-        await recordWrite(projectPath, true);
-        await reader.reloadProject();
+        });
+        // Nothing was written: the editor removed it first
+        if (backup === undefined) return notRegistered();
 
         const result: WriteResult = {
           success: true,
@@ -288,8 +270,51 @@ export function registerProjectTools({ server, reader, writer }: MutationToolDep
         return toolResult(result);
       } catch (error) {
         console.error('[unregister_addon] failed:', error);
-        return toolError(`Error unregistering addon: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error unregistering addon: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
+
+  // ─── load_addon_definitions ───────────────────────────────
+
+  server.tool(
+    'load_addon_definitions',
+    'Load a third-party addon\'s definitions (addon.json and aces.json) so that validate_project and the event tools can check its conditions, actions and expressions. '
+      + 'The path is an addon folder, or a folder holding several addon folders; give an absolute path, because a relative one is resolved against the folder the server was started in. '
+      + 'The path must lie inside the project folder (for a .c3p project, the folder that holds the .c3p) or inside a root named in the C3_ADDON_DEFINITIONS variable. '
+      + 'Call it without a path to list the definitions loaded so far. '
+      + 'It changes only what this server checks; it writes nothing to the project.',
+    {
+      path: z.string().min(1).max(4096).optional().describe('Addon folder, or a folder holding addon folders; omit to list what is loaded'),
+    },
+    async (args) => {
+      try {
+        const defs = addonDefinitionsOf(reader);
+        if (args.path === undefined) {
+          return toolResult({ loaded: defs.list().map(summaryOf), skipped: [], nowLoaded: nowLoaded(defs) });
+        }
+        const report = await defs.load(args.path);
+        if (report.loaded.length === 0) {
+          const joined = report.skipped.map(s => `${s.name}: ${s.reason}`).join('; ');
+          const text = joined.endsWith('.') ? joined : `${joined}.`;
+          return toolError(`Error loading addon definitions: ${text}${text.endsWith('Nothing was loaded.') ? '' : ' Nothing was loaded.'}`);
+        }
+        return toolResult({ loaded: report.loaded, skipped: report.skipped, nowLoaded: nowLoaded(defs) });
+      } catch (error) {
+        console.error('[load_addon_definitions] failed:', error);
+        return toolError('Error loading addon definitions. Nothing was loaded.');
+      }
+    }
+  );
+}
+
+/** A definition without its ACEs, as a load report lists it. */
+function summaryOf(definition: AddonDefinition): Omit<AddonDefinition, 'aces'> {
+  const { aces: _aces, ...summary } = definition;
+  return summary;
+}
+
+/** The loaded definitions as "<type>:<id>". */
+function nowLoaded(defs: AddonDefinitions): string[] {
+  return defs.list().map(d => `${d.type}:${d.id}`);
 }

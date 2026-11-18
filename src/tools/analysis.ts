@@ -2,7 +2,6 @@
  * MCP Tools for Phase 2 analysis features.
  */
 
-import { redactFsPaths } from '../error-messages.js';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
@@ -16,11 +15,14 @@ import { buildEventOutline, locateEvent, renderOutline } from '../construct3/ana
 import type { EventSheet } from '../construct3/types.js';
 import { notFoundError, toolError, toolResult } from './shared.js';
 import { findRuntimeTraps } from '../construct3/analyzers/runtime-traps.js';
+import { withProjectSync } from './project-sync.js';
+import { errorMessage } from '../construct3/error-text.js';
 
 const detailSchema = z.enum(['summary', 'standard', 'full']).optional().default('standard')
   .describe('Level of detail: summary (<2K tokens), standard, or full');
 
-export function registerAnalysisTools(server: McpServer, reader: Construct3ProjectReader) {
+export function registerAnalysisTools(mcpServer: McpServer, reader: Construct3ProjectReader) {
+  const server = withProjectSync(mcpServer, reader);
   // Tool: Event sheet flow visualization
   server.tool(
     'get_eventsheet_flow',
@@ -42,7 +44,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -68,7 +70,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -78,7 +80,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
   // Tool: Object dependencies
   server.tool(
     'get_object_dependencies',
-    'Get where objects are used (event sheets, layouts including sub-layers and object properties, families, co-occurring objects). Project-wide, orphanedObjects follows find_orphaned_objects, and orphanedFamilyMembers lists the orphans that are family members with their families (delete_object refuses them until they leave the family)',
+    'Get where objects are used (event sheets, layouts including sub-layers and object properties, families, co-occurring objects). Project-wide, orphanedObjects follows find_orphaned_objects, and orphanedFamilyMembers lists the orphans that are family members with their families (delete_object refuses them until they leave the family). Event sheets, layouts and families that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text and listed in unscannedFiles: an object whose name (or SID) such a file holds, or any object when such a file cannot be read at all, gets possiblyReferencedIn (not counted in referenceCount) and, project-wide, is listed in possiblyUsedObjects instead of orphanedObjects. An object whose own object type file could not be parsed gets "unanalysed" (its SID is unknown, so references by SID are not counted) and, without a use found, is listed in unanalysedObjects instead of orphanedObjects',
     {
       object: z.string().max(200).optional().describe('Specific object name (omit for project-wide top 20)'),
       detail: detailSchema,
@@ -94,7 +96,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -104,7 +106,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
   // Tool: Find orphaned objects
   server.tool(
     'find_orphaned_objects',
-    'Find objects not used by any event (as condition/action object, object parameter, expression or runtime.objects in a script action; directly or through a family), not placed in any layout (on any layer or sub-layer, including non-world instances) and not named by an object property of another instance. An orphan that is a member of a family lists it in "families": delete_object refuses it until it leaves the family. Project script files are not scanned.',
+    'Find objects not used by any event (as condition/action object, object parameter, expression, runtime.objects in a script action or the literal name of System "Create object (by name)"; directly or through a family), not placed in any layout (on any layer or sub-layer, including non-world instances) and not named by an object property of another instance. An orphan that is a member of a family lists it in "families": delete_object refuses it until it leaves the family. Event sheets, layouts and families that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text and listed in unscannedFiles: an object whose name (or SID) such a file holds, or any object when such a file cannot be read at all, is listed in possiblyUsed with those files instead of orphanedObjects. An object whose own object type file could not be parsed (its SID is unknown, so uses by SID cannot be looked up) is listed in unanalysedObjects with the reason instead. Project script files are not scanned.',
     {},
     async () => {
       try {
@@ -114,7 +116,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -142,7 +144,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -168,7 +170,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -178,7 +180,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
   // Tool: Project integrity validation
   server.tool(
     'validate_project',
-    'Run integrity checks: file existence, duplicate SIDs/UIDs, broken references, orphaned files, and the rules the Construct 3 editor enforces when opening a project (trigger placement, expression syntax, empty expressions, duplicate object names, family plugins). The result carries `complete` (false when a registered file over the 10MB read cap was skipped, so checks did not cover it) alongside `valid`.',
+    'Run integrity checks: file existence, duplicate SIDs/UIDs, broken references, orphaned files, and the rules the Construct 3 editor enforces when opening a project (trigger placement, expression syntax, empty expressions, duplicate object names, family plugins). It also checks conditions, actions and the expressions in their parameters against the definitions of the Construct release the project was saved with (warnings `ace-unknown-ace`, `ace-unknown-parameter`, `ace-missing-parameter`, `ace-invalid-choice` and `expression-grammar`, `expression-unknown-object`, `expression-unknown-member`, `expression-unknown-function`, `expression-unknown-name`, `expression-argument-count`): the definitions are built on first use from three files the server requests from editor.construct.net (or a local copy named by C3_ACE_SOURCE_DIR) and cached per user, a third-party addon is checked once load_addon_definitions has loaded its definitions, and without definitions these checks are skipped with one info issue (`ace-catalog-unavailable`). `valid` means no errors AND every file was checked; `complete` is false (and so is `valid`) when a registered object type, family, event sheet or layout file exists but was not checked (over the size limit (10MB by default), invalid JSON, unreadable; listed in `unscannedFiles`), so no check covered its contents.',
     {},
     async () => {
       try {
@@ -188,7 +190,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -216,7 +218,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }
@@ -235,7 +237,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
       if (!listed) {
         return { error: notFoundError('Event sheet', name, reader.findNearestName(name, 'eventsheets'), 'list_eventsheets') };
       }
-      return { error: toolError(`Error reading event sheet "${name}": ${error instanceof Error ? error.message : String(error)}`) };
+      return { error: toolError(`Error reading event sheet "${name}": ${errorMessage(error, reader.getProjectDir())}`) };
     }
   }
 
@@ -270,7 +272,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
           actionIndexBase: args.actionIndexBase === 0 ? 0 : 1,
         }));
       } catch (error) {
-        return toolError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -303,7 +305,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         });
         return { content: [{ type: 'text' as const, text: page.text }] };
       } catch (error) {
-        return toolError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -327,7 +329,7 @@ export function registerAnalysisTools(server: McpServer, reader: Construct3Proje
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: redactFsPaths(`Error: ${error instanceof Error ? error.message : String(error)}`) }],
+          content: [{ type: 'text' as const, text: `Error: ${errorMessage(error, reader.getProjectDir())}` }],
           isError: true,
         };
       }

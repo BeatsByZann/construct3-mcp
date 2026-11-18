@@ -1,51 +1,106 @@
 /**
- * Replace tools: replace_object_in_events, replace_in_expressions.
+ * Replace tools: replace_object_in_events and replace_in_expressions.
  *
  * replace_object_in_events is Construct's event-sheet "Replace object": every
  * reference to one object type (or family) in the events of one sheet or the
  * whole project is swapped for another of the same plugin. The references
- * are the ones the rename tools rewrite (`src/construct3/references.ts`):
- * condition/action `objectClass`, the bare object-name parameters and
- * identifier tokens in expressions. An event is swapped only when the target
- * has everything its conditions and actions use from the source: the
- * behavior (`behaviorType`), the instance variable (`instance-variable`
- * parameter, 315 sample uses), the effect (`effect` parameter holding a
- * quoted name, 15 sample uses) and every `Source.Member` expression member
- * that is a behavior or instance variable. The unit of a swap is a branch (an
- * event with its sub-events, which share its picked instances): when any event
- * in it cannot be swapped, the whole branch is left alone and reported, so no
+ * are the ones the rename tools rewrite (`src/construct3/object-name-references.ts`):
+ * condition/action `objectClass`, the object-valued parameters, the object of
+ * an instance variable parameter and `ObjectName.Member` in expressions. An
+ * event is swapped only when the target has everything its conditions and
+ * actions use from the source: the behavior (`behaviorType`), the instance
+ * variable (`instance-variable` parameter), the effect (`effect` parameter
+ * holding a quoted name) and every `Source.Member` expression member that is
+ * a behavior or instance variable. The unit of a swap is a branch (an event
+ * with its sub-events, which share its picked instances): when any event in
+ * it cannot be swapped, the whole branch is left alone and reported, so no
  * branch ends up half swapped. Layouts are not touched: Replace object is an
  * event-sheet command.
  *
- * replace_in_expressions is a bulk find-and-replace over condition and action
- * parameter values (the expression text shown in the event sheet), scoped to
- * chosen sheets and parameter keys, with dryRun and per-sheet counts. Name
- * and combo parameters are protected by default, zero-length matches are
- * refused, and matching runs under a time limit.
+ * All changed sheets are decided in memory first and written together; a
+ * failed write puts the earlier sheets back. Before the first write every
+ * changed sheet passes the editor load-time gate (a new error refuses the
+ * call, nothing written), and the conditions and actions the call changed are
+ * checked against the catalogue of the project's release (warnings). Sheets
+ * that could not be parsed are never changed; they are listed, with what a
+ * text search of them found.
+ *
+ * replace_in_expressions finds and replaces text in the parameter values of
+ * conditions and actions (the expressions shown in event sheets), with the
+ * same all-or-nothing writes.
  */
 
-import { z } from 'zod';
 import vm from 'vm';
+import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { EventSheet, C3Event } from '../construct3/types.js';
-import { toolResult, toolError, notFoundError } from './shared.js';
-import { resetProjectIndex } from '../construct3/analyzers/index-builder.js';
-import { aceTreeSnapshot, buildAceContext, changedAceSidsInTree, checkEventAces, describeEventAceProblem } from '../construct3/ace-catalog.js';
-import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../construct3/expression-check.js';
+import type { EventSheet } from '../construct3/types.js';
+import { toolResult, toolError } from './shared.js';
+import { findNameClash, nameKey } from '../construct3/names.js';
+import { walkEventStrings, type EventStringSite } from '../construct3/event-strings.js';
+import { classifyReadError } from '../construct3/project-reader.js';
 import {
-  collectObjectNameRefsInSheet,
-  countUnrewrittenObjectMentions,
-  countByKind,
-  groupByFile,
-  isExpressionIdentifier,
-  OBJECT_NAME_PARAM_KEYS,
-  type RefSite,
-} from '../construct3/references.js';
+  OBJECT_REWRITE_POLICY,
+  OTHER_NAME_PARAMETER_KEYS,
+  objectNameUsesInSheet,
+  projectVariableNames,
+  type ObjectNameUse,
+} from '../construct3/object-name-references.js';
+import { NON_OBJECT_PARAMETER_KEYS, OBJECT_PARAMETER_KEYS, expressionMemberChains, type ExpressionMemberChain } from '../construct3/analyzers/index-builder.js';
+import { everyAnimation } from '../construct3/animation-rename.js';
+import {
+  checkUnscannedFiles,
+  describeReadFailure,
+  describeUnscannedFile,
+  unscannedFields,
+  unscannedFilesOf,
+  type UnscannedFile,
+  type UnscannedFileReport,
+} from '../construct3/analyzers/unscanned-uses.js';
+import { nameTerm } from '../construct3/raw-text-search.js';
+import { writeEntityOrRollBack } from './call-rollback.js';
+import { checkLoadRulesBeforeWrite, loadRuleErrorMessage, snapshotEvents } from './event-helpers.js';
+import { checkEventChange, warmAceCatalog } from '../construct3/event-change-check.js';
+import type { C3Event } from '../construct3/types.js';
+import { errorMessage, errorReason } from '../construct3/error-text.js';
+import { refuse } from './refusals.js';
+import { unregisteredNameMessage } from './registered-names.js';
+import { withProjectSync } from './project-sync.js';
 
 type Reader = MutationToolDeps['reader'];
 type Json = Record<string, unknown>;
 
-const MAX_DEPTH = 60;
+/** How deep the swap looks into sub-events; a branch or a reference below it is refused or listed, never left out silently. */
+export const MAX_EVENT_DEPTH = 60;
+
+/**
+ * The parameter keys that never hold an object name, for the finder: the
+ * reference index's keys for sounds, instance variables, event variables
+ * and layouts, and the keys for timelines, properties, functions and files.
+ * A value equal to an object's name under one of them is another kind of
+ * name and is left alone, whatever else shares the name.
+ */
+const SWAP_NON_OBJECT_KEYS: ReadonlySet<string> = new Set([...NON_OBJECT_PARAMETER_KEYS, ...OTHER_NAME_PARAMETER_KEYS]);
+
+function isRecord(value: unknown): value is Json {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Member accesses on the object in expression text outside string literals
+ * (`Name.member`, `Name(i).member`, `Name.Behavior.Expression`), the name
+ * compared as the editor does (letter case ignored). With `selfIsObject`,
+ * `Self.member` counts as an access on the object too: in a condition or
+ * action on that object, `Self` is that object.
+ */
+export function expressionMemberChainsOf(text: string, objectName: string, selfIsObject = false): ExpressionMemberChain[] {
+  const key = nameKey(objectName);
+  return expressionMemberChains(text).filter(chain => nameKey(chain.object) === key || (selfIsObject && chain.object.toLowerCase() === 'self'));
+}
+
+/** The member names of `expressionMemberChainsOf`. */
+export function expressionMembers(text: string, objectName: string, selfIsObject = false): string[] {
+  return expressionMemberChainsOf(text, objectName, selfIsObject).map(chain => chain.member);
+}
 
 // ─── Object members ────────────────────────────────────────
 
@@ -60,7 +115,8 @@ interface ObjectMembers {
   animations: Set<string> | null;
 }
 
-function names(list: unknown): string[] {
+/** The names of the entries of a list of named entries. */
+function namesOf(list: unknown): string[] {
   if (!Array.isArray(list)) return [];
   return list
     .map(entry => (entry && typeof entry === 'object' ? (entry as { name?: unknown }).name : undefined))
@@ -70,19 +126,25 @@ function names(list: unknown): string[] {
 /**
  * What an object type or family offers to events. An object type also
  * exposes the behaviors, instance variables and effects of every family it
- * belongs to.
+ * belongs to. `name` is a registered name. A file that cannot be parsed
+ * gives `{ problem }` for the caller to refuse with.
  */
-async function readMembers(reader: Reader, name: string): Promise<ObjectMembers | null> {
+async function readMembers(reader: Reader, name: string): Promise<ObjectMembers | { problem: string } | null> {
   const add = (target: ObjectMembers, holder: Json) => {
-    names(holder.behaviorTypes).forEach(n => target.behaviors.add(n));
+    namesOf(holder.behaviorTypes).forEach(n => target.behaviors.add(n));
     for (const b of Array.isArray(holder.behaviorTypes) ? holder.behaviorTypes as Json[] : []) {
       if (typeof b.name === 'string' && typeof b.behaviorId === 'string') target.behaviorIds.set(b.name, b.behaviorId);
     }
-    names(holder.instanceVariables).forEach(n => target.variables.add(n));
-    names(holder.effectTypes).forEach(n => target.effects.add(n));
+    namesOf(holder.instanceVariables).forEach(n => target.variables.add(n));
+    namesOf(holder.effectTypes).forEach(n => target.effects.add(n));
   };
   if ((await reader.listObjectTypes()).includes(name)) {
-    const obj = await reader.readObjectType(name) as unknown as Json;
+    let obj: Json;
+    try {
+      obj = await reader.readObjectType(name) as unknown as Json;
+    } catch (error) {
+      return { problem: `Cannot read object type "${name}" (${describeReadFailure(classifyReadError(error))}).` };
+    }
     const animations = obj.animations as { items?: unknown } | undefined;
     const members: ObjectMembers = {
       kind: 'object',
@@ -91,7 +153,9 @@ async function readMembers(reader: Reader, name: string): Promise<ObjectMembers 
       behaviorIds: new Map(),
       variables: new Set(),
       effects: new Set(),
-      animations: animations ? new Set(collectAnimationNames(animations)) : null,
+      animations: animations
+        ? new Set(everyAnimation<{ name?: unknown }>(animations).flatMap(a => (typeof a.name === 'string' ? [a.name] : [])))
+        : null,
     };
     add(members, obj);
     for (const [, family] of await reader.readAllFamilies()) {
@@ -100,7 +164,12 @@ async function readMembers(reader: Reader, name: string): Promise<ObjectMembers 
     return members;
   }
   if ((await reader.listFamilies()).includes(name)) {
-    const family = await reader.readFamily(name);
+    let family: Json;
+    try {
+      family = await reader.readFamily(name);
+    } catch (error) {
+      return { problem: `Cannot read family "${name}" (${describeReadFailure(classifyReadError(error))}).` };
+    }
     const members: ObjectMembers = {
       kind: 'family',
       plugin: String(family['plugin-id']),
@@ -116,64 +185,7 @@ async function readMembers(reader: Reader, name: string): Promise<ObjectMembers 
   return null;
 }
 
-function collectAnimationNames(container: unknown): string[] {
-  const out: string[] = [];
-  const walk = (folder: unknown, depth: number) => {
-    if (!folder || typeof folder !== 'object' || depth > 32) return;
-    const f = folder as { items?: unknown; subfolders?: unknown };
-    out.push(...names(f.items));
-    if (Array.isArray(f.subfolders)) f.subfolders.forEach(sub => walk(sub, depth + 1));
-  };
-  walk(container, 0);
-  return out;
-}
-
-// ─── Expression members ────────────────────────────────────
-
-/**
- * Member names used as `Name.Member` in expression text, outside string
- * literals, where `Name` is a whole identifier not itself preceded by `.`.
- */
-export function expressionMembers(text: string, objectName: string): string[] {
-  if (!text.includes(objectName)) return [];
-  const isDelimiter = (ch: string) => !isExpressionIdentifier(ch);
-  const out: string[] = [];
-  let i = 0;
-  let inString = false;
-  let prev = '';
-  while (i < text.length) {
-    const ch = text[i];
-    if (inString) {
-      if (ch === '"') inString = false;
-      prev = ch;
-      i++;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      prev = ch;
-      i++;
-      continue;
-    }
-    if (isDelimiter(ch)) {
-      prev = ch;
-      i++;
-      continue;
-    }
-    let end = i;
-    while (end < text.length && !isDelimiter(text[end])) end++;
-    const run = text.slice(i, end);
-    if (run === objectName && prev !== '.' && text[end] === '.') {
-      let memberEnd = end + 1;
-      while (memberEnd < text.length && !isDelimiter(text[memberEnd])) memberEnd++;
-      if (memberEnd > end + 1) out.push(text.slice(end + 1, memberEnd));
-    }
-    prev = text[end - 1];
-    i = end;
-  }
-  return out;
-}
-
+/** The string values of a condition's or action's parameters, with their keys (positions for custom action arguments). */
 function parameterStrings(ace: Json): Array<{ key: string; value: string }> {
   const params = ace.parameters;
   if (Array.isArray(params)) {
@@ -183,48 +195,74 @@ function parameterStrings(ace: Json): Array<{ key: string; value: string }> {
   return Object.entries(params as Json).flatMap(([key, value]) => (typeof value === 'string' ? [{ key, value }] : []));
 }
 
+/** The text of a value that is one quoted string, or undefined. */
 function wholeLiteral(value: string): string | undefined {
   const m = /^"([^"]*)"$/.exec(value.trim());
   return m ? m[1] : undefined;
 }
 
-/** Why an event's conditions and actions cannot use `to` in place of `from`. */
-function incompatibilities(
-  event: Json,
-  from: string,
-  source: ObjectMembers,
-  target: ObjectMembers,
-  to: string,
-  warnings: string[],
-): string[] {
+/**
+ * The instance variable an `instance-variable` parameter names: a name
+ * (owned by the condition's or action's own object), or `{ name,
+ * objectClass }` of the object it belongs to. `objectClass` is undefined
+ * for the string form and for a record without one.
+ */
+function instanceVariableParameter(ace: Json): { name: string; objectClass?: string } | undefined {
+  const value = isRecord(ace.parameters) ? ace.parameters['instance-variable'] : undefined;
+  if (typeof value === 'string') return { name: value };
+  if (isRecord(value) && typeof value.name === 'string') {
+    return { name: value.name, ...(typeof value.objectClass === 'string' ? { objectClass: value.objectClass } : {}) };
+  }
+  return undefined;
+}
+
+interface ReplaceContext {
+  from: string;
+  to: string;
+  source: ObjectMembers;
+  target: ObjectMembers;
+  variableNames: ReadonlySet<string>;
+}
+
+/** Why an event's conditions and actions cannot use `to` in place of `from` (names of behaviors, instance variables and effects are compared exactly). */
+function incompatibilities(event: Json, ctx: ReplaceContext, warnings: string[]): string[] {
+  const { from, to, source, target } = ctx;
+  const fromKey = nameKey(from);
+  const isFrom = (value: unknown): boolean => typeof value === 'string' && nameKey(value) === fromKey;
   const reasons: string[] = [];
   for (const key of ['conditions', 'actions'] as const) {
     const aces = event[key];
     if (!Array.isArray(aces)) continue;
     for (const raw of aces) {
-      if (!raw || typeof raw !== 'object') continue;
-      const ace = raw as Json;
-      const label = String(ace.id ?? ace.customAction ?? ace.callFunction ?? key);
-      if ((ace.objectClass === from && typeof ace.customAction === 'string') || ace.customActionObjectClass === from) {
-        reasons.push(`"${label}" calls a custom action, which belongs to its object`);
+      if (!isRecord(raw)) continue;
+      const label = String(raw.id ?? raw.customAction ?? raw.callFunction ?? key);
+      const onFrom = isFrom(raw.objectClass);
+      if ((onFrom && typeof raw.customAction === 'string') || isFrom(raw.customActionObjectClass)) {
+        reasons.push(`"${label}" calls a custom action; whether ${to} has it is not checked`);
         continue;
       }
-      const params = parameterStrings(ace);
-      if (ace.objectClass === from) {
-        if (typeof ace.behaviorType === 'string' && !target.behaviors.has(ace.behaviorType)) {
-          reasons.push(`"${label}" uses behavior "${ace.behaviorType}", which ${to} does not have`);
-        } else if (typeof ace.behaviorType === 'string') {
-          // Same name, different behavior: the ACE would address a behavior of another kind.
-          const sourceId = source.behaviorIds.get(ace.behaviorType);
-          const targetId = target.behaviorIds.get(ace.behaviorType);
-          if (sourceId !== undefined && targetId !== undefined && sourceId !== targetId) {
-            reasons.push(`"${label}" uses behavior "${ace.behaviorType}", which is a ${sourceId} behavior on ${from} but a ${targetId} behavior on ${to}`);
-          }
+      const params = parameterStrings(raw);
+      /**
+       * Why behavior `name`, used by this condition, action or expression
+       * member, cannot be served by `to`: it has none of that name, or the
+       * name is another kind of behavior there (compared by behavior id,
+       * for conditions, actions and expression members alike).
+       */
+      const behaviorProblem = (name: string): string | undefined => {
+        if (!target.behaviors.has(name)) return `${to} does not have it`;
+        const sourceId = source.behaviorIds.get(name);
+        const targetId = target.behaviorIds.get(name);
+        if (sourceId !== undefined && targetId !== undefined && sourceId !== targetId) {
+          return `it is a ${sourceId} behavior on ${from} but a ${targetId} behavior on ${to}`;
+        }
+        return undefined;
+      };
+      if (onFrom) {
+        if (typeof raw.behaviorType === 'string') {
+          const problem = behaviorProblem(raw.behaviorType);
+          if (problem !== undefined) reasons.push(`"${label}" uses behavior "${raw.behaviorType}": ${problem}`);
         }
         for (const { key: paramKey, value } of params) {
-          if (paramKey === 'instance-variable' && !target.variables.has(value)) {
-            reasons.push(`"${label}" uses instance variable "${value}", which ${to} does not have`);
-          }
           const literal = wholeLiteral(value);
           if (paramKey === 'effect' && literal !== undefined && source.effects.has(literal) && !target.effects.has(literal)) {
             reasons.push(`"${label}" uses effect "${literal}", which ${to} does not have`);
@@ -234,12 +272,22 @@ function incompatibilities(
           }
         }
       }
+      // The variable's owner is the record's own objectClass when it has one (a record naming another object is not about `from`,
+      // as the finder leaves it); the string form and a record without an owner belong to the condition's or action's object
+      const variable = instanceVariableParameter(raw);
+      if (variable !== undefined && (variable.objectClass !== undefined ? isFrom(variable.objectClass) : onFrom) && !target.variables.has(variable.name)) {
+        reasons.push(`"${label}" uses instance variable "${variable.name}", which ${to} does not have`);
+      }
       for (const { value } of params) {
-        for (const member of expressionMembers(value, from)) {
-          if (source.behaviors.has(member) && !target.behaviors.has(member)) {
-            reasons.push(`"${label}" reads ${from}.${member}, a behavior ${to} does not have`);
+        // `Self.x` in a condition or action on `from` is `from` (Self in any other is another object)
+        for (const chain of expressionMemberChainsOf(value, from, onFrom)) {
+          const member = chain.member;
+          const shown = `${isFrom(chain.object) ? from : 'Self'}.${member}`;
+          if (source.behaviors.has(member)) {
+            const problem = behaviorProblem(member);
+            if (problem !== undefined) reasons.push(`"${label}" reads ${shown}, a behavior: ${problem}`);
           } else if (source.variables.has(member) && !target.variables.has(member)) {
-            reasons.push(`"${label}" reads ${from}.${member}, an instance variable ${to} does not have`);
+            reasons.push(`"${label}" reads ${shown}, an instance variable ${to} does not have`);
           }
         }
       }
@@ -248,124 +296,179 @@ function incompatibilities(
   return reasons;
 }
 
+/** An event (with its sub-events) left unchanged, and why. */
 interface SkippedEvent {
   file: string;
   path: string;
   eventSid?: number;
+  /** How many definite uses of the replaced object it holds */
   references: number;
   reasons: string[];
 }
 
-/**
- * Scan (and optionally swap) one sheet. The unit of a swap is a branch: an
- * event that references the replaced object together with all its
- * sub-events, because sub-events inherit the parent's picked instances.
- * Swapping a parent while a sub-event keeps the old object (or the reverse)
- * would change what the sub-event picks, so when any event in the branch
- * cannot be swapped, the whole branch is left alone and reported. An event
- * that does not reference the object passes each sub-event on as its own
- * branch. Each event is handed to the shared rename scanner on its own
- * (children detached), so paths and kinds match the rename tools.
- */
-function replaceInSheet(
-  file: string,
-  sheet: EventSheet,
-  from: string,
-  to: string,
-  source: ObjectMembers,
-  target: ObjectMembers,
-  apply: boolean,
-  warnings: string[],
-): { sites: RefSite[]; skipped: SkippedEvent[] } {
-  const sites: RefSite[] = [];
-  const skipped: SkippedEvent[] = [];
-  const isOwnedDefinition = (event: Json) => event.eventType === 'custom-ace-block' && event.objectClass === from;
-  const scanOne = (event: Json, path: string) => {
-    const single = { name: sheet.name, events: [{ ...event, children: undefined }] } as unknown as EventSheet;
-    const found = collectObjectNameRefsInSheet(file, single, from, to, false)
-      .map(site => ({ ...site, path: path + site.path.slice('events[0]'.length) }));
-    return { single, found };
-  };
+/** The result of scanning one sheet: the swapped uses, the events left whole, and the uses that no swap changes. */
+interface SheetScan {
+  swapped: ObjectNameUse[];
+  skipped: SkippedEvent[];
+  notChanged: ObjectNameUse[];
+}
 
-  interface Branch { sites: RefSite[]; singles: EventSheet[]; reasons: string[] }
+/**
+ * Scan (and with `apply`, swap in memory) one sheet. The unit of a swap is a
+ * branch: an event that references the replaced object with all its
+ * sub-events, because sub-events inherit the parent's picked instances; when
+ * any event of the branch cannot be swapped the whole branch is left alone
+ * and reported. Each event is handed to the finder on its own (children
+ * detached, its conditions and actions shared with the sheet), so a rewrite
+ * reaches the sheet and the paths match the finder's.
+ */
+function replaceInSheet(file: string, sheet: EventSheet, ctx: ReplaceContext, apply: boolean, warnings: string[]): SheetScan {
+  const { from, to, variableNames } = ctx;
+  const swapped: ObjectNameUse[] = [];
+  const skipped: SkippedEvent[] = [];
+  const isOwnedDefinition = (event: Json) => event.eventType === 'custom-ace-block' && typeof event.objectClass === 'string' && nameKey(event.objectClass) === nameKey(from);
+  const scanOne = (event: Json, path: string, rewrite: boolean) => {
+    const single = { ...sheet, events: [{ ...event, children: undefined }] } as unknown as EventSheet;
+    return objectNameUsesInSheet(single, file, from, variableNames, OBJECT_REWRITE_POLICY, rewrite ? to : undefined, SWAP_NON_OBJECT_KEYS)
+      .filter(use => use.definite)
+      .map(use => ({ ...use, eventPath: path + (use.eventPath ?? '').slice('events[0]'.length) }));
+  };
+  // Definite uses in an event and all its sub-events (a definition left whole is counted with what is inside it)
+  const usesInBranch = (event: Json) => objectNameUsesInSheet({ ...sheet, events: [event] } as unknown as EventSheet, file, from, variableNames, OBJECT_REWRITE_POLICY, undefined, SWAP_NON_OBJECT_KEYS)
+    .filter(use => use.definite).length;
+  interface Branch { uses: ObjectNameUse[]; events: Array<{ event: Json; path: string }>; reasons: string[]; warnings: string[] }
   const collectBranch = (event: Json, path: string, rootPath: string, depth: number, branch: Branch) => {
     const where = path === rootPath ? '' : `sub-event ${path}: `;
     if (isOwnedDefinition(event)) {
       branch.reasons.push(`${where}custom action definition owned by ${from}`);
       return;
     }
-    const { single, found } = scanOne(event, path);
+    const found = scanOne(event, path, false);
     if (found.length > 0) {
-      branch.sites.push(...found);
-      branch.singles.push(single);
-      for (const reason of incompatibilities(event, from, source, target, to, warnings)) {
-        branch.reasons.push(where + reason);
-      }
+      branch.uses.push(...found);
+      branch.events.push({ event, path });
+      for (const reason of incompatibilities(event, ctx, branch.warnings)) branch.reasons.push(where + reason);
     }
-    if (!Array.isArray(event.children) || depth > MAX_DEPTH) return;
+    if (!Array.isArray(event.children) || event.children.length === 0) return;
+    if (depth >= MAX_EVENT_DEPTH) {
+      // Not descended into: the events below might use something `to` lacks, so the branch is refused whole
+      branch.reasons.push(`${where}nested deeper than ${MAX_EVENT_DEPTH} levels; the events below it were not checked`);
+      return;
+    }
     event.children.forEach((child, i) => {
-      if (child && typeof child === 'object') {
-        collectBranch(child as Json, `${path}.children[${i}]`, rootPath, depth + 1, branch);
-      }
+      if (isRecord(child)) collectBranch(child, `${path}.children[${i}]`, rootPath, depth + 1, branch);
     });
   };
-
   const walk = (list: unknown, prefix: string, depth: number) => {
-    if (!Array.isArray(list) || depth > MAX_DEPTH) return;
+    if (!Array.isArray(list)) return;
+    if (depth > MAX_EVENT_DEPTH) {
+      // Events this deep are not walked; any that use the object are listed, not left out
+      const events = list.filter(isRecord);
+      const references = usesInBranch({ eventType: 'group', children: events } as Json);
+      if (references > 0) skipped.push({ file, path: prefix, references, reasons: [`nested deeper than ${MAX_EVENT_DEPTH} levels; the events below it were not checked`] });
+      return;
+    }
     list.forEach((raw, i) => {
-      if (!raw || typeof raw !== 'object') return;
-      const event = raw as Json;
+      if (!isRecord(raw)) return;
+      const event = raw;
       const path = `${prefix}[${i}]`;
       const eventSid = typeof event.sid === 'number' ? event.sid : undefined;
       if (isOwnedDefinition(event)) {
-        skipped.push({
-          file, path, eventSid, references: 1,
-          reasons: ['custom action definition: its owner and the events inside it are not replaced'],
-        });
+        skipped.push({ file, path, eventSid, references: usesInBranch(event), reasons: ['custom action definition: its owner and the events inside it are not replaced'] });
         return;
       }
-      if (scanOne(event, path).found.length === 0) {
+      if (scanOne(event, path, false).length === 0) {
         walk(event.children, `${path}.children`, depth + 1);
         return;
       }
-      const branch: Branch = { sites: [], singles: [], reasons: [] };
+      const branch: Branch = { uses: [], events: [], reasons: [], warnings: [] };
       collectBranch(event, path, path, depth, branch);
       if (branch.reasons.length > 0) {
-        skipped.push({ file, path, eventSid, references: branch.sites.length, reasons: [...new Set(branch.reasons)] });
+        // Warnings about a swap ("swapped anyway") are dropped with the branch, which is not swapped
+        skipped.push({ file, path, eventSid, references: usesInBranch(event), reasons: [...new Set(branch.reasons)] });
         return;
       }
-      sites.push(...branch.sites);
-      if (apply) {
-        for (const single of branch.singles) collectObjectNameRefsInSheet(file, single, from, to, true);
-      }
+      warnings.push(...branch.warnings);
+      swapped.push(...branch.uses);
+      if (apply) for (const member of branch.events) scanOne(member.event, member.path, true);
     });
   };
   walk(sheet.events, 'events', 0);
-  return { sites, skipped };
+  // Uses that no swap changes (scripts, string literals, variable values, possible expressions), anywhere in the sheet
+  const notChanged = objectNameUsesInSheet(sheet, file, from, variableNames, OBJECT_REWRITE_POLICY, undefined, SWAP_NON_OBJECT_KEYS).filter(use => !use.definite);
+  return { swapped, skipped, notChanged };
+}
+
+/** Uses counted by kind. */
+function countKinds(uses: readonly ObjectNameUse[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const use of uses) counts[use.kind] = (counts[use.kind] ?? 0) + 1;
+  return counts;
+}
+
+/** Uses grouped by the file they are in, with their kinds. */
+function groupByFile(uses: readonly ObjectNameUse[]): Array<{ file: string; count: number; kinds: Record<string, number> }> {
+  const files = new Map<string, ObjectNameUse[]>();
+  for (const use of uses) files.set(use.file, [...(files.get(use.file) ?? []), use]);
+  return [...files].map(([file, list]) => ({ file, count: list.length, kinds: countKinds(list) }));
+}
+
+/** Warnings for the sheets that could not be parsed: what the text search found, and that they were not changed. */
+function unparsedSheetWarnings(reports: readonly UnscannedFileReport[]): string[] {
+  return reports.map(report => {
+    const file = describeUnscannedFile(report);
+    if (report.textSearch === 'possible-use') return `${file} could not be parsed; its text names ${(report.names ?? []).map(n => `"${n}"`).join(', ')}. It was not changed.`;
+    if (report.textSearch === 'unreadable') return `${file} could not be searched either. It was not changed.`;
+    if (report.textSearch === 'not-searched') return `${file} could not be parsed and was not searched. It was not changed.`;
+    return `${file} could not be parsed and was only searched as text; no mention was found. It was not changed.`;
+  });
+}
+
+/** A sheet the call changed in memory, with its events as they were read. */
+interface ChangedSheet {
+  name: string;
+  sheet: EventSheet;
+  before: C3Event[];
+}
+
+/**
+ * The load-time gate and the ACE check for every sheet a replace changed,
+ * before any is written: a new load-time error puts every sheet back and gives
+ * the refusal text; otherwise the gate's warnings and the ACE check's, each
+ * ACE warning prefixed with its sheet's name, are added to `warnings`.
+ */
+async function checkChangedSheets(reader: Reader, changed: readonly ChangedSheet[], warnings: string[]): Promise<string | undefined> {
+  for (const { name, sheet, before } of changed) {
+    const loadCheck = await checkLoadRulesBeforeWrite(reader, name, before, sheet.events);
+    if (loadCheck.errors.length > 0) {
+      for (const c of changed) c.sheet.events = c.before;
+      return loadRuleErrorMessage(loadCheck.errors);
+    }
+    warnings.push(...loadCheck.warnings);
+  }
+  for (const { name, sheet, before } of changed) {
+    warnings.push(...(await checkEventChange(reader, name, before, sheet.events)).map(w => `${name}: ${w}`));
+  }
+  return undefined;
 }
 
 // ─── Expression find-and-replace ───────────────────────────
 
 /**
- * Parameter keys whose value is a name, not an expression. Sample evidence
- * (22 r495 examples, the template and C3-ACE): `variable` (635 uses),
- * `instance-variable` (616), `object` (235), `child` (135), `object-to-create`
- * (49), `timeline` (47), `property` (55, timeline property names), `parent`
- * (20), `object-class`, `pin-to`, `target`, `function`, `file` and
- * `audio-file`, plus `instance` and `layout` from the rename scanner. Quoted
- * names such as animation or layer names are expressions and stay searchable.
+ * Parameter keys whose value is a name, not an expression: the reference
+ * index's object and non-object name keys, and the keys of other kinds of
+ * name that the index does not look at.
  */
 export const NAME_PARAMETER_KEYS = new Set([
-  ...OBJECT_NAME_PARAM_KEYS,
-  'variable', 'instance-variable', 'layout', 'timeline', 'property',
-  'object-class', 'pin-to', 'target', 'function', 'file', 'audio-file',
+  ...OBJECT_PARAMETER_KEYS, ...NON_OBJECT_PARAMETER_KEYS, ...OTHER_NAME_PARAMETER_KEYS,
+  'parent', 'instance', 'object-class', 'target',
 ]);
 
 /**
  * Parameter keys that hold a combo choice (a fixed lower-case ID such as
- * `enabled`, `easeinsine` or `d-pad-left`) in the samples. `state` also holds
- * expressions for some addons, so a value under these keys counts as a combo
- * only when it looks like one.
+ * `enabled`, `easeinsine` or `d-pad-left`) in editor-saved projects. `state`
+ * also holds expressions for some addons, so a value under these keys counts
+ * as a combo only when it looks like one.
  */
 export const COMBO_PARAMETER_KEYS = new Set([
   'which', 'ease', 'destroy-on-complete', 'loop', 'ping-pong', 'from', 'type',
@@ -405,6 +508,7 @@ const MATCH_SCRIPT = [
   'out;',
 ].join('\n');
 
+/** What matching one value gave. */
 export interface MatchOutcome {
   count: number;
   /** The pattern matched zero characters somewhere in this value. */
@@ -412,6 +516,7 @@ export interface MatchOutcome {
   after: string;
 }
 
+/** The pattern did not finish within the time limit. */
 export class RegexTimeoutError extends Error {
   constructor(timeoutMs: number) {
     super(`The search pattern took longer than ${timeoutMs} ms to run (probably catastrophic backtracking). Simplify the pattern or narrow the sheets.`);
@@ -443,103 +548,170 @@ export function matchAllBounded(
   return out;
 }
 
-// ─── Registration ──────────────────────────────────────────
+/** The path of a parameter as `changes` reports it: "events[0].actions[1].parameters.value" or "...parameters[0]". */
+function parameterPath(site: EventStringSite, key: string, named: boolean): string {
+  const m = /^(condition|action) (\d+)$/.exec(site.ace);
+  const list = m ? `${m[1]}s[${m[2]}]` : site.ace;
+  return `${site.eventPath}.${list}.parameters${named ? `.${key}` : `[${key}]`}`;
+}
 
-export function registerReplaceTools({ server, reader, writer }: MutationToolDeps) {
+/**
+ * Compare two slots by their place in the sheet: an event's conditions,
+ * then its actions, then its sub-events, each in index order (the
+ * numbers of the path, with conditions below actions below children). A
+ * positional parameter compares by its index as a number; parameters of one
+ * condition or action that remain tied compare by path text.
+ */
+function documentOrder(a: { path: string }, b: { path: string }): number {
+  const offset: Record<string, number> = { events: 0, conditions: 0, actions: 1e6, children: 2e6, parameters: 0 };
+  const key = (slot: { path: string }) => [...slot.path.matchAll(/(events|children|conditions|actions|parameters)\[(\d+)\]/g)]
+    .map(m => offset[m[1]] + Number(m[2]));
+  const ka = key(a);
+  const kb = key(b);
+  for (let i = 0; i < Math.min(ka.length, kb.length); i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+  if (ka.length !== kb.length) return ka.length - kb.length;
+  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+}
+
+/** A condition or action parameter value that may be replaced. */
+interface ParameterSlot {
+  /** Index into the scanned sheets */
+  sheet: number;
+  set(value: string): void;
+  key: string;
+  value: string;
+  path: string;
+  eventSid?: number;
+  /** The value holds a name or a combo choice, which is left alone unless parameterKeys names it */
+  protectedName: boolean;
+}
+
+/** One change as the result lists it. */
+interface ReportedChange {
+  sheet: string;
+  eventSid?: number;
+  path: string;
+  key: string;
+  before: string;
+  after: string;
+}
+
+/** Register the replace tools. */
+export function registerReplaceTools({ server: mcpServer, reader, writer }: MutationToolDeps): void {
+  const server = withProjectSync(mcpServer, reader);
+
   // ─── replace_object_in_events ─────────────────────────────
 
   server.tool(
     'replace_object_in_events',
-    'Construct\'s "Replace object" for event sheets: swap every reference to one object type or family for another of the same plugin, in one sheet or all sheets (objectClass, object parameters, and ObjectName.Member expressions). An event is swapped only when the replacement has the behaviors, instance variables and effects it uses; other events are left unchanged and listed with the reason. Layouts are not changed.',
+    'Swap every reference to one object type or family for another of the same plugin in the event sheets, in one sheet or all of them '
+      + '(objectClass, object parameters, the object-valued instance variable parameter, and ObjectName.Member expressions). '
+      + 'An event is swapped only when the replacement has the behaviors, instance variables and effects it uses; a sub-event goes with its parent, '
+      + 'and other events are left unchanged and listed with the reason. Layouts are not changed. '
+      + 'Both names must be given as registered, in that letter case. A swap that would add an editor load-time error is refused, nothing written. '
+      + 'All changed sheets are written together, and a failed write is rolled back; '
+      + 'sheets that could not be parsed are listed and not changed, and a global variable declared in one of them is not known to the swap.',
     {
-      fromObject: z.string().max(200).describe('Object type or family to replace'),
-      toObject: z.string().max(200).describe('Object type or family to use instead (same plugin)'),
+      fromObject: z.string().max(200).describe('Object type or family to replace (as registered, in that letter case)'),
+      toObject: z.string().max(200).describe('Object type or family to use instead (same plugin; as registered)'),
       sheetName: z.string().max(200).optional().describe('Limit the swap to this event sheet; omit for the whole project'),
       dryRun: z.boolean().optional().default(false).describe('Report what would be swapped and skipped, and write nothing'),
     },
     async (args) => {
-      const filesWritten: string[] = [];
       try {
         const { fromObject: from, toObject: to } = args;
-        if (from === to) return toolError('fromObject and toObject are the same.');
-        const source = await readMembers(reader, from);
-        if (!source) return notFoundError('Object or family', from, reader.findNearestName(from, 'objects'), 'list_objects');
-        const target = await readMembers(reader, to);
-        if (!target) return notFoundError('Object or family', to, reader.findNearestName(to, 'objects'), 'list_objects');
+        const names = [...await reader.listObjectTypes(), ...await reader.listFamilies()];
+        for (const name of [from, to]) {
+          const missing = unregisteredNameMessage('Object or family', name, names, () => reader.findNearestName(name, 'objects'), 'list_objects');
+          if (missing !== undefined) return refuse(missing);
+        }
+        if (nameKey(from) === nameKey(to)) return refuse('fromObject and toObject are the same.');
+        // A family the reader could not parse may give `from` or `to` members the check cannot see
+        const families = await reader.readAllFamilies();
+        const brokenFamilies = unscannedFilesOf('families', await reader.listFamilies(), families, reader.getReadFailures('families'));
+        if (brokenFamilies.length > 0) {
+          return refuse(`Cannot read ${brokenFamilies.map(f => `family "${f.name}" (${f.reason})`).join(', ')}; `
+            + 'what it gives its members is unknown, so whether an event can be swapped cannot be decided.');
+        }
+        const source = (await readMembers(reader, from))!;
+        if ('problem' in source) return refuse(source.problem);
+        const target = (await readMembers(reader, to))!;
+        if ('problem' in target) return refuse(target.problem);
         if (source.plugin !== target.plugin) {
-          return toolError(
-            `"${from}" is a ${source.plugin} and "${to}" is a ${target.plugin}. Replace object only swaps objects of the same plugin, because their conditions, actions and expressions differ.`
-          );
+          return refuse(`"${from}" is a ${source.plugin} and "${to}" is a ${target.plugin}. Replace object only swaps objects of the same plugin, because their conditions, actions and expressions differ.`);
         }
-
-        const sheets = await reader.listEventSheets();
-        if (args.sheetName !== undefined && !sheets.includes(args.sheetName)) {
-          return notFoundError('Event sheet', args.sheetName, reader.findNearestName(args.sheetName, 'eventsheets'), 'list_eventsheets');
+        const registered = await reader.listEventSheets();
+        if (args.sheetName !== undefined) {
+          const missing = unregisteredNameMessage('Event sheet', args.sheetName, registered, () => reader.findNearestName(args.sheetName!, 'eventsheets'), 'list_eventsheets');
+          if (missing !== undefined) return refuse(missing);
         }
-        const scope = args.sheetName !== undefined ? [args.sheetName] : sheets;
+        // The catalogue for the ACE check, obtained before the sheets are read, so a fetch does not run between the reads and the writes
+        if (!args.dryRun) await warmAceCatalog(reader);
+        // The project's variable names decide whether a whole-value parameter is a variable or the object; read-only
+        const all = await reader.readAllEventSheets();
+        const unparsed = unscannedFilesOf('eventSheets', registered, all, reader.getReadFailures('eventSheets'));
+        const ctx: ReplaceContext = { from, to, source, target, variableNames: projectVariableNames(all) };
         const warnings: string[] = [];
-        if (!isExpressionIdentifier(to)) {
-          warnings.push(`"${to}" cannot appear in expression text (it contains a delimiter such as a space); swapped expressions will not parse.`);
-        }
+        if (!/^[\p{L}\p{N}_]+$/u.test(to)) warnings.push(`"${to}" cannot appear in expression text (it contains a delimiter such as a space); swapped expressions will not parse.`);
 
-        const sites: RefSite[] = [];
+        // Everything is decided and changed in memory first; nothing is written until all sheets are done
+        const scope = args.sheetName !== undefined ? [args.sheetName] : registered.filter(n => !unparsed.some(f => f.name === n));
+        const changed: Array<ChangedSheet & { file: string }> = [];
+        const swapped: ObjectNameUse[] = [];
         const skipped: SkippedEvent[] = [];
-        let unrewritten = 0;
-        let aceContext: Awaited<ReturnType<typeof buildAceContext>> | undefined;
-        let expressionContext: Awaited<ReturnType<typeof buildExpressionContext>> | undefined;
+        const notChanged: ObjectNameUse[] = [];
         for (const name of scope) {
-          const file = reader.getEntityRelativePath('eventSheets', name);
           let sheet: EventSheet;
           try {
             sheet = await reader.readEventSheet(name);
-          } catch (e) {
-            warnings.push(`Event sheet "${name}" could not be read and was not scanned: ${e instanceof Error ? e.message : String(e)}`);
-            continue;
+          } catch (error) {
+            return refuse(`Cannot read event sheet "${name}" (${describeReadFailure(classifyReadError(error))}).`);
           }
-          const acesBefore = aceTreeSnapshot(sheet.events);
-          const result = replaceInSheet(file, sheet, from, to, source, target, !args.dryRun, warnings);
-          sites.push(...result.sites);
-          skipped.push(...result.skipped);
-          unrewritten += countUnrewrittenObjectMentions(sheet, from);
-          if (!args.dryRun && result.sites.length > 0) {
-            // The swapped conditions and actions, against Construct's own definitions.
-            aceContext ??= await buildAceContext(reader);
-            expressionContext ??= await buildExpressionContext(reader);
-            const changed = changedAceSidsInTree(acesBefore, sheet.events);
-            for (const problem of checkEventAces(sheet.events, aceContext, changed)) {
-              warnings.push(`${name}: ${describeEventAceProblem(problem)}`);
+          // The load-time check of a real run compares with this copy; a dry run changes nothing and needs none
+          const before = args.dryRun ? [] : snapshotEvents(sheet.events);
+          const file = reader.getEntityRelativePath('eventSheets', name);
+          const scan = replaceInSheet(file, sheet, ctx, !args.dryRun, warnings);
+          swapped.push(...scan.swapped);
+          skipped.push(...scan.skipped);
+          notChanged.push(...scan.notChanged);
+          if (scan.swapped.length > 0) changed.push({ name, sheet, before, file });
+        }
+        // Sheets that could not be parsed are outside a call limited to one sheet
+        const outOfScope = args.sheetName === undefined ? unparsed : [];
+        const reports = await checkUnscannedFiles(reader, outOfScope, [{ categories: ['eventSheets'], allOf: [[nameTerm(from)]] }]);
+        warnings.push(...unparsedSheetWarnings(reports));
+        if (notChanged.length > 0) {
+          warnings.push(`${notChanged.length} mention(s) of "${from}" were listed and not changed (${Object.entries(countKinds(notChanged)).map(([k, n]) => `${k}: ${n}`).join(', ')}).`);
+        }
+
+        const filesWritten: string[] = [];
+        if (!args.dryRun) {
+          const refusal = await checkChangedSheets(reader, changed, warnings);
+          if (refusal !== undefined) return refuse(refusal);
+          for (const { name, sheet, file } of changed) {
+            try {
+              await writeEntityOrRollBack(writer, 'eventSheets', name, sheet);
+            } catch (error) {
+              return toolError(errorMessage(error, reader.getProjectDir()));
             }
-            for (const problem of checkEventExpressions(sheet.events, expressionContext, aceContext, changed)) {
-              warnings.push(`${name}: ${describeEventExpressionProblem(problem)}`);
-            }
-            const subfolder = writer.getSubfolderForEntity('eventSheets', name);
-            await writer.writeEntityFile('eventSheets', name, sheet, subfolder);
-            resetProjectIndex();
             filesWritten.push(file);
           }
         }
-        if (unrewritten > 0) {
-          warnings.push(`${unrewritten} mention(s) of "${from}" in script bodies, comments or variable initial values were not changed.`);
-        }
-
         return toolResult({
-          success: true,
-          entity: to,
-          category: source.kind,
-          action: args.dryRun ? 'dry-run' : 'replaced',
-          fromObject: from,
-          toObject: to,
-          sheetsScanned: scope.length,
-          references: { total: sites.length, byKind: countByKind(sites), byFile: groupByFile(sites) },
+          success: true, entity: to, category: source.kind, action: args.dryRun ? 'dry-run' : 'replaced',
+          fromObject: from, toObject: to, sheetsScanned: scope.length,
+          references: { total: swapped.length, byKind: countKinds(swapped), byFile: groupByFile(swapped) },
           skippedEvents: skipped,
-          filesWritten,
-          dryRun: args.dryRun,
+          notChanged: { total: notChanged.length, byKind: countKinds(notChanged) },
+          filesWritten, dryRun: args.dryRun,
+          ...(outOfScope.length > 0 ? { complete: false } : {}),
           warnings: warnings.length > 0 ? [...new Set(warnings)] : undefined,
+          ...unscannedFields(reports),
         }, { projectWritten: filesWritten.length > 0 });
       } catch (error) {
         console.error('[replace_object_in_events] failed:', error);
-        const written = filesWritten.length > 0 ? ` Files already written: ${filesWritten.join(', ')}.` : '';
-        return toolError(`Error replacing object: ${error instanceof Error ? error.message : String(error)}.${written}`);
+        // Everything before the first write is in this try, and the writes return from their own catch: nothing was changed
+        return refuse(`Error replacing object: ${errorReason(error, { projectDir: reader.getProjectDir(), relative: file => writer.projectRelative(file) })}`);
       }
     }
   );
@@ -548,90 +720,82 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
 
   server.tool(
     'replace_in_expressions',
-    'Find and replace text in condition and action parameter values (the expressions shown in event sheets) across the project or chosen sheets. Parameters that hold a name (variable, instance-variable, object, layout, timeline, ...) or a combo choice are left alone unless parameterKeys names them. Comments, scripts and variable declarations are not touched. Matching is limited to 2 seconds in total. Use dryRun to see every change first.',
+    'Find and replace text in condition and action parameter values (the expressions shown in event sheets) across the project or chosen sheets. '
+      + 'Parameters that hold a name (variable, instance-variable, object, layout, timeline, ...) or a combo choice are left alone unless parameterKeys names them. '
+      + 'Comments, scripts and variable declarations are not touched. Matching is limited to 2 seconds in total. '
+      + 'A replacement that would add an editor load-time error is refused, nothing written. '
+      + 'Sheets that could not be parsed are listed in unscannedFiles (with complete: false), were not changed, and are only searched as text for a plain name. '
+      + 'Use dryRun to see every change first.',
     {
       find: z.string().min(1).max(500).describe('Text to find, or a regular expression when regex is true'),
       replace: z.string().max(2000).describe('Replacement text; with regex, $1-style group references are expanded'),
       regex: z.boolean().optional().default(false).describe('Treat find as a JavaScript regular expression'),
       caseSensitive: z.boolean().optional().default(true).describe('Match case (default true)'),
       wholeWord: z.boolean().optional().default(false).describe('Match whole words only'),
-      sheets: z.array(z.string().max(200)).max(500).optional().describe('Limit to these event sheets (default: all)'),
+      sheets: z.array(z.string().max(200)).max(500).optional().describe('Limit to these event sheets (as registered, in that letter case; default: all)'),
       parameterKeys: z.array(z.string().max(200)).max(100).optional()
         .describe('Only change parameters with these keys (e.g. ["value", "expression"]); naming a name or combo key here makes it replaceable. Positional custom-action or function arguments use their index ("0", "1", ...)'),
       dryRun: z.boolean().optional().default(false).describe('Report the changes and write nothing'),
       maxReported: z.number().int().min(0).max(1000).optional().default(100).describe('Maximum individual changes listed in the result (counts are always complete)'),
     },
     async (args) => {
-      const filesWritten: string[] = [];
       try {
         let pattern: RegExp;
         try {
           const sourceText = args.regex ? args.find : args.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           pattern = new RegExp(args.wholeWord ? `\\b(?:${sourceText})\\b` : sourceText, args.caseSensitive ? 'g' : 'gi');
         } catch (e) {
-          return toolError(`Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`);
+          return refuse(`Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`);
         }
-        const allSheets = await reader.listEventSheets();
-        const scope = [...new Set(args.sheets ?? allSheets)];
-        const missing = scope.filter(name => !allSheets.includes(name));
-        if (missing.length > 0) return toolError(`Event sheet(s) not found: ${missing.join(', ')}. Use list_eventsheets to see all names.`);
+        const registered = await reader.listEventSheets();
+        const requested = args.sheets === undefined ? undefined : [...new Set(args.sheets)];
+        const missing = (requested ?? []).filter(name => !registered.includes(name));
+        if (missing.length > 0) {
+          const shown = missing.map(name => {
+            const variant = findNameClash(name, registered);
+            return variant === undefined ? name : `${name} (Did you mean "${variant}"?)`;
+          });
+          return refuse(`Event sheet(s) not found: ${shown.join(', ')}. Use list_eventsheets to see all names.`);
+        }
+        // The catalogue for the ACE check, obtained before the sheets are read, so a fetch does not run between the reads and the writes
+        if (!args.dryRun) await warmAceCatalog(reader);
+        // Sheets that cannot be parsed are outside a call that names its sheets
+        let unparsed: UnscannedFile[] = [];
+        if (requested === undefined) {
+          const all = await reader.readAllEventSheets();
+          unparsed = unscannedFilesOf('eventSheets', registered, all, reader.getReadFailures('eventSheets'));
+        }
+        const scope = requested ?? registered.filter(name => !unparsed.some(f => f.name === name));
         const keyFilter = args.parameterKeys ? new Set(args.parameterKeys) : null;
         // Plain text: a literal replacement, so escape String.replace's $ patterns.
         const replacement = args.regex ? args.replace : args.replace.replace(/\$/g, '$$$$');
         const warnings: string[] = [];
 
-        // Phase 1: collect every candidate parameter without matching.
-        interface Slot {
-          sheet: number;
-          record: Record<string, unknown>;
-          key: string;
-          value: string;
-          path: string;
-          eventSid?: number;
-          protectedName: boolean;
-        }
-        const sheets: Array<{ name: string; data: EventSheet }> = [];
-        const slots: Slot[] = [];
+        // Phase 1: collect every candidate parameter without matching, in each sheet's order.
+        const sheets: Array<{ name: string; data: EventSheet; before: C3Event[] }> = [];
+        const slots: ParameterSlot[] = [];
         for (const name of scope) {
           let data: EventSheet;
           try {
             data = await reader.readEventSheet(name);
-          } catch (e) {
-            warnings.push(`Event sheet "${name}" could not be read and was not scanned: ${e instanceof Error ? e.message : String(e)}`);
-            continue;
+          } catch (error) {
+            return refuse(`Cannot read event sheet "${name}" (${describeReadFailure(classifyReadError(error))}).`);
           }
-          const sheetIndex = sheets.push({ name, data }) - 1;
-          const walk = (list: unknown, prefix: string, depth: number) => {
-            if (!Array.isArray(list) || depth > MAX_DEPTH) return;
-            list.forEach((raw, i) => {
-              if (!raw || typeof raw !== 'object') return;
-              const event = raw as Json;
-              const path = `${prefix}[${i}]`;
-              const eventSid = typeof event.sid === 'number' ? event.sid : undefined;
-              for (const listKey of ['conditions', 'actions'] as const) {
-                const aces = event[listKey];
-                if (!Array.isArray(aces)) continue;
-                aces.forEach((aceRaw, j) => {
-                  if (!aceRaw || typeof aceRaw !== 'object') return;
-                  const params = (aceRaw as Json).parameters;
-                  if (!params || typeof params !== 'object') return;
-                  const record = params as Record<string, unknown>;
-                  for (const key of Object.keys(record)) {
-                    const value = record[key];
-                    if (typeof value !== 'string') continue;
-                    if (keyFilter && !keyFilter.has(key)) continue;
-                    slots.push({
-                      sheet: sheetIndex, record, key, value, eventSid,
-                      path: Array.isArray(params) ? `${path}.${listKey}[${j}].parameters[${key}]` : `${path}.${listKey}[${j}].parameters.${key}`,
-                      protectedName: !keyFilter && !Array.isArray(params) && isProtectedParameter(key, value),
-                    });
-                  }
-                });
-              }
-              walk(event.children, `${path}.children`, depth + 1);
-            });
-          };
-          walk(data.events as unknown as C3Event[], 'events', 0);
+          const sheetIndex = sheets.push({ name, data, before: args.dryRun ? [] : snapshotEvents(data.events) }) - 1;
+          const found: ParameterSlot[] = [];
+          const sids = new Map<string, number>();
+          walkEventStrings(data, {
+            event(event, eventPath) { if (typeof event.sid === 'number') sids.set(eventPath, event.sid); },
+            parameter(site, parameter) {
+              if (keyFilter && !keyFilter.has(parameter.key)) return;
+              found.push({
+                sheet: sheetIndex, set: parameter.set, key: parameter.key, value: parameter.value, eventSid: sids.get(site.eventPath),
+                path: parameterPath(site, parameter.key, parameter.named),
+                protectedName: !keyFilter && parameter.named && isProtectedParameter(parameter.key, parameter.value),
+              });
+            },
+          });
+          slots.push(...found.sort(documentOrder));
         }
 
         // Phase 2: match everything under one time limit. The empty string
@@ -640,21 +804,20 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
         try {
           outcomes = matchAllBounded(pattern, replacement, ['', ...slots.map(slot => slot.value)]);
         } catch (e) {
-          if (e instanceof RegexTimeoutError) return toolError(e.message);
+          if (e instanceof RegexTimeoutError) return refuse(e.message);
           throw e;
         }
         const emptyAt = outcomes.findIndex(outcome => outcome.empty);
         if (emptyAt !== -1) {
           const where = emptyAt === 0 ? 'on empty text' : `in ${sheets[slots[emptyAt - 1].sheet].name} ${slots[emptyAt - 1].path}`;
-          return toolError(
-            `The search pattern matches zero characters (${where}), which would insert the replacement between characters. ` +
-            'Use a pattern that always consumes at least one character.'
+          return refuse(
+            `The search pattern matches zero characters (${where}), which would insert the replacement between characters. `
+            + 'Use a pattern that always consumes at least one character.'
           );
         }
 
-        // Phase 3: apply and report.
-        const acesBefore = args.dryRun ? [] : sheets.map(sheet => aceTreeSnapshot(sheet.data.events));
-        const changes: Array<{ sheet: string; eventSid?: number; path: string; key: string; before: string; after: string }> = [];
+        // Phase 3: apply in memory and report.
+        const changes: ReportedChange[] = [];
         const perSheet = new Map<number, { sheet: string; parameters: number; matches: number }>();
         const protectedHits = new Map<string, number>();
         let totalMatches = 0;
@@ -679,37 +842,35 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
           if (changes.length < args.maxReported) {
             changes.push({ sheet: name, eventSid: slot.eventSid, path: slot.path, key: slot.key, before: slot.value, after: outcome.after });
           }
-          if (!args.dryRun) slot.record[slot.key] = outcome.after;
+          // These are this call's own copies of the sheets; a dry run never writes them
+          slot.set(outcome.after);
         });
         if (protectedHits.size > 0) {
           const list = [...protectedHits].map(([key, count]) => `${key} (${count})`).join(', ');
           warnings.push(`Matches in parameters that hold a name or a combo choice were left unchanged: ${list}. Name those keys in parameterKeys to change them.`);
         }
 
+        // Sheets that could not be parsed: a plain name is searched for as text; with no name to search for they are listed as not searched
+        const searchable = !args.regex && /^[\p{L}_][\p{L}\p{N}_]*$/u.test(args.find);
+        const reports: UnscannedFileReport[] = searchable
+          ? await checkUnscannedFiles(reader, unparsed, [{ categories: ['eventSheets'], allOf: [[nameTerm(args.find)]] }])
+          // No unchecked: nothing is refused for them; they are listed, warned about and never changed
+          : unparsed.map(({ file, reason }) => ({ file, reason, textSearch: 'not-searched' as const }));
+        warnings.push(...unparsedSheetWarnings(reports));
+
         const touched = [...perSheet].sort((x, y) => x[0] - y[0]);
-        if (!args.dryRun && touched.length > 0) {
-          // The rewritten parameters, against Construct's own definitions (a
-          // combo value changed through parameterKeys can stop being a choice).
-          const aceContext = await buildAceContext(reader);
-          const expressionContext = await buildExpressionContext(reader);
-          for (const [index] of touched) {
-            const { name, data } = sheets[index];
-            const changed = changedAceSidsInTree(acesBefore[index], data.events);
-            for (const problem of checkEventAces(data.events, aceContext, changed)) {
-              warnings.push(`${name}: ${describeEventAceProblem(problem)}`);
-            }
-            // The rewritten text itself: a replacement can leave a name nothing defines.
-            for (const problem of checkEventExpressions(data.events, expressionContext, aceContext, changed)) {
-              warnings.push(`${name}: ${describeEventExpressionProblem(problem)}`);
-            }
-          }
-        }
+        const filesWritten: string[] = [];
         if (!args.dryRun) {
+          const changedSheets = touched.map(([index]) => ({ name: sheets[index].name, sheet: sheets[index].data, before: sheets[index].before }));
+          const refusal = await checkChangedSheets(reader, changedSheets, warnings);
+          if (refusal !== undefined) return refuse(refusal);
           for (const [index] of touched) {
             const { name, data } = sheets[index];
-            const subfolder = writer.getSubfolderForEntity('eventSheets', name);
-            await writer.writeEntityFile('eventSheets', name, data, subfolder);
-            resetProjectIndex();
+            try {
+              await writeEntityOrRollBack(writer, 'eventSheets', name, data);
+            } catch (error) {
+              return toolError(errorMessage(error, reader.getProjectDir()));
+            }
             filesWritten.push(reader.getEntityRelativePath('eventSheets', name));
           }
         }
@@ -727,12 +888,14 @@ export function registerReplaceTools({ server, reader, writer }: MutationToolDep
           changesTruncated: totalParameters > changes.length,
           filesWritten,
           dryRun: args.dryRun,
+          ...(reports.length > 0 ? { complete: false } : {}),
           warnings: warnings.length > 0 ? warnings : undefined,
+          ...unscannedFields(reports),
         }, { projectWritten: filesWritten.length > 0 });
       } catch (error) {
         console.error('[replace_in_expressions] failed:', error);
-        const written = filesWritten.length > 0 ? ` Files already written: ${filesWritten.join(', ')}.` : '';
-        return toolError(`Error replacing text: ${error instanceof Error ? error.message : String(error)}.${written}`);
+        // Everything before the first write is in this try, and the writes return from their own catch: nothing was changed
+        return refuse(`Error replacing text: ${errorReason(error, { projectDir: reader.getProjectDir(), relative: file => writer.projectRelative(file) })}`);
       }
     }
   );

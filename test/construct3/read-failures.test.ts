@@ -3,7 +3,7 @@
  * consumers that depend on them (IdGenerator, validateProjectIntegrity).
  *
  * The in-memory MockReader fakes the I/O, so mock-only tests cannot catch a
- * broken production primitive: the 10MB size-cap bypass, path-map (subfolder)
+ * broken production primitive: the size-cap bypass (10MB by default), path-map (subfolder)
  * resolution, or the real fs error surface (ENOENT, EISDIR). Everything here
  * runs Construct3ProjectReader against files on disk in a temp copy of the
  * minimal-project fixture.
@@ -12,21 +12,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, cp, rm, mkdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { Construct3ProjectReader } from '../../src/construct3/project-reader.js';
 import { IdGenerator } from '../../src/construct3/id-generator.js';
 import { validateProjectIntegrity } from '../../src/construct3/analyzers/integrity.js';
 import { resetProjectIndex } from '../../src/construct3/analyzers/index-builder.js';
 
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'minimal-project');
-/** Must match MAX_FILE_SIZE in src/construct3/project-reader.ts */
+/** The default size limit: DEFAULT_MAX_FILE_MB in src/construct3/file-size-limit.ts (the suite clears C3MCP_MAX_FILE_MB) */
 const READER_SIZE_CAP = 10 * 1024 * 1024;
 /** Pushes a small JSON document just past the cap. ASCII spaces, so byte length equals char length. */
 const PADDING = Buffer.alloc(READER_SIZE_CAP + 4096, 0x20);
-/** Writing and scanning a 10MB file is well under a second locally; leave room for slow disks and AV scanners. */
-const OVERSIZED_TIMEOUT_MS = 15_000;
 
-type Category = 'layouts' | 'objectTypes';
+type Category = 'layouts' | 'objectTypes' | 'families';
 
 async function createTempProject(): Promise<string> {
   const tmp = await mkdtemp(join(tmpdir(), 'c3-readfail-'));
@@ -56,7 +54,7 @@ async function registerInProject(projectDir: string, category: Category, name: s
  * A valid JSON document padded past the reader's size cap. The padding is a
  * string field placed BEFORE the tail, so the IDs of interest sit after the
  * 10MB mark: a scanner that only read a prefix would miss them. Written with
- * raw fs because Construct3ProjectWriter refuses files over 5MB.
+ * raw fs because Construct3ProjectWriter refuses files over the size limit.
  */
 function oversizedJson(head: string, tail: string): Buffer {
   return Buffer.concat([Buffer.from(head), PADDING, Buffer.from(tail)]);
@@ -111,7 +109,7 @@ afterEach(async () => {
 // ─── Read-failure recording ──────────────────────────────────
 
 describe('Construct3ProjectReader — read failures (real files)', () => {
-  it('records E_FILE_TOO_LARGE for a layout over the 10MB cap', async () => {
+  it('records E_FILE_TOO_LARGE for a layout over the default 10MB size limit', async () => {
     await registerInProject(tmpDir, 'layouts', 'Big');
     await writeOversizedLayout(tmpDir, 'Big', 30046);
     const reader = await openReader(tmpDir);
@@ -123,7 +121,7 @@ describe('Construct3ProjectReader — read failures (real files)', () => {
     const failure = reader.getReadFailures('layouts').get('Big');
     expect(failure).toMatchObject({ code: 'E_FILE_TOO_LARGE' });
     expect(failure!.message).toContain('exceeds 10MB limit');
-  }, OVERSIZED_TIMEOUT_MS);
+  });
 
   it('records E_FILE_NOT_FOUND for a registered layout with no file', async () => {
     await registerInProject(tmpDir, 'layouts', 'GhostLayout');
@@ -163,7 +161,7 @@ describe('Construct3ProjectReader.scanEntityIdsRaw (real files)', () => {
     const scan = await reader.scanEntityIdsRaw('layouts', 'Big');
     expect(scan.highestUid).toBe(30046);
     expect(scan.sids).toEqual([510000000000001, 510000000000002, 510000000000003, 510000000000004]);
-  }, OVERSIZED_TIMEOUT_MS);
+  });
 
   it('resolves a layout registered in a c3proj subfolder through the same path map as readLayout', async () => {
     await registerInProject(tmpDir, 'layouts', 'Deep', 'Levels');
@@ -186,6 +184,24 @@ describe('Construct3ProjectReader.scanEntityIdsRaw (real files)', () => {
     expect((await reader.scanEntityIdsRaw('objectTypes', 'Kb')).highestUid).toBe(77);
   });
 
+  it('keeps the path traversal check: a registered name that leaves the project folder is not read', async () => {
+    // A file outside the project that "layouts/<name>.json" reaches through "../.."
+    const outsideDir = await mkdtemp(join(tmpdir(), 'c3-outside-'));
+    try {
+      await writeFile(join(outsideDir, 'Secret.json'), '{"uid": 99999, "sid": 990000000000001}');
+      const name = `../../${basename(outsideDir)}/Secret`;
+      await registerInProject(tmpDir, 'layouts', name);
+      const reader = await openReader(tmpDir);
+
+      await expect(reader.scanEntityIdsRaw('layouts', name)).rejects.toThrow(/Path traversal/);
+      // The outside file's UID is never used; the unreadable registration blocks minting instead
+      await expect(new IdGenerator().generateUid(reader))
+        .rejects.toThrow(/Cannot generate a safe UID.*Secret: Path traversal detected/);
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects with an ENOENT-coded error for a missing file', async () => {
     await registerInProject(tmpDir, 'layouts', 'GhostLayout');
     const reader = await openReader(tmpDir);
@@ -205,7 +221,7 @@ describe('IdGenerator — real files', () => {
     const reader = await openReader(tmpDir);
 
     expect(await new IdGenerator().generateUid(reader)).toBe(30047);
-  }, OVERSIZED_TIMEOUT_MS);
+  });
 
   it('ignores a registered layout whose file is missing (reviewer repro: GhostLayout)', async () => {
     await registerInProject(tmpDir, 'layouts', 'GhostLayout');
@@ -221,6 +237,16 @@ describe('IdGenerator — real files', () => {
 
     await expect(new IdGenerator().generateUid(reader))
       .rejects.toThrow(/Cannot generate a safe UID.*layouts\/Bad/);
+  });
+
+  it('names why each file could not be scanned, without the absolute project path', async () => {
+    await registerInProject(tmpDir, 'layouts', 'Bad');
+    await mkdir(join(tmpDir, 'layouts', 'Bad.json'));
+    const reader = await openReader(tmpDir);
+
+    const error = await new IdGenerator().generateUid(reader).then(() => undefined, (e: Error) => e);
+    expect(error?.message).toContain('(layouts/Bad: a folder in place of the file)');
+    expect(error?.message).not.toContain(tmpDir);
   });
 
   it('recovers IDs from a layout whose JSON is invalid', async () => {
@@ -239,7 +265,7 @@ describe('IdGenerator — real files', () => {
     await reader.readAllObjectTypes();
     expect(reader.getReadFailures('objectTypes').get('BigGlobal')).toMatchObject({ code: 'E_FILE_TOO_LARGE' });
     expect(await new IdGenerator().generateUid(reader)).toBe(30051);
-  }, OVERSIZED_TIMEOUT_MS);
+  });
 
   it('ignores a registered object type whose file is missing', async () => {
     await registerInProject(tmpDir, 'objectTypes', 'GhostType');
@@ -262,9 +288,10 @@ describe('validateProjectIntegrity — real files', () => {
     expect(result.warnings.find(w => w.check === 'unscanned-file' && w.entity === 'layouts/Big')).toBeDefined();
     expect(result.unscannedFiles).toContain('layouts/Big');
     expect(result.summary.unscanned).toBe(1);
-    expect(result.valid).toBe(true);
+    expect(result.summary.errors).toBe(0);
+    expect(result.valid).toBe(false);
     expect(result.complete).toBe(false);
-  }, OVERSIZED_TIMEOUT_MS);
+  });
 
   it('reports a missing layout as a file-existence error with complete: true', async () => {
     await registerInProject(tmpDir, 'layouts', 'GhostLayout');
@@ -288,5 +315,189 @@ describe('validateProjectIntegrity — real files', () => {
     expect(err).toBeDefined();
     expect(err!.message).toContain('no file exists at layouts/Levels/Deep.json');
     expect(err!.message).not.toContain(tmpDir);
+  });
+
+  it('reports an oversized timeline as UNSCANNED with complete: false', async () => {
+    await mkdir(join(tmpDir, 'timelines'), { recursive: true });
+    await writeFile(join(tmpDir, 'timelines', 'Big.json'), oversizedJson('{"name":"Big","padding":"', '"}'));
+    const reader = await openReader(tmpDir);
+
+    const result = await validateProjectIntegrity(reader);
+    const warning = result.warnings.find(w => w.check === 'unscanned-file' && w.entity === 'timelines/Big');
+    expect(warning).toBeDefined();
+    expect(warning!.message).not.toContain(tmpDir);
+    expect(result.errors.find(e => e.entity === 'timelines/Big')).toBeUndefined();
+    expect(result.unscannedFiles).toContain('timelines/Big');
+    expect(result.complete).toBe(false);
+  });
+
+  it('reports a timeline with invalid JSON as an error and as not checked (complete: false)', async () => {
+    await mkdir(join(tmpDir, 'timelines'), { recursive: true });
+    await writeFile(join(tmpDir, 'timelines', 'Broken.json'), '{ "name": "Broken", not json');
+    const reader = await openReader(tmpDir);
+
+    const result = await validateProjectIntegrity(reader);
+    const err = result.errors.find(e => e.check === 'file-existence' && e.entity === 'timelines/Broken');
+    expect(err).toBeDefined();
+    expect(err!.message).toContain('could not be read');
+    expect(err!.message).not.toContain(tmpDir);
+    expect(result.unscannedFiles).toContain('timelines/Broken');
+    expect(result.complete).toBe(false);
+  });
+
+  it('reports a directory in place of a layout as an error and as not checked (complete: false)', async () => {
+    await registerInProject(tmpDir, 'layouts', 'Bad');
+    await mkdir(join(tmpDir, 'layouts', 'Bad.json'));
+    const reader = await openReader(tmpDir);
+
+    const result = await validateProjectIntegrity(reader);
+    const err = result.errors.find(e => e.check === 'file-existence' && e.entity === 'layouts/Bad');
+    expect(err).toBeDefined();
+    expect(err!.message).toContain('could not be read');
+    expect(err!.message).not.toContain(tmpDir);
+    expect(result.unscannedFiles).toEqual(['layouts/Bad']);
+    expect(result.summary.unscanned).toBe(1);
+    expect(result.complete).toBe(false);
+    expect(result.valid).toBe(false);
+  });
+
+  it('reports a layout with invalid JSON as an error and as not checked (complete: false)', async () => {
+    await registerInProject(tmpDir, 'layouts', 'Broken');
+    await writeFile(join(tmpDir, 'layouts', 'Broken.json'), '{ "name": "Broken", not json');
+    const reader = await openReader(tmpDir);
+
+    const result = await validateProjectIntegrity(reader);
+    expect(result.errors.find(e => e.check === 'file-existence' && e.entity === 'layouts/Broken')).toBeDefined();
+    expect(result.unscannedFiles).toEqual(['layouts/Broken']);
+    expect(result.complete).toBe(false);
+  });
+
+  it('checks family files too: invalid JSON is not complete, a missing file is an error only', async () => {
+    await registerInProject(tmpDir, 'families', 'BrokenFamily');
+    await mkdir(join(tmpDir, 'families'), { recursive: true });
+    await writeFile(join(tmpDir, 'families', 'BrokenFamily.json'), '{ "name": "BrokenFamily", ');
+    await registerInProject(tmpDir, 'families', 'GhostFamily');
+    const reader = await openReader(tmpDir);
+
+    const result = await validateProjectIntegrity(reader);
+    const broken = result.errors.find(e => e.check === 'file-existence' && e.entity === 'families/BrokenFamily');
+    expect(broken).toBeDefined();
+    expect(broken!.message).toContain('could not be read');
+    const ghost = result.errors.find(e => e.check === 'file-existence' && e.entity === 'families/GhostFamily');
+    expect(ghost).toBeDefined();
+    expect(ghost!.message).toContain('no file exists at families/GhostFamily.json');
+    expect(result.unscannedFiles).toEqual(['families/BrokenFamily']);
+    expect(result.complete).toBe(false);
+  });
+});
+
+// ─── Read failures under concurrent calls ────────────────────
+//
+// Tool calls run concurrently, and several (update_project_metadata,
+// register_addon, create_object's addon registration, ...) reload the project,
+// which drops the reader's caches while another call may be in the middle of a
+// bulk read. The failures a bulk read found must stay with the result it
+// returns and caches, or the ID generator and validate_project lose a skipped
+// file and treat it as absent.
+
+/**
+ * Make the next read of `name` reload the project first, as a concurrent
+ * tool call that rewrites project.c3proj would, mid bulk read.
+ */
+function reloadWhenReadingLayout(reader: Construct3ProjectReader, name: string): void {
+  const readLayout = reader.readLayout.bind(reader);
+  let reloaded = false;
+  reader.readLayout = async (layoutName: string) => {
+    if (!reloaded && layoutName === name) {
+      reloaded = true;
+      await reader.reloadProject();
+    }
+    return readLayout(layoutName);
+  };
+}
+
+describe('Read failures survive a project reload during the bulk read (real files)', () => {
+  /** Big (over the cap) is read before After, whose read triggers the reload. */
+  async function projectWithBigThenAfter(): Promise<void> {
+    await registerInProject(tmpDir, 'layouts', 'Big');
+    await writeOversizedLayout(tmpDir, 'Big', 30046);
+    await registerInProject(tmpDir, 'layouts', 'After');
+    await writeFile(join(tmpDir, 'layouts', 'After.json'), smallLayoutJson('After', 3, 540000000000000));
+  }
+
+  it('generateUid still allocates above an oversized layout', async () => {
+    await projectWithBigThenAfter();
+    const reader = await openReader(tmpDir);
+    reloadWhenReadingLayout(reader, 'After');
+
+    expect(await new IdGenerator().generateUid(reader)).toBe(30047);
+  });
+
+  it('generateUid still allocates above the singleglobal-inst UID of an oversized object type', async () => {
+    await registerInProject(tmpDir, 'objectTypes', 'BigGlobal');
+    await writeOversizedObjectType(tmpDir, 'BigGlobal', 30050);
+    const reader = await openReader(tmpDir);
+    // Object types are read first; the reload lands while the layouts are read
+    reloadWhenReadingLayout(reader, 'Layout 1');
+
+    expect(await new IdGenerator().generateUid(reader)).toBe(30051);
+  });
+
+  it('a later validate_project still reports the oversized layout as unscanned', async () => {
+    await projectWithBigThenAfter();
+    const reader = await openReader(tmpDir);
+    reloadWhenReadingLayout(reader, 'After');
+    await reader.readAllLayouts();
+
+    expect(reader.getReadFailures('layouts').get('Big')).toMatchObject({ code: 'E_FILE_TOO_LARGE' });
+    const result = await validateProjectIntegrity(reader);
+    expect(result.errors.find(e => e.entity === 'layouts/Big')).toBeUndefined();
+    expect(result.warnings.find(w => w.check === 'unscanned-file' && w.entity === 'layouts/Big')).toBeDefined();
+    expect(result.complete).toBe(false);
+  });
+
+  it('two concurrent first generateUid calls share one scan and both refuse while a layout cannot be scanned', async () => {
+    await registerInProject(tmpDir, 'layouts', 'Bad');
+    await mkdir(join(tmpDir, 'layouts', 'Bad.json'));
+    const reader = await openReader(tmpDir);
+
+    // Pin the interleaving: call A has scanned Bad and waits in readAllFamilies
+    // until call B has asked for a UID too. B joins A's scan instead of
+    // starting its own, so it cannot empty the list of unscanned files between
+    // A's scan and A's check, and it waits for A's result.
+    let aInFamilies!: () => void;
+    const aReachedFamilies = new Promise<void>(resolve => { aInFamilies = resolve; });
+    let releaseA!: () => void;
+    const aReleased = new Promise<void>(resolve => { releaseA = resolve; });
+
+    const readAllFamilies = reader.readAllFamilies.bind(reader);
+    let familyReads = 0;
+    reader.readAllFamilies = async () => {
+      if (++familyReads === 1) {
+        aInFamilies();
+        await aReleased;
+      }
+      return readAllFamilies();
+    };
+    const scanEntityIdsRaw = reader.scanEntityIdsRaw.bind(reader);
+    let scans = 0;
+    reader.scanEntityIdsRaw = async (category, name) => {
+      scans++;
+      return scanEntityIdsRaw(category, name);
+    };
+
+    const idGen = new IdGenerator();
+    const settle = (p: Promise<number>) => p.then(uid => `uid ${uid}`, (error: Error) => error.message);
+    const a = settle(idGen.generateUid(reader));
+    await aReachedFamilies;
+    const b = settle(idGen.generateUid(reader));
+    releaseA();
+
+    const [resultA, resultB] = await Promise.all([a, b]);
+    expect(resultA).toMatch(/Cannot generate a safe UID.*layouts\/Bad/);
+    expect(resultB).toMatch(/Cannot generate a safe UID.*layouts\/Bad/);
+    // One project scan, then each call tries Bad once more before it refuses
+    expect(familyReads).toBe(1);
+    expect(scans).toBe(3);
   });
 });

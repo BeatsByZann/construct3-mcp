@@ -4,34 +4,38 @@
  * orphaned files, editor load-time rules, and more.
  */
 
-import { redactFsPaths } from '../../error-messages.js';
-import { readdir, lstat } from 'fs/promises';
+import { readdir } from 'fs/promises';
 import { join } from 'path';
-import { entityFolderPaths, entityFilePath, type Construct3ProjectReader } from '../project-reader.js';
-import type { C3Event, Construct3Project, Layout, ObjectType, EventSheet } from '../types.js';
+import {
+  classifyReadError,
+  entityFolderPaths,
+  entityFilePath,
+  type Construct3ProjectReader,
+  type EntityCategory,
+  type ReadFailure,
+} from '../project-reader.js';
+import type { C3Event, Construct3Project, Instance, Layout, ObjectType, EventSheet, Timeline } from '../types.js';
 import { getProjectIndex, OBJECT_SID_PROPERTIES, type MemberReference, type MemberReferenceForm } from './index-builder.js';
 import { isNamelessFolder, transitionsFolderIndex } from '../timeline-folders.js';
-import { forEachLayoutInstance, layerEntries, layerPath, layerPathLabel, repeatedLayerNames, type LayerEntry } from '../layers.js';
+import { listPropertyTracks, listTracks, PROPERTY_TRACK_SOURCE_TYPES, trackKind } from '../timeline-model.js';
+import { resolveTimelineProperty, WORLD_PROPERTIES } from '../timeline-properties.js';
+import { readTemplate } from '../instance-templates.js';
+import { findInstanceByUid, forEachLayoutInstance, layerEntries, layerPath, layerPathLabel, repeatedLayerNames, type LayerEntry } from '../layers.js';
 import { findOrphanedObjects } from './object-deps.js';
-import { SINGLE_IMAGE_PLUGINS, ANIMATION_PLUGINS } from '../templates.js';
-import { getImageFileName } from '../png-generator.js';
-import { ACE_CATALOG_RELEASE, buildAceContext, checkEventAces, describeEventAceProblem, isBuiltInAddon } from '../ace-catalog.js';
-import { addonDefinition } from '../addon-definitions.js';
-import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../expression-check.js';
-
-/** Image file extensions by declared fileType, from the r495.2 samples. */
-const IMAGE_EXTENSIONS: Record<string, string> = {
-  'image/png': 'png',
-  'image/gif': 'gif',
-};
 import { scanLegacyBehaviorKeys, hasOnlyLegacyBehaviorName, describeLegacyHit } from './legacy-behavior-keys.js';
 import { scanLegacyEventShapes, describeLegacyEventShapeHit } from './legacy-event-shapes.js';
 import { collectFunctionSignatures, functionsObjectName } from '../event-shapes.js';
 import { checkBehaviorName } from './behavior-refs.js';
 import { findMissingBehaviorEntries } from '../instance-behaviors.js';
+import { findHierarchyLinkProblems, type HierarchyLinkProblem } from '../hierarchy.js';
+import { namedAfterAnyObject } from '../object-images.js';
 import type { BehaviorLookupData } from './behavior-refs.js';
+import { everyAnimation, expectedFrameImageName, frameImageBaseName, indexImageFiles } from '../animation-rename.js';
+import { nameKey } from '../names.js';
+import { isWriteLeftover } from '../atomic-write.js';
+import { containerMemberProblems, projectContainers, SMALL_CONTAINER_RULE } from '../containers.js';
+import { duplicateFunctionNames, functionBlockNames } from '../event-variable-names.js';
 import {
-  lintExpression,
   checkEventLoadRules,
   checkFamilyPlugins,
   checkObjectClassNames,
@@ -41,6 +45,14 @@ import {
   describeEvent,
   type LoadRuleIssue,
 } from './load-rules.js';
+import { unscannedFilesOf } from './unscanned-uses.js';
+import { aceCatalogProviderFor, describeCatalogSubstitute } from '../ace-catalog-provider.js';
+import { releaseLabel } from '../ace-catalog-source.js';
+import { addonDefinitionsOf } from '../addon-definitions.js';
+import { buildAceContext, checkEventAces, describeEventAceProblem, isBuiltInAddon } from '../ace-catalog.js';
+import { buildExpressionContext, checkEventExpressions, describeEventExpressionProblem } from '../expression-check.js';
+import type { ProjectData } from '../ace-types.js';
+import { errorMessage } from '../error-text.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -52,14 +64,23 @@ export interface IntegrityIssue {
 }
 
 export interface IntegrityResult {
-  /** No error-level issues were found in the files that were scanned */
+  /**
+   * No error-level issue was found AND every registered file was checked
+   * (`complete`). A project with a file that could not be checked is never
+   * reported valid, because nothing in that file (duplicate UIDs/SIDs
+   * included) was verified. `summary.errors === 0 && !complete` means: no
+   * errors in the checked files, the rest unknown.
+   */
   valid: boolean;
   /**
-   * Every registered object type, event sheet and layout file was read.
-   * False when any of them was skipped for exceeding the reader's size cap
-   * (listed in unscannedFiles); `valid` then only vouches for the files that
-   * were checked. Files that exist but cannot be read for another reason are
-   * errors, not unscanned entries. Families are not covered by this check.
+   * Every object type, family, event sheet and layout file that is registered
+   * in project.c3proj and exists on disk, and every file below timelines/, was
+   * read and checked. False when one
+   * of them was not (over the reader's size limit (10MB by default), invalid JSON, unreadable):
+   * those files are listed in unscannedFiles, and no check (duplicate
+   * UIDs/SIDs, references, load-time rules) covered their contents. A
+   * registered file that does not exist is a file-existence error but leaves
+   * `complete` true, since nothing on disk escaped the checks.
    */
   complete: boolean;
   summary: {
@@ -68,13 +89,17 @@ export interface IntegrityResult {
     info: number;
     checksRun: number;
     entitiesScanned: number;
-    /** Files registered in c3proj that could not be scanned (e.g. over the reader's size cap) */
+    /** Number of entries in unscannedFiles */
     unscanned: number;
   };
   errors: IntegrityIssue[];
   warnings: IntegrityIssue[];
   info: IntegrityIssue[];
-  /** Entities NOT covered by any check below — results are partial wherever these are listed */
+  /**
+   * Registered files ("category/name") that exist but were not checked.
+   * Files over the size limit are `unscanned-file` warnings; files that could
+   * not be read or parsed are also `file-existence` errors.
+   */
   unscannedFiles: string[];
 }
 
@@ -92,16 +117,22 @@ export async function validateProjectIntegrity(
   const warnings: IntegrityIssue[] = [];
   const info: IntegrityIssue[] = [];
 
-  // Load all data once
+  // Load all data once. Each bulk read's failures are taken right away: they
+  // belong to that result, and a reload by a concurrent call clears them.
   const project = reader.getProject();
   const objects = await reader.readAllObjectTypes();
+  const objectFailures = reader.getReadFailures('objectTypes');
   const eventSheets = await reader.readAllEventSheets();
+  const sheetFailures = reader.getReadFailures('eventSheets');
   const layouts = await reader.readAllLayouts();
+  const layoutFailures = reader.getReadFailures('layouts');
   const families = await reader.readAllFamilies();
+  const familyFailures = reader.getReadFailures('families');
 
   const registeredObjects = flattenContainer(project.objectTypes);
   const registeredSheets = flattenContainer(project.eventSheets);
   const registeredLayouts = flattenContainer(project.layouts);
+  const registeredFamilies = flattenContainer(project.families);
 
   const entitiesScanned =
     registeredObjects.length + registeredSheets.length + registeredLayouts.length;
@@ -109,17 +140,19 @@ export async function validateProjectIntegrity(
   const unscannedFiles: string[] = [];
 
   // Error checks
-  checkFileExistence(registeredObjects, objects, 'objectTypes', reader, errors, warnings, unscannedFiles);
-  checkFileExistence(registeredSheets, eventSheets, 'eventSheets', reader, errors, warnings, unscannedFiles);
-  checkFileExistence(registeredLayouts, layouts, 'layouts', reader, errors, warnings, unscannedFiles);
+  checkFileExistence(registeredObjects, objects, objectFailures, 'objectTypes', reader, errors, warnings, unscannedFiles);
+  checkFileExistence(registeredSheets, eventSheets, sheetFailures, 'eventSheets', reader, errors, warnings, unscannedFiles);
+  checkFileExistence(registeredLayouts, layouts, layoutFailures, 'layouts', reader, errors, warnings, unscannedFiles);
+  checkFileExistence(registeredFamilies, families, familyFailures, 'families', reader, errors, warnings, unscannedFiles);
   checkRequiredFieldsObjects(objects, errors);
   checkRequiredFieldsSheets(eventSheets, errors);
   checkRequiredFieldsLayouts(layouts, errors);
   checkNameConsistency(objects, eventSheets, layouts, errors);
   checkSubfolderStructure(project, errors);
-  await checkObjectImages(objects, reader, errors, warnings);
+  checkContainerMembers(project, registeredObjects, errors, warnings, info);
   await checkLegacyBehaviorKeys(reader, eventSheets, objects, families, errors, warnings);
   await checkLegacyEventShapes(eventSheets, warnings);
+  checkLegacyEventKeys(eventSheets, warnings);
 
   // Editor load-time rules (errors, or warnings where only partly verified)
   const aceOrigin = createAceOriginResolver({
@@ -134,39 +167,74 @@ export async function validateProjectIntegrity(
   }
   addLoadRuleIssues(checkObjectClassNames(project), errors, warnings);
   addLoadRuleIssues(checkFamilyPlugins(families, objects as Map<string, Record<string, unknown>>), errors, warnings);
+  const timelines = await readTimelineFiles(reader, project, errors, warnings, unscannedFiles);
+  checkTimelinePropertyTrackTypes(timelines, layouts, objects, errors, warnings);
+  checkTemplatesOnNonWorldInstances(layouts, errors);
 
   // Duplicate SIDs: errors for object type/family SIDs, warnings otherwise
   checkDuplicateSids(objects, eventSheets, layouts, families, errors, warnings);
 
   // Warning checks
   checkDuplicateUids(layouts, objects, warnings);
+  checkHierarchyLinks(layouts, warnings);
   await checkBrokenObjectReferences(reader, objects, families, layouts, warnings);
   await checkMissingBehaviorsAndVariables(reader, families, warnings);
   checkDuplicateLayerNames(layouts, warnings);
+  checkDuplicateFunctionNames(eventSheets, warnings);
   checkBrokenEventSheetReferences(layouts, eventSheets, warnings);
   checkBrokenIncludes(eventSheets, warnings);
-  checkLegacyEventKeys(eventSheets, warnings);
   checkMissingAddons(objects, reader, warnings);
-  await checkEventAceDefinitions(reader, eventSheets, warnings);
-  await checkEventExpressionText(reader, eventSheets, warnings);
   checkMissingBehaviorEntries(layouts, objects, families, warnings);
+
+  // Conditions, actions and expressions against Construct's definitions
+  // A fault inside this step becomes one info issue, so no single value can take the whole report down.
+  try {
+    await checkAcesAndExpressions(
+      reader,
+      {
+        objects,
+        families,
+        sheets: eventSheets,
+        unreadable: {
+          objectTypes: unscannedFilesOf('objectTypes', registeredObjects, objects, objectFailures).map(f => f.file),
+          families: unscannedFilesOf('families', registeredFamilies, families, familyFailures).map(f => f.file),
+          eventSheets: unscannedFilesOf('eventSheets', registeredSheets, eventSheets, sheetFailures).map(f => f.file),
+        },
+      },
+      warnings,
+      info,
+    );
+  } catch {
+    info.push({
+      check: 'ace-check-failed',
+      entity: 'project',
+      message: 'The check of conditions, actions and expressions stopped on an unexpected fault, so it may have found less than it would otherwise. The other checks ran.',
+    });
+  }
 
   // Info checks (orphaned files also warn about file-name-case-mismatch)
   await checkOrphanedFiles(reader, project, warnings, info);
   await checkBackupFiles(reader, info);
-  checkAddonDefinitions(reader, info);
   await checkOrphanedObjects(reader, info);
+
+  // Frame images: warnings for frames without one, info for unused ones
+  await checkFrameImages(reader, objects, warnings, info);
+  await checkOrphanedImages(reader, [...new Set([...registeredObjects, ...objects.keys()])], info);
 
   // 13 original checks + legacy-behavior-key + legacy-event-shape +
   // expression-syntax, empty-expression, trigger-placement, else-placement,
   // duplicate-object-name, family-plugin-mismatch, file-name-case-mismatch,
-  // duplicate-layer-name, missing-behavior-entry, missing-behavior-or-variable
-  // + object images, event-legacy-key, ACE definitions, expression text and
-  // addon definitions
-  const checksRun = 30;
+  // duplicate-layer-name, missing-behavior-entry, missing-behavior-or-variable,
+  // frame-image, hierarchy-link, orphaned-image, duplicate-function-name,
+  // container-member, event-legacy-key + the ace- codes, the expression- codes
+  // of the parameters and ace-definitions-unavailable; these count whether or
+  // not a catalogue was found, since they ran and reported why they found
+  // nothing to check + timeline-property-track-type and
+  // template-on-non-world-instance
+  const checksRun = 36;
 
   return {
-    valid: errors.length === 0,
+    valid: errors.length === 0 && unscannedFiles.length === 0,
     complete: unscannedFiles.length === 0,
     summary: {
       errors: errors.length,
@@ -189,7 +257,8 @@ function flattenContainer(container: { items: string[]; subfolders: Array<{ item
   const result = [...container.items];
   const walk = (subfolders: Array<{ items: string[]; subfolders: unknown[]; name: string }>) => {
     for (const sf of subfolders) {
-      result.push(...sf.items);
+      // A subfolder without an items array is reported by checkSubfolderStructure
+      if (Array.isArray(sf.items)) result.push(...sf.items);
       if (Array.isArray(sf.subfolders)) {
         walk(sf.subfolders as Array<{ items: string[]; subfolders: unknown[]; name: string }>);
       }
@@ -215,56 +284,226 @@ function addLoadRuleIssues(
   }
 }
 
+/**
+ * Property tracks on a property their instance does not have. Construct 3
+ * r506-2 refused to open a project whose timeline had a property track on a
+ * property it could not resolve (a Text instance's `angle`), with "property
+ * track type 'undefined' is not valid". The property is resolved the way the
+ * timeline tools do (resolveTimelineProperty): an unresolved name on a
+ * world-instance source is an error, on an instance-variable or plugin source
+ * a warning, since only the world-instance case is on record. A track whose
+ * instance or object type is not found is not reported. A missing or unknown
+ * `source.type` is a warning: the known set is not proven complete.
+ */
+function checkTimelinePropertyTrackTypes(
+  timelines: Map<string, Timeline>,
+  layouts: Map<string, Layout>,
+  objects: Map<string, ObjectType>,
+  errors: IntegrityIssue[],
+  warnings: IntegrityIssue[]
+): void {
+  for (const [relative, timeline] of timelines) {
+    const entity = `timelines/${relative.replace(/\.json$/, '')}`;
+    for (const { track } of listTracks(timeline)) {
+      const kind = trackKind(track);
+      const uid = kind === 'instance-track' || kind === 'legacy-instance-track' ? track.worldInstance : undefined;
+      const instance = typeof uid === 'number' ? findInstanceInLayouts(layouts, uid) : undefined;
+      const objectType = instance ? objects.get(instance.type) : undefined;
+      for (const { propertyTrack } of listPropertyTracks(track)) {
+        const type: unknown = propertyTrack.source?.type;
+        if (typeof type !== 'string' || !PROPERTY_TRACK_SOURCE_TYPES.has(type)) {
+          warnings.push({
+            check: 'timeline-property-track-type',
+            entity,
+            message: `Property track "${propertyTrack.property}" has ${typeof type === 'string' ? `the source type "${type}"` : 'no source type'}`
+              + `, which is not one of the source types the tools write (${[...PROPERTY_TRACK_SOURCE_TYPES].join(', ')}). `
+              + 'Whether Construct 3 accepts it was not checked.',
+            suggestion: 'Check the property track in the Construct 3 editor, or remove it with remove_property_track.',
+          });
+        }
+        // Instance or object type not found: the property cannot be resolved, so nothing is reported
+        if (!instance || !objectType) continue;
+        const resolved = resolveTimelineProperty(propertyTrack.property, instance, objectType);
+        if (!resolved.ok || resolved.spec.verified) continue;
+        const refusal = 'Construct 3 r506-2 refused to open a project whose timeline had a property track on a property it could not resolve '
+          + '(a Text instance\'s `angle`), with "property track type \'undefined\' is not valid".';
+        const subject = `Property track "${propertyTrack.property}" of instance UID ${instance.uid} (${instance.type}) names a property that is not a world property, an instance variable or a plugin property of that instance. `;
+        const suggestion = `Remove the property track with remove_property_track, or animate a property the instance has (world properties: ${Object.keys(WORLD_PROPERTIES).join(', ')}).`;
+        if (type === 'world-instance') {
+          errors.push({ check: 'timeline-property-track-type', entity, message: subject + refusal, suggestion });
+        } else if (type === 'instance-variable' || type === 'plugin') {
+          // Only the world-instance case is on record; the other sources are not tested
+          warnings.push({
+            check: 'timeline-property-track-type',
+            entity,
+            message: `${subject}${refusal} That case had a world-instance source; a ${type} source was not tested.`,
+            suggestion,
+          });
+        }
+      }
+    }
+  }
+}
+
+/** The instance with this UID on any layer of any layout, or among its non-world instances. */
+function findInstanceInLayouts(layouts: Map<string, Layout>, uid: number): Instance | undefined {
+  for (const layout of layouts.values()) {
+    const found = findInstanceByUid(layout, uid);
+    if (found) return found.instance;
+  }
+  return undefined;
+}
+
+/**
+ * Reads every file below timelines/ once and reports the ones that cannot be
+ * checked, the way checkFileExistence does for the other registered files: a
+ * file over the size limit is an `unscanned-file` warning, a file that cannot
+ * be read or parsed is a `file-existence` error, and both are listed in
+ * unscannedFiles so the result is not complete. A timeline registered in
+ * project.c3proj with no file of that name is a `file-existence` error that
+ * leaves the result complete.
+ * @returns The timelines that were read and parsed, by path below timelines/
+ */
+async function readTimelineFiles(
+  reader: Construct3ProjectReader,
+  project: Construct3Project,
+  errors: IntegrityIssue[],
+  warnings: IntegrityIssue[],
+  unscannedFiles: string[]
+): Promise<Map<string, Timeline>> {
+  const timelines = new Map<string, Timeline>();
+  const paths = await reader.listDataFiles('timelines');
+  for (const relative of paths) {
+    const entity = `timelines/${relative.replace(/\.json$/, '')}`;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await reader.readDataFileText('timelines', relative));
+    } catch (error) {
+      const code = classifyReadError(error);
+      // Gone between the listing and the read: nothing on disk escaped the checks
+      if (code === 'E_FILE_NOT_FOUND') continue;
+      unscannedFiles.push(entity);
+      const message = errorMessage(error, reader.getProjectDir());
+      if (code === 'E_FILE_TOO_LARGE') {
+        warnings.push({
+          check: 'unscanned-file',
+          entity,
+          message: `UNSCANNED: ${message} — timeline checks (property tracks) did not cover this file`,
+          suggestion: 'The results are partial (complete: false); check this file another way, e.g. in the Construct 3 editor',
+        });
+      } else {
+        errors.push({
+          check: 'file-existence',
+          entity,
+          message: `Timeline file could not be read: ${withoutFsPath(message)}`,
+          suggestion: `Check that timelines/${relative} is a readable file with valid JSON`,
+        });
+      }
+      continue;
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) timelines.set(relative, parsed as Timeline);
+  }
+
+  const present = new Set(paths.map(p => nameKey((p.split('/').pop() ?? p).replace(/\.json$/, ''))));
+  for (const name of project.timelines ? flattenContainer(project.timelines) : []) {
+    if (present.has(nameKey(name))) continue;
+    errors.push({
+      check: 'file-existence',
+      entity: `timelines/${name}`,
+      message: `Registered in c3proj but no file named ${name}.json exists below timelines/`,
+      suggestion: `Create the timeline file or remove "${name}" from project.c3proj`,
+    });
+  }
+  return timelines;
+}
+
+/**
+ * Instances that carry a template or replica block but are not on a layer.
+ * Construct 3 r506-2 (Free edition) refused to open such a project ("Failed
+ * to open project").
+ */
+function checkTemplatesOnNonWorldInstances(
+  layouts: Map<string, Layout>,
+  errors: IntegrityIssue[]
+): void {
+  for (const [layoutName, layout] of layouts) {
+    forEachLayoutInstance(layout, (instance, entry) => {
+      if (entry !== undefined) return;
+      const mode = readTemplate(instance)?.mode;
+      if (mode !== 'template' && mode !== 'replica') return;
+      errors.push({
+        check: 'template-on-non-world-instance',
+        entity: `layouts/${layoutName}`,
+        message: `Instance UID ${instance.uid} (${instance.type}) is a non-world instance with a ${mode} block. `
+          + 'Construct 3 r506-2 (Free edition) refused to open a project with a template or replica block on a non-world instance ("Failed to open project").',
+        suggestion: 'Remove the template block with set_instance_template (mode "none"), or delete the instance.',
+      });
+    });
+  }
+}
+
+/**
+ * Drop the trailing ", <syscall> '<absolute path>'" Node appends to fs
+ * errors; tool output should not echo the project's absolute path.
+ */
+function withoutFsPath(message: string): string {
+  return message.replace(/, (?:stat|lstat|open|read|access|scandir) '.*'$/, '');
+}
+
 // ─── Check 1: File Existence ─────────────────────────────────
 
 function checkFileExistence(
   registered: string[],
   loaded: Map<string, unknown>,
-  category: 'objectTypes' | 'eventSheets' | 'layouts',
+  readFailures: Map<string, ReadFailure>,
+  category: EntityCategory,
   reader: Construct3ProjectReader,
   errors: IntegrityIssue[],
   warnings: IntegrityIssue[],
   unscannedFiles: string[]
 ): void {
-  const readFailures = reader.getReadFailures(category);
   for (const name of registered) {
     if (loaded.has(name)) continue;
+    const entity = `${category}/${name}`;
+    const relPath = reader.getEntityRelativePath(category, name);
     const failure = readFailures.get(name);
-    if (failure?.code === 'E_FILE_TOO_LARGE') {
-      // The file exists but exceeds the reader's size cap — it was NOT
-      // scanned, so every check below is blind to its contents. Report it
-      // honestly instead of claiming the file is missing or invalid.
-      unscannedFiles.push(`${category}/${name}`);
-      warnings.push({
-        check: 'unscanned-file',
-        entity: `${category}/${name}`,
-        message: `UNSCANNED: ${failure.message} — integrity checks (duplicate UIDs/SIDs, references) did not cover this file`,
-        suggestion: `Validate this file separately; results for this project are partial`,
-      });
-    } else if (failure?.code === 'E_FILE_NOT_FOUND') {
+    if (failure?.code === 'E_FILE_NOT_FOUND') {
       // Registered but absent on disk. Say so plainly, with the path the
       // reader actually looked at (subfolder included), rather than echoing
       // the raw stat message, which carries the absolute project path.
-      const relPath = reader.getEntityRelativePath(category, name);
       errors.push({
         check: 'file-existence',
-        entity: `${category}/${name}`,
+        entity,
         message: `Registered in c3proj but no file exists at ${relPath}`,
         suggestion: `Create ${relPath} or remove "${name}" from project.c3proj`,
+      });
+      continue;
+    }
+    // The file is there (or its state is unknown) but was not read, so no
+    // check below covered its contents: the result is not complete.
+    unscannedFiles.push(entity);
+    if (failure?.code === 'E_FILE_TOO_LARGE') {
+      // Over the reader's size cap: report it honestly instead of claiming
+      // the file is missing or invalid.
+      warnings.push({
+        check: 'unscanned-file',
+        entity,
+        message: `UNSCANNED: ${failure.message} — integrity checks (duplicate UIDs/SIDs, references) did not cover this file`,
+        suggestion: `The results are partial (complete: false); check this file another way, e.g. in the Construct 3 editor`,
       });
     } else if (failure) {
       errors.push({
         check: 'file-existence',
-        entity: `${category}/${name}`,
-        message: `Registered in c3proj but could not be read: ${redactFsPaths(failure.message)}`,
-        suggestion: `Check that ${reader.getEntityRelativePath(category, name)} exists and is valid JSON`,
+        entity,
+        message: `Registered in c3proj but could not be read: ${withoutFsPath(failure.message)}`,
+        suggestion: `Check that ${relPath} is a readable file with valid JSON`,
       });
     } else {
       errors.push({
         check: 'file-existence',
-        entity: `${category}/${name}`,
+        entity,
         message: `Registered in c3proj but file is missing or contains invalid JSON`,
-        suggestion: `Check that ${category}/${name}.json exists and is valid JSON`,
+        suggestion: `Check that ${relPath} exists and is valid JSON`,
       });
     }
   }
@@ -426,11 +665,6 @@ function validateSubfolders(
 ): void {
   for (let i = 0; i < subfolders.length; i++) {
     const sf = subfolders[i];
-    // The editor's Transitions folder (the first nameless subfolder directly
-    // under timelines, which also holds custom eases) is saved without a name,
-    // empty or not: seen as
-    // `"timelines": { "items": [], "subfolders": [{ "items": [], "subfolders": [] }] }`
-    // in an editor-saved example. Any other nameless folder is malformed.
     const isTransitions = i === transitionsIndex;
     if (!isTransitions && isNamelessFolder(sf)) {
       errors.push({
@@ -455,6 +689,65 @@ function validateSubfolders(
     }
     if (Array.isArray(sf.subfolders)) {
       validateSubfolders(sf.subfolders as Array<Record<string, unknown>>, folderPath, containerName, errors);
+    }
+  }
+}
+
+// ─── Container members ──────────────────────────────────────
+
+/**
+ * Container members (project.c3proj "containers", see containers.ts) that
+ * name no object type of the project: errors, since the editor refuses to
+ * open such a project ("cannot find object type name"). A member that
+ * differs from an object type only in letter case is a warning (whether
+ * the editor matches it that way was not checked). A container with fewer
+ * than two members that are object types follows SMALL_CONTAINER_RULE:
+ * info when the editor keeps such a container, an error when it does not.
+ */
+function checkContainerMembers(
+  project: Construct3Project,
+  registeredObjects: string[],
+  errors: IntegrityIssue[],
+  warnings: IntegrityIssue[],
+  info: IntegrityIssue[]
+): void {
+  for (const container of projectContainers(project)) {
+    const entity = `containers/${container.index}`;
+    const members = container.members.map(m => `"${m}"`).join(', ');
+    for (const problem of containerMemberProblems(container.members, registeredObjects)) {
+      const { member = '', registered } = problem;
+      if (problem.kind === 'case-variant') {
+        warnings.push({
+          check: 'container-member',
+          entity,
+          message: `Container ${container.index} of project.c3proj lists "${member}", which differs only in letter case from the object type "${registered}". ` +
+            'Whether Construct 3 matches container members ignoring case was not checked.',
+          suggestion: `Change the member to "${registered}" in project.c3proj.`,
+        });
+      } else if (problem.kind === 'missing') {
+        errors.push({
+          check: 'container-member',
+          entity,
+          message: `Container ${container.index} of project.c3proj (members ${members}) lists "${member}", which is not an object type of the project. ` +
+            'Construct 3 does not open a project whose container names a missing object type ("cannot find object type name").',
+          suggestion: `Remove "${member}" from that container's "members" in project.c3proj, or restore the object type.`,
+        });
+      } else {
+        const issue: IntegrityIssue = {
+          check: 'container-member',
+          entity,
+          message: (registered === undefined
+            ? `Container ${container.index} of project.c3proj has no member that is an object type`
+            : `Container ${container.index} of project.c3proj has only one member that is an object type ("${registered}")`)
+            + (SMALL_CONTAINER_RULE === 'removed'
+              ? ': Construct 3 refuses to open a project with such a container ("need at least 2 types in container").'
+              : SMALL_CONTAINER_RULE === 'kept-unverified'
+                ? ': it groups nothing. Whether Construct 3 opens such a container was not checked.'
+                : ': it groups nothing.'),
+          suggestion: 'Add the object types it should group in the Construct 3 editor, or remove the container.',
+        };
+        (SMALL_CONTAINER_RULE === 'removed' ? errors : info).push(issue);
+      }
     }
   }
 }
@@ -1145,6 +1438,83 @@ async function checkMissingBehaviorsAndVariables(
   }
 }
 
+// ─── Check 6a-2: Conditions, Actions and Expressions ────────
+
+/**
+ * Conditions, actions and the expressions in their parameters, checked against
+ * the definitions of the release the project was saved with (or the fallback
+ * release, said in an info issue), plus the used addons whose definitions are
+ * neither built in nor loaded. Warnings, because the catalogue may lag the
+ * editor. Without a catalogue one info issue says why and nothing else is
+ * reported by these checks. `data` is what the other checks already read, so
+ * the project is not read again.
+ */
+async function checkAcesAndExpressions(
+  reader: Construct3ProjectReader,
+  data: ProjectData,
+  warnings: IntegrityIssue[],
+  info: IntegrityIssue[]
+): Promise<void> {
+  const savedWith = reader.getProject().savedWithRelease;
+  const lookup = await aceCatalogProviderFor(reader).catalogFor(savedWith);
+  if (!lookup.ok) {
+    info.push({ check: 'ace-catalog-unavailable', entity: 'project', message: lookup.message });
+    return;
+  }
+  const substitute = describeCatalogSubstitute(lookup);
+  if (substitute) {
+    info.push({ check: 'ace-catalog-other-release', entity: 'project', message: substitute });
+  }
+
+  const catalog = lookup.catalog;
+  const addons = addonDefinitionsOf(reader);
+  const aceContext = buildAceContext(data);
+  const expressionContext = buildExpressionContext(data, aceContext);
+  /** The entity of a finding: the sheet, and the ACE's SID when it has one. */
+  const where = (sheet: string, sid: number | undefined) =>
+    sid === undefined ? `eventSheets/${sheet}` : `eventSheets/${sheet}/sid:${sid}`;
+
+  for (const [name, sheet] of data.sheets) {
+    for (const problem of checkEventAces(sheet.events, aceContext, addons, catalog)) {
+      warnings.push({
+        check: `ace-${problem.code}`,
+        entity: where(name, problem.sid),
+        message: describeEventAceProblem(problem, catalog.release, savedWith),
+      });
+    }
+  }
+
+  for (const [name, sheet] of data.sheets) {
+    for (const problem of checkEventExpressions(sheet.events, expressionContext, aceContext, addons, catalog)) {
+      warnings.push({
+        check: problem.code,
+        entity: where(name, problem.sid),
+        message: describeEventExpressionProblem(problem, catalog.release, savedWith),
+      });
+    }
+  }
+  if (!expressionContext.complete) {
+    info.push({
+      check: 'expression-names-unchecked',
+      entity: 'project',
+      message: `Names in expressions were only partly checked, because these files could not be read and may declare objects, families, functions or variables: ${listFew(expressionContext.unreadable)}.`,
+    });
+  }
+
+  const seen = new Set<string>();
+  for (const addon of reader.getUsedAddons()) {
+    if ((addon.type !== 'plugin' && addon.type !== 'behavior') || seen.has(`${addon.type}:${addon.id}`)) continue;
+    seen.add(`${addon.type}:${addon.id}`);
+    if (isBuiltInAddon(addon.type, addon.id, catalog) || addons.get(addon.type, addon.id) !== undefined) continue;
+    info.push({
+      check: 'ace-definitions-unavailable',
+      entity: `usedAddons/${addon.type}:${addon.id}`,
+      message: `The ${addon.type} "${addon.id}" is not one of Construct ${releaseLabel(catalog.release)}'s built-in ${addon.type}s and no definitions are loaded for it, so its conditions, actions and expressions were not checked.`,
+      suggestion: 'Load its definitions with load_addon_definitions (the folder holds addon.json and aces.json).',
+    });
+  }
+}
+
 /** "a, b, c" or "a, b, c, d, e and 3 more" */
 function listFew(items: string[], max = 5): string {
   const shown = items.slice(0, max).join(', ');
@@ -1178,60 +1548,62 @@ function checkDuplicateLayerNames(layouts: Map<string, Layout>, warnings: Integr
   }
 }
 
-// ─── Check 6b: Conditions and Actions Against Construct's Definitions ──
+// ─── Hierarchy Links ─────────────────────────────────────────
+
+const HIERARCHY_PROBLEMS: Record<HierarchyLinkProblem['problem'], (p: HierarchyLinkProblem) => string> = {
+  'missing-parent': p => `names parent UID ${p.target}, which is no instance of this layout`,
+  'missing-child': p => `lists child UID ${p.target}, which is no instance of this layout`,
+  'parent-not-linked': p => `names parent UID ${p.target}, which does not list it as a child`,
+  'child-not-linked': p => `lists child UID ${p.target}, which names another parent or none`,
+};
 
 /**
- * Every standard condition and action of a built-in plugin or behavior must be
- * one Construct defines, with the parameter names it defines and, for a combo
- * parameter, one of its choices. ACEs of third-party addons and of objects the
- * project does not declare are skipped.
+ * Hierarchy (scene graph) links that point at no instance of the layout, or
+ * whose other side does not name the instance (see hierarchy.ts). Older
+ * versions of delete_instance_from_layout and delete_layer left such links
+ * behind, and a new instance can get the UID of a deleted one, so a link left
+ * behind can point at an unrelated instance. What the editor does with such a
+ * link when it opens the project is not verified, so a warning.
  */
-async function checkEventAceDefinitions(
-  reader: Construct3ProjectReader,
-  sheets: Map<string, EventSheet>,
-  warnings: IntegrityIssue[]
-): Promise<void> {
-  const context = await buildAceContext(reader);
-  for (const [name, sheet] of sheets) {
-    for (const problem of checkEventAces(sheet.events, context)) {
+function checkHierarchyLinks(layouts: Map<string, Layout>, warnings: IntegrityIssue[]): void {
+  for (const [layoutName, layout] of layouts) {
+    for (const problem of findHierarchyLinkProblems(layout)) {
+      const where = problem.entry ? `${layerLocation(problem.entry)}/` : 'nonworld:';
       warnings.push({
-        check: `ace-${problem.code}`,
-        entity: `eventSheets/${name}${problem.sid !== undefined ? `/sid:${problem.sid}` : ''}`,
-        message: describeEventAceProblem(problem),
-        suggestion: `Compare with the ${problem.kind === 'conditions' ? 'condition' : 'action'} as Construct ${ACE_CATALOG_RELEASE} writes it, or fix it with update_event_block`,
+        check: 'hierarchy-link',
+        entity: `layouts/${layoutName}/${where}inst:${problem.type}`,
+        message: `The hierarchy record of "${problem.type}" UID ${problem.uid} in layout "${layoutName}" ` +
+          `${HIERARCHY_PROBLEMS[problem.problem](problem)}. Hierarchy links name UIDs, and a new instance can get the UID ` +
+          'of a deleted one, so a link left behind by a deletion can point at an unrelated instance.',
+        suggestion: 'Fix the link in the Construct 3 editor (remove the instance from its parent, or add it again), or in the layout file: ' +
+          'the child\'s sceneGraphData "parent-uid" and the parent\'s sceneGraphData "children" entry must name each other. ' +
+          'Older versions of delete_instance_from_layout and delete_layer left such links behind.',
       });
     }
   }
 }
 
-// ─── Check: expressions inside parameters ───────────────────
+// ─── Check 6c: Duplicate Function Names ─────────────────────
 
 /**
- * Parse every expression-typed parameter and resolve its names against the
- * project and the catalogue: an unknown object, member, function or bare
- * name, a wrong argument count, or text that does not parse.
+ * Function blocks whose names match ignoring case, anywhere in the project:
+ * the editor's Function dialog refuses such a name and renames a pasted
+ * function block, and calls resolve names ignoring case, so a call names one
+ * of them ambiguously. The loader reads function names without checking
+ * them, so this is a warning.
  */
-async function checkEventExpressionText(
-  reader: Construct3ProjectReader,
-  sheets: Map<string, EventSheet>,
-  warnings: IntegrityIssue[]
-): Promise<void> {
-  const aceContext = await buildAceContext(reader);
-  const context = await buildExpressionContext(reader);
-  for (const [name, sheet] of sheets) {
-    for (const problem of checkEventExpressions(sheet.events, context, aceContext)) {
-      // An empty parameter, an unterminated string or a backslash outside a
-      // string is already an expression-syntax or empty-expression error of
-      // the load-rule checks; report the parameter once.
-      if (problem.code === 'expression-syntax'
-        && (problem.expression === '' || lintExpression(problem.expression) !== null)) continue;
-      warnings.push({
-        check: problem.code,
-        entity: `eventSheets/${name}${problem.sid !== undefined ? `/sid:${problem.sid}` : ''}`,
-        message: describeEventExpressionProblem(problem),
-        suggestion: 'Check the name against list_objects, the object\'s instance variables and behaviors, get_function_map and the sheet\'s variables, then fix the parameter with update_event_block or update_event_block_action',
-      });
-    }
+function checkDuplicateFunctionNames(eventSheets: Map<string, EventSheet>, warnings: IntegrityIssue[]): void {
+  const sheets = new Map<string, C3Event[]>();
+  for (const [name, sheet] of eventSheets) if (Array.isArray(sheet.events)) sheets.set(name, sheet.events);
+  for (const group of duplicateFunctionNames(functionBlockNames(sheets))) {
+    warnings.push({
+      check: 'duplicate-function-name',
+      entity: `function:${group[0].name}`,
+      message: `${group.length} function blocks have the name "${group[0].name}", ignoring case: ` +
+        group.map(f => `"${f.name}" in eventSheets/${f.sheet} at ${f.eventPath}${f.sid !== undefined ? ` (sid ${f.sid})` : ''}`).join(', ') +
+        '. Construct 3 requires a function name to differ, ignoring case, from every other function in the project and looks functions up ignoring case, so a call to this name is ambiguous.',
+      suggestion: 'Keep one of them: delete the others (delete_event_from_sheet) or rename them in the editor.',
+    });
   }
 }
 
@@ -1256,8 +1628,6 @@ function checkBrokenEventSheetReferences(
     }
   }
 }
-
-// ─── Check 8: Broken Includes ────────────────────────────────
 
 // ─── Check: legacy or misspelt event keys ───────────────────
 
@@ -1285,6 +1655,7 @@ const LEGACY_BLOCK_KEYS: Record<string, string> = {
  * legacy-event-shape, with the tools that convert them.
  */
 function checkLegacyEventKeys(eventSheets: Map<string, EventSheet>, warnings: IntegrityIssue[]): void {
+  /** Report the keys on a list of events and, below the depth limit, on their sub-events. */
   const walk = (events: unknown, sheet: string, depth: number) => {
     if (!Array.isArray(events) || depth > 50) return;
     for (const event of events as Array<Record<string, unknown>>) {
@@ -1322,6 +1693,8 @@ function checkLegacyEventKeys(eventSheets: Map<string, EventSheet>, warnings: In
   };
   for (const [name, sheet] of eventSheets) walk(sheet.events, name, 0);
 }
+
+// ─── Check 8: Broken Includes ────────────────────────────────
 
 function checkBrokenIncludes(
   sheets: Map<string, EventSheet>,
@@ -1366,164 +1739,7 @@ function walkEventsForIncludes(
   }
 }
 
-// ─── Check 8b: Object Images ─────────────────────────────────
-
-/**
- * An image-bearing object type should have its image record and the PNG on
- * disk. Severity follows the evidence rather than the suspicion:
- *
- * - A single-image object type with no `image` record is an ERROR. r495.2
- *   refuses the whole project ("Failed to open project. Check it is a valid
- *   Construct 3 single-file (.c3p) project.") and names no object, observed on
- *   a package holding one Sprite Font object and isolated against a package
- *   that opens normally.
- * - Everything else here is a WARNING, because it is inferred from the 30
- *   sampled r495.2 projects rather than tested in the editor: all 384
- *   animation object types carry frames and all 505 image-bearing types have
- *   their PNG, but no failing package was built for those shapes.
- *
- * The on-disk half is skipped when the project has no `images` directory,
- * which a partially materialised fixture or an in-memory project has; that
- * absence says nothing about what Construct would do.
- */
-async function checkObjectImages(
-  objects: Map<string, ObjectType>,
-  reader: Construct3ProjectReader,
-  errors: IntegrityIssue[],
-  warnings: IntegrityIssue[]
-): Promise<void> {
-  const imagesDir = join(reader.getProjectDir(), 'images');
-  // Construct saves every image file name in lowercase, and the r495.2
-  // samples hold no other case, so the listing is compared in lowercase. That
-  // also keeps the check the same on a case-sensitive filesystem, where a
-  // lookup under the animation's own case would miss every mixed-case name.
-  let imageFiles: Set<string> | undefined;
-  try {
-    if ((await lstat(imagesDir)).isDirectory()) {
-      imageFiles = new Set((await readdir(imagesDir)).map((f) => f.toLowerCase()));
-    }
-  } catch {
-    imageFiles = undefined;
-  }
-
-  // The file name follows the fileType the image record declares, not a fixed
-  // .png: one sampled project stores 30 frames as image/gif in images/<name>.gif. png and
-  // gif are the only types in the samples. For any other declared type the
-  // extension is not guessed, and any file with the same stem counts.
-  const imageFile = (
-    objectName: string,
-    animationName: string,
-    frameIndex: number,
-    pluginId: string,
-    fileType: unknown,
-  ): { name: string; present: () => boolean } => {
-    const stem = getImageFileName(objectName, animationName, frameIndex, pluginId)
-      .replace(/\.png$/, '')
-      .toLowerCase();
-    const declared = typeof fileType === 'string' ? fileType : 'image/png';
-    const ext = IMAGE_EXTENSIONS[declared];
-    if (ext !== undefined) {
-      const name = `${stem}.${ext}`;
-      return { name, present: () => !imageFiles || imageFiles.has(name) };
-    }
-    return {
-      name: `${stem}.*`,
-      present: () => !imageFiles || [...imageFiles].some((f) => f.startsWith(`${stem}.`)),
-    };
-  };
-
-  for (const [name, obj] of objects) {
-    const pluginId = obj['plugin-id'];
-    if (!pluginId) continue;
-
-    if (SINGLE_IMAGE_PLUGINS.has(pluginId)) {
-      const image = (obj as unknown as Record<string, unknown>).image;
-      if (!image || typeof image !== 'object') {
-        errors.push({
-          check: 'object-image',
-          entity: `objectTypes/${name}`,
-          message: `A ${pluginId} object type has no "image" record, which stops Construct opening the project`,
-          suggestion: `Recreate the object with create_object, or add the image record and its PNG`,
-        });
-        continue;
-      }
-      const file = imageFile(name, '', 0, pluginId, (image as Record<string, unknown>).fileType);
-      if (!file.present()) {
-        warnings.push({
-          check: 'object-image',
-          entity: `objectTypes/${name}`,
-          message: `A ${pluginId} object type declares an image but images/${file.name} is missing, which stops Construct opening the project`,
-          suggestion: `Restore the file, or replace the image with replace_object_image`,
-        });
-      }
-      continue;
-    }
-
-    if (!ANIMATION_PLUGINS.has(pluginId)) continue;
-
-    const animations = (obj as unknown as Record<string, unknown>).animations as
-      | { items?: Array<{ name?: string; frames?: unknown[] }> }
-      | undefined;
-    const items = animations?.items;
-    if (!Array.isArray(items) || items.length === 0) {
-      warnings.push({
-        check: 'object-image',
-        entity: `objectTypes/${name}`,
-        message: `A ${pluginId} object type has no animation frames, which stops Construct opening the project`,
-        suggestion: `Recreate the object with create_object, or add an animation with at least one frame`,
-      });
-      continue;
-    }
-    for (const item of items) {
-      const frames = Array.isArray(item.frames) ? item.frames : [];
-      if (frames.length === 0) {
-        warnings.push({
-          check: 'object-image',
-          entity: `objectTypes/${name}/animation:${item.name ?? ''}`,
-          message: `Animation "${item.name ?? ''}" has no frames, which stops Construct opening the project`,
-          suggestion: `Add a frame with add_frame_to_animation, or delete the animation`,
-        });
-        continue;
-      }
-      for (let i = 0; i < frames.length; i++) {
-        const frame = frames[i];
-        const fileType = frame && typeof frame === 'object' ? (frame as Record<string, unknown>).fileType : undefined;
-        const file = imageFile(name, item.name ?? '', i, pluginId, fileType);
-        if (!file.present()) {
-          warnings.push({
-            check: 'object-image',
-            entity: `objectTypes/${name}/animation:${item.name ?? ''}`,
-            message: `Frame ${i} declares images/${file.name}, which is missing, and Construct will not open the project`,
-            suggestion: `Restore the file, or replace the frame image with replace_sprite_image`,
-          });
-        }
-      }
-    }
-  }
-}
-
 // ─── Check 9: Missing Addons ─────────────────────────────────
-
-// ─── Check: addons whose ACEs cannot be checked ──────────────
-
-/**
- * Name every used plugin or behavior that is neither a built-in of the
- * catalogue's release nor loaded from its own definitions, because its
- * conditions and actions are silently skipped by the ACE checks until then.
- */
-function checkAddonDefinitions(reader: Construct3ProjectReader, info: IntegrityIssue[]): void {
-  for (const addon of reader.getUsedAddons()) {
-    if (addon.type !== 'plugin' && addon.type !== 'behavior') continue;
-    if (isBuiltInAddon(addon.type, addon.id) || addonDefinition(addon.type, addon.id)) continue;
-    const version = typeof (addon as { version?: unknown }).version === 'string' ? ` ${(addon as { version: string }).version}` : '';
-    info.push({
-      check: 'ace-definitions-unavailable',
-      entity: `usedAddons/${addon.id}`,
-      message: `The ${addon.type} "${addon.id}" (${addon.name}${version}) is not a built-in of Construct ${ACE_CATALOG_RELEASE} and its definitions are not loaded, so its conditions and actions are not checked.`,
-      suggestion: 'Point C3_ADDON_DEFINITIONS at its .c3addon file or unpacked folder before starting the server, or call load_addon_definitions with that path.',
-    });
-  }
-}
 
 function checkMissingAddons(
   objects: Map<string, ObjectType>,
@@ -1592,16 +1808,8 @@ function checkMissingBehaviorEntries(
 
 // ─── Check 10: Orphaned Files ────────────────────────────────
 
-/**
- * Construct writes per-user editor UI state beside project files: `<name>.uistate.json`
- * files, and (r487+) `layouts/uistate/<folders>/<name>.instancesBar.json`. They are never
- * registered in project.c3proj and are not entities.
- */
-function isEditorUiStateFile(relativeDir: string, fileName: string): boolean {
-  if (fileName.endsWith('.uistate.json')) return true;
-  return fileName.endsWith('.instancesBar.json')
-    && (relativeDir === 'layouts/uistate' || relativeDir.startsWith('layouts/uistate/'));
-}
+/** Editor view-state files saved next to entity files (e.g. Layout1.uistate.json); not entities. */
+const EDITOR_UI_STATE_SUFFIX = '.uistate.json';
 
 /** Folder nesting depth scanned below objectTypes/, eventSheets/ and layouts/. */
 const MAX_ENTITY_DIR_DEPTH = 20;
@@ -1610,7 +1818,6 @@ const ENTITY_NOUNS: Record<string, string> = {
   objectTypes: 'object type',
   eventSheets: 'event sheet',
   layouts: 'layout',
-  families: 'family',
 };
 
 interface EntityFile {
@@ -1630,9 +1837,7 @@ interface EntityFile {
  *   macOS). It gets a targeted warning with rename advice, never delete advice;
  * - anything else is not read for any entity (orphaned-file, info), including
  *   a copy named like a registered entity in another folder.
- * Editor UI state files (*.uistate.json, layouts/uistate/<folders>/*.instancesBar.json)
- * are skipped. A category folder that is a link (symbolic link, junction) is not
- * scanned, and links below it are not followed.
+ * Editor *.uistate.json files are skipped.
  */
 async function checkOrphanedFiles(
   reader: Construct3ProjectReader,
@@ -1645,7 +1850,6 @@ async function checkOrphanedFiles(
     ['objectTypes', project.objectTypes],
     ['eventSheets', project.eventSheets],
     ['layouts', project.layouts],
-    ['families', project.families],
   ];
 
   for (const [dirName, container] of categories) {
@@ -1663,16 +1867,13 @@ async function listEntityFiles(dirPath: string, prefix: string, depth: number): 
   if (depth > MAX_ENTITY_DIR_DEPTH) return [];
   let entries;
   try {
-    // The category folder itself must be a real directory, not a link out of the project
-    if (depth === 0 && !(await lstat(dirPath)).isDirectory()) return [];
     entries = await readdir(dirPath, { withFileTypes: true });
   } catch {
     return []; // Directory doesn't exist or not readable — skip (common in tests)
   }
   const files: EntityFile[] = [];
   for (const entry of entries) {
-    // Dirents of links are neither files nor directories here, so links are not followed
-    if (entry.isFile() && entry.name.endsWith('.json') && !isEditorUiStateFile(prefix, entry.name)) {
+    if (entry.isFile() && entry.name.endsWith('.json') && !entry.name.endsWith(EDITOR_UI_STATE_SUFFIX)) {
       files.push({ path: `${prefix}/${entry.name}`, base: entry.name.slice(0, -'.json'.length) });
     }
   }
@@ -1750,9 +1951,12 @@ function classifyEntityFiles(
 // ─── Check 11: Backup Files ─────────────────────────────────
 
 /**
- * .bak files in the entity folders (recursively, including timelines/) and next
- * to project.c3proj. The project root is not scanned recursively, so files/,
- * images/, scripts/ and the like stay out of it.
+ * .bak files, and the files an interrupted write leaves
+ * (.c3mcp-<16 hex digits>.tmp|link|old), in the entity folders (recursively,
+ * including timelines/), directly in images/ (the frame tools keep frame
+ * images there as .bak) and next to project.c3proj. The project root is not
+ * scanned recursively, so files/, scripts/, subfolders of images/ and the
+ * like stay out of it.
  */
 async function checkBackupFiles(
   reader: Construct3ProjectReader,
@@ -1764,6 +1968,8 @@ async function checkBackupFiles(
   for (const dirName of dirs) {
     await scanDirForBackups(join(projectDir, dirName), dirName, info, true);
   }
+  // add_frame_to_animation and delete_frame_from_animation keep images there as .bak
+  await scanDirForBackups(join(projectDir, 'images'), 'images', info, false);
   await scanDirForBackups(projectDir, '', info, false);
 }
 
@@ -1783,6 +1989,13 @@ async function scanDirForBackups(
           entity: path,
           message: 'Backup copy: this server copies a file to <file>.bak before changing or deleting it and keeps the copy afterwards',
           suggestion: 'Review and delete it if no longer needed',
+        });
+      } else if (entry.isFile() && isWriteLeftover(entry.name)) {
+        info.push({
+          check: 'backup-file',
+          entity: path,
+          message: 'a file left by an interrupted write; the .old one holds the file\'s previous content',
+          suggestion: 'Review and delete it if no longer needed; compare an .old file with the file it sat beside first',
         });
       }
       if (recursive && entry.isDirectory()) {
@@ -1807,13 +2020,159 @@ async function checkOrphanedObjects(
       check: 'orphaned-object',
       entity: `objectTypes/${orphan.name}`,
       message: `Object "${orphan.name}" (${orphan.pluginId}) is not used by any event (as condition/action object, object parameter, ` +
-        'expression or in a script action), not used through a family, has no instance in any layout (on any layer or sub-layer, ' +
+        'expression, in a script action or as the literal name of Create object (by name)), not used through a family, ' +
+        'has no instance in any layout (on any layer or sub-layer, ' +
         'including non-world instances) and no other instance names it in an object property',
-      suggestion: 'Before removing it, check what this analysis cannot see: project script files, objects created by name at runtime, ' +
+      suggestion: 'Before removing it, check what this analysis cannot see: project script files, objects created by a name built at runtime, ' +
         'and script references it does not recognise. delete_object refuses objects that are still referenced.' +
         (families.length > 0
           ? ` It is a member of ${families.map(f => `"${f}"`).join(', ')}: remove it from the family first (update_family removeMembers).`
           : ''),
+    });
+  }
+}
+
+// ─── Check 13: Frame Images ──────────────────────────────────
+
+/**
+ * Sprite animation frames and the image files in images/. The editor names a
+ * frame's image lower("<object>-<animation>-NNN.<ext>"), NNN being the frame's
+ * index and ext following its fileType (see animation-rename.ts). images/ is
+ * read once and names are compared by nameKey(), ignoring case and Unicode
+ * normalization, as Windows and macOS do. The check is skipped when the
+ * project has no images/ folder.
+ *
+ * - Warning, one per animation: frames without their image file. Older
+ *   versions of add_frame_to_animation left the frames after an insert index
+ *   without one. What the editor does with a frame whose image file is
+ *   missing is not verified, so this is a warning.
+ * - Info, one per animation: files named like frames of the animation past
+ *   its last frame that no frame uses, e.g. left behind by older versions of
+ *   delete_frame_from_animation.
+ */
+async function checkFrameImages(
+  reader: Construct3ProjectReader,
+  objects: Map<string, ObjectType>,
+  warnings: IntegrityIssue[],
+  info: IntegrityIssue[]
+): Promise<void> {
+  let files: string[];
+  try {
+    files = await readdir(join(reader.getProjectDir(), 'images'));
+  } catch {
+    return; // No images/ folder
+  }
+  const images = indexImageFiles(files);
+  // nameKey("<object>-<animation>-") → the animations whose frame images start with it
+  const byPrefix = new Map<string, Array<{ entity: string; name: string; frameCount: number }>>();
+  // nameKey() of the names without extension that a frame of any animation uses
+  const usedStems = new Set<string>();
+
+  for (const [objectName, obj] of objects) {
+    if (obj['plugin-id'] !== 'Sprite') continue;
+    for (const anim of everyAnimation<{ name?: unknown; frames?: unknown }>(obj.animations)) {
+      if (typeof anim.name !== 'string') continue;
+      const animationName = anim.name;
+      const frames: unknown[] = Array.isArray(anim.frames) ? anim.frames : [];
+      const entity = `objectTypes/${objectName}/animation:${animationName}`;
+      const missing: string[] = [];
+      frames.forEach((frame, index) => {
+        const base = frameImageBaseName(objectName, animationName, index);
+        usedStems.add(nameKey(base));
+        const fileType = isRecord(frame) ? frame.fileType : undefined;
+        if (images.frameFiles(base, fileType).length === 0) missing.push(`images/${expectedFrameImageName(base, fileType)}`);
+      });
+      if (missing.length > 0) {
+        warnings.push({
+          check: 'frame-image',
+          entity,
+          message: `${missing.length} of ${frames.length} frame(s) of animation "${animationName}" have no image file: ${listFew(missing)}`,
+          suggestion: 'Construct 3 loads a frame\'s image from images/<object>-<animation>-NNN.<ext> (NNN = frame index, .jpg for a JPEG frame, '
+            + '.png otherwise, all lowercase); what it does when the file is missing is not verified. Restore the file (from a .bak copy in '
+            + 'images/ or version control), or give the frame an image with replace_sprite_image. Older versions of construct3-mcp left '
+            + 'the frames after an add_frame_to_animation index without their images.',
+        });
+      }
+      const prefix = nameKey(frameImageBaseName(objectName, animationName, 0).slice(0, -'000'.length));
+      const list = byPrefix.get(prefix);
+      const entry = { entity, name: animationName, frameCount: frames.length };
+      if (list) list.push(entry); else byPrefix.set(prefix, [entry]);
+    }
+  }
+
+  // Files named like a frame past the last one of an animation, which no frame uses
+  const unused = new Map<{ entity: string; name: string; frameCount: number }, string[]>();
+  for (const file of files) {
+    const match = /^(.*-)(\d{3,})\.[^.]+$/.exec(nameKey(file));
+    if (!match) continue;
+    const [, prefix, digits] = match;
+    const frameIndex = Number(digits);
+    if (digits !== String(frameIndex).padStart(3, '0') || usedStems.has(`${prefix}${digits}`)) continue;
+    const anim = byPrefix.get(prefix)?.find(a => frameIndex >= a.frameCount);
+    if (!anim) continue;
+    const list = unused.get(anim);
+    if (list) list.push(`images/${file}`); else unused.set(anim, [`images/${file}`]);
+  }
+  for (const [anim, unusedFiles] of unused) {
+    info.push({
+      check: 'frame-image',
+      entity: anim.entity,
+      message: `${unusedFiles.length} file(s) in images/ are named like frames of animation "${anim.name}" past its last frame `
+        + `(it has ${anim.frameCount}), and no frame uses them: ${listFew(unusedFiles.sort())}`,
+      suggestion: 'They can be images of deleted frames (older versions of delete_frame_from_animation left the last one behind) '
+        + 'or of frames the animation had before. Check them before deleting them; add_frame_to_animation keeps such a file as .bak '
+        + 'instead of writing over it.',
+    });
+  }
+}
+
+// ─── Orphaned Images ─────────────────────────────────────────
+
+/**
+ * Files directly in images/ named after no object type of the project: the
+ * editor names an object's frame images "<object>-<animation>-NNN.<ext>" and
+ * a single image "<object>.<ext>" (see object-images.ts), so such a file
+ * belongs to no object, e.g. the images of a deleted object type (older
+ * versions of delete_object left them behind). Info, one entry per name part
+ * before the first "-" or "." (the name of the object they were stored for):
+ * whether the editor or anything else uses such a file is not verified.
+ * Registered object types whose file could not be parsed count as object
+ * types; .bak files and the files an interrupted write leaves are listed as
+ * backup-file instead, and files named after an existing object type (e.g.
+ * frames past an animation's last frame, see frame-image) are not reported
+ * here. Skipped without an images/ folder.
+ */
+async function checkOrphanedImages(
+  reader: Construct3ProjectReader,
+  objectNames: string[],
+  info: IntegrityIssue[]
+): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(join(reader.getProjectDir(), 'images'), { withFileTypes: true });
+  } catch {
+    return; // No images/ folder
+  }
+  const groups = new Map<string, string[]>();
+  const namedAfterObject = namedAfterAnyObject(objectNames);
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.name.toLowerCase().endsWith('.bak') || isWriteLeftover(entry.name)) continue;
+    if (namedAfterObject(entry.name)) continue;
+    const stem = /^[^.-]*/.exec(entry.name)?.[0] ?? entry.name;
+    const key = nameKey(stem);
+    const list = groups.get(key);
+    if (list) list.push(`images/${entry.name}`); else groups.set(key, [`images/${entry.name}`]);
+  }
+  for (const files of groups.values()) {
+    files.sort();
+    info.push({
+      check: 'orphaned-image',
+      entity: files[0],
+      message: `${files.length} file(s) in images/ are named after no object type of the project: ${listFew(files)}. ` +
+        'Construct 3 names the frame images of an object <object>-<animation>-NNN.<ext> and a single image <object>.<ext>, ' +
+        'so no object uses them; they can be the images of a deleted object type (older versions of delete_object left them behind).',
+      suggestion: 'Check that nothing else uses them (e.g. a project file or script that loads them by path), then delete them. ' +
+        'delete_object keeps the images of the object type it deletes as .bak.',
     });
   }
 }

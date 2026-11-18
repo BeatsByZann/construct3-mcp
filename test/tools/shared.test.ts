@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  validateName, validateSubfolder, toolResult, toolError, boundedRecord,
+  validateName, validateSubfolder, validateFileName, toolResult, toolError, boundedRecord,
   EDITOR_RELOAD_NOTE, reportsProjectWrite,
 } from '../../src/tools/shared.js';
 
@@ -116,6 +116,56 @@ describe('reportsProjectWrite', () => {
     expect(reportsProjectWrite({ success: true, action: 'already_registered' }, { projectWritten: false })).toBe(false);
     expect(reportsProjectWrite({ success: true }, { projectWritten: false })).toBe(false);
     expect(reportsProjectWrite({ packed: true }, { projectWritten: true })).toBe(true);
+  });
+});
+
+describe('validateFileName', () => {
+  it('accepts ordinary file names', () => {
+    expect(() => validateFileName('host.js')).not.toThrow();
+    expect(() => validateFileName('console.js')).not.toThrow();
+    expect(() => validateFileName('a.b.json')).not.toThrow();
+    expect(() => validateFileName('a'.repeat(251))).not.toThrow();
+    for (const name of ['com10', 'nullable', 'auxiliary.js', 'comment.js', 'conin.txt', 'coma']) {
+      expect(() => validateFileName(name), name).not.toThrow();
+    }
+  });
+
+  it('rejects the empty string', () => {
+    expect(() => validateFileName('')).toThrow('File name cannot be empty');
+  });
+
+  it('rejects names whose .tmp or .bak name would pass 255 characters', () => {
+    expect(() => validateFileName('a'.repeat(252))).toThrow('too long');
+    expect(() => validateFileName('a'.repeat(256))).toThrow('too long');
+  });
+
+  it('rejects "." and ".." and path separators', () => {
+    for (const name of ['.', '..', 'a/b', 'a\\b']) {
+      expect(() => validateFileName(name), name).toThrow('must be a single path segment');
+    }
+  });
+
+  it('rejects characters Windows cannot store', () => {
+    for (const name of ['data.json:x', 'D:x.json', 'a*b', 'x?', 'a<b', 'a>b', 'a"b', 'a|b', 'a\tb', 'a\u0000b', 'a\u001fb']) {
+      expect(() => validateFileName(name), JSON.stringify(name)).toThrow('must not contain');
+    }
+  });
+
+  it('rejects a trailing dot or space', () => {
+    expect(() => validateFileName('name.')).toThrow('must not end with a dot or a space');
+    expect(() => validateFileName('name ')).toThrow('must not end with a dot or a space');
+  });
+
+  it('rejects Windows device names, with or without an extension', () => {
+    const names = ['CON', 'aux.js', 'COM1.txt', 'lpt9', 'prn', 'NUL.txt', 'com9', 'LPT1', 'CONIN$', 'conout$.txt'];
+    for (const name of [...names, 'COM\xb9', 'com\xb2.txt', 'LPT\xb3', 'lpt\xb9.log']) {
+      expect(() => validateFileName(name), name).toThrow('reserved for a device');
+    }
+  });
+
+  it('starts the message with the label when one is given', () => {
+    expect(() => validateFileName('', 'Subfolder part')).toThrow(/^Subfolder part cannot be empty/);
+    expect(() => validateFileName('a*b', 'Subfolder part')).toThrow(/^Subfolder part must not contain/);
   });
 });
 

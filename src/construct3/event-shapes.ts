@@ -5,9 +5,7 @@
  * - Else: the System condition { id: "else", objectClass: "System", sid } at
  *   condition index 0 of a block, always after another block (directly, or
  *   with comments between). Conditions after it make an else-if. There is no
- *   block-level "isElse" key. A disabled else condition ("disabled": true,
- *   saved in place) is ignored when the event runs, so its block is an
- *   ordinary block: only an active else makes an else block.
+ *   block-level "isElse" key.
  * - OR blocks: the block key "isOrBlock": true. Conditions carry no OR flag.
  * - Function calls: { callFunction, sid, disabled?, parameters?: [...] } with no
  *   id/objectClass. Parameters are positional, one per function parameter:
@@ -23,39 +21,23 @@
  */
 
 import type { Condition, FunctionCallAction } from './types.js';
+import { isEventVariableNameCharacter } from './event-variable-names.js';
 
 const MAX_NODES = 100_000;
 const MAX_DEPTH = 50;
 
 // ─── Else ────────────────────────────────────────────────────
 
-/**
- * True for the System "else" condition, enabled or disabled: the condition
- * Construct 3 saves as condition 0 of an else block. Use it where the question
- * is whether a condition is an else condition (placement of the condition,
- * duplicates); use isActiveElseCondition for whether a block is an else block.
- */
+/** True for the System "else" condition, which Construct 3 saves as condition 0 of an else block. */
 export function isElseCondition(cond: unknown): boolean {
   if (typeof cond !== 'object' || cond === null) return false;
   const rec = cond as Record<string, unknown>;
   return rec.id === 'else' && rec.objectClass === 'System';
 }
 
-/**
- * True for a System "else" condition that is in effect, which is one not saved
- * with "disabled": true. A disabled else is ignored when the event runs, so
- * its block is an ordinary block and needs no block before it.
- */
-export function isActiveElseCondition(cond: unknown): boolean {
-  return isElseCondition(cond) && (cond as Record<string, unknown>).disabled !== true;
-}
-
-/**
- * True when a stored event is an else block: its first condition is an active
- * System "else". A block whose first condition is a disabled else is ordinary.
- */
+/** True when a stored event is an else block: its first condition is the System "else". */
 export function isElseBlock(event: Readonly<Record<string, unknown>>): boolean {
-  return Array.isArray(event.conditions) && isActiveElseCondition(event.conditions[0]);
+  return Array.isArray(event.conditions) && isElseCondition(event.conditions[0]);
 }
 
 /** The System "else" condition, in the editor's key order. */
@@ -145,6 +127,30 @@ export function functionsObjectName(source: { getProject?: () => unknown } | und
   }
 }
 
+// ─── Create object (by name) ────────────────────────────────
+
+/**
+ * What a System "Create object (by name)" action (id "create-object-by-name")
+ * creates: the object type or family name when its "object-name" parameter is
+ * one string literal (`"Bullet"`, surrounding spaces allowed; `""` inside is a
+ * quote), null when it is any other expression (a name built at runtime), and
+ * undefined for any other condition or action. The runtime looks the name up
+ * ignoring case. get_asset_usage and the cross-reference index share this rule.
+ */
+export function createByNameTarget(ace: unknown): string | null | undefined {
+  if (!ace || typeof ace !== 'object' || Array.isArray(ace)) return undefined;
+  const record = ace as Record<string, unknown>;
+  const parameters = record.parameters;
+  if (record.id !== 'create-object-by-name' || !parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+    return undefined;
+  }
+  const expression = (parameters as Record<string, unknown>)['object-name'];
+  if (typeof expression !== 'string') return undefined;
+  const s = expression.trim();
+  if (!s.startsWith('"') || c3StringEnd(s, 0) !== s.length - 1) return null;
+  return s.slice(1, -1).replace(/""/g, '"');
+}
+
 // ─── Function calls in expressions ──────────────────────────
 
 /** Index of the quote that closes the C3 string literal opening at `start`, or -1. */
@@ -223,20 +229,23 @@ export function findExpressionCalls(expr: string, functionsObject: string): Arra
   return calls;
 }
 
-const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*/y;
 const NUMBER = /[0-9][0-9A-Za-z_.]*/y;
 
 /**
- * Bare names in a C3 expression, lower-cased, one entry per use: the names
- * that can refer to an event variable or a function parameter, such as
- * `Score` in `Score * 2` or `max(Score, 1)`. Not returned: anything inside
- * string literals, numbers, names after "." (`Sprite.Score`, `Functions.Name`)
- * and names followed by "." or "(" (object names as in `Sprite.X`, system
- * expressions and calls as in `max(...)`). Parameterless system expressions
- * such as `dt` are returned like any other name.
+ * The bare names of a C3 expression with their positions, one entry per
+ * use: the names that can refer to an event variable or a function
+ * parameter, such as `Score` in `Score * 2` or `max(Score, 1)`. A name is a
+ * run of the characters an event variable name may hold
+ * (isEventVariableNameCharacter) that does not start with a digit, so
+ * names with letters outside ASCII are read whole. Not returned: anything
+ * inside string literals, numbers, names after "." (`Sprite.Score`,
+ * `Functions.Name`) and names followed by "." or "(" (object names as in
+ * `Sprite.X`, system expressions and calls as in `max(...)`).
+ * Parameterless system expressions such as `dt` are returned like any
+ * other name. `start` and `end` index `expr`.
  */
-export function findExpressionIdentifiers(expr: string): string[] {
-  const names: string[] = [];
+export function expressionIdentifierSpans(expr: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
   let previous = ''; // last character before the current token, spaces aside
   let i = 0;
   while (i < expr.length) {
@@ -248,7 +257,7 @@ export function findExpressionIdentifiers(expr: string): string[] {
       previous = '"';
       continue;
     }
-    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+    if (/\s/.test(ch)) {
       i++;
       continue;
     }
@@ -259,20 +268,43 @@ export function findExpressionIdentifiers(expr: string): string[] {
       previous = '0';
       continue;
     }
-    IDENTIFIER.lastIndex = i;
-    const word = IDENTIFIER.exec(expr);
-    if (!word) {
+    if (!isEventVariableNameCharacter(ch)) {
       previous = ch;
       i++;
       continue;
     }
-    i += word[0].length;
+    const start = i;
+    while (i < expr.length && isEventVariableNameCharacter(expr[i])) i++;
     let next = i;
     while (next < expr.length && /\s/.test(expr[next])) next++;
-    if (previous !== '.' && expr[next] !== '.' && expr[next] !== '(') names.push(word[0].toLowerCase());
+    if (previous !== '.' && expr[next] !== '.' && expr[next] !== '(') spans.push({ start, end: i });
     previous = 'a';
   }
-  return names;
+  return spans;
+}
+
+/**
+ * Bare names in a C3 expression, lower-cased, one entry per use (see
+ * expressionIdentifierSpans for which names count).
+ */
+export function findExpressionIdentifiers(expr: string): string[] {
+  return expressionIdentifierSpans(expr).map(({ start, end }) => expr.slice(start, end).toLowerCase());
+}
+
+/**
+ * `expr` with every bare name (expressionIdentifierSpans) that is `name`,
+ * ignoring case, replaced by `newName`, and how many were.
+ */
+export function renameExpressionIdentifier(expr: string, name: string, newName: string): { text: string; count: number } {
+  const key = name.toLowerCase();
+  let text = expr;
+  let count = 0;
+  for (const { start, end } of expressionIdentifierSpans(expr).reverse()) {
+    if (expr.slice(start, end).toLowerCase() !== key) continue;
+    text = text.slice(0, start) + newName + text.slice(end);
+    count++;
+  }
+  return { text, count };
 }
 
 /** Expression parameters of an ACE: `parameters` is an object (ACEs) or an array (function calls). */
@@ -531,11 +563,19 @@ export function isLegacyFunctionCall(ace: Readonly<Record<string, unknown>>): bo
 }
 
 /**
- * Rewrite a stored function call in place into the editor's shape: drops the
- * legacy keys and writes `args` as positional parameters, in the order
- * callFunction, sid, disabled, other keys, parameters.
+ * Write `args` as the positional parameters of a stored function call. A call
+ * already in the editor's shape keeps its keys where they are (only the
+ * arguments change, so an update with the same arguments changes nothing); a
+ * call in an older shape is rewritten into the editor's shape: the legacy
+ * keys dropped, in the order callFunction, sid, disabled, other keys,
+ * parameters.
  */
 export function rewriteFunctionCallInPlace(ace: Record<string, unknown>, args: FunctionArgument[]): void {
+  if (!isLegacyFunctionCall(ace)) {
+    if (args.length > 0) ace.parameters = args;
+    else delete ace.parameters;
+    return;
+  }
   const others = Object.entries(ace).filter(([k]) =>
     !['callFunction', 'sid', 'disabled', 'parameters', ...LEGACY_CALL_KEYS].includes(k));
   const { callFunction, sid, disabled } = ace;

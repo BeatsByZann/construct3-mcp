@@ -1,7 +1,7 @@
 {
 	"projectFormatVersion": 1,
 	"savedWithRelease": 49502,
-	"name": "W85 Timeline Sampling",
+	"name": "timeline-properties",
 	"runtime": "c3",
 	"useWorker": "dom",
 	"bundleAddons": false,

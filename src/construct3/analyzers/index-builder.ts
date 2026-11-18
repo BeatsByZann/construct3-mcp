@@ -1,6 +1,7 @@
 /**
  * Cross-reference index builder for Construct 3 projects.
- * Foundation for all analysis features: builds lazily on first use, cached.
+ * Foundation for all analysis features: builds lazily on first use, cached
+ * per project (per reader, see getProjectIndex).
  *
  * Objects count as used in events when they are the object of a condition or
  * action, or the objectClass of a custom action block (eventType
@@ -20,7 +21,11 @@
  * - script: runtime.objects.Name or runtime.objects["Name"] (any `objects`
  *   property, e.g. this.runtime.objects) in script actions and script events.
  *   Dynamic lookups (runtime.objects[name]), destructuring and project script
- *   files are not analysed.
+ *   files are not analysed;
+ * - create-by-name: the name System "Create object (by name)" creates when it
+ *   is one string literal ("object-name": "\"Bullet\""), matched ignoring
+ *   case as the runtime looks it up (createByNameTarget, the rule
+ *   get_asset_usage uses). A name built by an expression is not analysed.
  * Only names of existing object types and families are recorded this way, so
  * these references never show up as broken references; the exception are the
  * object parameter keys below, whose values name an object type or family in
@@ -57,7 +62,11 @@
  * is deleted. Scripts that read instance variables and behaviors by name
  * (instVars.name, behaviors.Name in script actions, script events and project
  * script files) are listed apart (getScriptMemberReads): which object's
- * instances they read is not known, so they only warrant a warning.
+ * instances they read is not known, so they only warrant a warning. A
+ * registered object type whose file could not be parsed (over the size limit,
+ * not valid JSON) still counts as an object type, with the names it gets
+ * from its families only (its own are unknown), so the uses of its families'
+ * names through it are found (issue #55).
  */
 
 import type { Construct3ProjectReader } from '../project-reader.js';
@@ -73,33 +82,18 @@ import type {
   ObjectReference,
   Layout,
   FileFolder,
-  FileFolderSubfolder,
 } from '../types.js';
-
-/** A place in an event sheet that uses a behavior through a condition or action. */
-export interface BehaviorReference {
-  objectClass: string;
-  behaviorType: string;
-  eventSheet: string;
-  path: string;
-  context: 'condition' | 'action';
-}
-
-/** A custom action definition (custom-ace-block). */
-export interface CustomActionDefinition {
-  objectClass: string;
-  aceName: string;
-  sheet: string;
-  sid?: number;
-  params: string[];
-}
+import { registeredScriptFiles } from '../script-files.js';
 import {
+  createByNameTarget,
   functionsObjectName,
   findExpressionCalls,
   mappedFunctionName,
   parameterValues,
 } from '../event-shapes.js';
 import { forEachLayoutInstance, layerPathLabel } from '../layers.js';
+import { unscannedFilesOf, type UnscannedFile } from './unscanned-uses.js';
+import { diskEpochOf, ensureCachesFreshOf } from '../disk-state.js';
 
 /** Instances of an object type in one layout, on one layer (or among the non-world instances). */
 export interface InstancePlacement {
@@ -238,6 +232,12 @@ interface ClassMembers {
   isFamily: boolean;
   variables: string[];
   behaviors: string[];
+  /**
+   * The object type's file could not be parsed (issue #55): its own
+   * instance variables and behaviors are unknown (variables and behaviors
+   * are empty), only those it gets from its families are known
+   */
+  ownUnknown?: boolean;
 }
 
 const MAX_NODES = 100_000;
@@ -261,18 +261,30 @@ export interface FunctionCallSite {
  * Parameter keys that hold an object type or family name (object parameters),
  * as found on editor-saved projects. Counted even when a variable has the name.
  */
-const OBJECT_PARAMETER_KEYS = new Set(['object', 'object-to-create', 'pin-to', 'child']);
+export const OBJECT_PARAMETER_KEYS = new Set(['object', 'object-to-create', 'pin-to', 'child']);
 /**
  * Parameter keys whose value names something else: a sound (Audio "audio-file"),
  * an instance variable, an event variable, a layout. Never object references.
  */
-const NON_OBJECT_PARAMETER_KEYS = new Set(['audio-file', 'instance-variable', 'variable', 'layout']);
+export const NON_OBJECT_PARAMETER_KEYS = new Set(['audio-file', 'instance-variable', 'variable', 'layout']);
 /**
  * Shaped like an object type or family name: letters, digits and underscores,
  * at least one of them not a digit (editor-saved object names can start with a
  * digit). Object parameter values in editor-saved projects are always such names.
  */
 const NAME_SHAPED = /^[\p{L}\p{N}_]*[\p{L}_][\p{L}\p{N}_]*$/u;
+/**
+ * Whether a parameter whose whole value is an object or family name refers
+ * to that object: always for object parameter keys, never for keys that
+ * hold other names, otherwise (other keys, call arguments: `key`
+ * undefined) unless an event variable or function parameter has the name.
+ * The rule of the cross-reference index, shared with the object rename.
+ */
+export function isObjectParameterValue(key: string | undefined, isVariableName: boolean): boolean {
+  if (key !== undefined && OBJECT_PARAMETER_KEYS.has(key)) return true;
+  if (key !== undefined && NON_OBJECT_PARAMETER_KEYS.has(key)) return false;
+  return !isVariableName;
+}
 /**
  * Instance properties known to hold the SID of an object type or family, per
  * plugin. Editor-saved projects store the Particles "object" property (the
@@ -400,31 +412,29 @@ export function scriptMemberAccesses(script: string): Array<{ kind: MemberRefere
   return [...found.values()];
 }
 
+/**
+ * The paths, relative to scripts/, of the project script files rootFileFolders.script
+ * lists, and the script folders nested too deep to be walked (their files are not in `paths`).
+ */
+export function scriptFilePaths(project: unknown): { paths: string[]; notWalked: string[] } {
+  const folder = (project as { rootFileFolders?: { script?: FileFolder } } | undefined)?.rootFileFolders?.script;
+  const { files, notWalked } = registeredScriptFiles(folder);
+  return { paths: files.map(f => f.path), notWalked };
+}
+
 /** The instance variables and behaviors the project script files (rootFileFolders.script) read by name. */
 async function readScriptFileMemberReads(
   reader: Construct3ProjectReader,
 ): Promise<{ reads: ScriptMemberRead[]; unreadable: string[] }> {
   const reads: ScriptMemberRead[] = [];
   const unreadable: string[] = [];
-  let folder: FileFolder | undefined;
+  let paths: string[];
   try {
-    folder = typeof reader.getProject === 'function' ? reader.getProject().rootFileFolders?.script : undefined;
+    paths = typeof reader.getProject === 'function' ? scriptFilePaths(reader.getProject()).paths : [];
   } catch {
     return { reads, unreadable };
   }
-  if (!folder || typeof reader.readScriptFile !== 'function') return { reads, unreadable };
-
-  const paths: string[] = [];
-  const walk = (f: FileFolder | FileFolderSubfolder, prefix: string, depth: number) => {
-    if (depth > MAX_DEPTH) return;
-    for (const item of Array.isArray(f.items) ? f.items : []) {
-      if (item && typeof item.name === 'string' && item.name !== '') paths.push(prefix + item.name);
-    }
-    for (const sub of Array.isArray(f.subfolders) ? f.subfolders : []) {
-      if (sub && typeof sub.name === 'string') walk(sub, `${prefix}${sub.name}/`, depth + 1);
-    }
-  };
-  walk(folder, '', 0);
+  if (typeof reader.readScriptFile !== 'function') return { reads, unreadable };
 
   for (const path of paths) {
     let source: string;
@@ -453,10 +463,22 @@ function scriptText(script: unknown): string {
 }
 
 /**
+ * Parameter names of a function block: its `functionParameters`, the key the
+ * editor saves them under, or `parameters` on a block without that key.
+ */
+function functionParameterNames(func: FunctionBlockEvent): string[] {
+  const list = Array.isArray(func.functionParameters) ? func.functionParameters
+    : Array.isArray(func.parameters) ? func.parameters : [];
+  return list
+    .map(p => (p && typeof p === 'object' ? (p as { name?: unknown }).name : undefined))
+    .filter((name): name is string => typeof name === 'string');
+}
+
+/**
  * Names of the event variables (global and local) and function parameters
  * declared in a sheet's events, added to `into`.
  */
-function collectVariableNames(events: C3Event[], into: Set<string>): void {
+export function collectVariableNames(events: C3Event[], into: Set<string>): void {
   const stack: Array<{ event: C3Event; depth: number }> = events.map(event => ({ event, depth: 0 }));
   let nodeCount = 0;
   while (stack.length > 0 && nodeCount++ <= MAX_NODES) {
@@ -492,18 +514,6 @@ export class ProjectIndex {
   /** Object or family → instance properties that hold its SID */
   objectToInstanceProperties: Map<string, InstancePropertyReference[]> = new Map();
 
-  /** Object → layout → number of placed instances */
-  objectInstanceCounts: Map<string, Map<string, number>> = new Map();
-
-  /** "objectClass::behaviorType" → event references */
-  behaviorReferences: Map<string, BehaviorReference[]> = new Map();
-
-  /** "objectClass::aceName" → custom action definition */
-  customActionDefinitions: Map<string, CustomActionDefinition> = new Map();
-
-  /** Custom action calls: action name → call sites (objectClass and customActionObjectClass as written) */
-  customActionCalls: Map<string, { sheet: string; path: string; objectClass: string; customActionObjectClass?: string }[]> = new Map();
-
   /**
    * Function definitions & call sites. Call sites are callFunction actions,
    * `Functions.Name(...)` calls in the expressions of conditions and actions,
@@ -513,6 +523,12 @@ export class ProjectIndex {
    * looks functions up ignoring case); use getFunctionCalls.
    */
   functionDefinitions: Map<string, { sheet: string; params: string[] }> = new Map();
+  /**
+   * Every function block, in sheet order. functionDefinitions keeps one
+   * entry per exact name, so function blocks whose names match (which the
+   * editor refuses to create) are listed here only.
+   */
+  functionDefinitionList: Array<{ name: string; sheet: string; params: string[] }> = [];
   functionCalls: Map<string, FunctionCallSite[]> = new Map();
 
   /** Family membership */
@@ -532,12 +548,24 @@ export class ProjectIndex {
   /** Warnings collected during indexing */
   warnings: string[] = [];
 
+  /**
+   * Registered event sheets, layouts, object types and families the bulk
+   * reads skipped (over the size cap, not valid JSON, unreadable; not files
+   * that do not exist). Nothing in them is indexed: the reference checks
+   * search them as text (unscanned-uses.ts).
+   */
+  unscannedFiles: UnscannedFile[] = [];
+
   /** Object type and family names that parameters, expressions and scripts can refer to */
   private referableNames: Set<string> = new Set();
+  /** Lower-cased object type or family name → the name (for names matched ignoring case) */
+  private referableNamesLower: Map<string, string> = new Map();
   /** Event variable and function parameter names declared in any event sheet */
   private variableNames: Set<string> = new Set();
   /** SID → name of every object type and family (for object properties that store a SID) */
   private namesBySid: Map<number, string> = new Map();
+  /** Name → SID of every object type and family that could be read */
+  private sidsByName: Map<string, number> = new Map();
   /** Instance variable and behavior names of every object type and family that could be read */
   private classMembers: Map<string, ClassMembers> = new Map();
   /** Lower-cased name → name, for the object types and families in classMembers */
@@ -566,16 +594,25 @@ export class ProjectIndex {
     this.allObjects = await reader.listObjectTypes();
     this.allLayouts = await reader.listLayouts();
     this.referableNames = new Set([...this.allObjects, ...(await reader.listFamilies())]);
+    for (const name of this.referableNames) {
+      if (!this.referableNamesLower.has(name.toLowerCase())) this.referableNamesLower.set(name.toLowerCase(), name);
+    }
 
-    // Instance variables and behaviors of object types and families (for the uses found in events)
+    // Instance variables and behaviors of object types and families (for the uses found in events).
+    // Each bulk read's failures are taken right away: a reload by a concurrent call clears them.
     const objectTypes = await reader.readAllObjectTypes();
+    const objectTypeFailures = reader.getReadFailures('objectTypes');
     const families = await reader.readAllFamilies();
-    this.indexClassMembers(objectTypes, families);
-    this.unreadableFamilies = (await reader.listFamilies()).some(name => !families.has(name));
+    const familyFailures = reader.getReadFailures('families');
+    const familyNames = await reader.listFamilies();
+    const unparsedObjectTypes = unscannedFilesOf('objectTypes', this.allObjects, objectTypes, objectTypeFailures);
+    this.indexClassMembers(objectTypes, families, unparsedObjectTypes.map(f => f.name));
+    this.unreadableFamilies = familyNames.some(name => !families.has(name));
     this.functionsName = functionsObjectName(reader);
 
     // Index event sheets (variable names first: parameters are checked against them)
     const eventSheets = await reader.readAllEventSheets();
+    const eventSheetFailures = reader.getReadFailures('eventSheets');
     for (const [, sheet] of eventSheets) {
       if (Array.isArray(sheet.events)) collectVariableNames(sheet.events, this.variableNames);
     }
@@ -600,13 +637,22 @@ export class ProjectIndex {
     for (const [name, data] of [...objectTypes, ...families]) {
       const sid = (data as { sid?: unknown } | null)?.sid;
       if (typeof sid === 'number' && !this.namesBySid.has(sid)) this.namesBySid.set(sid, name);
+      if (typeof sid === 'number') this.sidsByName.set(name, sid);
     }
 
     // Index layouts
     const layouts = await reader.readAllLayouts();
+    const layoutFailures = reader.getReadFailures('layouts');
     for (const [layoutName, layout] of layouts) {
       this.indexLayout(layoutName, layout);
     }
+
+    this.unscannedFiles = [
+      ...unscannedFilesOf('eventSheets', this.allEventSheets, eventSheets, eventSheetFailures),
+      ...unscannedFilesOf('layouts', this.allLayouts, layouts, layoutFailures),
+      ...unparsedObjectTypes,
+      ...unscannedFilesOf('families', familyNames, families, familyFailures),
+    ];
 
     // Index families
     for (const [familyName, familyData] of families) {
@@ -640,33 +686,9 @@ export class ProjectIndex {
 
       const eventType = event.eventType;
 
-      if (eventType === 'block' || eventType === 'function-block' || eventType === 'custom-ace-block') {
+      if (eventType === 'block') {
         const block = event as BlockEvent;
-        const record = event as unknown as Record<string, unknown>;
-        let label = 'block';
-        if (eventType === 'function-block') {
-          const funcName = (record.functionName as string) || 'unknown';
-          label = `function:${funcName}`;
-          const params = (record.functionParameters ?? record.parameters) as Array<{ name?: string }> | undefined;
-          this.functionDefinitions.set(funcName, {
-            sheet: sheetName,
-            params: Array.isArray(params) ? params.map(p => String(p.name)) : [],
-          });
-        } else if (eventType === 'custom-ace-block') {
-          const owner = String(record.objectClass ?? '');
-          const aceName = String(record.aceName ?? 'unknown');
-          label = `custom-action:${owner}.${aceName}`;
-          const params = record.functionParameters as Array<{ name?: string }> | undefined;
-          this.customActionDefinitions.set(`${owner}::${aceName}`, {
-            objectClass: owner,
-            aceName,
-            sheet: sheetName,
-            sid: typeof record.sid === 'number' ? record.sid : undefined,
-            params: Array.isArray(params) ? params.map(p => String(p.name)) : [],
-          });
-          if (owner) this.addObjectReference(owner, sheetName, path ? `${path} > ${label}` : label, 'custom-action');
-        }
-        const blockPath = path ? `${path} > ${label}` : label;
+        const blockPath = path ? `${path} > block` : 'block';
 
         // Index conditions
         if (block.conditions) {
@@ -686,6 +708,62 @@ export class ProjectIndex {
         if (block.children) {
           for (let i = block.children.length - 1; i >= 0; i--) {
             stack.push({ event: block.children[i], path: blockPath, eventPath: `${eventPath}.children[${i}]`, depth: depth + 1 });
+          }
+        }
+      } else if (eventType === 'function-block') {
+        const func = event as FunctionBlockEvent;
+        const funcName = func.functionName || 'unknown';
+        const funcPath = path ? `${path} > function:${funcName}` : `function:${funcName}`;
+
+        // Record function definition. The editor (and add_event_to_sheet) saves the
+        // parameters under functionParameters; "parameters" is only read when that is absent
+        const paramNames = functionParameterNames(func);
+        this.functionDefinitions.set(funcName, { sheet: sheetName, params: paramNames });
+
+        this.functionDefinitionList.push({ name: funcName, sheet: sheetName, params: paramNames });
+
+        // Index conditions & actions
+        if (func.conditions) {
+          for (let i = 0; i < func.conditions.length; i++) {
+            this.indexCondition(sheetName, func.conditions[i], `${funcPath} > condition:${i}`, eventPath);
+          }
+        }
+        if (func.actions) {
+          for (let i = 0; i < func.actions.length; i++) {
+            this.indexAction(sheetName, func.actions[i], `${funcPath} > action:${i}`, eventPath);
+          }
+        }
+
+        // Push children
+        if (func.children) {
+          for (let i = func.children.length - 1; i >= 0; i--) {
+            stack.push({ event: func.children[i], path: funcPath, eventPath: `${eventPath}.children[${i}]`, depth: depth + 1 });
+          }
+        }
+      } else if ((eventType as string) === 'custom-ace-block') {
+        // Custom action block: a custom action of its objectClass (object type or
+        // family), with conditions, actions and sub-events like a function block
+        const custom = event as unknown as {
+          objectClass?: unknown; aceName?: unknown; conditions?: Condition[]; actions?: Action[]; children?: C3Event[];
+        };
+        const customLabel = `custom-action:${String(custom.objectClass)}.${String(custom.aceName)}`;
+        const customPath = path ? `${path} > ${customLabel}` : customLabel;
+        if (typeof custom.objectClass === 'string' && custom.objectClass !== '') {
+          this.addObjectReference(custom.objectClass, sheetName, customPath, 'custom-action');
+        }
+        if (Array.isArray(custom.conditions)) {
+          for (let i = 0; i < custom.conditions.length; i++) {
+            this.indexCondition(sheetName, custom.conditions[i], `${customPath} > condition:${i}`, eventPath);
+          }
+        }
+        if (Array.isArray(custom.actions)) {
+          for (let i = 0; i < custom.actions.length; i++) {
+            this.indexAction(sheetName, custom.actions[i], `${customPath} > action:${i}`, eventPath);
+          }
+        }
+        if (Array.isArray(custom.children)) {
+          for (let i = custom.children.length - 1; i >= 0; i--) {
+            stack.push({ event: custom.children[i], path: customPath, eventPath: `${eventPath}.children[${i}]`, depth: depth + 1 });
           }
         }
       } else if (eventType === 'group') {
@@ -717,18 +795,9 @@ export class ProjectIndex {
     this.indexExpressionCalls(condition as unknown as Record<string, unknown>, sheetName, path);
     if (condition.objectClass) {
       this.addObjectReference(condition.objectClass, sheetName, path, 'condition');
-      if (condition.behaviorType) {
-        this.addBehaviorReference(condition.objectClass, condition.behaviorType, sheetName, path, 'condition');
-      }
     }
     this.indexParameters(sheetName, condition.parameters, path, condition.objectClass);
     this.indexMemberReferences(sheetName, condition as unknown as Record<string, unknown>, path, eventPath, 'condition');
-  }
-
-  private addBehaviorReference(objectClass: string, behaviorType: string, sheetName: string, path: string, context: 'condition' | 'action'): void {
-    const key = `${objectClass}::${behaviorType}`;
-    if (!this.behaviorReferences.has(key)) this.behaviorReferences.set(key, []);
-    this.behaviorReferences.get(key)!.push({ objectClass, behaviorType, eventSheet: sheetName, path, context });
   }
 
   private indexAction(sheetName: string, action: Action, path: string, eventPath: string): void {
@@ -739,34 +808,18 @@ export class ProjectIndex {
       return;
     }
 
-    if ('type' in action && action.type === 'comment') return;
-
     const record = action as unknown as Record<string, unknown>;
-    const stdAction = action as {
-      objectClass?: string; callFunction?: string; id?: string; parameters?: unknown;
-      behaviorType?: string; customAction?: string; customActionObjectClass?: string;
-    };
+    const stdAction = action as { objectClass?: string; callFunction?: string; id?: string; parameters?: unknown };
     if (stdAction.objectClass) {
       this.addObjectReference(stdAction.objectClass, sheetName, path, 'action');
-      if (stdAction.behaviorType) {
-        this.addBehaviorReference(stdAction.objectClass, stdAction.behaviorType, sheetName, path, 'action');
-      }
-    }
-    if (stdAction.customActionObjectClass) {
-      this.addObjectReference(stdAction.customActionObjectClass, sheetName, path, 'action');
-    }
-    if (stdAction.customAction && stdAction.objectClass) {
-      const calls = this.customActionCalls.get(stdAction.customAction) || [];
-      calls.push({
-        sheet: sheetName,
-        path,
-        objectClass: stdAction.objectClass,
-        customActionObjectClass: stdAction.customActionObjectClass,
-      });
-      this.customActionCalls.set(stdAction.customAction, calls);
     }
     this.indexParameters(sheetName, stdAction.parameters, path, stdAction.objectClass);
     this.indexMemberReferences(sheetName, action as unknown as Record<string, unknown>, path, eventPath, 'action');
+
+    // System "Create object (by name)" with a literal name creates that object type (or a family member)
+    const created = createByNameTarget(record);
+    const createdName = typeof created === 'string' ? this.referableNamesLower.get(created.toLowerCase()) : undefined;
+    if (createdName !== undefined) this.addObjectReference(createdName, sheetName, path, 'create-by-name');
 
     // Check for function calls
     if (typeof stdAction.callFunction === 'string' && stdAction.callFunction) {
@@ -830,26 +883,34 @@ export class ProjectIndex {
    * other names, otherwise unless a variable or function parameter has the name.
    */
   private isObjectParameter(key: string | undefined, name: string): boolean {
-    if (key !== undefined && OBJECT_PARAMETER_KEYS.has(key)) return true;
-    if (key !== undefined && NON_OBJECT_PARAMETER_KEYS.has(key)) return false;
-    return !this.variableNames.has(name);
+    return isObjectParameterValue(key, this.variableNames.has(name));
   }
 
-  /** Instance variable and behavior names of the object types and families, and each object type's families. */
+  /**
+   * Instance variable and behavior names of the object types and families,
+   * and each object type's families. A registered object type whose file
+   * could not be parsed (`unparsedObjectTypes`) is a class whose own names are
+   * unknown: the uses of the names it gets from a family are still found and
+   * checked (delete_family, update_family), and validate_project does not
+   * report its uses as unresolved.
+   */
   private indexClassMembers(
     objectTypes: ReadonlyMap<string, unknown>,
     families: ReadonlyMap<string, Record<string, unknown>>,
+    unparsedObjectTypes: readonly string[],
   ): void {
-    const add = (name: string, data: unknown, isFamily: boolean) => {
+    const add = (name: string, data: unknown, isFamily: boolean, ownUnknown = false) => {
       const record = data && typeof data === 'object' ? data as Record<string, unknown> : {};
       this.classMembers.set(name, {
         isFamily,
         variables: entryNames(record.instanceVariables),
         behaviors: entryNames(record.behaviorTypes),
+        ...(ownUnknown ? { ownUnknown } : {}),
       });
       if (!this.classNamesLower.has(name.toLowerCase())) this.classNamesLower.set(name.toLowerCase(), name);
     };
     for (const [name, data] of objectTypes) add(name, data, false);
+    for (const name of unparsedObjectTypes) add(name, undefined, false, true);
     for (const [name, data] of families) {
       add(name, data, true);
       if (!Array.isArray(data?.members)) continue;
@@ -864,7 +925,9 @@ export class ProjectIndex {
   /**
    * Whether an object type or family has an instance variable or behavior of
    * this name (ignoring case) after `removal`: its own, or for an object type
-   * one of a family it stays a member of.
+   * one of a family it stays a member of. An object type whose file could not
+   * be parsed has no known names of its own, so a use of a family's name
+   * through it counts as broken when it loses that family's name.
    */
   hasMember(
     objectClass: string, kind: MemberReference['kind'], name: string, removal: MemberRemoval = {},
@@ -1026,11 +1089,6 @@ export class ProjectIndex {
     if (!layouts.includes(layoutName)) {
       layouts.push(layoutName);
     }
-    if (!this.objectInstanceCounts.has(type)) {
-      this.objectInstanceCounts.set(type, new Map());
-    }
-    const counts = this.objectInstanceCounts.get(type)!;
-    counts.set(layoutName, (counts.get(layoutName) ?? 0) + 1);
     if (!this.objectPlacements.has(type)) {
       this.objectPlacements.set(type, []);
     }
@@ -1068,6 +1126,11 @@ export class ProjectIndex {
       }
       this.objectToFamilies.get(member)!.push(familyName);
     }
+  }
+
+  /** SID of an object type or family whose file could be read. */
+  sidOf(name: string): number | undefined {
+    return this.sidsByName.get(name);
   }
 
   /**
@@ -1144,12 +1207,14 @@ export class ProjectIndex {
    * parameter, behaviorType and "Name.Behavior.Expression"; a "Name.member"
    * that names none is one of the plugin's expressions, and the legacy
    * "behavior-type" key is validate_project's legacy-behavior-key check. Uses
-   * through an object type are left out while a family file could not be read.
+   * through an object type are left out while a family file could not be read,
+   * and uses through an object type whose own file could not be parsed.
    */
   findUnresolvedMemberReferences(): MemberReference[] {
     return this.memberReferences.filter(ref =>
       ref.form !== 'member-expression' && ref.form !== 'legacy-behavior-type' &&
       !(this.unreadableFamilies && this.classMembers.get(ref.objectClass)?.isFamily === false) &&
+      !this.classMembers.get(ref.objectClass)?.ownUnknown &&
       !this.hasMember(ref.objectClass, ref.kind, ref.name));
   }
 
@@ -1231,17 +1296,36 @@ export class ProjectIndex {
   }
 }
 
-/** Singleton lazy builder */
-let cachedIndex: ProjectIndex | null = null;
+/**
+ * The built index of each project, keyed by its reader: two projects opened in
+ * one process (scripts, tests, embeddings) never see each other's index. Each
+ * notes the reader's disk epoch it was built in.
+ */
+let cachedIndexes = new WeakMap<Construct3ProjectReader, { index: ProjectIndex; epoch: number }>();
 
+/**
+ * The cross-reference index of the reader's project: built on first use, then
+ * cached for that reader until a write resets it or the reader finds a change
+ * on disk the server did not make (its disk epoch moves, #51).
+ */
 export async function getProjectIndex(reader: Construct3ProjectReader): Promise<ProjectIndex> {
-  if (cachedIndex && cachedIndex.isBuilt()) return cachedIndex;
-  cachedIndex = new ProjectIndex();
-  await cachedIndex.build(reader);
-  return cachedIndex;
+  // In a tool call: a file the index was built from may have changed on disk since
+  await ensureCachesFreshOf(reader);
+  const epoch = diskEpochOf(reader);
+  const cached = cachedIndexes.get(reader);
+  if (cached && cached.epoch === epoch && cached.index.isBuilt()) return cached.index;
+  const index = new ProjectIndex();
+  // Cached before the build: a reset while it runs drops it, so the next call rebuilds
+  cachedIndexes.set(reader, { index, epoch });
+  await index.build(reader);
+  return index;
 }
 
-/** Reset the cached project index so it rebuilds on next use. */
-export function resetProjectIndex(): void {
-  cachedIndex = null;
+/**
+ * Reset the cached index of the reader's project so it rebuilds on next use;
+ * other projects keep theirs. Without a reader, every project's index is reset.
+ */
+export function resetProjectIndex(reader?: Construct3ProjectReader): void {
+  if (reader) cachedIndexes.delete(reader);
+  else cachedIndexes = new WeakMap();
 }

@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { findReferencesLeftByDelete, countDeleteReferences } from '../../src/construct3/analyzers/delete-references.js';
+import {
+  findReferencesLeftByDelete,
+  countDeleteReferences,
+  namesVisibleToOtherSheets,
+  recordVariableScopes,
+  findVariableReferencesLostByChange,
+  recordVariableBindings,
+  findVariableBindingChanges,
+} from '../../src/construct3/analyzers/delete-references.js';
 
 const fn = (name: string, sid: number, extra: Record<string, unknown> = {}) => ({
   functionName: name, functionReturnType: 'none', functionParameters: [],
@@ -193,5 +201,176 @@ describe('findReferencesLeftByDelete — event variables', () => {
     const plain = block(40, [setVar('Anything')]);
     const report = scan({ A: [plain, variable('Anything', 41)] }, plain);
     expect(report).toEqual({ functions: [], variables: [], complete: true });
+  });
+});
+
+describe('findReferencesLeftByDelete — several deleted events (a deleted sheet, #58)', () => {
+  it('takes every top-level event of a sheet and reports only uses outside them', () => {
+    const lib = [fn('Spawn', 10), variable('Score', 11), block(12, [call('Spawn'), setVar('Score')])];
+    const report = findReferencesLeftByDelete(new Map<string, unknown>([
+      ['Lib', lib],
+      ['Game', [block(20, [call('spawn'), setVar('SCORE')])]],
+    ]), lib, 'Functions');
+    expect(report.functions.map(f => [f.name, f.references.map(r => `${r.sheet}:${r.path}`)])).toEqual([['Spawn', ['Game:block > action:0']]]);
+    expect(report.variables.map(v => [v.name, v.references.map(r => `${r.sheet}:${r.path}`)])).toEqual([['Score', ['Game:block > action:1']]]);
+  });
+});
+
+describe('namesVisibleToOtherSheets', () => {
+  it('names the functions a delete removes and a top-level (global) variable', () => {
+    const group = { eventType: 'group', title: 'G', sid: 50, children: [fn('Inner', 51), variable('Local', 52)] };
+    expect(namesVisibleToOtherSheets(fn('Spawn', 53), true)).toEqual(['Spawn']);
+    expect(namesVisibleToOtherSheets(variable('Score', 54), true)).toEqual(['Score']);
+    expect(namesVisibleToOtherSheets(group, true)).toEqual(['Inner']);
+  });
+
+  it('leaves out variables that are local: not at the top level of the sheet', () => {
+    expect(namesVisibleToOtherSheets(variable('Local', 55), false)).toEqual([]);
+  });
+});
+
+const setX = (sid: number, x: string) => ({ id: 'set-x', objectClass: 'Hero', sid, parameters: { x } });
+const customAction = (name: string, sid: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+  aceType: 'action', aceName: name, objectClass: 'Hero', functionDescription: '', functionCategory: '', functionReturnType: 'none',
+  functionCopyPicked: false, functionIsAsync: false, functionParameters: [{ name: 'amount', type: 'number' }],
+  eventType: 'custom-ace-block', conditions: [], actions: [], sid, ...extra,
+});
+const sheetsOf = (events: unknown[]) => new Map<string, unknown>([['S', events]]);
+
+describe('custom action parameters', () => {
+  it('a use of a custom action parameter in its body is in scope', () => {
+    const use = setX(12, 'amount + 1');
+    const events = [customAction('Bump', 10, { children: [block(11, [use])] })];
+    const record = recordVariableScopes(sheetsOf(events), new Map([['amount', 'amount']]));
+    expect([...(record.resolved.get(use) ?? [])]).toEqual(['amount']);
+  });
+
+  it('a block moved out of a custom action body that uses its parameter loses it', () => {
+    const moved = block(11, [setX(12, 'amount + 1')]);
+    const body = customAction('Bump', 10, { children: [moved] });
+    const events: unknown[] = [body];
+    const sheets = sheetsOf(events);
+    const record = recordVariableScopes(sheets, new Map([['amount', 'amount']]));
+    body.children = [];
+    events.push(moved);
+    const lost = findVariableReferencesLostByChange(record, sheets);
+    expect(lost.variables.map(v => [v.name, v.references.map(r => r.path)])).toEqual([['amount', ['block > action:0']]]);
+  });
+
+  it('a deleted global variable named like a custom action parameter is not still used by the custom action\'s body', () => {
+    const global = variable('amount', 5);
+    const events = [global, customAction('Bump', 10, { children: [block(11, [setX(12, 'amount + 1')])] })];
+    expect(scan({ S: events }, global).variables).toEqual([]);
+  });
+});
+
+describe('scope bindings', () => {
+  it('reports a use that finds another declaration of its name after a move as rebound', () => {
+    const moved = block(3, [setVar('p')]);
+    const groupA = { eventType: 'group', title: 'A', sid: 10, children: [variable('p', 1), moved] as unknown[] };
+    const groupB = { eventType: 'group', title: 'B', sid: 11, children: [variable('p', 2)] as unknown[] };
+    const sheets = sheetsOf([groupA, groupB]);
+    const variables = new Map([['p', 'p']]);
+    const bindings = recordVariableBindings(sheets, variables);
+    const scopes = recordVariableScopes(sheets, variables);
+    groupA.children = [groupA.children[0]];
+    groupB.children.push(moved);
+    const changes = findVariableBindingChanges(bindings, sheets);
+    expect(changes.rebound.variables.map(v => [v.name, v.references.map(r => r.path)])).toEqual([['p', ['group:B > block > action:0']]]);
+    expect(changes.lost.variables).toEqual([]);
+    // The check that compares names alone sees nothing change
+    expect(findVariableReferencesLostByChange(scopes, sheets).variables).toEqual([]);
+  });
+
+  it('reports swapped parameter names as rebound', () => {
+    const a = { name: 'a', type: 'number' };
+    const b = { name: 'b', type: 'number' };
+    const events = [fn('F', 10, { functionParameters: [a, b], actions: [setVar('a')] })];
+    const sheets = sheetsOf(events);
+    const bindings = recordVariableBindings(sheets, new Map([['a', 'a']]));
+    a.name = 'c';
+    b.name = 'a';
+    const changes = findVariableBindingChanges(bindings, sheets);
+    expect(changes.rebound.variables.map(v => [v.name, v.references.length])).toEqual([['a', 1]]);
+    expect(changes.lost.variables).toEqual([]);
+  });
+
+  it('reports a use whose declaration is gone as lost', () => {
+    const a = { name: 'a', type: 'number' };
+    const b = { name: 'b', type: 'number' };
+    const f: Record<string, unknown> = fn('F', 10, { functionParameters: [a, b], actions: [setVar('a')] });
+    const sheets = sheetsOf([f]);
+    const bindings = recordVariableBindings(sheets, new Map([['a', 'a']]));
+    f.functionParameters = [b];
+    const changes = findVariableBindingChanges(bindings, sheets);
+    expect(changes.lost.variables.map(v => [v.name, v.references.length])).toEqual([['a', 1]]);
+    expect(changes.rebound.variables).toEqual([]);
+  });
+
+  it('keeps a use whose declaration only moved with it as bound', () => {
+    const group = { eventType: 'group', title: 'G', sid: 10, children: [variable('p', 1), block(2, [setVar('p')])] };
+    const target = { eventType: 'group', title: 'H', sid: 11, children: [] as unknown[] };
+    const events = [group, target];
+    const sheets = sheetsOf(events);
+    const bindings = recordVariableBindings(sheets, new Map([['p', 'p']]));
+    events.splice(0, 1);
+    target.children.push(group);
+    const changes = findVariableBindingChanges(bindings, sheets);
+    expect(changes.lost.variables).toEqual([]);
+    expect(changes.rebound.variables).toEqual([]);
+  });
+
+  it('records only the uses of the given names that find a declaration, and skips a sheet that is not a list', () => {
+    const sheets = new Map<string, unknown>([
+      ['Broken', 42],
+      ['S', [variable('q', 1), block(2, [setVar('q'), setVar('p')])]],
+    ]);
+    const record = recordVariableBindings(sheets, new Map([['p', 'p']]));
+    // q is not a name asked for, and p has no declaration to find
+    expect(record.bindings.size).toBe(0);
+  });
+
+  it('compares only the names recorded, so another name in the same expression is not reported', () => {
+    const use = setX(3, 'p + q');
+    const sheets = sheetsOf([variable('p', 1), block(2, [use])]);
+    const bindings = recordVariableBindings(sheets, new Map([['p', 'p']]));
+    expect(bindings.bindings.size).toBe(1);
+    // An action added after the recording was not recorded, so it is not compared
+    (sheets.get('S') as Array<{ actions: unknown[] }>)[1].actions.push(setX(4, 'p'));
+    const changes = findVariableBindingChanges(bindings, sheets);
+    expect(changes.lost.variables).toEqual([]);
+    expect(changes.rebound.variables).toEqual([]);
+  });
+
+  it('says the walk is incomplete when events nest deeper than its depth limit', () => {
+    const global = variable('Score', 1);
+    let inner: Record<string, unknown> = block(2, [setVar('Score')]);
+    for (let i = 0; i < 52; i++) inner = block(i + 3, [], { children: [inner] });
+    const sheets = sheetsOf([global, inner]);
+    const bindings = recordVariableBindings(sheets, new Map([['score', 'Score']]));
+    expect([bindings.complete, bindings.limit]).toEqual([false, 'depth']);
+    const left = findReferencesLeftByDelete(sheets, global, 'Functions');
+    expect([left.complete, left.limit]).toEqual([false, 'depth']);
+    const scopes = recordVariableScopes(sheets, new Map([['score', 'Score']]));
+    expect([scopes.complete, scopes.limit]).toEqual([false, 'depth']);
+    expect(findVariableReferencesLostByChange(scopes, sheets).limit).toBe('depth');
+    expect(findVariableBindingChanges(bindings, sheets).lost.limit).toBe('depth');
+    // More events than the event limit is a different limit
+    const wide = Array.from({ length: 100_001 }, () => ({ eventType: 'comment', text: '' }));
+    expect(findReferencesLeftByDelete(sheetsOf([global, ...wide]), global, 'Functions').limit).toBe('events');
+  });
+
+  it('names both limits when one sheet nests too deep and another has too many events', () => {
+    const global = variable('Score', 1);
+    let inner: Record<string, unknown> = block(2, [setVar('Score')]);
+    for (let i = 0; i < 52; i++) inner = block(i + 3, [], { children: [inner] });
+    const wide = Array.from({ length: 100_001 }, () => ({ eventType: 'comment', text: '' }));
+    const names = new Map([['score', 'Score']]);
+    const sheets = new Map<string, unknown>([['Deep', [global, inner]], ['Wide', wide]]);
+    const scopes = recordVariableScopes(sheets, names);
+    expect([scopes.complete, scopes.limit]).toEqual([false, 'both']);
+    expect(findVariableReferencesLostByChange(scopes, sheets).limit).toBe('both');
+    expect(findVariableBindingChanges(recordVariableBindings(sheets, names), sheets).lost.limit).toBe('both');
+    expect(findReferencesLeftByDelete(sheets, global, 'Functions').limit).toBe('both');
   });
 });

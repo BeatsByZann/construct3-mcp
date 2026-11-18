@@ -7,6 +7,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { Construct3ProjectReader } from './construct3/project-reader.js';
 import { registerProjectResources } from './resources/project.js';
 import { registerDocsResources } from './resources/docs.js';
 import { registerQueryTools } from './tools/query.js';
@@ -17,75 +18,102 @@ import { registerMutationTools } from './tools/mutations.js';
 import { Construct3ProjectWriter } from './construct3/project-writer.js';
 import { IdGenerator } from './construct3/id-generator.js';
 import { registerRuntimeTools } from './tools/runtime-tools.js';
-import { ProjectSession } from './construct3/project-session.js';
-import { registerSessionTools } from './tools/session-tools.js';
-import { loadAddonDefinitionsFromEnv } from './construct3/addon-definitions.js';
+import { startC3pSession } from './construct3/project-source.js';
+import { findLeftWorkFolders } from './construct3/c3p-archive.js';
+import { describeArchiveClose, withArchiveSync } from './tools/archive-sync.js';
+import { addonDefinitionsOf, addonRootsFor, loadAddonDefinitionsFromEnv } from './construct3/addon-definitions.js';
 import { delimiter } from 'node:path';
 
-// Use explicit path if given, otherwise auto-detect .c3proj in current working directory.
-// A .c3p path opens the archive through a working folder that is written back after each change;
-// open_project switches to another project while the server runs.
+// The project: a folder, its .c3proj file, or a single-file .c3p (served through a working folder); else the working directory
 const projectPath: string = process.argv[2] || process.env.C3_PROJECT_PATH || process.cwd();
 
 const server = new McpServer(
-  { name: 'construct3-mcp-server', version: '1.9.1' },
+  { name: 'construct3-mcp-server', version: '1.10.0' },
   { capabilities: { resources: {}, tools: {}, prompts: {} } }
 );
+
+async function initializeProject(path: string): Promise<Construct3ProjectReader> {
+  let projectFile = path;
+  if (!path.endsWith('.c3proj')) {
+    const found = await Construct3ProjectReader.findProjectFile(path);
+    if (!found) {
+      throw new Error(`No .c3proj file found in directory: ${path}`);
+    }
+    projectFile = found;
+  }
+
+  const isValid = await Construct3ProjectReader.isValidProject(projectFile);
+  if (!isValid) {
+    throw new Error(`Invalid Construct3 project file: ${projectFile}`);
+  }
+
+  const reader = new Construct3ProjectReader(projectFile);
+  await reader.loadProject();
+  console.error(`Loaded Construct3 project: ${reader.getMetadata().name}`);
+  return reader;
+}
 
 async function main() {
   try {
     console.error('Construct3 MCP Server starting...');
     console.error(`Project path: ${projectPath}`);
 
-    const session = await ProjectSession.start(projectPath);
-    const reader = session.reader;
-    if (session.archive) console.error(`Opened ${session.archive.archivePath} in the working folder ${session.archive.workDir}`);
-    console.error(`Loaded Construct3 project: ${reader.getMetadata().name}`);
-    // Third-party addon definitions, so their conditions and actions are checked too.
-    const addons = await loadAddonDefinitionsFromEnv(process.env.C3_ADDON_DEFINITIONS, delimiter);
-    for (const loaded of addons.loaded) console.error(`Loaded addon definitions: ${loaded.type} ${loaded.id} ${loaded.version ?? ''} (${loaded.counts.conditions} conditions, ${loaded.counts.actions} actions)`);
-    for (const skipped of addons.skipped) console.error(`Addon definitions skipped: ${skipped.path}: ${skipped.reason}`);
-    process.once('exit', () => {
-      const kept = session.closeSync();
-      if (kept) console.error(`Kept the working folder with unsaved changes: ${kept}`);
+    await startC3pSession(projectPath, async (sourcePath, archive) => {
+      const reader = await initializeProject(sourcePath);
+      // Addon definitions may be read from the project folder (for a .c3p, the folder that holds it) and the roots the variable names
+      const addons = addonDefinitionsOf(reader);
+      await addons.setRoots(addonRootsFor(reader.getProjectDir(), archive?.archivePath, process.env.C3_ADDON_DEFINITIONS, delimiter));
+      const fromEnv = await loadAddonDefinitionsFromEnv(addons, process.env.C3_ADDON_DEFINITIONS, delimiter);
+      for (const entry of fromEnv.loaded) console.error(`Loaded addon definitions: ${entry.id} (${entry.source})`);
+      for (const entry of fromEnv.skipped) console.error(`Skipped addon definitions: ${entry.name}: ${entry.reason}`);
+      let served = server;
+      let closeArchive: () => Promise<void> = async () => {};
+      if (archive) {
+        console.error(`Opened ${archive.archivePath} in the working folder ${archive.workDir}`);
+        const left = await findLeftWorkFolders();
+        const startupNote = left.length > 0
+          ? `Working folder(s) left by a session that stopped without closing (they may hold changes never written back): `
+            + `${left.map(l => `${l.sessionDir} (from ${l.archivePath}${l.leftovers.length ? `; also ${l.leftovers.join(', ')}` : ''})`).join('; ')}.`
+          : undefined;
+        if (startupNote) console.error(startupNote);
+        // A .c3p is refreshed before the calls and written back after them
+        const wrapped = withArchiveSync(server, archive, { startupNote });
+        served = wrapped.server;
+        closeArchive = async () => {
+          const message = describeArchiveClose(archive, await wrapped.close());
+          if (message) console.error(message);
+        };
+      }
+
+      // Register all modular handlers
+      registerProjectResources(served, reader);
+      registerDocsResources(served);
+      registerQueryTools(served, reader);
+      registerWorkflowPrompts(served, reader);
+      registerAnalysisTools(served, reader);
+      registerUsageTools(served, reader);
+
+      // Phase 3: Safe Modifications
+      const idGen = new IdGenerator();
+      const writer = new Construct3ProjectWriter(reader, idGen);
+      registerMutationTools(served, reader, writer, idGen);
+
+      // Runtime Control (for live game testing via browser automation)
+      const runtimeTools = registerRuntimeTools({ server: served, reader, writer, archive });
+
+      // Start transport
+      const transport = new StdioServerTransport();
+      await server.connect(transport);
+
+      /** Close the runtime tools, then the archive through its gate; once, whatever fails. */
+      let stopping: Promise<void> | undefined;
+      const shutdown = () => (stopping ??= runtimeTools.close()
+        .catch(error => { console.error('Closing the runtime tools failed:', error); })
+        .finally(() => closeArchive().catch(error => { console.error('Closing the archive failed:', error); })));
+      process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
+      process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
+      process.stdin.once('end', () => { void shutdown(); });
     });
-    // Every tool goes through the session's gate: a .c3p is written back after
-    // each change, and open_project switches projects between calls.
-    session.install(server);
-
-    // Register all modular handlers
-    registerProjectResources(server, reader);
-    registerDocsResources(server);
-    registerQueryTools(server, reader);
-    registerWorkflowPrompts(server, reader);
-    registerAnalysisTools(server, reader);
-    registerUsageTools(server, reader);
-
-    // Phase 3: Safe Modifications
-    const idGen = new IdGenerator();
-    const writer = new Construct3ProjectWriter(reader, idGen);
-    registerMutationTools(server, reader, writer, idGen);
-    registerSessionTools(server, session, idGen);
-
-    // Runtime Control (for live game testing via browser automation)
-    const runtimeTools = registerRuntimeTools({ server, reader, writer });
-
-    // Start transport
-    const transport = new StdioServerTransport();
-    server.server.onclose = () => {
-      void runtimeTools.close();
-    };
-    process.stdin.once('end', () => {
-      void server.close();
-    });
-    const stopForSignal = () => {
-      void runtimeTools.close()
-        .then(() => server.close())
-        .finally(() => process.exit(0));
-    };
-    process.once('SIGINT', stopForSignal);
-    process.once('SIGTERM', stopForSignal);
-    await server.connect(transport);
 
     console.error('Construct3 MCP Server ready');
   } catch (error) {

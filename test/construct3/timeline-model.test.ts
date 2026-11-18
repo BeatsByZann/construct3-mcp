@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
   trackKind,
   listTracks,
@@ -13,10 +15,14 @@ import {
   clashesWithBuiltinEase,
   folderChainResultMode,
   timelineFolder,
+  sameTime,
+  easeWarnings,
+  trackFolderResultMode,
+  type AnyTrack,
   type CustomEase,
 } from '../../src/construct3/timeline-model.js';
 import { transitionsFolder, ensureTransitionsFolder } from '../../src/construct3/timeline-folders.js';
-import type { Timeline } from '../../src/construct3/types.js';
+import type { Timeline, TimelineFolder } from '../../src/construct3/types.js';
 
 function timeline(overrides: Record<string, unknown> = {}): Timeline {
   return {
@@ -24,6 +30,9 @@ function timeline(overrides: Record<string, unknown> = {}): Timeline {
     transitionsData: [], ...overrides,
   } as unknown as Timeline;
 }
+
+/** A `transitionsData` entry. */
+interface TransitionEntry { folders: unknown[]; json: CustomEase }
 
 const EASE: CustomEase = {
   name: 'Swoop', linear: false, purpose: 'any',
@@ -61,7 +70,7 @@ describe('track kinds', () => {
       propertyTracks: [{ property: 'offsetX', source: { type: 'world-instance', uid: 1 } }],
       propertyTracksRoot: { ...timelineFolder('Property Track Folder'), subfolders: [{ ...timelineFolder('Sine'), items: [inFolder], ownerId: 'behavior', ownerUid: 'Sine' }] },
     };
-    expect(listPropertyTracks(track as any).map(l => [l.propertyTrack.property, l.folderPath])).toEqual([
+    expect(listPropertyTracks(track as unknown as AnyTrack).map(l => [l.propertyTrack.property, l.folderPath])).toEqual([
       ['offsetX', ''], ['magnitude', 'Sine'],
     ]);
   });
@@ -99,7 +108,7 @@ describe('custom eases', () => {
     expect(noItems.subfolders).toHaveLength(1);
   });
 
-  it('builds ease keyframes with handle flags as sampled', () => {
+  it('builds ease keyframes with the handle flags the editor writes', () => {
     expect(buildEaseKeyframes([{ x: 0, y: 0, startHandle: { x: 0.4, y: 1.3 } }, { x: 1, y: 1, endHandle: { x: -0.3, y: 0 } }])).toEqual([
       { x: 0, y: 0, sax: 0.4, say: 1.3, eax: 0, eay: 0, se: true, ee: false, sm: 'cubic' },
       { x: 1, y: 1, sax: 0, say: 0, eax: -0.3, eay: 0, se: false, ee: true, sm: 'cubic' },
@@ -143,24 +152,95 @@ describe('custom eases', () => {
     const data = timeline({ tracks: [{ keyframes: [{ ease: 'Swoop' }] }] });
     expect(syncTransitionsData(data, eases)).toBe(true);
     expect(data.transitionsData).toEqual([{ folders: [], json: EASE }]);
-    expect((data.transitionsData[0] as any).json).not.toBe(EASE);
+    expect((data.transitionsData[0] as TransitionEntry).json).not.toBe(EASE);
 
     const changed = { ...EASE, linear: true };
     expect(syncTransitionsData(data, new Map([['Swoop', changed]]))).toBe(true);
-    expect((data.transitionsData[0] as any).json.linear).toBe(true);
+    expect((data.transitionsData[0] as TransitionEntry).json.linear).toBe(true);
     expect(syncTransitionsData(data, new Map([['Swoop', changed]]))).toBe(false);
 
     // No longer used: the copy of a registered ease goes; unknown entries stay.
-    (data.tracks[0] as any).keyframes[0].ease = 'default';
+    (data.tracks[0] as { keyframes: Array<{ ease: string }> }).keyframes[0].ease = 'default';
     data.transitionsData.push({ folders: [], json: { ...EASE, name: 'Unregistered' } });
     syncTransitionsData(data, eases);
-    expect((data.transitionsData as any[]).map(e => e.json.name)).toEqual(['Unregistered']);
+    expect((data.transitionsData as TransitionEntry[]).map(e => e.json.name)).toEqual(['Unregistered']);
   });
 
   it('leaves a file without transitionsData alone when no ease is used', () => {
     const data = timeline();
-    delete (data as any).transitionsData;
+    delete (data as { transitionsData?: unknown }).transitionsData;
     expect(syncTransitionsData(data, new Map([['Swoop', EASE]]))).toBe(false);
     expect('transitionsData' in data).toBe(false);
+  });
+
+  it('warns about ease names that are neither built in nor registered', () => {
+    expect(easeWarnings(['Bouncy', 'easeinsine', undefined], new Map())).toEqual([
+      'Ease name(s) Bouncy are not Construct ease names and match no custom ease in this project (see list_eases).',
+    ]);
+    expect(easeWarnings(['Swoop', 'default'], new Map([['Swoop', EASE]]))).toEqual([]);
+    expect(easeWarnings([undefined], new Map())).toEqual([]);
+  });
+});
+
+describe('untyped track fixture', () => {
+  it('has the keys of the recorded legacy shape, in order, and reads as an untyped instance track', () => {
+    const dir = join(__dirname, '..', 'fixtures', 'timeline-kinds');
+    const shapes = JSON.parse(readFileSync(join(dir, 'shapes-r495.json'), 'utf-8')) as { legacyTimelineKeys: string[]; legacyTrack: Record<string, unknown> };
+    const legacy = JSON.parse(readFileSync(join(dir, 'Legacy.json'), 'utf-8')) as Timeline;
+    expect(Object.keys(legacy)).toEqual(shapes.legacyTimelineKeys);
+    const track = legacy.tracks[0] as AnyTrack;
+    expect(Object.keys(track)).toEqual(Object.keys(shapes.legacyTrack));
+    expect(trackKind(track)).toBe('legacy-instance-track');
+  });
+});
+
+describe('keyframe times', () => {
+  it('treats times closer than a tolerance as the same time', () => {
+    expect(sameTime(0.1 + 0.2, 0.3)).toBe(true);
+    expect(sameTime(0, 0.001)).toBe(false);
+  });
+});
+
+/** A folder chain `f1` to `f<depth>`, each inside the one before, with `items` in the innermost. */
+function nestedFolders(depth: number, items: unknown[], resultMode = 'default'): TimelineFolder {
+  let inner: TimelineFolder = { ...timelineFolder(`f${depth}`), items, resultMode };
+  for (let level = depth - 1; level >= 1; level--) {
+    inner = { ...timelineFolder(`f${level}`), subfolders: [inner] };
+  }
+  return { ...timelineFolder('Track Folder'), subfolders: [inner] };
+}
+
+const DEEP_PATH = Array.from({ length: 40 }, (_, i) => `f${i + 1}`).join('/');
+
+describe('deeply nested folders', () => {
+  it('lists, finds and reads the result mode of a track 40 folders down', () => {
+    const track = { type: 'value-track', name: 'Deep' };
+    const data = timeline({ tracksRoot: nestedFolders(40, [track], 'absolute') });
+    const listed = listTracks(data);
+    expect(listed.map(l => [l.folderPath, l.track.name])).toEqual([[DEEP_PATH, 'Deep']]);
+    expect(findTrackByName(data, 'Deep')?.folderPath).toBe(DEEP_PATH);
+    expect(trackFolderResultMode(data, track as AnyTrack, DEEP_PATH)).toBe('absolute');
+  });
+
+  it('skips a subfolder entry that is not a folder', () => {
+    const track = { type: 'value-track', name: 'Kept' };
+    const root = { ...timelineFolder('Track Folder'), subfolders: [null, 'text', { ...timelineFolder('A'), items: [track] }] };
+    expect(listTracks(timeline({ tracksRoot: root })).map(l => [l.folderPath, l.track.name])).toEqual([['A', 'Kept']]);
+  });
+
+  it('lists a property track 40 folders down', () => {
+    const propertyTrack = { property: 'magnitude', source: { type: 'behavior', uid: 'Sine' } };
+    const track = { propertyTracks: [], propertyTracksRoot: nestedFolders(40, [propertyTrack]) } as unknown as AnyTrack;
+    expect(listPropertyTracks(track).map(l => [l.propertyTrack.property, l.folderPath])).toEqual([['magnitude', DEEP_PATH]]);
+  });
+
+  it('collects an ease named by a keyframe 40 and 80 folders down, and still skips transitionsData', () => {
+    const tracksRoot = nestedFolders(40, [{ keyframes: [{ ease: 'Deep40' }] }]);
+    tracksRoot.subfolders.push(...nestedFolders(80, [{ keyframes: [{ ease: 'Deep80' }] }]).subfolders);
+    const data = timeline({
+      tracksRoot,
+      transitionsData: [{ folders: [], json: { ...EASE, name: 'Other', ease: 'Hidden' } }],
+    });
+    expect([...referencedEases(data)].sort()).toEqual(['Deep40', 'Deep80', 'default']);
   });
 });

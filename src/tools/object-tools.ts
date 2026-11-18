@@ -1,17 +1,17 @@
 /**
  * Object type tools: create_object, update_object_properties, delete_object,
- * create_family, update_family, reorder_behaviors, delete_family.
+ * create_family, update_family, update_instance_variable, reorder_behaviors,
+ * delete_family.
  */
 
 import { z } from 'zod';
 import type { MutationToolDeps } from './shared.js';
-import type { WriteResult, ObjectType, Instance, ObjectReference } from '../construct3/types.js';
+import type { WriteResult, ObjectType, ObjectReference } from '../construct3/types.js';
 import type { Construct3ProjectReader } from '../construct3/project-reader.js';
 import type { Construct3ProjectWriter } from '../construct3/project-writer.js';
-import {
-  validateName, validateSubfolder, toolResult, toolError, notFoundError, orphanedFileError, boundedRecord, folderCaseClashError,
-} from './shared.js';
-import { findFolderPathClash } from '../construct3/names.js';
+import { validateName, validateSubfolder, toolResult, toolError, notFoundError, folderCaseClashError, deleteRegisteredEntity } from './shared.js';
+import { findFolderPathClash, nameKey } from '../construct3/names.js';
+import { unregisteredNameMessage } from './registered-names.js';
 import {
   getProjectIndex,
   toFamilyMemberUse,
@@ -21,7 +21,22 @@ import {
   type ObjectUsage,
   type ProjectIndex,
 } from '../construct3/analyzers/index-builder.js';
-import { forEachLayoutInstance } from '../construct3/layers.js';
+import {
+  blocksWithoutForce,
+  checkUnscannedFiles,
+  describeReadFailure,
+  mergeUnscannedReports,
+  ownFileReports,
+  unscannedFields,
+  unscannedRefusal,
+  unscannedWarnings,
+  type UnscannedFileReport,
+  type UseRule,
+} from '../construct3/analyzers/unscanned-uses.js';
+import { OWN_FILE_UNCHECKED } from '../construct3/analyzers/object-deps.js';
+import { describeContainerRemoval, removeContainerMember, SMALL_CONTAINER_RULE, type ContainerEntry, type ContainerRemoval } from '../construct3/containers.js';
+import { nameTerm, numberTerm } from '../construct3/raw-text-search.js';
+import { classifyReadError, type EntityCategory } from '../construct3/project-reader.js';
 import {
   checkFamilyPlugins,
   findObjectClassNameClash,
@@ -34,11 +49,8 @@ import {
 } from '../construct3/analyzers/load-rules.js';
 import { functionsObjectName } from '../construct3/event-shapes.js';
 import {
-  DEFAULT_OBJECT_IMAGE_SIZE,
   GLOBAL_PLUGINS,
   NONWORLD_GLOBAL_PLUGINS,
-  SINGLE_IMAGE_PLUGINS,
-  ANIMATION_PLUGINS,
   createSpriteObject,
   createTextObject,
   createTiledBgObject,
@@ -46,18 +58,32 @@ import {
   createGenericObject,
   createInstanceVariable,
   createBehavior,
-  KNOWN_SCIRRA_BEHAVIORS,
 } from '../construct3/templates.js';
 import {
   expectedInstanceBehaviors,
   readFamiliesForInstances,
-  syncInstanceBehaviors,
-  unknownDefaultsWarning,
   behaviorTypesOf,
 } from '../construct3/instance-behaviors.js';
-import type { InstanceBehavior } from '../construct3/instance-behaviors.js';
+import { planObjectImageParking, type ObjectImageParking } from '../construct3/object-images.js';
+import {
+  effectNamesOf,
+  expectedInstanceEffects,
+  expectedInstanceVariables,
+  instanceVariablesOf,
+} from '../construct3/instance-variables.js';
+import {
+  effectUseLocation,
+  familyEffectUsesThroughMembers,
+  findEffectUses,
+  type EffectUse,
+} from '../construct3/analyzers/effect-uses.js';
+import { withProjectSync } from './project-sync.js';
+import { syncLayoutInstances, type InstanceSyncPlan } from './instance-sync.js';
+import { rollBackFailedCall } from './call-rollback.js';
+import { errorMessage } from '../construct3/error-text.js';
 
-export function registerObjectTools({ server, reader, writer, idGen }: MutationToolDeps) {
+export function registerObjectTools({ server: mcpServer, reader, writer, idGen }: MutationToolDeps) {
+  const server = withProjectSync(mcpServer, reader);
   // ─── create_object ──────────────────────────────────────────
 
   server.tool(
@@ -97,20 +123,25 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         const fileRefusal = await writer.entityFileRefusal('objectTypes', args.name, args.subfolder);
         if (fileRefusal) return toolError(fileRefusal);
 
+        const isSingleglobal = GLOBAL_PLUGINS.has(args.pluginId);
+        const isNonworldGlobal = NONWORLD_GLOBAL_PLUGINS.has(args.pluginId);
+        // A global object's UID before any write too: generateUid refuses while
+        // a project file's UIDs are unknown. Registering the addon below only
+        // rewrites project.c3proj, which holds no UIDs, so the UID stays free.
+        const uid = isSingleglobal || (args.isGlobal && !isNonworldGlobal)
+          ? await idGen.generateUid(reader)
+          : undefined;
+
         // Ensure the plugin is registered in usedAddons
         const addonWarning = await writer.ensureAddonRegistered('plugin', args.pluginId);
 
         const sid = await idGen.generateSid(reader);
-        const isSingleglobal = GLOBAL_PLUGINS.has(args.pluginId);
-        const isNonworldGlobal = NONWORLD_GLOBAL_PLUGINS.has(args.pluginId);
         let data: ObjectType;
-        let uid: number | undefined;
 
-        if (isSingleglobal || (args.isGlobal && !isNonworldGlobal)) {
-          uid = await idGen.generateUid(reader);
+        if (uid !== undefined) {
           const sgiSid = await idGen.generateSid(reader);
           data = createGlobalObject(args.name, args.pluginId, sid, uid, sgiSid);
-        } else if (ANIMATION_PLUGINS.has(args.pluginId)) {
+        } else if (args.pluginId === 'Sprite') {
           const animSid = await idGen.generateSid(reader);
           const imageSpriteId = await idGen.generateImageSpriteId(reader);
 
@@ -119,23 +150,15 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
             objectName: args.name,
             animationName: 'Animation 1',
             frameIndex: 0,
-            pluginId: args.pluginId,
-            width: DEFAULT_OBJECT_IMAGE_SIZE,
-            height: DEFAULT_OBJECT_IMAGE_SIZE,
+            pluginId: 'Sprite',
+            width: 1,
+            height: 1,
           }]);
 
           data = createSpriteObject(args.name, sid, animSid, imageSpriteId);
-          data['plugin-id'] = args.pluginId;
-          if (args.pluginId !== 'Sprite') {
-            // All 42 sampled 3D Shape frames omit collisionPoly, which only
-            // Sprite frames carry.
-            for (const item of data.animations?.items ?? []) {
-              for (const frame of item.frames ?? []) delete (frame as unknown as Record<string, unknown>).collisionPoly;
-            }
-          }
         } else if (args.pluginId === 'Text') {
           data = createTextObject(args.name, sid);
-        } else if (SINGLE_IMAGE_PLUGINS.has(args.pluginId)) {
+        } else if (args.pluginId === 'TiledBg') {
           const imageSpriteId = await idGen.generateImageSpriteId(reader);
 
           // Write placeholder PNG before JSON — abort if image fails
@@ -143,18 +166,12 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
             objectName: args.name,
             animationName: '',
             frameIndex: 0,
-            pluginId: args.pluginId,
-            width: DEFAULT_OBJECT_IMAGE_SIZE,
-            height: DEFAULT_OBJECT_IMAGE_SIZE,
+            pluginId: 'TiledBg',
+            width: 1,
+            height: 1,
           }]);
 
           data = createTiledBgObject(args.name, sid, imageSpriteId);
-          data['plugin-id'] = args.pluginId;
-          if (args.pluginId === 'Tilemap') {
-            // Sampled tilemaps carry this key last, empty when no tile has a
-            // collision polygon.
-            (data as unknown as Record<string, unknown>)['tile-collision-polys'] = {};
-          }
         } else {
           data = createGenericObject(args.name, args.pluginId, sid);
           // Nonworld-global plugins (Arr, Json, Dictionary) are isGlobal but not singleglobal-inst
@@ -181,7 +198,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         return toolResult(result);
       } catch (error) {
         console.error('[create_object] failed:', error);
-        return toolError(`Error creating object: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error creating object: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -190,33 +207,27 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'update_object_properties',
-    'Update properties of an existing object type (variables, behaviors, global status). Removing an instance variable or behavior that events still use is refused without force, listing the uses: the "instance-variable" parameter or behaviorType of conditions/actions on the object (also System actions such as Sort Z order that name the object with the variable), and "Object.name", "Object.Behavior.Expression" or (on the object) "Self.name" in expressions. Scripts are not checked; a warning names scripts that read a removed name (instVars.name, behaviors.Name).',
+    'Update properties of an existing object type (variables, behaviors, global status). Removing an instance variable or behavior that events still use is refused without force, listing the uses: the "instance-variable" parameter or behaviorType of conditions/actions on the object (also System actions such as Sort Z order that name the object with the variable), and "Object.name", "Object.Behavior.Expression" or (on the object) "Self.name" in expressions. Scripts are not checked; a warning names scripts that read a removed name (instVars.name, behaviors.Name). Event sheets that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text: one that names a removed variable or behavior and the object (a possible use), or that cannot be read at all, also refuses without force; they are listed in unscannedFiles.',
     {
       name: z.string().max(200).describe('Existing object name, as registered (letter case included)'),
       isGlobal: z.boolean().optional().describe('Change global status'),
       addVariables: z.array(z.object({
         name: z.string().describe('Variable name'),
         type: z.enum(['number', 'string', 'boolean']).describe('Variable type'),
-        description: z.string().max(1000).optional().describe('Description shown in the editor (C3 "desc"; default empty)'),
-        showInPropertiesBar: z.boolean().optional().describe('Show the variable in the properties bar (C3 "show"; default true)'),
       })).optional().describe('Instance variables to add'),
       removeVariables: z.array(z.string()).optional().describe('Instance variable names to remove'),
       addBehaviors: z.array(z.object({
         behaviorId: z.string().describe('Behavior plugin ID (e.g., "Tween", "Sin", "Timer")'),
         name: z.string().describe('Behavior instance name'),
       })).optional().describe('Behaviors to add'),
-      removeBehaviors: z.array(z.string()).optional().describe('Behavior names to remove; refused while events still use them unless force is true'),
+      removeBehaviors: z.array(z.string()).optional().describe('Behavior names to remove'),
       force: z.boolean().optional().default(false).describe('If true, remove instance variables and behaviors even if events use them (the uses are NOT changed)'),
-      globalInstanceProperties: boundedRecord(100, 4).optional()
-        .describe('Plugin property values to merge into a single-global object\'s settings (Keyboard, Touch, Audio, Gamepad, LocalStorage...), e.g. { "use-mouse-input": true }; keys are the plugin\'s property IDs'),
-      globalInstanceTags: z.string().max(500).optional().describe('Tags of a single-global object\'s instance'),
     },
     async (args) => {
       try {
         // Check at least one update is provided
-        if (args.isGlobal === undefined && !args.addVariables?.length && !args.removeVariables?.length && !args.addBehaviors?.length && !args.removeBehaviors?.length &&
-            args.globalInstanceProperties === undefined && args.globalInstanceTags === undefined) {
-          return toolError('No updates provided. Specify at least one of: isGlobal, addVariables, removeVariables, addBehaviors, removeBehaviors, globalInstanceProperties, globalInstanceTags.');
+        if (args.isGlobal === undefined && !args.addVariables?.length && !args.removeVariables?.length && !args.addBehaviors?.length && !args.removeBehaviors?.length) {
+          return toolError('No updates provided. Specify at least one of: isGlobal, addVariables, removeVariables, addBehaviors, removeBehaviors.');
         }
 
         // The registered name only: on case-insensitive file systems another
@@ -237,6 +248,8 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         const warnings: string[] = [];
         const addedBehaviors: string[] = [];
         const removedBehaviors: string[] = [];
+        const addedVariables: string[] = [];
+        const removedVariables: string[] = [];
 
         // Before any change: events that use an instance variable or behavior being removed
         const variablesToRemove = existingNames(obj.instanceVariables, args.removeVariables);
@@ -245,49 +258,24 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           variables: new Map([[args.name, variablesToRemove]]),
           behaviors: new Map([[args.name, behaviorsToRemove]]),
         };
+        let unscanned: UnscannedFileReport[] = [];
         if (variablesToRemove.length > 0 || behaviorsToRemove.length > 0) {
           const index = await getProjectIndex(reader);
           const broken = index.findReferencesBrokenBy(removal);
-          if (broken.length > 0 && !args.force) {
-            return toolResult(removalBlocked(args.name, 'object', broken));
+          // Event sheets that could not be parsed: a use names the member and the object
+          unscanned = await checkUnscannedFiles(reader, index.unscannedFiles, [{
+            categories: ['eventSheets'],
+            allOf: [[...variablesToRemove, ...behaviorsToRemove].map(n => nameTerm(n)), [nameTerm(args.name)]],
+          }]);
+          if ((broken.length > 0 || blocksWithoutForce(unscanned)) && !args.force) {
+            return toolResult(removalBlocked(args.name, 'object', broken, unscanned));
           }
           warnings.push(...removalForcedWarnings(args.name, broken));
+          warnings.push(...unscannedWarnings(unscanned, 'Removed'));
           warnings.push(...await scriptReadWarnings(reader, index, removal, [
             ...variablesToRemove.map(name => ({ objectClass: args.name, kind: 'instance variable' as const, name })),
             ...behaviorsToRemove.map(name => ({ objectClass: args.name, kind: 'behavior' as const, name })),
           ]));
-        }
-
-        // Single-global settings live on the object type, not in a layout.
-        if (args.globalInstanceProperties !== undefined || args.globalInstanceTags !== undefined) {
-          const sgi = (obj as Record<string, unknown>)['singleglobal-inst'] as Record<string, unknown> | undefined;
-          if (!sgi || typeof sgi !== 'object') {
-            return toolError(`Object "${args.name}" (${obj['plugin-id']}) is not a single-global object, so it has no global instance settings. Use update_instance for placed instances.`);
-          }
-          if (args.globalInstanceProperties !== undefined) {
-            const current = sgi.properties && typeof sgi.properties === 'object' ? sgi.properties as Record<string, unknown> : {};
-            const unknownKeys = Object.keys(args.globalInstanceProperties).filter(k => !(k in current));
-            if (unknownKeys.length > 0) {
-              warnings.push(`Propert${unknownKeys.length === 1 ? 'y' : 'ies'} ${unknownKeys.map(k => `"${k}"`).join(', ')} not present on "${args.name}" before; check the plugin's property IDs. Present: ${Object.keys(current).join(', ') || '(none)'}.`);
-            }
-            sgi.properties = { ...current, ...args.globalInstanceProperties };
-          }
-          if (args.globalInstanceTags !== undefined) sgi.tags = args.globalInstanceTags;
-        }
-
-        // A new behavior name must not match one the object already gets from a family.
-        if (args.addBehaviors?.length) {
-          const unknownAddons = unregistrableBehaviors(reader, args.addBehaviors.map(b => b.behaviorId));
-          if (unknownAddons.length > 0) {
-            return toolError(`Behavior addon(s) ${unknownAddons.map(id => `"${id}"`).join(', ')} are not in the project's usedAddons and are not known built-in Scirra behaviors. Add them in the Construct 3 editor first.`);
-          }
-          const inherited = await behaviorNamesOf(reader, args.name, await reader.readAllFamilies());
-          for (const b of args.addBehaviors) {
-            const owner = inherited.get(b.name);
-            if (owner && owner.startsWith('family')) {
-              return toolError(`Behavior name "${b.name}" is already given to "${args.name}" by ${owner}. Construct needs each behavior name to be unique on an object type; choose another name.`);
-            }
-          }
         }
 
         // Update global status
@@ -307,7 +295,8 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
               continue;
             }
             const sid = await idGen.generateSid(reader);
-            vars.push(createInstanceVariable(v.name, v.type, sid, v.description ?? '', v.showInPropertiesBar ?? true));
+            vars.push(createInstanceVariable(v.name, v.type, sid));
+            addedVariables.push(v.name);
           }
         }
 
@@ -319,6 +308,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
               const idx = vars.findIndex(v => v.name === varName);
               if (idx !== -1) {
                 vars.splice(idx, 1);
+                removedVariables.push(varName);
               } else {
                 warnings.push(`Variable "${varName}" not found, skipping`);
               }
@@ -328,6 +318,8 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 
         // Add behaviors
         if (args.addBehaviors && args.addBehaviors.length > 0) {
+          // All of them before registering the first: an unknown one must not leave the others registered
+          for (const b of args.addBehaviors) writer.checkAddonRegistrable('behavior', b.behaviorId);
           for (const b of args.addBehaviors) {
             const bWarning = await writer.ensureAddonRegistered('behavior', b.behaviorId);
             if (bWarning) warnings.push(bWarning);
@@ -370,19 +362,23 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 
         // Sync layout instances: ensure all instances of this object have
         // behaviors/instanceVariables dicts so C3 can resolve them on load,
-        // add an entry for each added behavior (and any other entry an
-        // instance lacks) and drop the removed ones.
+        // add an entry for each added behavior and a default value for each
+        // added instance variable (and any other entry or value an instance
+        // lacks) and drop the removed ones.
         if (args.addBehaviors?.length || args.removeBehaviors?.length || args.addVariables?.length || args.removeVariables?.length) {
-          const syncedLayouts: string[] = [];
-          try {
-            const expected = expectedInstanceBehaviors(args.name, obj, await readFamiliesForInstances(reader));
-            const sync = await syncLayoutInstances(reader, writer, new Map([
-              [args.name, { expected, add: addedBehaviors, drop: removedBehaviors }],
-            ]), syncedLayouts);
-            warnings.push(...sync.warnings);
-          } catch (error) {
-            return partialWriteResult(args.name, 'object', backupPath, syncedLayouts, error);
-          }
+          const families = await readFamiliesForInstances(reader);
+          const sync = await syncLayoutInstances(reader, writer, new Map([
+            [args.name, {
+              expected: expectedInstanceBehaviors(args.name, obj, families),
+              add: addedBehaviors,
+              drop: removedBehaviors,
+              variables: expectedInstanceVariables(args.name, obj, families),
+              addVariables: addedVariables,
+              dropVariables: removedVariables,
+            }],
+          ]));
+          warnings.push(...sync.warnings);
+          unscanned = mergeUnscannedReports(unscanned, sync.unscanned);
         }
 
         const result: WriteResult = {
@@ -392,204 +388,12 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           action: 'updated',
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
+          ...unscannedFields(unscanned),
         };
         return toolResult(result);
       } catch (error) {
         console.error('[update_object_properties] failed:', error);
-        return toolError(`Error updating object: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  );
-
-  // ─── update_instance_variable ─────────────────────────────
-
-  server.tool(
-    'update_instance_variable',
-    'Edit an existing instance variable definition on an object type or family (rename, retype, description, properties-bar visibility) and keep placed instances and event-sheet references in sync',
-    {
-      objectName: z.string().max(200).optional().describe('Object type that owns the variable (supply exactly one of objectName/familyName)'),
-      familyName: z.string().max(200).optional().describe('Family that owns the variable (supply exactly one of objectName/familyName)'),
-      variableName: z.string().max(200).describe('Current instance variable name'),
-      newName: z.string().max(200).optional().describe('New variable name'),
-      newType: z.enum(['number', 'string', 'boolean']).optional().describe('New variable type — stored values on placed instances are coerced'),
-      description: z.string().max(1000).optional().describe('New description (C3 "desc")'),
-      showInPropertiesBar: z.boolean().optional().describe('Show the variable in the properties bar (C3 "show")'),
-      renameReferences: z.boolean().optional().default(false).describe('Rewrite event-sheet references when renaming. When false, a rename is refused while references exist.'),
-    },
-    async (args) => {
-      try {
-        if ((args.objectName === undefined) === (args.familyName === undefined)) {
-          return toolError('Specify exactly one of objectName or familyName.');
-        }
-        if (args.newName === undefined && args.newType === undefined &&
-            args.description === undefined && args.showInPropertiesBar === undefined) {
-          return toolError('No updates provided. Specify at least one of: newName, newType, description, showInPropertiesBar.');
-        }
-
-        const isFamily = args.familyName !== undefined;
-        const ownerName = (args.objectName ?? args.familyName) as string;
-
-        let owner: Record<string, unknown>;
-        if (isFamily) {
-          try {
-            owner = await reader.readFamily(ownerName);
-          } catch {
-            return toolError(`Family "${ownerName}" not found. Use list_families to see available families.`);
-          }
-        } else {
-          try {
-            owner = await reader.readObjectType(ownerName) as unknown as Record<string, unknown>;
-          } catch {
-            return notFoundError('Object', ownerName, reader.findNearestName(ownerName, 'objects'), 'list_objects');
-          }
-        }
-
-        const vars = Array.isArray(owner.instanceVariables)
-          ? owner.instanceVariables as Array<Record<string, unknown>>
-          : [];
-        const target = vars.find(v => v.name === args.variableName);
-        if (!target) {
-          const available = vars.map(v => String(v.name));
-          const hint = available.length > 0
-            ? `\nAvailable instance variables: ${available.join(', ')}`
-            : '\nThis object type or family has no instance variables.';
-          return toolError(`Instance variable "${args.variableName}" not found on ${isFamily ? 'family' : 'object'} "${ownerName}".${hint}`);
-        }
-
-        const renaming = args.newName !== undefined && args.newName !== args.variableName;
-        const newName = args.newName as string;
-        if (renaming) {
-          try {
-            validateName(newName);
-          } catch (e) {
-            return toolError(`Invalid new variable name: ${e instanceof Error ? e.message : String(e)}`);
-          }
-          if (vars.some(v => v !== target && v.name === newName)) {
-            return toolError(`"${ownerName}" already has an instance variable named "${newName}".`);
-          }
-        }
-
-        // Types whose placed instances carry a stored value for this variable.
-        // C3 stores a family instance variable flat in each member instance's
-        // own `instanceVariables` dict, so a family rename touches every member.
-        const affectedTypes = new Set<string>();
-        if (isFamily) {
-          const members = Array.isArray(owner.members) ? owner.members as string[] : [];
-          for (const m of members) affectedTypes.add(m);
-        } else {
-          affectedTypes.add(ownerName);
-        }
-
-        if (renaming && isFamily) {
-          for (const member of affectedTypes) {
-            let memberObj: ObjectType;
-            try {
-              memberObj = await reader.readObjectType(member);
-            } catch {
-              continue;
-            }
-            const memberVars = Array.isArray(memberObj.instanceVariables)
-              ? memberObj.instanceVariables as Array<Record<string, unknown>>
-              : [];
-            if (memberVars.some(v => v.name === newName)) {
-              return toolError(`Family member "${member}" already has its own instance variable named "${newName}".`);
-            }
-          }
-        }
-
-        // Names an event sheet can use to reach the variable: the owning
-        // object type, or the family plus each of its members.
-        const referringNames = new Set<string>(affectedTypes);
-        if (isFamily) referringNames.add(ownerName);
-
-        const warnings: string[] = [];
-        let rewrittenSheets: string[] = [];
-
-        if (renaming) {
-          const sheets = await reader.readAllEventSheets();
-          const pattern = buildExpressionPattern(referringNames, args.variableName);
-          const referenced: Array<{ sheet: string; count: number }> = [];
-          const modifiedSheets: string[] = [];
-
-          for (const [sheetName, sheet] of sheets) {
-            const ctx: SheetScanContext = {
-              referringNames,
-              variableName: args.variableName,
-              newName,
-              expressionPattern: pattern,
-              apply: args.renameReferences,
-              count: 0,
-            };
-            const modified = scanSheetNode(sheet, ctx, undefined);
-            if (ctx.count > 0) referenced.push({ sheet: sheetName, count: ctx.count });
-            if (modified) modifiedSheets.push(sheetName);
-          }
-
-          if (referenced.length > 0 && !args.renameReferences) {
-            const total = referenced.reduce((n, r) => n + r.count, 0);
-            const list = referenced.map(r => `${r.sheet} (${r.count})`).join(', ');
-            return toolError(
-              `Renaming "${args.variableName}" to "${newName}" would break ${total} event-sheet reference(s) in: ${list}. ` +
-              'Re-run with renameReferences: true to rewrite them, or remove the references first.'
-            );
-          }
-
-          for (const sheetName of modifiedSheets) {
-            const sheet = sheets.get(sheetName);
-            if (!sheet) continue;
-            const sheetSubfolder = writer.getSubfolderForEntity('eventSheets', sheetName);
-            await writer.writeEntityFile('eventSheets', sheetName, sheet, sheetSubfolder);
-          }
-          rewrittenSheets = modifiedSheets;
-        }
-
-        // Update the definition itself
-        if (renaming) target.name = newName;
-        if (args.newType !== undefined) target.type = args.newType;
-        if (args.description !== undefined) target.desc = args.description;
-        if (args.showInPropertiesBar !== undefined) target.show = args.showInPropertiesBar;
-        owner.instanceVariables = vars;
-
-        const category = isFamily ? 'families' : 'objectTypes';
-        const subfolder = writer.getSubfolderForEntity(category, ownerName);
-        const backupPath = await writer.writeEntityFile(category, ownerName, owner, subfolder);
-
-        // Sync stored values on placed instances across all layouts
-        const sync = await syncInstanceVariableValues(
-          reader,
-          writer,
-          affectedTypes,
-          args.variableName,
-          renaming ? newName : undefined,
-          args.newType,
-        );
-
-        if (sync.layouts.length > 0) {
-          warnings.push(`Updated placed instances in layout(s): ${sync.layouts.join(', ')}`);
-        }
-        if (renaming && sync.renamed > 0) {
-          warnings.push(`Renamed the stored value key on ${sync.renamed} placed instance(s).`);
-        }
-        if (args.newType !== undefined && sync.coerced > 0) {
-          warnings.push(`Coerced ${sync.coerced} stored instance value(s) to ${args.newType}.`);
-        }
-        if (rewrittenSheets.length > 0) {
-          warnings.push(`Rewrote event-sheet references in: ${rewrittenSheets.join(', ')}`);
-          warnings.push('Rewrites cover "instance-variable" ACE parameters and <Object>.<variable> expression text only. References built by string concatenation, or written inside JavaScript script actions or script files, are NOT rewritten.');
-        }
-
-        const result: WriteResult = {
-          success: true,
-          entity: `${ownerName}.${renaming ? newName : args.variableName}`,
-          category: isFamily ? 'family' : 'object',
-          action: 'updated',
-          warnings: warnings.length > 0 ? warnings : undefined,
-          backupFile: backupPath,
-        };
-        return toolResult(result);
-      } catch (error) {
-        console.error('[update_instance_variable] failed:', error);
-        return toolError(`Error updating instance variable: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating object: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -598,7 +402,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'delete_object',
-    'Delete an object type from the project (checks references first: events, including object parameters, expressions and runtime.objects in script actions; layout instances on any layer or sub-layer, including non-world instances; object properties of other instances; families). Refused without force while anything refers to the object; the response lists where. References in project script files and objects created by name at runtime are not detected.',
+    'Delete an object type from the project (checks references first: events, including object parameters, expressions, runtime.objects in script actions and the literal name of System "Create object (by name)"; layout instances on any layer or sub-layer, including non-world instances; object properties of other instances; families). Refused without force while anything refers to the object; the response lists where. Event sheets, layouts and families that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text for the name (and, in layouts, the SID): a match is a possible use and refuses without force, as does such a file that cannot be read at all; unscannedFiles lists them. References in project script files and objects created by a name built at runtime are not detected. The frame image files (or single image) of the object in images/ are kept as <file>.bak. The object type is also taken out of the containers in project.c3proj that list it (containersUpdated), in the same update that removes its registration, since Construct 3 does not open a project whose container lists a missing object type. A container left with fewer than two members is removed (containersRemoved).',
     {
       name: z.string().max(200).describe('Object name to delete'),
       force: z.boolean().optional().default(false).describe('If true, delete even if referenced (does NOT clean up references)'),
@@ -617,21 +421,38 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         const hasRefs = index.isObjectReferenced(args.name);
         const eventSheetRefs = [...new Set(usage.events.map(r => r.eventSheet))];
         const layoutRefs = [...new Set([...usage.placements, ...usage.instanceProperties].map(p => p.layout))];
+        // Files the index could not parse: the name, and the SID an object property holds.
+        // The object type's own file: without it, its SID is unknown
+        const unscanned = mergeUnscannedReports(
+          ownFileReports(index.unscannedFiles, [{
+            category: 'objectTypes',
+            name: args.name,
+            unchecked: OWN_FILE_UNCHECKED,
+          }]),
+          await checkUnscannedFiles(reader, index.unscannedFiles, nameOrSidRules(
+            args.name, index.sidOf(args.name), ['eventSheets', 'layouts', 'families'],
+          )),
+        );
+        const unscannedBlock = blocksWithoutForce(unscanned);
 
-        if (hasRefs && !args.force) {
+        if ((hasRefs || unscannedBlock) && !args.force) {
+          const reasons = [
+            ...(hasRefs ? [`Object is still referenced: ${describeObjectUsage(usage)}.`] : []),
+            ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
+          ];
           return toolResult({
             success: false,
             entity: args.name,
             category: 'object',
             action: 'delete_blocked',
-            message: `Object is still referenced: ${describeObjectUsage(usage)}. ` +
-              'Use force=true to delete anyway (references will NOT be cleaned up).',
+            message: `${reasons.join(' ')} Use force=true to delete anyway (references will NOT be cleaned up).`,
             references: {
               eventSheets: eventSheetRefs,
               layouts: layoutRefs,
               families: usage.families,
               ...usageDetails(usage),
             },
+            ...unscannedFields(unscanned),
           });
         }
 
@@ -641,34 +462,74 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           const unreported = unreportedUsesWarning(usage.events);
           if (unreported) warnings.push(unreported);
         }
+        warnings.push(...unscannedWarnings(unscanned, 'Deleted'));
 
-        // Capture the subfolder first: removeFromProject reloads project.c3proj,
-        // after which the name is no longer resolvable.
-        const subfolder = writer.getSubfolderForEntity('objectTypes', args.name);
-        // Deregister before deleting the file. A failure in the second step
-        // then leaves an orphaned file (info-level) instead of a dangling
-        // registration (a file-existence error).
-        await writer.removeFromProject('objectTypes', args.name);
-        let backupPath: string;
-        try {
-          backupPath = await writer.deleteEntityFile('objectTypes', args.name, subfolder);
-        } catch (error) {
-          console.error('[delete_object] file delete failed after deregistration:', error);
-          return orphanedFileError('objectTypes', args.name, subfolder, error);
-        }
+        // What the delete takes out of containers (containersUpdated and containersRemoved in the result)
+        let containers: ContainerRemoval = { updated: [], removed: [] };
 
-        const result: WriteResult = {
+        // Its frame images (or single image) lose their user: kept as .bak, like
+        // the image of a deleted frame. They are renamed first; then the name
+        // leaves project.c3proj and the object file is deleted (#ISSUE). When a
+        // step fails, the writer has put back what the call changed (see
+        // deleteRegisteredEntity) and the images are renamed back here, since
+        // the writer does not track them. All of it runs under the animation
+        // lock, as the animation tools do, which rename the same frame images:
+        // the plan is read inside it, and no other tool moves those files
+        // meanwhile or between a rename and its rollback.
+        const { images, backupPath } = await writer.withAnimationLock(async () => {
+          const planned = await planDeletedObjectImages(reader, writer, args.name);
+          const renames = planned.parking?.renames ?? [];
+          // An object file saved in the editor since the server read it refuses
+          // the delete before the images are touched (deleteRegisteredEntity checks
+          // again)
+          const subfolder = writer.getSubfolderForEntity('objectTypes', args.name);
+          await writer.assertEntityFileCurrent('objectTypes', args.name, subfolder);
+          if (renames.length > 0) await writer.renameImageFiles(renames);
+          try {
+            // The registration and every container membership leave project.c3proj in one update,
+            // built from the file as it is right before the write: the editor does not open a project
+            // whose container lists a missing object type, and a save in between cannot bring one back
+            const backup = await deleteRegisteredEntity(writer, 'objectTypes', args.name, {
+              alsoChange: project => {
+                containers = removeContainerMember(project, args.name, { dropUnderTwo: SMALL_CONTAINER_RULE === 'removed' });
+              },
+            });
+            return { images: planned, backupPath: backup };
+          } catch (error) {
+            const message = errorMessage(error, reader.getProjectDir());
+            if (renames.length === 0) throw new Error(message);
+            // The images go back to their live names only when the delete was
+            // undone: project.c3proj lists the object and its file is there. An
+            // object that is gone, or whose state is unknown, keeps its images
+            // as .bak, so a later create_object or add_animation_to_sprite
+            // placeholder cannot overwrite them without a backup.
+            const now = await writer.entityOnDisk('objectTypes', args.name, subfolder);
+            const undone = now.project === 'lists' && now.file === 'present';
+            const imagesNote = undone
+              ? await renameObjectImagesBack(writer, renames)
+              : `Its image files are kept as .bak: ${renames.map(r => `"images/${r.to}"`).join(', ')}.`;
+            throw new Error(`${message} ${imagesNote}`);
+          }
+        });
+        warnings.push(...images.warnings);
+        const containerWarning = describeContainerRemoval(containers);
+        if (containerWarning) warnings.push(containerWarning);
+
+        const result: WriteResult & { containersUpdated?: ContainerEntry[]; containersRemoved?: ContainerEntry[] } = {
           success: true,
           entity: args.name,
           category: 'object',
           action: 'deleted',
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
+          ...(containers.updated.length > 0 ? { containersUpdated: containers.updated } : {}),
+          ...(containers.removed.length > 0 ? { containersRemoved: containers.removed } : {}),
+          ...unscannedFields(unscanned),
         };
         return toolResult(result);
       } catch (error) {
         console.error('[delete_object] failed:', error);
-        return toolError(`Error deleting object: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting object: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -758,7 +619,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         return toolResult(result);
       } catch (error) {
         console.error('[create_family] failed:', error);
-        return toolError(`Error creating family: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error creating family: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -767,7 +628,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'update_family',
-    'Update a family: add/remove members, shared instance variables and shared behaviors. Removing an instance variable or behavior that events still use (on the family, or through a member that gets it from this family only), or a member through which events use the family\'s instance variables or behaviors, is refused without force, listing the uses. Removing a member also warns when events use the family itself, since they no longer apply to that member. Scripts are not checked; a warning names scripts that read a name a member loses.',
+    'Update a family: add/remove members, add/remove shared instance variables. Removing an instance variable that events still use (on the family, or through a member that gets it from this family only), or a member through which events use the family\'s instance variables or behaviors, is refused without force, listing the uses. Removing a member also warns when events use the family itself, since they no longer apply to that member. Scripts are not checked; a warning names scripts that read a name a member loses. Event sheets that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text: one that names a removed variable (or, for a removed member, one of the family\'s variables or behaviors) together with the family or member (a possible use), or that cannot be read at all, also refuses without force; they are listed in unscannedFiles.',
     {
       name: z.string().max(200).describe('Family name to update, as registered (letter case included)'),
       addMembers: z.array(z.string().max(200)).optional().describe('Object type names to add to the family'),
@@ -775,25 +636,16 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
       addVariables: z.array(z.object({
         name: z.string().describe('Variable name'),
         type: z.enum(['number', 'string', 'boolean']).describe('Variable type'),
-        description: z.string().max(1000).optional().describe('Description shown in the editor (C3 "desc"; default empty)'),
-        showInPropertiesBar: z.boolean().optional().describe('Show the variable in the properties bar (C3 "show"; default true)'),
       })).optional().describe('Instance variables to add to all family members'),
       removeVariables: z.array(z.string()).optional().describe('Instance variable names to remove'),
-      addBehaviors: z.array(z.object({
-        behaviorId: z.string().max(100).describe('Behavior addon ID (e.g. "Bullet", "Sin", "Platform")'),
-        name: z.string().max(200).describe('Behavior name, unique across the family and each member\'s own behaviors'),
-      })).max(50).optional().describe('Behaviors every member gets through the family'),
-      removeBehaviors: z.array(z.string().max(200)).max(50).optional()
-        .describe('Family behavior names to remove; refused while events still use them unless force is true'),
-      force: z.boolean().optional().default(false).describe('If true, remove instance variables, behaviors and members even if events use them (the uses are NOT changed)'),
+      force: z.boolean().optional().default(false).describe('If true, remove instance variables and members even if events use them (the uses are NOT changed)'),
     },
     async (args) => {
       try {
         const hasUpdates = (args.addMembers?.length ?? 0) > 0 || (args.removeMembers?.length ?? 0) > 0 ||
-          (args.addVariables?.length ?? 0) > 0 || (args.removeVariables?.length ?? 0) > 0 ||
-          (args.addBehaviors?.length ?? 0) > 0 || (args.removeBehaviors?.length ?? 0) > 0;
+          (args.addVariables?.length ?? 0) > 0 || (args.removeVariables?.length ?? 0) > 0;
         if (!hasUpdates) {
-          return toolError('No updates provided. Specify at least one of: addMembers, removeMembers, addVariables, removeVariables, addBehaviors, removeBehaviors.');
+          return toolError('No updates provided. Specify at least one of: addMembers, removeMembers, addVariables, removeVariables.');
         }
 
         // The registered name only, as for update_object_properties
@@ -816,27 +668,43 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         const currentMembers = Array.isArray(family.members) ? family.members.filter((m): m is string => typeof m === 'string') : [];
         const leaving = [...new Set((args.removeMembers ?? []).filter(m => currentMembers.includes(m)))];
         const variablesToRemove = existingNames(family.instanceVariables, args.removeVariables);
-        const behaviorsToRemove = existingNames(family.behaviorTypes, args.removeBehaviors);
         const removal: MemberRemoval = {
           variables: new Map([[args.name, variablesToRemove]]),
-          behaviors: new Map([[args.name, behaviorsToRemove]]),
           members: new Map([[args.name, leaving]]),
         };
-        if (leaving.length > 0 || variablesToRemove.length > 0 || behaviorsToRemove.length > 0) {
+        let unscanned: UnscannedFileReport[] = [];
+        if (leaving.length > 0 || variablesToRemove.length > 0) {
           const index = await getProjectIndex(reader);
           const broken = index.findReferencesBrokenBy(removal);
-          if (broken.length > 0 && !args.force) {
-            return toolResult(removalBlocked(args.name, 'family', broken));
-          }
-          warnings.push(...removalForcedWarnings(args.name, broken));
-          // What member instances lose: the removed variables and behaviors, and for a
-          // leaving member all of the family's instance variables and behaviors
+          // What member instances lose: the removed variables, and for a leaving member
+          // all of the family's instance variables and behaviors
           const familyVariables = entryNamesOf(family.instanceVariables);
           const familyBehaviors = entryNamesOf(family.behaviorTypes);
+          const familyEffects = effectNamesOf(family);
+          // Event sheets that could not be parsed: a use names what is removed and the
+          // family or member it goes through
+          unscanned = await checkUnscannedFiles(reader, index.unscannedFiles, [
+            {
+              categories: ['eventSheets'],
+              allOf: [variablesToRemove.map(n => nameTerm(n)), [args.name, ...currentMembers].map(n => nameTerm(n))],
+            },
+            {
+              categories: ['eventSheets'],
+              allOf: [[...familyVariables, ...familyBehaviors, ...familyEffects].map(n => nameTerm(n)), leaving.map(n => nameTerm(n))],
+            },
+          ]);
+          // The family's effects, named by conditions and actions on a leaving member
+          const effects = await familyEffectUses(reader, args.name, { ...family, members: currentMembers.filter(m => !leaving.includes(m)) }, leaving);
+          if ((broken.length > 0 || effects.broken.length > 0 || blocksWithoutForce(unscanned)) && !args.force) {
+            return toolResult(removalBlocked(args.name, 'family', broken, unscanned, effects.broken));
+          }
+          warnings.push(...removalForcedWarnings(args.name, broken));
+          warnings.push(...effectUseWarnings(effects, 'Removed'));
+          warnings.push(...unscannedWarnings(unscanned, 'Removed'));
           warnings.push(...await scriptReadWarnings(reader, index, removal, [...new Set(currentMembers)].flatMap(member => [
             ...(leaving.includes(member) ? familyVariables : variablesToRemove)
               .map(name => ({ objectClass: member, kind: 'instance variable' as const, name })),
-            ...(leaving.includes(member) ? familyBehaviors : behaviorsToRemove)
+            ...(leaving.includes(member) ? familyBehaviors : [])
               .map(name => ({ objectClass: member, kind: 'behavior' as const, name })),
           ])));
           // Not checkable: whether events that use the family itself rely on these members being in it
@@ -896,6 +764,8 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
         if (!Array.isArray(family.instanceVariables)) family.instanceVariables = [];
         const vars = family.instanceVariables as Array<Record<string, unknown>>;
 
+        const addedVariables: string[] = [];
+        const removedVariables: string[] = [];
         if (args.addVariables) {
           for (const v of args.addVariables) {
             if (vars.some(ev => ev.name === v.name)) {
@@ -903,7 +773,8 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
               continue;
             }
             const sid = await idGen.generateSid(reader);
-            vars.push(createInstanceVariable(v.name, v.type, sid, v.description ?? '', v.showInPropertiesBar ?? true));
+            vars.push(createInstanceVariable(v.name, v.type, sid));
+            addedVariables.push(v.name);
           }
         }
 
@@ -912,98 +783,37 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
             const idx = vars.findIndex(v => v.name === varName);
             if (idx !== -1) {
               vars.splice(idx, 1);
+              removedVariables.push(varName);
             } else {
               warnings.push(`Variable "${varName}" not found, skipping`);
             }
           }
         }
 
-        // Manage behaviors. A family behavior is used in events through the
-        // family or any member, and every member instance carries its settings.
-        if (!Array.isArray(family.behaviorTypes)) family.behaviorTypes = [];
-        const familyBehaviors = family.behaviorTypes as Array<Record<string, unknown>>;
-        const removedBehaviors: string[] = [];
-        if (args.removeBehaviors?.length) {
-          const missing = args.removeBehaviors.filter(b => !familyBehaviors.some(e => e.name === b));
-          for (const b of missing) warnings.push(`Behavior "${b}" not found on the family, skipping`);
-          // Uses in events were checked with the other removals above
-          const toRemove = args.removeBehaviors.filter(b => !missing.includes(b));
-          for (const b of toRemove) {
-            familyBehaviors.splice(familyBehaviors.findIndex(e => e.name === b), 1);
-            removedBehaviors.push(b);
-          }
-        }
-
-        // Validate every new behavior before anything is registered or written.
-        const newBehaviors: Array<{ behaviorId: string; name: string }> = [];
-        for (const b of args.addBehaviors ?? []) {
-          if (!BEHAVIOR_NAME.test(b.name)) {
-            return toolError(`Behavior name "${b.name}" is not valid: use letters, digits, underscores and spaces.`);
-          }
-          if (familyBehaviors.some(e => e.name === b.name) || newBehaviors.some(e => e.name === b.name)) {
-            warnings.push(`Behavior "${b.name}" already exists on the family, skipping`);
-            continue;
-          }
-          newBehaviors.push(b);
-        }
-
-        const unknownAddons = unregistrableBehaviors(reader, newBehaviors.map(b => b.behaviorId));
-        if (unknownAddons.length > 0) {
-          return toolError(`Behavior addon(s) ${unknownAddons.map(id => `"${id}"`).join(', ')} are not in the project's usedAddons and are not known built-in Scirra behaviors. Add them in the Construct 3 editor first.`);
-        }
-
-        // Every member must be able to carry every family behavior name: check
-        // new members against all family behaviors, and new behaviors against all members.
-        if (newBehaviors.length > 0 || (args.addMembers?.length ?? 0) > 0) {
-          const addedMembers = new Set(members.filter(m => !membersBefore.includes(m)));
-          const newNames = new Set(newBehaviors.map(b => b.name));
-          const allNames = [...familyBehaviors.map(e => String(e.name)), ...newNames];
-          const families = await reader.readAllFamilies();
-          for (const m of members) {
-            const owners = await behaviorNamesOf(reader, m, families, args.name);
-            for (const n of allNames) {
-              const owner = owners.get(n);
-              if (owner && (addedMembers.has(m) || newNames.has(n))) {
-                return toolError(`Behavior name "${n}" would appear twice on "${m}": the family "${args.name}" and ${owner} both define it. Construct needs each behavior name to be unique on an object type; rename one of them first.`);
-              }
-            }
-          }
-        }
-
-        for (const b of newBehaviors) {
-          const bWarning = await writer.ensureAddonRegistered('behavior', b.behaviorId);
-          if (bWarning) warnings.push(bWarning);
-          familyBehaviors.push(createBehavior(b.behaviorId, b.name, await idGen.generateSid(reader)));
-        }
-
         const subfolder = writer.getSubfolderForEntity('families', args.name);
         const backupPath = await writer.writeEntityFile('families', args.name, family, subfolder);
 
-        // Member instances carry an entry for every family behavior: members that
-        // joined get entries for all of them, members that left lose them, and
-        // the others gain the added behaviors and lose the removed ones
-        const familyBehaviorNames = behaviorTypesOf(family).map(b => b.name);
-        const addedBehaviorNames = newBehaviors.map(b => b.name);
-        const memberChanges = [...new Set([...membersBefore, ...members])].flatMap((member): MemberSyncChange[] => {
+        // Instances of members that joined get entries for the family's
+        // behaviors and values for its instance variables, instances of members
+        // that left lose them and the entries for its effects; instances of the
+        // other members get values for added variables and lose removed ones
+        const familyBehaviors = behaviorTypesOf(family).map(b => b.name);
+        const familyVariables = instanceVariablesOf(family).map(v => v.name);
+        const familyEffects = effectNamesOf(family);
+        const memberChanges: FamilyMemberChange[] = [...new Set([...membersBefore, ...members])].map(member => {
           const joined = members.includes(member) && !membersBefore.includes(member);
-          const left = !members.includes(member) && membersBefore.includes(member);
-          if (joined) return [{ member, add: familyBehaviorNames }];
-          if (left) return [{ member, drop: [...familyBehaviorNames, ...removedBehaviors] }];
-          if (addedBehaviorNames.length > 0 || removedBehaviors.length > 0) {
-            return [{ member, add: addedBehaviorNames, drop: removedBehaviors }];
-          }
-          return [];
-        });
-        const syncedLayouts: string[] = [];
+          const left = membersBefore.includes(member) && !members.includes(member);
+          if (joined) return { member, addBehaviors: familyBehaviors, addVariables: familyVariables };
+          if (left) return { member, dropBehaviors: familyBehaviors, dropVariables: [...familyVariables, ...removedVariables], dropEffects: familyEffects };
+          return { member, addVariables: addedVariables, dropVariables: removedVariables };
+        }).filter(hasFamilyMemberChange);
         if (memberChanges.length > 0) {
-          try {
-            const families = new Map(await readFamiliesForInstances(reader));
-            families.set(args.name, family);
-            const plans = await memberSyncPlans(reader, families, memberChanges);
-            warnings.push(...(await syncLayoutInstances(reader, writer, plans, syncedLayouts)).warnings);
-          } catch (error) {
-            return partialWriteResult(args.name, 'family', backupPath, syncedLayouts, error);
-          }
+          const families = new Map(await readFamiliesForInstances(reader));
+          families.set(args.name, family);
+          const { plans, warnings: planWarnings } = await familyMemberPlans(reader, families, memberChanges);
+          const sync = await syncLayoutInstances(reader, writer, plans);
+          warnings.push(...planWarnings, ...sync.warnings);
+          unscanned = mergeUnscannedReports(unscanned, sync.unscanned);
         }
 
         const result: WriteResult = {
@@ -1013,11 +823,194 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           action: 'updated',
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
+          ...unscannedFields(unscanned),
         };
         return toolResult(result);
       } catch (error) {
         console.error('[update_family] failed:', error);
-        return toolError(`Error updating family: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error updating family: ${errorMessage(error, reader.getProjectDir())}`);
+      }
+    }
+  );
+
+  // ─── update_instance_variable ─────────────────────────────
+
+  server.tool(
+    'update_instance_variable',
+    'Rename an instance variable of an object type or family, or change its type or description, and keep the values placed '
+      + 'instances hold for it in step: a rename moves each value to the new name, a type change gives every value that does not '
+      + 'fit the new type its default (0, "" or false) and lists the values it replaced. A rename that events use is refused '
+      + 'without force, listing the uses, as removing the variable is (update_object_properties, update_family); uses are never '
+      + 'rewritten. A rename that only changes the letter case breaks no use. Event sheets that could not be parsed are searched '
+      + 'as text: one that possibly uses the variable, or that cannot be read, refuses the rename without force.',
+    {
+      objectName: z.string().max(200).optional().describe('Object type that has the variable, as registered (give this or familyName)'),
+      familyName: z.string().max(200).optional().describe('Family that has the variable, as registered (give this or objectName)'),
+      variableName: z.string().max(200).describe('Current name, letter case included'),
+      newName: z.string().max(200).optional()
+        .describe('New name: letters, digits, underscores and spaces; not the name of another instance variable the instances hold a value for, ignoring case'),
+      newType: z.enum(['number', 'string', 'boolean']).optional().describe('New type; placed instances whose value does not fit it get its default'),
+      description: z.string().max(1000).optional().describe('New description (saved as "desc")'),
+      force: z.boolean().optional().default(false).describe('Rename even if events use the variable (the uses are NOT changed)'),
+    },
+    async (args) => {
+      try {
+        if ((args.objectName === undefined) === (args.familyName === undefined)) {
+          return toolError('Give exactly one of objectName and familyName. Nothing was changed.');
+        }
+        if (args.newName === undefined && args.newType === undefined && args.description === undefined) {
+          return toolError('No updates provided. Specify at least one of: newName, newType, description. Nothing was changed.');
+        }
+        const isFamily = args.familyName !== undefined;
+        const ownerName = (isFamily ? args.familyName : args.objectName)!;
+        const category = isFamily ? 'families' : 'objectTypes';
+        const kind = isFamily ? 'family' : 'object';
+
+        // The registered name only, as for update_object_properties
+        const registered = isFamily ? await reader.listFamilies() : await reader.listObjectTypes();
+        if (!registered.includes(ownerName)) {
+          return isFamily
+            ? entityNotFound('Family', ownerName, registered, [], 'list_families')
+            : entityNotFound('Object', ownerName, registered, reader.findNearestName(ownerName, 'objects'), 'list_objects');
+        }
+        let owner: Record<string, unknown>;
+        try {
+          owner = isFamily ? await reader.readFamily(ownerName) : await reader.readObjectType(ownerName) as unknown as Record<string, unknown>;
+        } catch (error) {
+          return toolError(`${isFamily ? 'Family' : 'Object type'} "${ownerName}" could not be read: `
+            + `${errorMessage(error, reader.getProjectDir())}. Nothing was changed.`);
+        }
+        const definitions = Array.isArray(owner.instanceVariables) ? owner.instanceVariables as Array<Record<string, unknown>> : [];
+        const target = definitions.find(v => v.name === args.variableName);
+        if (!target) {
+          const known = instanceVariablesOf(owner).map(v => `"${v.name}"`).join(', ') || '(none)';
+          return toolError(`"${ownerName}" has no instance variable "${args.variableName}" (names are matched with their letter case). `
+            + `Its instance variables: ${known}. Nothing was changed.`);
+        }
+        const oldName = args.variableName;
+        const oldType = typeof target.type === 'string' ? target.type : 'number';
+        const newName = args.newName ?? oldName;
+        const renaming = newName !== oldName;
+        const retyping = args.newType !== undefined && args.newType !== oldType;
+        const describing = args.description !== undefined && args.description !== target.desc;
+        if (!renaming && !retyping && !describing) {
+          return toolResult({ success: true, entity: ownerName, category: kind, action: 'unchanged', variable: oldName, type: oldType },
+            { projectWritten: false });
+        }
+
+        // The object types whose instances hold a value for it: the object type, or the family's members
+        const objectTypes = await reader.listObjectTypes();
+        const holders = isFamily
+          ? [...new Set((Array.isArray(owner.members) ? owner.members : [])
+            .filter((m): m is string => typeof m === 'string' && objectTypes.includes(m)))]
+          : [ownerName];
+        const families = await readFamiliesForInstances(reader);
+        const holderObjects = isFamily ? await readMemberObjects(reader, holders) : new Map([[ownerName, owner]]);
+
+        const warnings: string[] = [];
+        let unscanned: UnscannedFileReport[] = [];
+        let index: ProjectIndex | undefined;
+        const removal: MemberRemoval = { variables: new Map([[ownerName, [oldName]]]) };
+
+        if (renaming) {
+          try {
+            validateName(newName);
+          } catch (error) {
+            return toolError(`Invalid new name: ${errorMessage(error, reader.getProjectDir())}. Nothing was changed.`);
+          }
+          // Another variable the instances hold a value for, ignoring case: events match the names ignoring case
+          const key = nameKey(newName);
+          const others = [
+            ...definitions.filter(v => v !== target && typeof v.name === 'string').map(v => ({ holder: ownerName, name: String(v.name) })),
+            ...holders.flatMap(holder => expectedInstanceVariables(holder, holderObjects.get(holder), families)
+              .filter(v => v.name !== oldName).map(v => ({ holder, name: v.name }))),
+          ];
+          const clash = others.find(o => nameKey(o.name) === key);
+          if (clash) {
+            return toolError(`"${clash.holder}" already has an instance variable "${clash.name}" (its own or a family's), and events match `
+              + 'instance variable names ignoring case. Choose another name. Nothing was changed.');
+          }
+          // A rename that changes more than the letter case breaks every use of the old name
+          if (nameKey(newName) !== nameKey(oldName)) {
+            index = await getProjectIndex(reader);
+            const broken = index.findReferencesBrokenBy(removal);
+            unscanned = await checkUnscannedFiles(reader, index.unscannedFiles, [{
+              categories: ['eventSheets'],
+              allOf: [[nameTerm(oldName)], [ownerName, ...holders].map(n => nameTerm(n))],
+            }]);
+            if ((broken.length > 0 || blocksWithoutForce(unscanned)) && !args.force) {
+              return toolResult(renameBlocked(ownerName, kind, oldName, newName, broken, unscanned));
+            }
+            warnings.push(...removalForcedWarnings(ownerName, broken, 'Renamed'));
+            warnings.push(...unscannedWarnings(unscanned, 'Renamed'));
+            warnings.push(...await scriptReadWarnings(reader, index, removal,
+              [ownerName, ...holders].map(objectClass => ({ objectClass, kind: 'instance variable' as const, name: oldName }))));
+          } else {
+            // Events match the names ignoring case, scripts do not: instVars.hp no longer finds "HP"
+            index = await getProjectIndex(reader);
+            warnings.push(...await caseOnlyRenameScriptWarnings(reader, index, oldName, newName));
+          }
+        }
+        if (retyping) {
+          index ??= await getProjectIndex(reader);
+          const uses = index.findReferencesBrokenBy(removal);
+          if (uses.length > 0) {
+            warnings.push(`Events use it: ${describeMemberReferences(ownerName, uses)}; they were written for a ${oldType} value, `
+              + `and whether they work with a ${args.newType} value is not checked: review them.`);
+          }
+        }
+
+        target.name = newName;
+        if (args.newType !== undefined) target.type = args.newType;
+        if (args.description !== undefined) target.desc = args.description;
+
+        // The layouts first, the owner file last: a call stopped between them leaves the definition
+        // under its old name, so running it again finds the variable and finishes the values.
+        // A failure rolls back what the call wrote
+        let backupPath: string;
+        try {
+          if (renaming || retyping) {
+            const familiesAfter = new Map(families);
+            if (isFamily) familiesAfter.set(ownerName, owner);
+            const plans = new Map<string, InstanceSyncPlan>();
+            for (const holder of holders) {
+              const object = holderObjects.get(holder);
+              if (object === undefined) {
+                warnings.push(`Instances of "${holder}" were NOT updated: its object type file could not be read, `
+                  + `so their values for "${oldName}" were left as they were.`);
+                continue;
+              }
+              plans.set(holder, {
+                expected: expectedInstanceBehaviors(holder, object, familiesAfter),
+                variables: expectedInstanceVariables(holder, object, familiesAfter),
+                ...(renaming ? { renameVariables: [{ from: oldName, to: newName }] } : {}),
+                ...(retyping ? { retypeVariables: [{ name: newName, type: args.newType! }] } : {}),
+              });
+            }
+            const sync = await syncLayoutInstances(reader, writer, plans);
+            warnings.push(...sync.warnings);
+            unscanned = mergeUnscannedReports(unscanned, sync.unscanned);
+          }
+          backupPath = await writer.writeEntityFile(category, ownerName, owner, writer.getSubfolderForEntity(category, ownerName));
+        } catch (error) {
+          throw new Error(await rollBackFailedCall(writer, error));
+        }
+
+        return toolResult({
+          success: true,
+          entity: ownerName,
+          category: kind,
+          action: 'updated',
+          variable: newName,
+          ...(renaming ? { previousName: oldName } : {}),
+          type: args.newType ?? oldType,
+          warnings: warnings.length > 0 ? warnings : undefined,
+          backupFile: backupPath,
+          ...unscannedFields(unscanned),
+        });
+      } catch (error) {
+        console.error('[update_instance_variable] failed:', error);
+        return toolError(`Error updating instance variable: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1026,59 +1019,92 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'reorder_behaviors',
-    'Reorder the behaviors of an object type or a family, as dragging them in the editor\'s Behaviors dialog does. The order is saved in the object type or family file.',
+    'Put the behaviors of an object type or family in a new order: order lists every behavior once, with its exact name. '
+      + 'On placed instances, the entries of these behaviors are put in the new order among the places they hold; the '
+      + 'entries of other families and for other names stay where they are. An instance holds one entry per behavior name: '
+      + 'when another owner has a behavior of the same name (the object\'s own and a family\'s, say), that one entry moves with '
+      + 'this owner\'s order.',
     {
-      objectName: z.string().max(200).optional().describe('Object type whose behaviors to reorder'),
-      familyName: z.string().max(200).optional().describe('Family whose behaviors to reorder'),
-      order: z.array(z.string().max(200)).min(1).max(100).describe('Every behavior name exactly once, in the new order'),
+      objectName: z.string().max(200).optional().describe('Object type whose behaviors to reorder, as registered (give this or familyName)'),
+      familyName: z.string().max(200).optional().describe('Family whose behaviors to reorder, as registered (give this or objectName)'),
+      order: z.array(z.string().max(200)).min(1).max(100).describe('Every behavior once, letter case included, in the new order'),
     },
     async (args) => {
       try {
         if ((args.objectName === undefined) === (args.familyName === undefined)) {
-          return toolError('Give exactly one of objectName and familyName.');
+          return toolError('Give exactly one of objectName and familyName. Nothing was changed.');
         }
         const isFamily = args.familyName !== undefined;
-        const name = (args.objectName ?? args.familyName)!;
-        let holder: Record<string, unknown>;
-        try {
-          holder = isFamily
-            ? await reader.readFamily(name)
-            : await reader.readObjectType(name) as unknown as Record<string, unknown>;
-        } catch {
+        const ownerName = (isFamily ? args.familyName : args.objectName)!;
+        const category = isFamily ? 'families' : 'objectTypes';
+        const registered = isFamily ? await reader.listFamilies() : await reader.listObjectTypes();
+        if (!registered.includes(ownerName)) {
           return isFamily
-            ? toolError(`Family "${name}" not found. Use list_families to see available families.`)
-            : notFoundError('Object', name, reader.findNearestName(name, 'objects'), 'list_objects');
+            ? entityNotFound('Family', ownerName, registered, [], 'list_families')
+            : entityNotFound('Object', ownerName, registered, reader.findNearestName(ownerName, 'objects'), 'list_objects');
         }
-
-        const behaviors = Array.isArray(holder.behaviorTypes) ? holder.behaviorTypes as Array<Record<string, unknown>> : [];
+        let owner: Record<string, unknown>;
+        try {
+          owner = isFamily ? await reader.readFamily(ownerName) : await reader.readObjectType(ownerName) as unknown as Record<string, unknown>;
+        } catch (error) {
+          return toolError(`${isFamily ? 'Family' : 'Object type'} "${ownerName}" could not be read: `
+            + `${errorMessage(error, reader.getProjectDir())}. Nothing was changed.`);
+        }
+        const behaviors = Array.isArray(owner.behaviorTypes) ? owner.behaviorTypes as Array<Record<string, unknown>> : [];
         const current = behaviors.map(b => String(b.name));
-        const sameSet = args.order.length === current.length
-          && new Set(args.order).size === args.order.length
-          && args.order.every(n => current.includes(n));
-        if (!sameSet) {
-          return toolError(`order must list every behavior of "${name}" exactly once. Current order: ${current.join(', ') || '(no behaviors)'}.`);
+        const repeated = [...new Set(current.filter((n, i) => current.indexOf(n) !== i))];
+        if (repeated.length > 0) {
+          return toolError(`Behaviors of "${ownerName}" share a name (${repeated.map(n => `"${n}"`).join(', ')}): `
+            + 'rename one in the Construct 3 editor first. Nothing was changed.');
         }
+        const valid = args.order.length === current.length
+          && new Set(args.order).size === args.order.length && args.order.every(n => current.includes(n));
+        if (!valid) {
+          return toolError(`order must list every behavior of "${ownerName}" exactly once, with its exact name. `
+            + `Current order: ${current.map(n => `"${n}"`).join(', ') || '(no behaviors)'}. Nothing was changed.`);
+        }
+        const common = { success: true, entity: ownerName, category: isFamily ? 'family' : 'object', order: args.order };
         if (args.order.every((n, i) => n === current[i])) {
-          return toolResult({ success: true, entity: name, category: isFamily ? 'family' : 'object', action: 'unchanged', order: current });
+          return toolResult({ ...common, action: 'unchanged' }, { projectWritten: false });
         }
+        owner.behaviorTypes = args.order.map(n => behaviors[current.indexOf(n)]);
 
-        holder.behaviorTypes = args.order.map(n => behaviors.find(b => b.name === n)!);
-        const folder = isFamily ? 'families' : 'objectTypes';
-        const subfolder = writer.getSubfolderForEntity(folder, name);
-        const backupPath = await writer.writeEntityFile(folder, name, holder, subfolder);
-
-        const result: WriteResult = {
-          success: true,
-          entity: name,
-          category: isFamily ? 'family' : 'object',
-          action: 'updated',
-          backupFile: backupPath,
-          warnings: [`Behavior order: ${args.order.join(', ')}.`],
-        };
-        return toolResult(result);
+        const warnings: string[] = [];
+        let unscanned: UnscannedFileReport[] = [];
+        let backupPath: string;
+        try {
+          // The layouts first, the owner file last (as update_instance_variable), so running a stopped call again finishes it
+          const objectTypes = await reader.listObjectTypes();
+          const holders = isFamily
+            ? [...new Set((Array.isArray(owner.members) ? owner.members : [])
+              .filter((m): m is string => typeof m === 'string' && objectTypes.includes(m)))]
+            : [ownerName];
+          const familiesAfter = new Map(await readFamiliesForInstances(reader));
+          if (isFamily) familiesAfter.set(ownerName, owner);
+          const holderObjects = isFamily ? await readMemberObjects(reader, holders) : new Map([[ownerName, owner]]);
+          const plans = new Map<string, InstanceSyncPlan>();
+          for (const holder of holders) {
+            const object = holderObjects.get(holder);
+            if (object === undefined) {
+              warnings.push(`Instances of "${holder}" were NOT updated: its object type file could not be read, so their behavior entries keep their order.`);
+              continue;
+            }
+            plans.set(holder, { expected: expectedInstanceBehaviors(holder, object, familiesAfter), orderBehaviors: args.order });
+          }
+          const sync = await syncLayoutInstances(reader, writer, plans);
+          warnings.push(...sync.warnings);
+          unscanned = sync.unscanned;
+          backupPath = await writer.writeEntityFile(category, ownerName, owner, writer.getSubfolderForEntity(category, ownerName));
+        } catch (error) {
+          throw new Error(await rollBackFailedCall(writer, error));
+        }
+        return toolResult({
+          ...common, action: 'updated', backupFile: backupPath,
+          warnings: warnings.length > 0 ? warnings : undefined, ...unscannedFields(unscanned),
+        });
       } catch (error) {
         console.error('[reorder_behaviors] failed:', error);
-        return toolError(`Error reordering behaviors: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error reordering behaviors: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
@@ -1087,7 +1113,7 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
 
   server.tool(
     'delete_family',
-    'Delete a family from the project (checks references first: events that name the family, including object parameters, expressions and runtime.objects in script actions; object properties of instances that hold its SID; its instance variables and behaviors used through a member object type, as the instance variable parameter or behavior of a condition/action on the member, as "Member.name" in an expression, or as "Self.name" in an expression of a condition/action on the member). Refused without force while anything refers to the family; the response lists where. The member object types are kept. References in project script files and script access to instance variables and behaviors of member instances are not detected.',
+    'Delete a family from the project (checks references first: events that name the family, including object parameters, expressions, runtime.objects in script actions and the literal name of System "Create object (by name)"; object properties of instances that hold its SID; its instance variables and behaviors used through a member object type, as the instance variable parameter or behavior of a condition/action on the member, as "Member.name" in an expression, or as "Self.name" in an expression of a condition/action on the member). Refused without force while anything refers to the family; the response lists where. Event sheets and layouts that could not be parsed (over the size limit (10MB by default), not valid JSON) are searched as text for the family\'s name and SID, and event sheets for its instance variables and behaviors together with a member\'s name: a match is a possible use and refuses without force, as does such a file that cannot be read at all; unscannedFiles lists them. The member object types are kept. The family\u2019s effects count too, when a condition or action on a member names one ("effect" parameter, e.g. Set effect parameter) and the member has no effect of that name itself or through another family. References in project script files, families created by a name built at runtime and script access to instance variables and behaviors of member instances are not detected.',
     {
       name: z.string().max(200).describe('Family name to delete'),
       force: z.boolean().optional().default(false).describe('If true, delete even if referenced (does NOT clean up references)'),
@@ -1099,27 +1125,72 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           return toolError(`Family "${args.name}" not found. Use list_families to see available families.`);
         }
 
+        // Read before deleting: its effects are checked, and the members' instances lose
+        // the entries for its behaviors and effects and the values of its variables
+        let family: Record<string, unknown> | undefined;
+        try {
+          family = await reader.readFamily(args.name);
+        } catch {
+          family = undefined;
+        }
+
         // Check references: uses by name (as for delete_object) and uses through members
         const index = await getProjectIndex(reader);
         const { events, instanceProperties } = index.getObjectUsage(args.name);
         const usage: ObjectUsage = { events, placements: [], instanceProperties, families: [], usedFamilies: [] };
         const memberUses = index.getFamilyMemberUses(args.name);
-        const hasRefs = events.length > 0 || instanceProperties.length > 0 || memberUses.length > 0;
-        const description = [describeObjectUsage(usage), describeMemberUses(memberUses)].filter(Boolean).join('; ');
+        // Its effects, named by conditions and actions on a member
+        const effects = family
+          ? await familyEffectUses(reader, args.name, undefined, index.familyMembers.get(args.name) ?? [], family)
+          : { broken: [], unknown: [] };
+        const hasRefs = events.length > 0 || instanceProperties.length > 0 || memberUses.length > 0 || effects.broken.length > 0;
+        const description = [describeObjectUsage(usage), describeMemberUses(memberUses), describeEffectUses(effects.broken)]
+          .filter(Boolean).join('; ');
+        // Files the index could not parse: the family's name and SID, and in event sheets its
+        // instance variables, behaviors and effects together with a member's name
+        const familyMemberNames = [
+          ...index.memberNamesOf(args.name, 'instance variable'),
+          ...index.memberNamesOf(args.name, 'behavior'),
+          ...effectNamesOf(family),
+        ];
+        // The family's own file: without it, its members, names and SID are unknown
+        let unscanned = mergeUnscannedReports(
+          ownFileReports(index.unscannedFiles, [{
+            category: 'families',
+            name: args.name,
+            unchecked: 'its members, instance variables, behaviors and SID are unknown, so uses through its members ' +
+              'and object properties of instances that hold its SID could not be checked',
+          }]),
+          await checkUnscannedFiles(reader, index.unscannedFiles, [
+            ...nameOrSidRules(args.name, index.sidOf(args.name), ['eventSheets', 'layouts']),
+            {
+              categories: ['eventSheets'],
+              allOf: [familyMemberNames.map(n => nameTerm(n)), (index.familyMembers.get(args.name) ?? []).map(n => nameTerm(n))],
+            },
+          ]),
+        );
+        const unscannedBlock = blocksWithoutForce(unscanned);
 
-        if (hasRefs && !args.force) {
+        if ((hasRefs || unscannedBlock) && !args.force) {
+          const reasons = [
+            ...(hasRefs ? [`Family is still referenced: ${description}.`] : []),
+            ...(unscannedBlock ? [unscannedRefusal(unscanned)] : []),
+          ];
           return toolResult({
             success: false,
             entity: args.name,
             category: 'family',
             action: 'delete_blocked',
-            message: `Family is still referenced: ${description}. ` +
-              'Use force=true to delete anyway (references will NOT be cleaned up).',
+            message: `${reasons.join(' ')} Use force=true to delete anyway (references will NOT be cleaned up).`,
             references: {
-              eventSheets: [...new Set([...events, ...memberUses].map(r => r.eventSheet))],
+              eventSheets: [...new Set([...events, ...memberUses, ...effects.broken].map(r => r.eventSheet))],
               layouts: [...new Set(instanceProperties.map(p => p.layout))],
-              ...boundedLists({ events: eventUseList(events), instanceProperties, memberUses }),
+              ...boundedLists({
+                events: eventUseList(events), instanceProperties, memberUses,
+                ...(effects.broken.length > 0 ? { effectUses: effectUseList(effects.broken) } : {}),
+              }),
             },
+            ...unscannedFields(unscanned),
           });
         }
 
@@ -1134,41 +1205,30 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           const unreported = unreportedUsesWarning(events, unreportedMemberUses);
           if (unreported) warnings.push(unreported);
         }
+        warnings.push(...effectUseWarnings({ broken: args.force ? effects.broken : [], unknown: effects.unknown }, 'Deleted'));
+        warnings.push(...unscannedWarnings(unscanned, 'Deleted'));
 
-        // Read before deleting: the members' instances lose the entries for the family's behaviors
-        let family: Record<string, unknown> | undefined;
-        try {
-          family = await reader.readFamily(args.name);
-        } catch {
-          family = undefined;
-        }
+        const backupPath = await deleteRegisteredEntity(writer, 'families', args.name);
 
-        // Capture the subfolder first: removeFromProject reloads project.c3proj,
-        // after which the name is no longer resolvable.
-        const subfolder = writer.getSubfolderForEntity('families', args.name);
-        // Deregister before deleting the file. A failure in the second step
-        // then leaves an orphaned file (info-level) instead of a dangling
-        // registration (a file-existence error).
-        await writer.removeFromProject('families', args.name);
-        let backupPath: string;
-        try {
-          backupPath = await writer.deleteEntityFile('families', args.name, subfolder);
-        } catch (error) {
-          console.error('[delete_family] file delete failed after deregistration:', error);
-          return orphanedFileError('families', args.name, subfolder, error);
-        }
-
+        // Instances of the former members lose the entries for the family's
+        // behaviors and effects and the values of its instance variables
         const familyBehaviors = behaviorTypesOf(family).map(b => b.name);
         const formerMembers = Array.isArray(family?.members)
-          ? family.members.filter((m): m is string => typeof m === 'string')
+          ? [...new Set(family.members.filter((m): m is string => typeof m === 'string'))]
           : [];
-        if (familyBehaviors.length > 0 && formerMembers.length > 0) {
+        const memberChanges: FamilyMemberChange[] = formerMembers.map(member => ({
+          member,
+          dropBehaviors: familyBehaviors,
+          dropVariables: instanceVariablesOf(family).map(v => v.name),
+          dropEffects: effectNamesOf(family),
+        })).filter(hasFamilyMemberChange);
+        if (memberChanges.length > 0) {
           const families = new Map(await readFamiliesForInstances(reader));
           families.delete(args.name);
-          const plans = await familyMemberPlans(
-            reader, families, formerMembers.map(m => ({ member: m, joined: false })), familyBehaviors,
-          );
-          warnings.push(...(await syncLayoutInstances(reader, writer, plans)).warnings);
+          const { plans, warnings: planWarnings } = await familyMemberPlans(reader, families, memberChanges);
+          const sync = await syncLayoutInstances(reader, writer, plans);
+          warnings.push(...planWarnings, ...sync.warnings);
+          unscanned = mergeUnscannedReports(unscanned, sync.unscanned);
         }
 
         const result: WriteResult = {
@@ -1178,14 +1238,154 @@ export function registerObjectTools({ server, reader, writer, idGen }: MutationT
           action: 'deleted',
           warnings: warnings.length > 0 ? warnings : undefined,
           backupFile: backupPath,
+          ...unscannedFields(unscanned),
         };
         return toolResult(result);
       } catch (error) {
         console.error('[delete_family] failed:', error);
-        return toolError(`Error deleting family: ${error instanceof Error ? error.message : String(error)}`);
+        return toolError(`Error deleting family: ${errorMessage(error, reader.getProjectDir())}`);
       }
     }
   );
+}
+
+/**
+ * Rename the image files delete_object kept as .bak back (`renames`, as
+ * made), after a later step of the delete failed. Returns a sentence on how
+ * that went, naming the files to rename by hand when it failed; empty when
+ * there was nothing to rename.
+ */
+async function renameObjectImagesBack(
+  writer: Construct3ProjectWriter,
+  renames: ReadonlyArray<{ from: string; to: string }>,
+): Promise<string> {
+  if (renames.length === 0) return '';
+  try {
+    await writer.renameImageFiles(renames.map(r => ({ from: r.to, to: r.from })).reverse());
+    return 'Its image files were renamed back from .bak.';
+  } catch (e) {
+    const message = errorMessage(e, writer.projectDir());
+    return `Renaming its image files back from .bak failed too (${message}); rename them back by hand: ` +
+      `${renames.map(r => `"images/${r.to}" \u2192 "images/${r.from}"`).join(', ')}.`;
+  }
+}
+
+/**
+ * How delete_object keeps the image files of the object type it deletes (see
+ * planObjectImageParking), with the warnings to return; no plan when the
+ * object type's file cannot be parsed (its images are unknown).
+ */
+async function planDeletedObjectImages(
+  reader: Construct3ProjectReader,
+  writer: Construct3ProjectWriter,
+  name: string,
+): Promise<{ parking?: ObjectImageParking; warnings: string[] }> {
+  let obj: ObjectType;
+  try {
+    obj = await reader.readObjectType(name);
+  } catch (error) {
+    if (classifyReadError(error) === 'E_FILE_NOT_FOUND') return { warnings: [] };
+    return {
+      warnings: [`The object type's file could not be parsed, so its image files in images/ are unknown and were left as they are. ` +
+        'validate_project lists files in images/ named after no object type (orphaned-image).'],
+    };
+  }
+  const stored = typeof obj.name === 'string' && obj.name !== '' ? obj.name : name;
+  const objects = await reader.readAllObjectTypes();
+  const failures = reader.getReadFailures('objectTypes');
+  const others = new Map([...objects].filter(([other]) => other !== name));
+  const unparsed = (await reader.listObjectTypes())
+    .filter(other => other !== name && !objects.has(other) && failures.get(other)?.code !== 'E_FILE_NOT_FOUND');
+  const parking = planObjectImageParking(stored, obj, await writer.listImageFiles(), others, unparsed);
+
+  const warnings: string[] = [];
+  if (parking.renames.length > 0) {
+    warnings.push(`Kept the object's ${parking.renames.length} image file(s) in images/ as .bak: ${listSome(parking.renames.map(r => `"images/${r.from}" → "images/${r.to}"`), 3)}. ` +
+      'No object uses them; delete them when they are no longer needed.');
+  }
+  if (parking.shared.length > 0) {
+    warnings.push(`Left ${listSome(parking.shared.map(f => `"images/${f}"`), 3)} in place: another object type's frames use a file of the same name.`);
+  }
+  if (parking.unknownUse.length > 0) {
+    warnings.push(`Left ${listSome(parking.unknownUse.map(f => `"images/${f}"`), 3)} in place: named after an object type whose file could not be parsed, ` +
+      'which may use them.');
+  }
+  return { parking, warnings };
+}
+
+/**
+ * Conditions and actions on `members` that name an effect of the family
+ * `familyName` that the member no longer has once the change is made
+ * (`broken`), and those on such a member whose effect parameter is another
+ * expression than a quoted name (`unknown`, which cannot be checked). The
+ * family's effects come from `familyBefore` (default: `familyAfter`);
+ * `familyAfter` is the family after the change (undefined: deleted). A member
+ * whose object type file cannot be read counts as having none of the effects
+ * itself.
+ */
+async function familyEffectUses(
+  reader: Construct3ProjectReader,
+  familyName: string,
+  familyAfter: Record<string, unknown> | undefined,
+  members: readonly string[],
+  familyBefore: Record<string, unknown> | undefined = familyAfter,
+): Promise<{ broken: EffectUse[]; unknown: EffectUse[] }> {
+  const familyEffects = effectNamesOf(familyBefore);
+  if (familyEffects.length === 0 || members.length === 0) return { broken: [], unknown: [] };
+  const families = new Map(await readFamiliesForInstances(reader));
+  if (familyAfter) families.set(familyName, familyAfter); else families.delete(familyName);
+  const kept = new Map<string, string[]>();
+  for (const member of members) {
+    let obj: unknown;
+    try {
+      obj = await reader.readObjectType(member);
+    } catch {
+      obj = undefined;
+    }
+    kept.set(member, expectedInstanceEffects(member, obj, families));
+  }
+  let sheets;
+  try {
+    sheets = await reader.readAllEventSheets();
+  } catch {
+    return { broken: [], unknown: [] };
+  }
+  return familyEffectUsesThroughMembers(findEffectUses(sheets), familyEffects, members, kept);
+}
+
+/** One sentence on uses of a family's effects through members, e.g. 'effect "Glow" of "Sprite1" used 2 time(s) in events of "Sheet1"'. */
+function describeEffectUses(uses: EffectUse[]): string {
+  if (uses.length === 0) return '';
+  const what = [...new Set(uses.map(u => `effect "${u.name ?? u.expression}" of "${u.objectClass}"`))];
+  const sheets = [...new Set(uses.map(u => `"${u.eventSheet}"`))];
+  return `its effects used ${uses.length} time(s) through members in events of ${listSome(sheets)} (${listSome(what)})`;
+}
+
+/** Effect uses as listed in a refusal. */
+function effectUseList(uses: EffectUse[]): Array<Record<string, unknown>> {
+  return uses.map(u => ({
+    eventSheet: u.eventSheet, eventPath: u.eventPath, ace: u.ace, ...(u.sid !== undefined ? { sid: u.sid } : {}),
+    member: u.objectClass, effect: u.name,
+  }));
+}
+
+/**
+ * Warnings about a family's effects used through members: uses a forced
+ * change leaves behind (validate_project does not check effect names), and
+ * uses whose effect cannot be told.
+ */
+function effectUseWarnings(uses: { broken: EffectUse[]; unknown: EffectUse[] }, verb: 'Removed' | 'Deleted'): string[] {
+  const warnings: string[] = [];
+  if (uses.broken.length > 0) {
+    warnings.push(`${verb} although events still use the family's effects through members: ${describeEffectUses(uses.broken)} ` +
+      `(${listSome([...new Set(uses.broken.map(effectUseLocation))])}). The uses were NOT changed, and validate_project does not check ` +
+      'effect names: fix them now.');
+  }
+  if (uses.unknown.length > 0) {
+    warnings.push(`Conditions or actions on a member name an effect with an expression that is not a quoted name, so whether they use ` +
+      `the family's effects could not be checked: ${listSome([...new Set(uses.unknown.map(u => `${effectUseLocation(u)} (${u.expression})`))])}. Review them.`);
+  }
+  return warnings;
 }
 
 /** At most this many uses of each kind are listed in a delete_object or delete_family response. */
@@ -1198,6 +1398,7 @@ const EVENT_USE_LABELS: Record<ObjectReference['context'], string> = {
   expression: 'expression',
   script: 'script',
   'custom-action': 'custom action definition',
+  'create-by-name': 'Create object (by name)',
 };
 
 /** A short list for messages: the first few items and how many more there are. */
@@ -1351,20 +1552,91 @@ async function scriptReadWarnings(
   return warnings;
 }
 
-/** The refusal of update_object_properties / update_family while events use what it removes. */
-function removalBlocked(entity: string, category: 'object' | 'family', uses: MemberReference[]): Record<string, unknown> {
+/**
+ * The refusal of update_object_properties / update_family while events use
+ * what it removes, or event sheets that could not be parsed possibly do.
+ */
+function removalBlocked(
+  entity: string, category: 'object' | 'family', uses: MemberReference[], unscanned: UnscannedFileReport[],
+  effectUses: EffectUse[] = [],
+): Record<string, unknown> {
+  const reasons = [
+    ...(uses.length > 0 ? [`Events still use what this update removes: ${describeMemberReferences(entity, uses)}.`] : []),
+    ...(effectUses.length > 0 ? [`Events still use the family's effects through a leaving member: ${describeEffectUses(effectUses)}.`] : []),
+    ...(blocksWithoutForce(unscanned) ? [unscannedRefusal(unscanned)] : []),
+  ];
   return {
     success: false,
     entity,
     category,
     action: 'update_blocked',
-    message: `Events still use what this update removes: ${describeMemberReferences(entity, uses)}. Nothing was changed. ` +
-      'Use force=true to remove anyway (the uses will NOT be changed).',
+    message: `${reasons.join(' ')} Nothing was changed. Use force=true to remove anyway (the uses will NOT be changed).`,
+    references: {
+      eventSheets: [...new Set([...uses, ...effectUses].map(u => u.eventSheet))],
+      ...boundedLists({ uses: memberUseList(uses), ...(effectUses.length > 0 ? { effectUses: effectUseList(effectUses) } : {}) }),
+    },
+    ...unscannedFields(unscanned),
+  };
+}
+
+/**
+ * The refusal of update_instance_variable while events use the instance
+ * variable it renames, or event sheets that could not be parsed possibly do.
+ */
+function renameBlocked(
+  entity: string, category: 'object' | 'family', oldName: string, newName: string,
+  uses: MemberReference[], unscanned: UnscannedFileReport[],
+): Record<string, unknown> {
+  const reasons = [
+    ...(uses.length > 0 ? [`Events use the instance variable this update renames: ${describeMemberReferences(entity, uses)}.`] : []),
+    ...(blocksWithoutForce(unscanned) ? [unscannedRefusal(unscanned)] : []),
+  ];
+  return {
+    success: false,
+    entity,
+    category,
+    action: 'update_blocked',
+    message: `${reasons.join(' ')} Renaming "${oldName}" to "${newName}" would leave such uses naming a variable that no longer exists. `
+      + 'Nothing was changed. Use force=true to rename anyway (the uses will NOT be changed).',
     references: {
       eventSheets: [...new Set(uses.map(u => u.eventSheet))],
       ...boundedLists({ uses: memberUseList(uses) }),
     },
+    ...unscannedFields(unscanned),
   };
+}
+
+/**
+ * For a rename that changes only the letter case: events match instance
+ * variable names ignoring case, but scripts read them by name with their
+ * case (instVars.hp, scriptReadWarnings' note), so reads of the old
+ * spelling no longer find the variable. One warning naming them.
+ */
+async function caseOnlyRenameScriptWarnings(
+  reader: Construct3ProjectReader, index: ProjectIndex, oldName: string, newName: string,
+): Promise<string[]> {
+  const { reads, unreadable } = await index.getScriptMemberReads(reader);
+  const where = [...new Set(reads.filter(r => r.kind === 'instance variable' && r.name === oldName).map(useLocation))];
+  if (where.length === 0) return [];
+  return [
+    `Scripts read instance variable "${oldName}" by name (instVars.${oldName}) in ${listSome(where)}; script names are case-sensitive, `
+      + `so a read of "${oldName}" may no longer find "${newName}" (the read could be dynamic). They were NOT changed: review them.`,
+    ...(unreadable.length > 0 ? [`${unreadable.length} script file(s) could not be read and were not searched: ${listSome(unreadable)}.`] : []),
+  ];
+}
+
+/**
+ * What delete_object and delete_family look for in files the index could not
+ * parse: the name in files of `categories`, and in layouts the SID (object
+ * properties of instances store an object type's or family's SID).
+ */
+function nameOrSidRules(name: string, sid: number | undefined, categories: EntityCategory[]): UseRule[] {
+  return [
+    { categories, allOf: [[nameTerm(name)]] },
+    ...(sid !== undefined && categories.includes('layouts')
+      ? [{ categories: ['layouts'] as EntityCategory[], allOf: [[numberTerm(sid, `SID ${sid} of "${name}"`)]] }]
+      : []),
+  ];
 }
 
 /**
@@ -1375,9 +1647,9 @@ function removalBlocked(entity: string, category: 'object' | 'family', uses: Mem
  * except a behavior named under the legacy "behavior-type" key, which it reports
  * as legacy-behavior-key. Empty when nothing is left behind.
  */
-function removalForcedWarnings(entity: string, uses: MemberReference[]): string[] {
+function removalForcedWarnings(entity: string, uses: MemberReference[], verb: 'Removed' | 'Renamed' = 'Removed'): string[] {
   if (uses.length === 0) return [];
-  const warnings = [`Removed although events still use it: ${describeMemberReferences(entity, uses)}. The uses were NOT changed.`];
+  const warnings = [`${verb} although events still use it: ${describeMemberReferences(entity, uses)}. The uses were NOT changed.`];
   const unreported = uses.filter(u => u.form === 'member-expression');
   if (unreported.length > 0) {
     const where = [...new Set(unreported.map(useLocation))];
@@ -1400,11 +1672,7 @@ function removalForcedWarnings(entity: string, uses: MemberReference[]): string[
 function entityNotFound(
   kind: 'Object' | 'Family', name: string, registered: string[], suggestions: string[], listTool: string,
 ): ReturnType<typeof toolError> {
-  const sameIgnoringCase = registered.find(n => n.toLowerCase() === name.toLowerCase());
-  if (sameIgnoringCase !== undefined) {
-    return toolError(`${kind} "${name}" not found: names are matched with their letter case. Did you mean "${sameIgnoringCase}"?`);
-  }
-  return notFoundError(kind, name, suggestions, listTool);
+  return toolError(unregisteredNameMessage(kind, name, registered, () => suggestions, listTool) ?? `${kind} "${name}" not found.`);
 }
 
 /** Event uses as listed in a refusal: where and how. */
@@ -1434,17 +1702,21 @@ function boundedLists(lists: Record<string, unknown[]>): Record<string, unknown>
 /**
  * The force-delete warning for the uses validate_project cannot report
  * afterwards (it reports the other leftovers as broken-object-reference and
- * missing-behavior-or-variable): uses in expressions and scripts, which are
- * recognised by the names of existing objects only, and the uses of a
+ * missing-behavior-or-variable): uses in expressions, scripts and System
+ * "Create object (by name)" literals, which are recognised by the names of
+ * existing objects only, and the uses of a
  * family's instance variables and behaviors through its members written as
  * "Member.name" in expressions (`memberUses`: the caller passes only those).
  * Empty when there are none.
  */
 function unreportedUsesWarning(events: ObjectReference[], memberUses: FamilyMemberUse[] = []): string {
-  const inCode = events.filter(r => r.context === 'expression' || r.context === 'script');
+  const inCode = events.filter(r => r.context === 'expression' || r.context === 'script' || r.context === 'create-by-name');
   if (inCode.length === 0 && memberUses.length === 0) return '';
   const counts: string[] = [];
-  if (inCode.length > 0) counts.push(`${inCode.length} use(s) in expressions and scripts`);
+  if (inCode.length > 0) {
+    const byName = inCode.some(r => r.context === 'create-by-name');
+    counts.push(`${inCode.length} use(s) in expressions${byName ? ', scripts and Create object (by name)' : ' and scripts'}`);
+  }
   if (memberUses.length > 0) {
     counts.push(`${memberUses.length} use(s) of its instance variables and behaviors through members written as "Member.name" in expressions`);
   }
@@ -1452,433 +1724,70 @@ function unreportedUsesWarning(events: ObjectReference[], memberUses: FamilyMemb
   return `validate_project will not report its ${counts.join(' and ')} (${listSome(where)}): fix them now.`;
 }
 
-/** How the layout instances of one object type change (see syncInstanceBehaviors). */
-interface InstanceSyncPlan {
-  /** Behaviors the object's instances carry entries for, after the change */
-  expected: InstanceBehavior[];
-  /**
-   * Behavior names the change added. Every expected entry an instance lacks
-   * gets added; only those for other names are reported as missing before
-   * the change.
-   */
-  add?: string[];
-  /** Behavior names whose entries are removed unless still expected */
-  drop?: string[];
-}
-
 /**
- * Update all layout instances (on every layer and sub-layer, and in
- * nonworld-instances) of the object types in `plans`: make sure they have
- * the `behaviors` and `instanceVariables` dicts C3 expects, give them a
- * default entry for every expected behavior they lack, and drop the entries
- * named in the plan's `drop` that are no longer expected. The editor stores
- * an entry for every behavior of the object and its families on each
- * instance, so besides the entries for behaviors the change added (`add`),
- * entries missing before the change are added too: older versions of these
- * tools wrote instances without them, and a hand edit can leave one out.
- * Existing entries keep their values and their saved order.
- *
- * Returns warnings naming the modified layouts, the entries that were missing
- * before the change, and any behavior that got an empty entry because its
- * defaults are not known.
+ * What a family change adds to or removes from the instances of one member:
+ * behavior entries, instance variable values, effect entries (names of the
+ * family's behaviors, variables and effects). A name is only removed while
+ * the member does not keep it through itself or another family.
  */
-async function syncLayoutInstances(
-  reader: Construct3ProjectReader,
-  writer: Construct3ProjectWriter,
-  plans: ReadonlyMap<string, InstanceSyncPlan>,
-  /** Filled with each layout as it is written, so a caller can report a partial write */
-  modifiedLayouts: string[] = [],
-): Promise<{ warnings: string[] }> {
-  const layouts = await reader.readAllLayouts();
-  const unknownDefaults: InstanceBehavior[] = [];
-  /** Per object type: instances that lacked entries the change did not add, and those behavior names */
-  const backfilled = new Map<string, { instances: number; names: Set<string> }>();
+interface FamilyMemberChange {
+  member: string;
+  addBehaviors?: string[];
+  dropBehaviors?: string[];
+  addVariables?: string[];
+  dropVariables?: string[];
+  dropEffects?: string[];
+}
 
-  for (const [layoutName, layout] of layouts) {
-    let modified = false;
-    const visit = (instance: Instance) => {
-      const plan = plans.get(instance.type);
-      if (!plan) return;
-      modified = ensureInstanceFields(instance) || modified;
-      const synced = syncInstanceBehaviors(instance, plan.expected, {
-        add: plan.expected.map(b => b.name),
-        drop: plan.drop,
-      });
-      modified = synced.modified || modified;
-      unknownDefaults.push(...synced.unknownDefaults);
-      const missingBefore = synced.added.filter(name => !(plan.add ?? []).includes(name));
-      if (missingBefore.length > 0) {
-        const entry = backfilled.get(instance.type) ?? { instances: 0, names: new Set<string>() };
-        entry.instances++;
-        for (const name of missingBefore) entry.names.add(name);
-        backfilled.set(instance.type, entry);
-      }
-    };
-
-    forEachLayoutInstance(layout, visit);
-
-    if (modified) {
-      const subfolder = writer.getSubfolderForEntity('layouts', layoutName);
-      await writer.writeEntityFile('layouts', layoutName, layout, subfolder);
-      modifiedLayouts.push(layoutName);
-    }
-  }
-
-  const warnings: string[] = [];
-  if (modifiedLayouts.length > 0) {
-    warnings.push(`Updated instances in layout(s): ${modifiedLayouts.join(', ')}`);
-  }
-  for (const [objectType, entry] of backfilled) {
-    const expected = plans.get(objectType)?.expected ?? [];
-    const names = expected.map(b => b.name).filter(name => entry.names.has(name));
-    warnings.push(`Also added default entries for behavior(s) ${names.map(n => `"${n}"`).join(', ')} to ${entry.instances} instance(s) of "${objectType}" `
-      + 'that had none (written by an older version of construct3-mcp or edited by hand). Construct 3 stores an entry for every behavior of the object and its families on each instance.');
-  }
-  if (unknownDefaults.length > 0) warnings.push(unknownDefaultsWarning(unknownDefaults));
-  return { warnings };
+function hasFamilyMemberChange(change: FamilyMemberChange): boolean {
+  return [change.addBehaviors, change.dropBehaviors, change.addVariables, change.dropVariables, change.dropEffects]
+    .some(list => (list?.length ?? 0) > 0);
 }
 
 /**
- * Sync plans for family members whose family behaviors changed: members that
- * joined get entries for `familyBehaviors`, members that left (or whose
- * family was deleted) lose them. `families` is the project's families after
- * the change.
+ * Sync plans for family members whose instances a family change affects
+ * (see FamilyMemberChange). `families` is the project's families after the
+ * change.
  */
 async function familyMemberPlans(
   reader: Construct3ProjectReader,
   families: ReadonlyMap<string, unknown>,
-  changes: Array<{ member: string; joined: boolean }>,
-  familyBehaviors: string[],
-): Promise<Map<string, InstanceSyncPlan>> {
-  const memberObjects = await readMemberObjects(reader, changes.map(c => c.member));
+  changes: FamilyMemberChange[],
+): Promise<{ plans: Map<string, InstanceSyncPlan>; warnings: string[] }> {
   const plans = new Map<string, InstanceSyncPlan>();
-  for (const { member, joined } of changes) {
-    const obj = memberObjects.get(member);
-    if (!obj) continue; // missing object type: it has no instances to update
+  const warnings: string[] = [];
+  for (const change of changes) {
+    const { member } = change;
+    let obj: unknown;
+    try {
+      obj = await reader.readObjectType(member);
+    } catch (error) {
+      // A missing object type has no instances to update. One whose file could not be
+      // parsed does (issue #55), but the entries its instances should have are unknown
+      const code = classifyReadError(error);
+      if (code !== 'E_FILE_NOT_FOUND') {
+        const names = [
+          ...(change.addBehaviors ?? []), ...(change.dropBehaviors ?? []),
+          ...(change.addVariables ?? []), ...(change.dropVariables ?? []), ...(change.dropEffects ?? []),
+        ];
+        warnings.push(`Instances of "${member}" were NOT updated: objectTypes/${member} (${describeReadFailure(code)}) could not ` +
+          `be parsed, so the behaviors, instance variables and effects its instances need entries for are unknown. Their entries and values ` +
+          `for the family's ${[...new Set(names)].map(b => `"${b}"`).join(', ')} were left as they were; check them in the Construct 3 editor.`);
+      }
+      continue;
+    }
     plans.set(member, {
       expected: expectedInstanceBehaviors(member, obj, families),
-      ...(joined ? { add: familyBehaviors } : { drop: familyBehaviors }),
+      add: change.addBehaviors ?? [],
+      drop: change.dropBehaviors ?? [],
+      variables: expectedInstanceVariables(member, obj, families),
+      addVariables: change.addVariables ?? [],
+      dropVariables: change.dropVariables ?? [],
+      dropEffects: change.dropEffects ?? [],
+      effects: expectedInstanceEffects(member, obj, families),
     });
   }
-  return plans;
-}
-
-/** How the behavior entries of one family member's instances change in an update_family. */
-interface MemberSyncChange {
-  member: string;
-  /** Behavior names the member gains */
-  add?: string[];
-  /** Behavior names the member loses */
-  drop?: string[];
-}
-
-/**
- * Sync plans for family members after an update_family: each change names the
- * behavior entries the member's instances gain (`add`) and lose (`drop`).
- * `families` is the project's families after the change.
- */
-async function memberSyncPlans(
-  reader: Construct3ProjectReader,
-  families: ReadonlyMap<string, unknown>,
-  changes: MemberSyncChange[],
-): Promise<Map<string, InstanceSyncPlan>> {
-  const memberObjects = await readMemberObjects(reader, changes.map(c => c.member));
-  const plans = new Map<string, InstanceSyncPlan>();
-  for (const { member, add, drop } of changes) {
-    const obj = memberObjects.get(member);
-    if (!obj) continue; // missing object type: it has no instances to update
-    plans.set(member, {
-      expected: expectedInstanceBehaviors(member, obj, families),
-      ...(add !== undefined ? { add } : {}),
-      ...(drop !== undefined ? { drop } : {}),
-    });
-  }
-  return plans;
-}
-
-/** Construct behavior names: the default for 8 Direction is "8Direction". */
-const BEHAVIOR_NAME = /^[A-Za-z0-9_][A-Za-z0-9_ ]*$/;
-
-/**
- * Behavior names an object type already carries, with where each comes from:
- * its own behaviors and those of its families, optionally skipping one family.
- */
-async function behaviorNamesOf(
-  reader: Construct3ProjectReader,
-  objectName: string,
-  families: Map<string, Record<string, unknown>>,
-  skipFamily?: string,
-): Promise<Map<string, string>> {
-  const owners = new Map<string, string>();
-  try {
-    const obj = await reader.readObjectType(objectName);
-    for (const b of (obj.behaviorTypes ?? []) as Array<{ name?: string }>) {
-      if (typeof b.name === 'string') owners.set(b.name, `object type "${objectName}"`);
-    }
-  } catch {
-    // Unknown object type: nothing to collide with.
-  }
-  for (const [familyName, family] of families) {
-    if (familyName === skipFamily) continue;
-    if (!(Array.isArray(family.members) && (family.members as string[]).includes(objectName))) continue;
-    for (const b of (Array.isArray(family.behaviorTypes) ? family.behaviorTypes : []) as Array<{ name?: string }>) {
-      if (typeof b.name === 'string') owners.set(b.name, `family "${familyName}"`);
-    }
-  }
-  return owners;
-}
-
-/**
- * The behavior addons in `ids` that ensureAddonRegistered would refuse: not in
- * usedAddons and not a known Scirra behavior. Checked up front so a refused
- * addon cannot leave earlier ones registered.
- */
-function unregistrableBehaviors(reader: Construct3ProjectReader, ids: string[]): string[] {
-  const used = reader.getUsedAddons();
-  return [...new Set(ids)].filter(id =>
-    !used.some(a => a.type === 'behavior' && a.id === id) && !(id in KNOWN_SCIRRA_BEHAVIORS));
-}
-
-/** A layout sync failed after the entity file was written; report exactly what changed. */
-function partialWriteResult(
-  entity: string,
-  category: 'object' | 'family',
-  backupFile: string | undefined,
-  writtenLayouts: string[],
-  error: unknown,
-) {
-  return toolResult({
-    success: false,
-    entity,
-    category,
-    action: 'partially_updated',
-    message: `The ${category === 'family' ? 'family' : 'object type'} file was written, but updating placed instances failed: ${error instanceof Error ? error.message : String(error)}. Layouts already written: ${writtenLayouts.join(', ') || '(none)'}. Restore the backup and the listed layouts' backups, then retry.`,
-    backupFile,
-    writtenLayouts,
-  });
-}
-
-/**
- * Ensure an instance has the standard fields C3 expects.
- * Returns true if the instance was modified.
- */
-function ensureInstanceFields(instance: Instance): boolean {
-  let modified = false;
-  const inst = instance as Record<string, unknown>;
-
-  if (!inst.behaviors || typeof inst.behaviors !== 'object') {
-    inst.behaviors = {};
-    modified = true;
-  }
-  if (!inst.instanceVariables || typeof inst.instanceVariables !== 'object') {
-    inst.instanceVariables = {};
-    modified = true;
-  }
-
-  return modified;
-}
-
-// ─── Instance variable rename/retype helpers ───────────────
-
-/**
- * Coerce a stored instance-variable value to a new definition type.
- *
- * C3 stores placed-instance values untyped in the instance's
- * `instanceVariables` dict, so a retype has to rewrite them. The rule is:
- *   - to string:  String(value); null/undefined become ""
- *   - to number:  Number(value), falling back to 0 when not finite;
- *                 booleans become 1/0
- *   - to boolean: JavaScript truthiness (0 and "" are false)
- */
-function coerceInstanceValue(value: unknown, newType: 'number' | 'string' | 'boolean'): unknown {
-  if (newType === 'string') {
-    return value === undefined || value === null ? '' : String(value);
-  }
-  if (newType === 'number') {
-    if (typeof value === 'boolean') return value ? 1 : 0;
-    const n = Number(value);
-    return Number.isFinite(n) ? n : 0;
-  }
-  return Boolean(value);
-}
-
-/**
- * Rename and/or coerce one instance's stored value for a variable.
- * Key order is preserved so the rewritten layout stays diff-friendly.
- */
-function applyToInstanceValues(
-  instance: Instance,
-  variableName: string,
-  newName: string | undefined,
-  newType: 'number' | 'string' | 'boolean' | undefined,
-): { renamed: boolean; coerced: boolean } {
-  const stored = (instance as Record<string, unknown>).instanceVariables;
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
-    return { renamed: false, coerced: false };
-  }
-  const dict = stored as Record<string, unknown>;
-  if (!Object.prototype.hasOwnProperty.call(dict, variableName)) {
-    return { renamed: false, coerced: false };
-  }
-
-  let coerced = false;
-  if (newType !== undefined) {
-    dict[variableName] = coerceInstanceValue(dict[variableName], newType);
-    coerced = true;
-  }
-
-  let renamed = false;
-  if (newName !== undefined && newName !== variableName) {
-    const rebuilt: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(dict)) {
-      rebuilt[key === variableName ? newName : key] = value;
-    }
-    (instance as Record<string, unknown>).instanceVariables = rebuilt;
-    renamed = true;
-  }
-
-  return { renamed, coerced };
-}
-
-/**
- * Rename and/or retype the stored value of an instance variable on every
- * placed instance of the affected object types, across all layouts.
- * Returns the layouts written and how many instances were touched.
- */
-async function syncInstanceVariableValues(
-  reader: Construct3ProjectReader,
-  writer: Construct3ProjectWriter,
-  affectedTypes: Set<string>,
-  variableName: string,
-  newName: string | undefined,
-  newType: 'number' | 'string' | 'boolean' | undefined,
-): Promise<{ layouts: string[]; renamed: number; coerced: number }> {
-  const layouts = await reader.readAllLayouts();
-  const modifiedLayouts: string[] = [];
-  let renamed = 0;
-  let coerced = 0;
-
-  for (const [layoutName, layout] of layouts) {
-    let modified = false;
-    forEachLayoutInstance(layout, (instance) => {
-      if (!affectedTypes.has(instance.type)) return;
-      const outcome = applyToInstanceValues(instance, variableName, newName, newType);
-      if (outcome.renamed) { renamed++; modified = true; }
-      if (outcome.coerced) { coerced++; modified = true; }
-    });
-
-    if (modified) {
-      const subfolder = writer.getSubfolderForEntity('layouts', layoutName);
-      await writer.writeEntityFile('layouts', layoutName, layout, subfolder);
-      modifiedLayouts.push(layoutName);
-    }
-  }
-
-  return { layouts: modifiedLayouts, renamed, coerced };
-}
-
-/** State carried through one event sheet's reference scan. */
-interface SheetScanContext {
-  /** Names an event sheet may use to reach the variable (type and/or family). */
-  referringNames: Set<string>;
-  variableName: string;
-  newName: string;
-  expressionPattern: RegExp;
-  /** false = count references only (dry run); true = rewrite them. */
-  apply: boolean;
-  count: number;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Build the pattern matching `<ReferringName>.<variableName>` inside event
- * parameter expressions (e.g. "fAgents.vEntityBlackboardUID").
- */
-export function buildInstanceVariablePattern(referringNames: Set<string>, variableName: string): RegExp {
-  return buildExpressionPattern(referringNames, variableName);
-}
-
-function buildExpressionPattern(referringNames: Set<string>, variableName: string): RegExp {
-  const names = Array.from(referringNames).map(escapeRegExp).join('|');
-  return new RegExp(`\\b(${names})\\s*\\.\\s*${escapeRegExp(variableName)}\\b`, 'g');
-}
-
-/**
- * Walk an event sheet, counting (and optionally rewriting) references to an
- * instance variable. Two reference shapes occur in C3 event sheets, both
- * confirmed against the C3-ACE project:
- *
- *   1. an ACE parameter keyed "instance-variable" whose value is the bare
- *      variable name, on an action/condition whose "objectClass" is one of the
- *      referring names (e.g. set-instvar-value on nodeCooldownXSec);
- *   2. expression text naming it as `<ReferringName>.<variableName>` inside
- *      any other parameter value.
- *
- * Returns true when the sheet was modified.
- */
-function scanSheetNode(node: unknown, ctx: SheetScanContext, objectClass: string | undefined): boolean {
-  if (Array.isArray(node)) {
-    let modified = false;
-    for (const item of node) {
-      if (scanSheetNode(item, ctx, objectClass)) modified = true;
-    }
-    return modified;
-  }
-  if (!node || typeof node !== 'object') return false;
-
-  const record = node as Record<string, unknown>;
-  const scope = typeof record.objectClass === 'string' ? record.objectClass : objectClass;
-  let modified = false;
-
-  const params = record.parameters;
-  if (Array.isArray(params)) {
-    for (let i = 0; i < params.length; i++) {
-      const value = params[i];
-      if (typeof value !== 'string') continue;
-      const matches = value.match(ctx.expressionPattern);
-      if (!matches) continue;
-      ctx.count += matches.length;
-      if (ctx.apply) {
-        params[i] = value.replace(ctx.expressionPattern, (_full, prefix: string) => `${prefix}.${ctx.newName}`);
-        modified = true;
-      }
-    }
-  } else if (params && typeof params === 'object') {
-    const dict = params as Record<string, unknown>;
-    for (const [key, value] of Object.entries(dict)) {
-      if (typeof value !== 'string') continue;
-
-      if (key === 'instance-variable' && value === ctx.variableName &&
-          scope !== undefined && ctx.referringNames.has(scope)) {
-        ctx.count++;
-        if (ctx.apply) {
-          dict[key] = ctx.newName;
-          modified = true;
-        }
-        continue;
-      }
-
-      const matches = value.match(ctx.expressionPattern);
-      if (!matches) continue;
-      ctx.count += matches.length;
-      if (ctx.apply) {
-        dict[key] = value.replace(ctx.expressionPattern, (_full, prefix: string) => `${prefix}.${ctx.newName}`);
-        modified = true;
-      }
-    }
-  }
-
-  for (const [key, value] of Object.entries(record)) {
-    if (key === 'parameters') continue;
-    if (value && typeof value === 'object') {
-      if (scanSheetNode(value, ctx, scope)) modified = true;
-    }
-  }
-
-  return modified;
+  return { plans, warnings };
 }
 
 /** The given object types that exist, by name (missing ones are left out). */

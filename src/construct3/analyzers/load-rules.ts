@@ -14,7 +14,7 @@
 
 import type { C3Event, Subfolder } from '../types.js';
 import { findNameClash, nameKey } from '../names.js';
-import { isActiveElseCondition, isElseCondition, DEFAULT_FUNCTIONS_OBJECT_NAME } from '../event-shapes.js';
+import { isElseCondition, DEFAULT_FUNCTIONS_OBJECT_NAME } from '../event-shapes.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -122,7 +122,9 @@ function checkAceParameters(
 
   for (const [name, value] of entries) {
     if (typeof value !== 'string') continue;
-    const key = `${keyBase}|${name}|${value}`;
+    // Keyed by location (event, ACE, parameter), not by text: rewriting a parameter
+    // that was already broken is not a new problem.
+    const key = `${keyBase}|${name}`;
 
     // Rule 2: no real project stores "" in any parameter (0 of 108k string
     // values across 755 sheets, incl. Scirra's example projects); an empty
@@ -273,6 +275,22 @@ function checkTriggers(
     : undefined;
   const branchRoot = root ?? ownRoot;
 
+  // A function block or custom action block inside the branch of a trigger (or of another function or
+  // custom action block) is a second trigger in that branch. The conditions above are checked on
+  // their own events; this is the root standing below a trigger, which that check cannot see.
+  if (ownRoot && root) {
+    const confirmed = root.confirmed;
+    const kind = isFunction ? 'function block' : 'custom action block';
+    out.push({
+      rule: 'trigger-placement',
+      severity: confirmed ? 'error' : 'warning',
+      location,
+      message: `The ${kind} ${describeEvent(ev)} is inside the event branch of ${root.label}, which already acts as a trigger. A function block and a custom action block are trigger roots of their own, and an event branch may contain only one trigger; ${loadFailure(confirmed)}.`,
+      suggestion: `Move the ${kind} out of the triggered branch (e.g. to the top level or into a group), or remove the trigger from the event above it.`,
+      key: `trigger-nested|${keyBase}|root`,
+    });
+  }
+
   if (branchRoot) {
     for (const t of triggers) {
       const confirmed = t.kind === 'trigger' && branchRoot.confirmed;
@@ -291,7 +309,7 @@ function checkTriggers(
   // triggers (a partial fix) is not mistaken for a new problem. A trigger after
   // the "else" condition of an else block is reported by rule 4 instead, since
   // "put the trigger first" would take Else off its first place.
-  const elseBlock = isActiveElseCondition(conditions[0]);
+  const elseBlock = isElseCondition(conditions[0]);
   if (ev.isOrBlock !== true) {
     if (triggers.length > 1) {
       const confirmed = triggers.every(t => t.kind === 'trigger');
@@ -310,9 +328,7 @@ function checkTriggers(
         severity: 'warning',
         location: `${location} > condition ${t.i} "${String(t.c.id)}"`,
         message: `Trigger "${String(t.c.id)}" is condition ${t.i}, but a trigger must be the first condition of its event${t.kind === 'trigger' ? '' : ' (if this addon condition is a trigger)'}. Construct 3 moves it to the top when it opens the project, so the conditions before it will be tested after it.`,
-        suggestion: isElseCondition(conditions[0])
-          ? 'A tool cannot put the trigger before the disabled "else" condition, which stays first. Remove that condition (update_event_block with isElse: false) and put the trigger first, or put the trigger in its own event.'
-          : 'Put the trigger first and the other conditions after it.',
+        suggestion: 'Put the trigger first and the other conditions after it.',
         key: `trigger-block|${keyBase}`,
       });
     }
@@ -359,8 +375,6 @@ export function previousNonComment(list: readonly unknown[], i: number): unknown
  * "else" condition, see rule 3). `previous` is the nearest sibling before the
  * else block that is not a comment, `conditions` the else block's own,
  * starting with the "else" condition. Triggers are recognised by id (`on-`).
- * Only a block whose "else" condition is enabled is an else block (see
- * isActiveElseCondition): a disabled else is ignored when the event runs.
  */
 export function elsePlacementProblem(previous: unknown, conditions: ReadonlyArray<unknown>): ElsePlacementProblem | null {
   const findTrigger = (list: unknown): Record<string, unknown> | undefined =>
@@ -409,7 +423,7 @@ function checkElsePlacement(
   aceOrigin: AceOriginResolver,
   out: LoadRuleIssue[],
 ): void {
-  if (ev.eventType !== 'block' || !Array.isArray(ev.conditions) || !isActiveElseCondition(ev.conditions[0])) return;
+  if (ev.eventType !== 'block' || !Array.isArray(ev.conditions) || !isElseCondition(ev.conditions[0])) return;
   // Looked up only for else blocks: the comment runs before distinct else
   // blocks do not overlap, so the walk stays linear in the sheet size.
   const problem = elsePlacementProblem(previousNonComment(siblings, index), ev.conditions);

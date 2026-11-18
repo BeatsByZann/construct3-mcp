@@ -1,14 +1,16 @@
 /**
  * Codec for a Tilemap instance's tile data.
  *
- * Construct 3 (r495.2) stores the painted tiles of a placed Tilemap in the
- * instance's `ownData.tilemapData`:
+ * The painted tiles of a placed Tilemap are stored in the instance's
+ * `ownData.tilemapData`, for example (r506-2):
  *
- *   "tilemapData": { "width": 20, "height": 17, "max-width": 20, "max-height": 17,
- *                    "data": "37,13,5x0,39,...,2x1hv,..." }
+ *   "tilemapData": { "width": 4, "height": 2, "max-width": 4, "max-height": 2,
+ *                    "data": "1,0,2,4h,2,4v,3,4hd" }
  *
- * Sampled from the editor's own "Download a copy" output of the Crossing Frog
- * example, before and after erasing and painting known cells:
+ * test/fixtures/tilemap-sample/tiles-r506.json records two 4x2 strings from
+ * Construct 3 r506-2 (Free edition): one this codec wrote, which the editor
+ * drew as written and saved unchanged, and one the editor wrote after cells
+ * were painted with the Tilemap Bar:
  *
  * - The string holds `width * height` cells in column-major order: all of
  *   column x = 0 from top to bottom, then column x = 1, and so on. The cell at
@@ -16,10 +18,15 @@
  * - A cell is the tileset index plus 1; `0` is an empty (erased) cell. The tile
  *   the Tilemap Bar labels 0 is written `1`.
  * - Flip flags follow the number in the fixed order `h` (horizontal),
- *   `v` (vertical), `d` (diagonal). The editor's rotations were written as
- *   90 degrees `vd`, 180 degrees `hv`, 270 degrees `hd`.
- * - `Nx<cell>` repeats a cell N times (N >= 2), flagged cells included:
- *   `5x0`, `2x25`, `2x1hv`.
+ *   `v` (vertical), `d` (diagonal). The editor wrote a mirrored cell as `h`
+ *   and its clockwise rotations (the Tilemap Bar's Rotation readout) as
+ *   90 degrees `hd` (flipX and flipDiagonal), 180 degrees `hv` (flipX and
+ *   flipY) and 270 degrees `vd` (flipY and flipDiagonal). Rotating
+ *   anticlockwise was not observed.
+ * - `Nx<cell>` repeats a cell N times. The editor wrote `3600x0` for an
+ *   untouched 60x60 instance; the fixture holds no run. Runs of flagged cells
+ *   and runs shorter than two were not observed; the decoder accepts them and
+ *   the encoder writes a run only for two or more equal cells.
  */
 
 export interface TileCell {
@@ -42,7 +49,7 @@ export interface TilemapDataBlock {
   [key: string]: unknown;
 }
 
-/** Upper bound on cells decoded or encoded in one call, to keep a bad string from exhausting memory. */
+/** Upper bound on the cells one decode may build (width * height), to keep a bad string from exhausting memory. */
 export const MAX_TILEMAP_CELLS = 4_000_000;
 
 const TOKEN = /^(?:(\d+)x)?(\d+)(h?)(v?)(d?)$/;

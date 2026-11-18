@@ -1,8 +1,8 @@
 /**
- * Codec tests against tile data saved by the Construct 3 r495.2 editor
- * (test/fixtures/tilemap-sample/ground-r495.json). The edits recorded in that
- * fixture pin the column-major order, the +1 offset, the flag letters and the
- * run syntax.
+ * Codec tests against tile data from Construct 3 r506-2
+ * (test/fixtures/tilemap-sample/tiles-r506.json): one string the codec wrote,
+ * one the editor wrote after painting known cells. They pin the column-major
+ * order, the +1 offset, the flag letters and the editor's rotation flags.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -16,53 +16,53 @@ import {
   maxTileIndex,
   validateTileValue,
   normalizeTileValue,
+  type TileValue,
 } from '../../src/construct3/tilemap-data.js';
 
-const sample = JSON.parse(readFileSync(join(__dirname, '..', 'fixtures', 'tilemap-sample', 'ground-r495.json'), 'utf-8'));
-const { width, height } = sample.instance.ownData.tilemapData;
-const at = (cells: unknown[], x: number, y: number) => cells[x * height + y];
+interface Sample {
+  strings: Record<string, string>;
+  sizes: Record<string, [number, number]>;
+  cells: Record<string, TileValue[][]>;
+  bytesMatch: Record<string, boolean>;
+}
+
+const sample: Sample = JSON.parse(
+  readFileSync(join(__dirname, '..', 'fixtures', 'tilemap-sample', 'tiles-r506.json'), 'utf-8'),
+);
 
 describe('decodeTileData on editor samples', () => {
-  it('decodes the shipped 20x17 map, whose road band is five empty rows in every column', () => {
-    const cells = decodeTileData(sample.data.base, width, height);
-    expect(cells).toHaveLength(340);
-    const rows = cellsToRows(cells, width, height);
-    for (let x = 0; x < width; x++) {
-      for (let y = 2; y <= 6; y++) expect(rows[y][x]).toBeNull();
+  for (const [entry, data] of Object.entries(sample.strings)) {
+    const [width, height] = sample.sizes[entry];
+
+    it(`decodes the ${entry} string to the cells the editor showed`, () => {
+      expect(cellsToRows(decodeTileData(data, width, height), width, height)).toEqual(sample.cells[entry]);
+    });
+
+    if (sample.bytesMatch[entry]) {
+      it(`re-encodes the ${entry} string byte for byte`, () => {
+        expect(encodeTileData(decodeTileData(data, width, height))).toBe(data);
+      });
+    } else {
+      it(`re-encodes the editor's ${entry} string to the same cells`, () => {
+        const cells = decodeTileData(data, width, height);
+        expect(decodeTileData(encodeTileData(cells), width, height)).toEqual(cells);
+      });
     }
-    // First token "37" is column 0, row 0: tile index 36.
-    expect(rows[0][0]).toBe(36);
-    expect(maxTileIndex(cells)).toBe(40);
+  }
+
+  it('reads the editor\'s rotations as flipX+flipDiagonal (90), flipX+flipY (180) and flipY+flipDiagonal (270)', () => {
+    const [width, height] = sample.sizes.editor;
+    const rows = cellsToRows(decodeTileData(sample.strings.editor, width, height), width, height);
+    // The editor painted row 0 as: plain, mirrored, rotated 90, rotated 180; row 1 starts with 270.
+    expect(rows[0][1]).toEqual({ tile: 0, flipX: true });
+    expect(rows[0][2]).toEqual({ tile: 0, flipX: true, flipDiagonal: true });
+    expect(rows[0][3]).toEqual({ tile: 0, flipX: true, flipY: true });
+    expect(rows[1][0]).toEqual({ tile: 0, flipY: true, flipDiagonal: true });
   });
 
-  it('places the erased and painted cells at the (x, y) the editor reported', () => {
-    const base = decodeTileData(sample.data.base, width, height);
-    const edited = decodeTileData(sample.data.edited, width, height);
-    for (const { x, y } of sample.edits.erased) {
-      expect(at(base, x, y)).not.toBeNull();
-      expect(at(edited, x, y)).toBeNull();
-    }
-    expect(at(edited, 4, 7)).toEqual({ tile: 0, flipX: true });
-    expect(at(edited, 5, 7)).toEqual({ tile: 0, flipY: true });
-    expect(at(edited, 6, 7)).toEqual({ tile: 0, flipY: true, flipDiagonal: true });
-    expect(at(edited, 7, 7)).toEqual({ tile: 0, flipX: true, flipDiagonal: true });
-
-    const changed = base.map((c, i) => JSON.stringify(c) !== JSON.stringify(edited[i]) ? i : -1).filter(i => i >= 0);
-    expect(changed).toHaveLength(7);
-  });
-
-  it('reads a run of flagged cells (2x1hv) down one column', () => {
-    const cells = decodeTileData(sample.data.rotated180, width, height);
-    expect(sample.data.rotated180).toContain('2x1hv');
-    for (const { x, y } of sample.edits.rotated180) {
-      expect(at(cells, x, y)).toEqual({ tile: 0, flipX: true, flipY: true });
-    }
-  });
-
-  it('re-encodes all three samples byte for byte', () => {
-    for (const data of Object.values(sample.data) as string[]) {
-      expect(encodeTileData(decodeTileData(data, width, height))).toBe(data);
-    }
+  it('reads the largest tile index of the tool string', () => {
+    const [width, height] = sample.sizes.tool;
+    expect(maxTileIndex(decodeTileData(sample.strings.tool, width, height))).toBe(3);
   });
 });
 
@@ -84,6 +84,31 @@ describe('decodeTileData errors', () => {
     expect(decodeTileData('', 0, 0)).toEqual([]);
     expect(() => decodeTileData('', 1, 1)).toThrow(/empty/);
   });
+
+  it('refuses a size that is negative or not a whole number', () => {
+    expect(() => decodeTileData('', -1, 2)).toThrow(/invalid size -1x2/);
+    expect(() => decodeTileData('1', 1, 1.5)).toThrow(/invalid size 1x1.5/);
+  });
+
+  it('refuses every size that is not a non-negative whole number', () => {
+    expect(() => decodeTileData('', 2, -1)).toThrow(/invalid size 2x-1/);
+    expect(() => decodeTileData('', 1.5, 2)).toThrow(/invalid size 1.5x2/);
+    expect(() => decodeTileData('', NaN, 2)).toThrow(/invalid size NaNx2/);
+    expect(() => decodeTileData('', Infinity, 2)).toThrow(/invalid size Infinityx2/);
+    expect(() => decodeTileData('', 2, Infinity)).toThrow(/invalid size 2xInfinity/);
+  });
+
+  it('refuses a map over the cell limit', () => {
+    expect(() => decodeTileData('', 2001, 2001)).toThrow(/exceeds the 4000000-cell limit/);
+  });
+
+  it('allows a map of exactly the cell limit', () => {
+    expect(decodeTileData('4000000x0', 2000, 2000)).toHaveLength(4_000_000);
+  });
+
+  it('a run that would pass the declared size is refused before it is expanded', () => {
+    expect(() => decodeTileData('999999x1', 2, 2)).toThrow(/more than the 4 cells/);
+  });
 });
 
 describe('encodeTileData', () => {
@@ -100,6 +125,13 @@ describe('row helpers and validation', () => {
     expect(cellsToRows(cells, 3, 2)).toEqual(rows);
   });
 
+  it('refuses an object cell whose tile is missing, negative or not a whole number', () => {
+    expect(validateTileValue({ tile: -1 }, 'c')).toBe('c.tile: must be a non-negative integer, got -1.');
+    expect(validateTileValue({ tile: 1.5 }, 'c')).toBe('c.tile: must be a non-negative integer, got 1.5.');
+    expect(validateTileValue({}, 'c')).toBe('c.tile: must be a non-negative integer, got undefined.');
+    expect(validateTileValue({ tile: 0 }, 'c')).toBeNull();
+  });
+
   it('validates and normalizes cells', () => {
     expect(validateTileValue(null, 'c')).toBeNull();
     expect(validateTileValue(3, 'c')).toBeNull();
@@ -109,6 +141,7 @@ describe('row helpers and validation', () => {
     expect(validateTileValue({ tile: 3, rotate: 90 }, 'c')).toMatch(/unknown key "rotate"/);
     expect(validateTileValue({ tile: 3, flipX: 1 }, 'c')).toMatch(/true or false/);
     expect(validateTileValue('3h', 'c')).toMatch(/expected null/);
+    expect(validateTileValue([1], 'c')).toMatch(/expected null/);
     expect(normalizeTileValue({ tile: 2, flipX: false })).toBe(2);
     expect(normalizeTileValue({ tile: 2, flipX: false, flipY: true })).toEqual({ tile: 2, flipY: true });
   });

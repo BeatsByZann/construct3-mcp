@@ -7,13 +7,20 @@
  * call_bridge submit a command and poll for its result); a browser console
  * or any CDP-capable tool can do the same.
  *
- * The bridge runs inside the browser alongside the game. It:
+ * The bridge runs inside the browser alongside the game: on the page, or in
+ * the runtime's worker when the project uses one ("Use worker"; the CDP
+ * client attaches to the worker to reach it). It:
  * 1. Captures the IRuntime reference via runOnStartup()
- * 2. Keeps a command queue and a result store on globalThis.__c3bridge
+ * 2. Keeps a command queue and a result store on globalThis.__c3bridge;
+ *    a caller that stops waiting withdraws its command with cancel(id), and
+ *    results nobody collects expire after 60 s
  * 3. Processes queued commands on every documented runtime tick
  * 4. Keeps event subscriptions (global-variable changes, layout changes and
  *    explicit custom events) in bounded per-subscription buffers, filled
  *    from documented runtime state each tick
+ *
+ * Construct loads the script because inject_runtime_bridge imports it from
+ * the project's main script, or registers it as the main script.
  *
  * Only documented scripting interfaces are used: IRuntime.globalVars,
  * IRuntime.layout, tickCount and the tick event. There is no documented
@@ -38,8 +45,10 @@ runOnStartup(async (runtime) => {
   const bridge = {
     // Pending commands from external tools
     _queue: [],
-    // Results keyed by command ID
+    // Results keyed by command ID, and when each was stored; a result
+    // nobody collects within RESULT_TTL_MS is dropped on a later tick.
     _results: {},
+    _resultTimes: {},
     // Auto-incrementing command ID
     _nextId: 1,
 
@@ -127,8 +136,34 @@ runOnStartup(async (runtime) => {
     // External tools poll this to get results
     getResult(id) {
       const r = this._results[id];
-      if (r) delete this._results[id]; // consume once
+      if (r) { delete this._results[id]; delete this._resultTimes[id]; } // consume once
       return r ?? null;
+    },
+
+    // Withdraw a command whose caller stopped waiting: "queued" when it had
+    // not run (it now never will), "result" when it ran and its result was
+    // discarded, false for an unknown id.
+    cancel(id) {
+      const index = this._queue.findIndex((cmd) => cmd.id === id);
+      if (index >= 0) { this._queue.splice(index, 1); return "queued"; }
+      if (Object.prototype.hasOwnProperty.call(this._results, id)) {
+        delete this._results[id];
+        delete this._resultTimes[id];
+        return "result";
+      }
+      return false;
+    },
+
+    _store(id, result) {
+      this._results[id] = result;
+      this._resultTimes[id] = Date.now();
+    },
+
+    _expireResults() {
+      const cutoff = Date.now() - 60000;
+      for (const id of Object.keys(this._resultTimes)) {
+        if (this._resultTimes[id] < cutoff) { delete this._results[id]; delete this._resultTimes[id]; }
+      }
     },
 
     // Current runtime state snapshot
@@ -296,7 +331,7 @@ runOnStartup(async (runtime) => {
             break;
 
           case "subscribeEvents":
-            result = { subscription_id: bridge.subscribe(cmd.args.eventType, cmd.args.filter, cmd.args.bufferSize) };
+            result = { subscriptionId: bridge.subscribe(cmd.args.eventType, cmd.args.filter, cmd.args.bufferSize) };
             break;
 
           case "readEvents": {
@@ -310,7 +345,7 @@ runOnStartup(async (runtime) => {
               result = { error: "Unknown subscription: " + cmd.args.subscriptionId };
               break;
             }
-            result = { subscription_id: cmd.args.subscriptionId, unsubscribed: true };
+            result = { subscriptionId: cmd.args.subscriptionId, unsubscribed: true };
             break;
           }
 
@@ -321,11 +356,12 @@ runOnStartup(async (runtime) => {
           default:
             result = { error: "Unknown command: " + cmd.type };
         }
-        bridge._results[cmd.id] = { ok: true, value: result };
+        bridge._store(cmd.id, { ok: true, value: result });
       } catch (e) {
-        bridge._results[cmd.id] = { ok: false, error: String(e) };
+        bridge._store(cmd.id, { ok: false, error: String(e) });
       }
     }
+    bridge._expireResults();
     // Commands first, so a subscription made this tick records its baseline
     // and starts observing on the next one instead of reporting a false change.
     bridge._poll();
@@ -345,13 +381,15 @@ export function getBridgeScriptPath(): string {
 }
 
 /**
- * Returns the entry that needs to be added to the project's
- * script files list in project.c3proj.
+ * The script entry for a project whose main script imports the bridge
+ * (purpose "none": Construct loads it only through that import). In a
+ * project without a main script, inject_runtime_bridge registers the bridge
+ * with purpose "main" instead; see installBridge in tools/runtime-tools.ts.
  */
 export function getBridgeProjectEntry(): { name: string; type: string; purpose: string } {
   return {
     name: 'c3-runtime-bridge.js',
     type: 'script',
-    purpose: 'none', // auto-runs via runOnStartup
+    purpose: 'none', // loaded through the main script's import
   };
 }

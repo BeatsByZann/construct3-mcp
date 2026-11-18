@@ -11,9 +11,6 @@ Real-world examples of using the Construct3 MCP Server with Claude.
 - [Finding References](#finding-references)
 - [Understanding Code](#understanding-code)
 - [Documentation Generation](#documentation-generation)
-- [Play-Testing a Running Game](#play-testing-a-running-game)
-- [Working Beside the Open Editor](#working-beside-the-open-editor)
-- [Validating Third-Party Addons](#validating-third-party-addons)
 - [Advanced Workflows](#advanced-workflows)
 
 ---
@@ -143,7 +140,7 @@ Real-world examples of using the Construct3 MCP Server with Claude.
 ### Add Variables and Behaviors to an Object
 
 **Query:**
-> "Add a health variable (number, default 100) and a Tween behavior to the Enemy object"
+> "Add a number instance variable health and a Tween behavior to the Enemy object"
 
 **Claude uses**: `update_object_properties` with:
 ```json
@@ -159,6 +156,8 @@ Real-world examples of using the Construct3 MCP Server with Claude.
 2. Validates "Tween" behavior is in `usedAddons` (auto-registers if known Scirra)
 3. Generates unique SIDs for the new variable and behavior
 4. Writes updated object back with backup
+
+`addVariables` takes a name and a type only; `update_object_properties` cannot set a variable's initial value.
 
 ### Create an Event Sheet with Includes
 
@@ -314,7 +313,7 @@ Returns an error — the startup layout cannot be deleted.
 **Force delete:**
 > "Force delete Enemy even though it's referenced"
 
-Returns success with a warning that names the remaining uses (references are NOT cleaned up). Afterwards `validate_project` reports the leftover instances, object parameters and family memberships as `broken-object-reference`; uses in expressions and scripts are not reported, and a second warning of the delete lists them.
+Returns success with a warning that names the remaining uses (references are NOT cleaned up). Afterwards `validate_project` reports the leftover instances, object parameters and family memberships as `broken-object-reference`; uses in expressions, scripts and *Create object (by name)* are not reported, and a second warning of the delete lists them. The object's image files are kept as `.bak`.
 
 ### Update Project Metadata
 
@@ -343,7 +342,7 @@ Returns success with a warning that names the remaining uses (references are NOT
     {
       "id": "set-instvar-value",
       "objectClass": "Player",
-      "parameters": { "variable": "health", "value": "100" }
+      "parameters": { "instance-variable": "health", "value": "100" }
     }
   ]
 }
@@ -393,7 +392,7 @@ Returns success with a warning that names the remaining uses (references are NOT
     {
       "id": "set-instvar-value",
       "objectClass": "Enemy",
-      "parameters": { "variable": "health", "value": "Enemy.health - 10" }
+      "parameters": { "instance-variable": "health", "value": "Enemy.health - 10" }
     }
   ]
 }
@@ -427,7 +426,7 @@ Returns success with a warning that names the remaining uses (references are NOT
     {
       "id": "subtract-from-instvar",
       "objectClass": "Player",
-      "parameters": { "variable": "health", "value": "1" }
+      "parameters": { "instance-variable": "health", "value": "1" }
     }
   ]
 }
@@ -472,7 +471,7 @@ The script is written the way the editor saves it: `{ "type": "script", "languag
     {
       "id": "subtract-from-instvar",
       "objectClass": "Enemy",
-      "parameters": { "variable": "health", "value": "10" }
+      "parameters": { "instance-variable": "health", "value": "10" }
     }
   ],
   "children": [
@@ -481,7 +480,7 @@ The script is written the way the editor saves it: `{ "type": "script", "languag
         {
           "id": "compare-instance-variable",
           "objectClass": "Enemy",
-          "parameters": { "variable": "health", "comparison": "≤", "value": "0" }
+          "parameters": { "instance-variable": "health", "comparison": 3, "value": "0" }
         }
       ],
       "actions": [
@@ -491,6 +490,8 @@ The script is written the way the editor saves it: `{ "type": "script", "languag
   ]
 }
 ```
+
+Parameter keys are the ones Construct 3 saves: instance variable conditions and actions use `"instance-variable"` (the reference checks of `update_object_properties` and `validate_project` only recognise that key; System event variable ACEs use `"variable"`). The comparison operator is a number: `0` is *equal to*, as in editor-saved sheets; the others follow Construct's comparison order (`1` not equal, `2` less, `3` less or equal, `4` greater, `5` greater or equal), which was not checked in the editor for this document. `validate_project` and the event tools warn about parameter names and combo values that Construct's definitions do not list (`ace-unknown-parameter`, `ace-invalid-choice`), but only when those definitions are available, and the operator numbers above were not compared with them; if in doubt build one such condition in the editor and read it with `get_eventsheet_details`.
 
 ### Else Block
 
@@ -512,17 +513,17 @@ An else block belongs after the block it is the else of, at the same level (only
         {
           "id": "compare-instance-variable",
           "objectClass": "Player",
-          "parameters": { "variable": "score", "comparison": "≥", "value": "100" }
+          "parameters": { "instance-variable": "score", "comparison": 5, "value": "100" }
         }
       ],
       "actions": [
-        { "id": "set-visible", "objectClass": "WinText", "parameters": { "visible": true } }
+        { "id": "set-visible", "objectClass": "WinText", "parameters": { "visibility": "visible" } }
       ]
     },
     {
       "isElse": true,
       "actions": [
-        { "id": "set-visible", "objectClass": "TryAgainText", "parameters": { "visible": true } }
+        { "id": "set-visible", "objectClass": "TryAgainText", "parameters": { "visibility": "visible" } }
       ]
     }
   ]
@@ -592,12 +593,12 @@ Arguments follow the order of the function's parameters: expressions as strings,
     {
       "id": "set-instvar-value",
       "objectClass": "Player",
-      "parameters": { "variable": "health", "value": "100" }
+      "parameters": { "instance-variable": "health", "value": "100" }
     },
     {
       "id": "set-instvar-value",
       "objectClass": "Player",
-      "parameters": { "variable": "health", "value": "999" },
+      "parameters": { "instance-variable": "health", "value": "999" },
       "disabled": true
     }
   ]
@@ -697,68 +698,6 @@ Arguments follow the order of the function's parameters: expressions as strings,
 
 ---
 
-## Play-Testing a Running Game
-
-These tools drive a game exported from Construct (Menu > Project > Export > Web (HTML5)) after
-`inject_runtime_bridge` added the bridge script to the project. They need Chrome or Edge.
-
-### Serve, Connect and Watch a Bonus Round
-
-**Query:**
-> "Run my exported game, click Start, and tell me when the bonus round begins"
-
-**Claude calls:**
-1. `serve_preview({ folder: "C:/exports/MyGame", launchBrowser: true, headless: true, chromeDebuggingPort: 9222 })` returns a `serverId`
-2. `connect_to_game({ host: "127.0.0.1", port: 9222 })` returns a `connectionId`
-3. `subscribe_events({ connectionId, eventType: "globalVarChange", filter: { variable: "BonusActive" } })` returns `sub-1`
-4. `subscribe_events({ connectionId, eventType: "layoutChange" })` returns `sub-2`
-5. `simulate_input({ connectionId, coordinateSpace: "layout", layer: "UI", action: { type: "click", x: 480, y: 320 } })` clicks the Start button at its layout position
-6. `read_events({ connectionId, subscriptionId: "sub-1" })` returns every change since the subscription, oldest first, each with `value`, `previousValue`, `timestamp` and `tick`
-7. `screenshot_game({ connectionId, outputPath: "C:/exports/bonus.png", canvasOnly: true })`
-8. `stop_preview({ serverId })` closes the browser and the server
-
-A game can report its own moments too: event-sheet script that calls
-`globalThis.__c3bridge.emit("bonus-start", { pot: 3 })` reaches a `custom` subscription, optionally
-filtered by `filter.name`.
-
-## Working Beside the Open Editor
-
-### See and Undo What a Call Changed
-
-**Query:**
-> "Rename the Enemy object to Foe, and undo it if anything looks wrong"
-
-**Claude calls:**
-1. `rename_object_type({ name: "Enemy", newName: "Foe" })`. The result ends with the files it changed, for example `Changed 4 file(s): ...`
-2. `list_changes()` shows recent calls with what each wrote, created, deleted or moved, and the `.bak` each write left
-3. `revert_last_change()` restores those files from their backups. It refuses when a later call touched the same files.
-
-### After Saving in Construct
-
-**Query:**
-> "I just saved in Construct. Carry on with the layout changes"
-
-**Claude calls:**
-1. `reload_project()` re-reads the project and lists which files Construct changed
-2. The layout tools continue from the saved content. Without the reload, a write that started from content read before the save is refused instead of overwriting Construct's save.
-
-## Validating Third-Party Addons
-
-### Check Events That Use an Addon
-
-**Query:**
-> "Validate the project, including the Spine addon's actions"
-
-**Claude calls:**
-1. `validate_project()` lists `Spine` as `ace-definitions-unavailable`: its actions are not checked yet
-2. `load_addon_definitions({ path: "C:/addons/spine.c3addon" })` reads the addon's `addon.json` and `aces.json`
-3. `validate_project()` checks the addon's conditions and actions like the built-in ones, and every expression in every parameter (`expression-*` warnings)
-
-To load addons at startup instead, set `C3_ADDON_DEFINITIONS` to the paths, separated by `;` on
-Windows and `:` elsewhere.
-
----
-
 ## Advanced Workflows
 
 ### Full Feature Creation
@@ -796,4 +735,4 @@ Windows and `:` elsewhere.
 
 ---
 
-**Last Updated**: 2026-09-24
+**Last Updated**: 2026-02-21

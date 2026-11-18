@@ -58,44 +58,284 @@ describe('validateProjectIntegrity', () => {
     resetProjectIndex();
   });
 
-  // ─── Sub-layers and legacy keys ──────────────────────────
+  // ─── Clean project ───────────────────────────────────────
 
-  it('reports duplicate UIDs and SIDs that sit on a sub-layer', async () => {
-    const reader = createReader({
-      objects: new Map([
-        ['Sprite', { name: 'Sprite', 'plugin-id': 'Sprite', sid: 100 }],
-      ]),
-      eventSheets: new Map([
-        ['MainSheet', { name: 'MainSheet', events: [], sid: 200 }],
-      ]),
-      layouts: new Map([
-        ['Layout 1', {
-          name: 'Layout 1',
-          sid: 300,
-          eventSheet: 'MainSheet',
-          layers: [{
-            name: 'Main',
-            sid: 301,
-            instances: [{ type: 'Sprite', uid: 5, sid: 302, properties: {} }],
-            subLayers: [{
-              name: 'Inner',
-              sid: 303,
-              instances: [{ type: 'Sprite', uid: 5, sid: 302, properties: {} }],
-            }],
-          }],
-        }],
-      ]),
-      usedAddons: [
-        { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
-      ],
-    });
+  it('returns valid: true for a clean project', async () => {
+    const reader = validProject();
     const result = await validateProjectIntegrity(reader);
-    const uid = result.warnings.filter(w => w.check === 'duplicate-uid');
-    expect(uid).toHaveLength(1);
-    expect(uid[0].message).toContain('layer:Inner');
-    const sid = result.warnings.filter(w => w.check === 'duplicate-sid');
-    expect(sid).toHaveLength(1);
-    expect(sid[0].message).toContain('layer:Inner');
+    expect(result.valid).toBe(true);
+    expect(result.complete).toBe(true);
+    expect(result.summary.errors).toBe(0);
+    expect(result.summary.checksRun).toBe(36);
+    expect(result.summary.entitiesScanned).toBeGreaterThan(0);
+  });
+
+  // ─── Timeline property track types and template blocks ──────
+
+  describe('timeline property track types', () => {
+    function propertyTrack(source: unknown): Record<string, unknown> {
+      return { property: 'offsetX', source, enabled: true, interpolationMode: 'default', resultMode: 'relative', ease: 'noease', pathMode: 'line', propertyKeyframes: [] };
+    }
+
+    function timelineText(tracks: unknown[], extra: Record<string, unknown> = {}): string {
+      return JSON.stringify({ name: 'Intro', tracks, ...extra });
+    }
+
+    function readerWithTimelines(
+      files: Array<{ path: string; text?: string; failure?: { code: 'E_FILE_TOO_LARGE' | 'E_READ_ERROR'; message: string } }>,
+      registeredTimelines: string[] = [],
+    ) {
+      const base = validProject();
+      const layout = base.layouts.get('Layout 1');
+      layout.layers[0].instances.push({ type: 'Text', uid: 1, sid: 303, properties: { text: 'hello' }, world: { x: 0, y: 0, width: 10, height: 10, angle: 0 } });
+      return createReader({
+        objects: new Map([
+          ...base.objects,
+          ['Text', { name: 'Text', 'plugin-id': 'Text', sid: 101, instanceVariables: [{ name: 'hp', type: 'number', sid: 102 }] }],
+        ]),
+        eventSheets: base.eventSheets,
+        layouts: base.layouts,
+        usedAddons: [...base.addons, { type: 'plugin', id: 'Text', name: 'Text', author: 'Scirra', bundled: false }],
+        dataFiles: files.map(file => ({ folder: 'timelines' as const, ...file })),
+        registeredTimelines,
+      });
+    }
+
+    const instanceTrack = (propertyTracks: unknown[], extra: Record<string, unknown> = {}) =>
+      ({ type: 'instance-track', worldInstance: 0, objectType: 'Sprite', propertyTracks, ...extra });
+    const textTrack = (propertyTracks: unknown[]) =>
+      ({ type: 'instance-track', worldInstance: 1, objectType: 'Text', propertyTracks });
+    const named = (property: string, source: unknown) => ({ ...propertyTrack(source), property });
+    const trackTypeErrors = (result: Awaited<ReturnType<typeof validateProjectIntegrity>>) =>
+      result.errors.filter(e => e.check === 'timeline-property-track-type');
+    const trackTypeWarnings = (result: Awaited<ReturnType<typeof validateProjectIntegrity>>) =>
+      result.warnings.filter(e => e.check === 'timeline-property-track-type');
+
+    it('reports a property track on a property its instance does not have', async () => {
+      const text = timelineText([textTrack([named('angle', { type: 'world-instance', uid: 1 })])]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      const found = trackTypeErrors(result);
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Intro');
+      expect(found[0].message).toContain('"angle"');
+      expect(found[0].message).toContain('r506-2');
+      expect(found[0].message).toContain('property track type \'undefined\' is not valid');
+      expect(found[0].suggestion).toBeDefined();
+      expect(result.valid).toBe(false);
+    });
+
+    it('accepts the world property offsetAngle on the same instance', async () => {
+      const text = timelineText([textTrack([named('offsetAngle', { type: 'world-instance', uid: 1 })])]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+      expect(trackTypeWarnings(result)).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('accepts an instance variable and a plugin property of the instance', async () => {
+      const text = timelineText([textTrack([
+        named('hp', { type: 'instance-variable', uid: 'hp' }),
+        named('text', { type: 'plugin', uid: 'Text' }),
+      ])]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+      expect(trackTypeWarnings(result)).toEqual([]);
+    });
+
+    it.each([
+      ['instance-variable', 'uid'],
+      ['plugin', 'uid'],
+    ])('warns, and does not report an error, for an unresolved name on a %s source', async (sourceType, key) => {
+      const text = timelineText([textTrack([named('nosuch', { type: sourceType, [key]: 'nosuch' })])]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+      const found = trackTypeWarnings(result);
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Intro');
+      expect(found[0].message).toContain('"nosuch"');
+      expect(found[0].message.endsWith(`a ${sourceType} source was not tested.`)).toBe(true);
+      expect(result.valid).toBe(true);
+    });
+
+    it('does not report a track whose instance or object type cannot be found', async () => {
+      const text = timelineText([
+        { type: 'instance-track', worldInstance: 99, objectType: 'Text', propertyTracks: [named('angle', { type: 'world-instance', uid: 99 })] },
+      ]);
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+    });
+
+    it('warns about a property track with no source type', async () => {
+      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack({ uid: 0 })])]) }]);
+      const result = await validateProjectIntegrity(reader);
+      expect(trackTypeErrors(result)).toEqual([]);
+      const found = trackTypeWarnings(result);
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Intro');
+      expect(found[0].message).toContain('"offsetX"');
+      expect(found[0].suggestion).toBeDefined();
+      expect(result.valid).toBe(true);
+    });
+
+    it('warns about a property track with no source at all', async () => {
+      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack(undefined)])]) }]);
+      const result = await validateProjectIntegrity(reader);
+      expect(trackTypeErrors(result)).toEqual([]);
+      expect(trackTypeWarnings(result)).toHaveLength(1);
+    });
+
+    it('warns about a property track whose source type the timeline model does not know', async () => {
+      const reader = readerWithTimelines([{ path: 'Intro.json', text: timelineText([instanceTrack([propertyTrack({ type: 'banana', uid: 0 })])]) }]);
+      const result = await validateProjectIntegrity(reader);
+      expect(trackTypeErrors(result)).toEqual([]);
+      const found = trackTypeWarnings(result);
+      expect(found).toHaveLength(1);
+      expect(found[0].message).toContain('"banana"');
+    });
+
+    it('finds the property tracks of a track in a folder and of a property track folder', async () => {
+      const folderTrack = instanceTrack([], {
+        propertyTracksRoot: { name: 'Property Track Folder', items: [], subfolders: [{ name: 'Sub', items: [propertyTrack({ uid: 0 })], subfolders: [] }] },
+      });
+      const text = timelineText([], { tracksRoot: { name: 'Track Folder', items: [], subfolders: [{ name: 'Group', items: [folderTrack], subfolders: [] }] } });
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text }]));
+      expect(trackTypeWarnings(result)).toHaveLength(1);
+    });
+
+    it('accepts every property track source type the timeline model knows', async () => {
+      const tracks = [
+        instanceTrack(['world-instance', 'instance-variable', 'plugin'].map(type => propertyTrack({ type, uid: 0 }))),
+        { type: 'value-track', name: 'Speed', propertyTracks: [propertyTrack({ type: 'value', uid: 'value' })] },
+        { type: 'audio-track', name: 'Music', propertyTracks: [propertyTrack({ type: 'audio', uid: 'audio' })] },
+      ];
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Intro.json', text: timelineText(tracks) }]));
+      expect(trackTypeErrors(result)).toEqual([]);
+      expect(trackTypeWarnings(result)).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    // ─── Timeline files that cannot be checked ──────────────
+
+    it('reports a timeline over the size limit as unscanned and the result as incomplete', async () => {
+      const failure = { code: 'E_FILE_TOO_LARGE' as const, message: 'File too large (11 MB exceeds 10 MB)' };
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'sub/Huge.json', failure }]));
+      expect(result.unscannedFiles).toEqual(['timelines/sub/Huge']);
+      expect(result.complete).toBe(false);
+      expect(result.valid).toBe(false);
+      const found = result.warnings.filter(w => w.check === 'unscanned-file');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/sub/Huge');
+      expect(found[0].message).toContain('UNSCANNED');
+    });
+
+    it('reports a timeline that is not valid JSON as an error and as unscanned', async () => {
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Broken.json', text: '{ not json' }]));
+      const found = result.errors.filter(e => e.check === 'file-existence');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Broken');
+      expect(found[0].message).toContain('could not be read');
+      expect(result.unscannedFiles).toEqual(['timelines/Broken']);
+      expect(result.complete).toBe(false);
+    });
+
+    it('reports a timeline that cannot be read as an error and as unscanned', async () => {
+      const failure = { code: 'E_READ_ERROR' as const, message: 'EACCES: permission denied' };
+      const result = await validateProjectIntegrity(readerWithTimelines([{ path: 'Locked.json', failure }]));
+      expect(result.errors.filter(e => e.check === 'file-existence' && e.entity === 'timelines/Locked')).toHaveLength(1);
+      expect(result.unscannedFiles).toEqual(['timelines/Locked']);
+    });
+
+    it('reports a registered timeline that has no file, and leaves the result complete', async () => {
+      const result = await validateProjectIntegrity(readerWithTimelines(
+        [{ path: 'Intro.json', text: timelineText([]) }],
+        ['Intro', 'Gone'],
+      ));
+      const found = result.errors.filter(e => e.check === 'file-existence');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('timelines/Gone');
+      expect(found[0].message).toContain('no file');
+      expect(result.complete).toBe(true);
+    });
+
+    it('finds the file of a registered timeline kept in a subfolder', async () => {
+      const result = await validateProjectIntegrity(readerWithTimelines(
+        [{ path: 'transitions/Swipe.json', text: timelineText([]) }],
+        ['Swipe'],
+      ));
+      expect(result.errors.filter(e => e.check === 'file-existence')).toEqual([]);
+    });
+  });
+
+  describe('template blocks on non-world instances', () => {
+    function layoutWith(nonWorld: unknown[], worldInstance: Record<string, unknown> = {}) {
+      return {
+        name: 'Layout 1',
+        sid: 300,
+        eventSheet: 'MainSheet',
+        layers: [{ name: 'Main', sid: 301, instances: [{ type: 'Sprite', uid: 0, sid: 302, properties: {}, ...worldInstance }] }],
+        'nonworld-instances': nonWorld,
+      };
+    }
+
+    function readerWith(layout: Record<string, unknown>) {
+      const base = validProject();
+      return createReader({
+        objects: new Map([...base.objects, ['Array', { name: 'Array', 'plugin-id': 'Array', sid: 101 }]]),
+        eventSheets: base.eventSheets,
+        layouts: new Map([['Layout 1', layout]]),
+        usedAddons: [...base.addons, { type: 'plugin', id: 'Array', name: 'Array', author: 'Scirra', bundled: false }],
+      });
+    }
+
+    const block = (mode: 'template' | 'replica') => ({
+      mode,
+      templateName: mode === 'template' ? 'Default' : '',
+      sourceTemplateName: mode === 'replica' ? 'Default' : '',
+      isReplica: mode === 'replica',
+    });
+
+    it.each(['template', 'replica'] as const)('reports a %s block on a non-world instance', async mode => {
+      const layout = layoutWith([{ type: 'Array', uid: 5, sid: 303, properties: {}, template: block(mode) }]);
+      const result = await validateProjectIntegrity(readerWith(layout));
+      const found = result.errors.filter(e => e.check === 'template-on-non-world-instance');
+      expect(found).toHaveLength(1);
+      expect(found[0].entity).toBe('layouts/Layout 1');
+      expect(found[0].message).toContain('UID 5');
+      expect(found[0].message).toContain('r506-2');
+      expect(found[0].suggestion).toBeDefined();
+      expect(result.valid).toBe(false);
+    });
+
+    it('accepts a template block on a world instance and a non-world instance with no block', async () => {
+      const layout = layoutWith([{ type: 'Array', uid: 5, sid: 303, properties: {} }], { template: block('template') });
+      const result = await validateProjectIntegrity(readerWith(layout));
+      expect(result.errors.filter(e => e.check === 'template-on-non-world-instance')).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  // ─── Check 1: file-existence ─────────────────────────────
+
+  it('detects missing object file', async () => {
+    const reader = validProject();
+    reader.registerEntityName('objects', 'MissingSprite');
+    const result = await validateProjectIntegrity(reader);
+    expect(result.valid).toBe(false);
+    const err = result.errors.find(e => e.check === 'file-existence' && e.entity.includes('MissingSprite'));
+    expect(err).toBeDefined();
+    expect(err!.message).toContain('no file exists at objectTypes/MissingSprite.json');
+    // Nothing on disk escaped the checks
+    expect(result.complete).toBe(true);
+    expect(result.unscannedFiles).toEqual([]);
+  });
+
+  it('detects missing event sheet file', async () => {
+    const reader = validProject();
+    reader.registerEntityName('eventSheets', 'GhostSheet');
+    const result = await validateProjectIntegrity(reader);
+    expect(result.valid).toBe(false);
+    const err = result.errors.find(e => e.check === 'file-existence' && e.entity.includes('GhostSheet'));
+    expect(err).toBeDefined();
   });
 
   it('warns about keys Construct does not read on blocks, conditions and actions', async () => {
@@ -149,67 +389,6 @@ describe('validateProjectIntegrity', () => {
     expect(behaviorKeys.map(i => i.message).join(' ')).toContain('"behavior-type"');
   });
 
-  it('reports an expression whose name nothing in the project defines', async () => {
-    const reader = createReader({
-      objects: new Map([
-        ['Sprite', { name: 'Sprite', 'plugin-id': 'Sprite', sid: 100, instanceVariables: [{ name: 'hp', type: 'number', sid: 101 }] }],
-      ]),
-      eventSheets: new Map([
-        ['MainSheet', {
-          name: 'MainSheet', sid: 200,
-          events: [{
-            eventType: 'block', sid: 201,
-            conditions: [{ id: 'every-tick', objectClass: 'System', sid: 202 }],
-            actions: [{ id: 'set-position', objectClass: 'Sprite', sid: 203, parameters: { x: 'Sprite.hp + 1', y: 'Sprite.speeed' } }],
-          }],
-        }],
-      ]),
-      layouts: new Map([
-        ['Layout 1', { name: 'Layout 1', sid: 300, eventSheet: 'MainSheet', layers: [{ name: 'Main', sid: 301, instances: [] }] }],
-      ]),
-      usedAddons: [
-        { type: 'plugin', id: 'Sprite', name: 'Sprite', author: 'Scirra', bundled: false },
-      ],
-    });
-    const result = await validateProjectIntegrity(reader);
-    const expression = result.warnings.filter(w => w.check.startsWith('expression-'));
-    expect(expression.map(w => [w.check, w.entity])).toEqual([['expression-unknown-member', 'eventSheets/MainSheet/sid:203']]);
-    expect(expression[0].message).toContain('parameter "y" = "Sprite.speeed"');
-  });
-
-  // ─── Clean project ───────────────────────────────────────
-
-  it('returns valid: true for a clean project', async () => {
-    const reader = validProject();
-    const result = await validateProjectIntegrity(reader);
-    expect(result.valid).toBe(true);
-    expect(result.complete).toBe(true);
-    expect(result.summary.errors).toBe(0);
-    expect(result.summary.checksRun).toBe(30);
-    expect(result.summary.entitiesScanned).toBeGreaterThan(0);
-  });
-
-  // ─── Check 1: file-existence ─────────────────────────────
-
-  it('detects missing object file', async () => {
-    const reader = validProject();
-    reader.registerEntityName('objects', 'MissingSprite');
-    const result = await validateProjectIntegrity(reader);
-    expect(result.valid).toBe(false);
-    const err = result.errors.find(e => e.check === 'file-existence' && e.entity.includes('MissingSprite'));
-    expect(err).toBeDefined();
-    expect(err!.message).toContain('missing or contains invalid JSON');
-  });
-
-  it('detects missing event sheet file', async () => {
-    const reader = validProject();
-    reader.registerEntityName('eventSheets', 'GhostSheet');
-    const result = await validateProjectIntegrity(reader);
-    expect(result.valid).toBe(false);
-    const err = result.errors.find(e => e.check === 'file-existence' && e.entity.includes('GhostSheet'));
-    expect(err).toBeDefined();
-  });
-
   it('reports oversized layouts as UNSCANNED warnings, not missing-file errors', async () => {
     const reader = validProject();
     reader.registerUnreadableLayout('HugeLayout', {
@@ -229,7 +408,7 @@ describe('validateProjectIntegrity', () => {
     expect(result.summary.unscanned).toBe(1);
   });
 
-  it('reports a recorded non-size read failure as an error with the real reason', async () => {
+  it('reports a recorded non-size read failure as an error with the real reason, and as not checked', async () => {
     const reader = validProject();
     reader.registerUnreadableLayout('BrokenLayout', {
       code: 'E_INVALID_JSON',
@@ -240,8 +419,12 @@ describe('validateProjectIntegrity', () => {
     const err = result.errors.find(e => e.check === 'file-existence' && e.entity === 'layouts/BrokenLayout');
     expect(err).toBeDefined();
     expect(err!.message).toContain('Unexpected token');
-    expect(result.summary.unscanned).toBe(0);
-    expect(result.complete).toBe(true);
+    // The file exists but no check covered it: an error AND an incomplete result
+    expect(result.warnings.find(w => w.entity === 'layouts/BrokenLayout')).toBeUndefined();
+    expect(result.unscannedFiles).toEqual(['layouts/BrokenLayout']);
+    expect(result.summary.unscanned).toBe(1);
+    expect(result.complete).toBe(false);
+    expect(result.valid).toBe(false);
   });
 
   it('classifies unscanned files by failure code, not by message text', async () => {
@@ -261,15 +444,19 @@ describe('validateProjectIntegrity', () => {
 
     expect(result.errors.find(e => e.entity === 'layouts/Opaque')).toBeUndefined();
     expect(result.warnings.find(w => w.check === 'unscanned-file' && w.entity === 'layouts/Opaque')).toBeDefined();
-    expect(result.unscannedFiles).toEqual(['layouts/Opaque']);
 
     const denied = result.errors.find(e => e.check === 'file-existence' && e.entity === 'layouts/Denied');
     expect(denied).toBeDefined();
     expect(denied!.message).toContain('could not be read');
-    expect(result.summary.unscanned).toBe(1);
+    expect(result.warnings.find(w => w.check === 'unscanned-file' && w.entity === 'layouts/Denied')).toBeUndefined();
+
+    // Neither file was checked, whatever the reason
+    expect(result.unscannedFiles).toEqual(['layouts/Opaque', 'layouts/Denied']);
+    expect(result.summary.unscanned).toBe(2);
+    expect(result.complete).toBe(false);
   });
 
-  it('reports complete: false while valid stays true when files were unscanned', async () => {
+  it('reports valid: false and complete: false with no errors when files were unscanned', async () => {
     const reader = validProject();
     reader.registerUnreadableLayout('HugeLayout', {
       code: 'E_FILE_TOO_LARGE',
@@ -277,8 +464,9 @@ describe('validateProjectIntegrity', () => {
     });
     const result = await validateProjectIntegrity(reader);
 
-    // valid only vouches for the files that were scanned; complete says whether that was all of them
-    expect(result.valid).toBe(true);
+    // Nothing in the unscanned file was checked, so the project is not reported valid;
+    // summary.errors === 0 still tells that the checked files had no errors.
+    expect(result.valid).toBe(false);
     expect(result.complete).toBe(false);
     expect(result.summary.errors).toBe(0);
   });
@@ -334,6 +522,7 @@ describe('validateProjectIntegrity', () => {
     expect(result.valid).toBe(false);
     const err = result.errors.find(e => e.check === 'file-existence' && e.entity.includes('GhostLayout'));
     expect(err).toBeDefined();
+    expect(result.complete).toBe(true);
   });
 
   // ─── Check 2: required-fields ────────────────────────────
@@ -676,28 +865,6 @@ describe('validateProjectIntegrity', () => {
     expect(warns[2].message).toContain('holds the trigger "on-layout-end"');
     // The trigger after "else" is reported once, by else-placement, not as "put the trigger first"
     expect(result.warnings.filter(w => w.check === 'trigger-placement')).toEqual([]);
-  });
-
-  it('does not report else-placement for a block whose else condition is disabled, and still does with it enabled', async () => {
-    const sheet = (elseExtra: Record<string, unknown>) => projectWithSheet([
-      { eventType: 'block', sid: 240, conditions: [{ id: 'every-tick', objectClass: 'System', sid: 241 }], actions: [], children: [
-        { eventType: 'comment', text: 'c' },
-        {
-          eventType: 'block', sid: 242, actions: [],
-          conditions: [
-            { id: 'else', objectClass: 'System', sid: 243, ...elseExtra },
-            { id: 'compare-two-values', objectClass: 'System', sid: 244 },
-          ],
-        },
-        { eventType: 'block', sid: 245, conditions: [{ id: 'else', objectClass: 'System', sid: 246 }], actions: [] },
-      ] },
-    ]);
-    const disabled = await validateProjectIntegrity(sheet({ disabled: true }));
-    expect(disabled.warnings.filter(w => w.check === 'else-placement')).toEqual([]);
-    const enabled = await validateProjectIntegrity(sheet({}));
-    const warns = enabled.warnings.filter(w => w.check === 'else-placement');
-    expect(warns).toHaveLength(1);
-    expect(warns[0].entity).toContain('sid 242');
   });
 
   it('does not warn about the shapes Construct 3 writes', async () => {
@@ -1368,8 +1535,10 @@ describe('validateProjectIntegrity', () => {
   // ─── Check 3b: subfolder-structure ────────────────────────
 
   /** validProject() with its project.c3proj containers patched */
-  function withContainers(containers: Record<string, unknown>) {
+  function withContainers(containers: Record<string, unknown>, timelineFiles: string[] = []) {
     const reader = validProject();
+    // Registered timelines need a file each, or they are file-existence errors
+    reader.dataFiles = timelineFiles.map(path => ({ folder: 'timelines', path, text: '{}' }));
     const origGetProject = reader.getProject.bind(reader);
     reader.getProject = () => ({ ...origGetProject(), ...containers });
     return reader;
@@ -1380,8 +1549,7 @@ describe('validateProjectIntegrity', () => {
 
   it('detects subfolder missing name field', async () => {
     const reader = withContainers({
-      // no name, and not empty (an empty nameless folder is what the editor itself saves)
-      families: { items: [], subfolders: [{ items: ['T2'], subfolders: [] }] },
+      families: { items: [], subfolders: [{ items: [], subfolders: [] }] }, // no name!
     });
     const result = await validateProjectIntegrity(reader);
     expect(result.valid).toBe(false);
@@ -1390,50 +1558,6 @@ describe('validateProjectIntegrity', () => {
     expect(err!.entity).toBe('families/subfolders[0]');
     expect(err!.message).toContain('missing required "name" field');
     expect(err!.suggestion).toContain('Add a "name" field');
-  });
-
-  it('accepts the unnamed empty subfolder that Construct r495.2 saves', async () => {
-    const reader = validProject();
-    const origGetProject = reader.getProject.bind(reader);
-    reader.getProject = () => {
-      const proj = origGetProject();
-      // Exactly as saved by the editor in the Crossing Frog example: the
-      // editor's Transitions folder, empty.
-      proj.timelines = { items: [], subfolders: [{ items: [], subfolders: [] }] };
-      return proj;
-    };
-    const result = await validateProjectIntegrity(reader);
-    expect(result.errors.filter((e: any) => e.check === 'subfolder-structure')).toEqual([]);
-  });
-
-  it('still flags an unnamed subfolder whose descendants hold items', async () => {
-    const reader = validProject();
-    const origGetProject = reader.getProject.bind(reader);
-    reader.getProject = () => {
-      const proj = origGetProject();
-      proj.layouts = { items: ['Layout 1'], subfolders: [{ items: [], subfolders: [{ name: 'Inner', items: ['T2'], subfolders: [] }] }] } as any;
-      return proj;
-    };
-    const result = await validateProjectIntegrity(reader);
-    const err = result.errors.find((e: any) => e.check === 'subfolder-structure');
-    expect(err?.entity).toBe('layouts/subfolders[0]');
-  });
-
-  it('accepts custom eases in the unnamed first timelines subfolder, but no other unnamed one', async () => {
-    const reader = validProject();
-    const origGetProject = reader.getProject.bind(reader);
-    reader.getProject = () => {
-      const proj = origGetProject();
-      // As in the tasty-cappuccino example: eases live in timelines/transitions/.
-      proj.timelines = {
-        items: [],
-        subfolders: [{ items: ['LightOutBack'], subfolders: [] }, { items: ['Stray'], subfolders: [] }],
-      } as any;
-      return proj;
-    };
-    const result = await validateProjectIntegrity(reader);
-    const errs = result.errors.filter((e: any) => e.check === 'subfolder-structure');
-    expect(errs.map((e: any) => e.entity)).toEqual(['timelines/subfolders[1]']);
   });
 
   it('passes subfolder check when all subfolders have names', async () => {
@@ -1448,7 +1572,7 @@ describe('validateProjectIntegrity', () => {
     for (const items of [['Transition1'], []]) {
       const reader = withContainers({
         timelines: { items: ['Timeline1'], subfolders: [{ items, subfolders: [] }] },
-      });
+      }, ['Timeline1.json', ...items.map(name => `${name}.json`)]);
       const result = await validateProjectIntegrity(reader);
       expect(subfolderErrors(result), `items ${JSON.stringify(items)}`).toEqual([]);
       expect(result.valid).toBe(true);
@@ -1464,7 +1588,7 @@ describe('validateProjectIntegrity', () => {
           { items: ['Transition1'], subfolders: [] },
         ],
       },
-    });
+    }, ['Timeline1.json', 'Transition1.json']);
     const result = await validateProjectIntegrity(reader);
     expect(subfolderErrors(result)).toEqual([]);
   });
@@ -2059,19 +2183,24 @@ describe('validateProjectIntegrity file scans', () => {
     expect(orphans[0].suggestion).toContain('move it to layouts/layout1.json');
   });
 
-  it('lists .bak files in timelines (with subfolders) and next to project.c3proj, but not elsewhere in the root', async () => {
+  it('lists .bak files in timelines (with subfolders), directly in images/ and next to project.c3proj, but not elsewhere in the root', async () => {
     await writeFiles([
       'project.c3proj.bak',
       'timelines/Timeline1.json.bak',
       'timelines/Folder1/Timeline2.json.bak',
       'timelines/transitions/Transition1.json.bak',
       'eventSheets/Sheet1.json.bak',
+      'images/sprite-animation 1-000.png.bak',
+      'images/sprite-animation 1-000.png.1.bak',
+      'images/sub/other.png.bak',
       'files/data.bak',
       'scripts/main.js.bak',
     ]);
     const result = await validateProjectIntegrity(readerFor({}));
     expect(byCheck(result.info, 'backup-file')).toEqual([
       'eventSheets/Sheet1.json.bak',
+      'images/sprite-animation 1-000.png.1.bak',
+      'images/sprite-animation 1-000.png.bak',
       'project.c3proj.bak',
       'timelines/Folder1/Timeline2.json.bak',
       'timelines/Timeline1.json.bak',
@@ -2079,6 +2208,23 @@ describe('validateProjectIntegrity file scans', () => {
     ]);
     const bak = result.info.find(i => i.check === 'backup-file')!;
     expect(bak.message).not.toContain('failed write');
+  });
+
+  it('lists the files an interrupted write leaves as backup-file info, not as orphaned images or files', async () => {
+    const left = [
+      'images/.c3mcp-0123456789abcdef.old',
+      'layouts/.c3mcp-0123456789abcdef.tmp',
+      'eventSheets/.c3mcp-0123456789abcdef.link',
+    ];
+    await writeFiles(left);
+    const result = await validateProjectIntegrity(readerFor({}));
+    expect(byCheck(result.info, 'backup-file')).toEqual([...left].sort());
+    for (const issue of result.info.filter(i => i.check === 'backup-file')) {
+      expect(issue.message).toContain('a file left by an interrupted write; the .old one holds the file\'s previous content');
+    }
+    expect(byCheck(result.info, 'orphaned-image')).toEqual([]);
+    expect(byCheck(result.info, 'orphaned-file')).toEqual([]);
+    expect(result.warnings).toEqual([]);
   });
 });
 

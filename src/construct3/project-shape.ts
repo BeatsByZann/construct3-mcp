@@ -1,35 +1,30 @@
 /**
- * Bring a project.c3proj written by an older Construct release to the shape
- * the r495.2 editor saves, so that a tool write followed by an editor save
- * does not produce a diff the tool did not cause (roadmap C5, HANDOFF W94).
+ * Bring a project.c3proj that an older Construct release saved to a fixed
+ * save shape, so that a tool write followed by an editor save shows fewer
+ * differences the tool did not cause.
  *
- * Evidence: every project.c3proj on this machine saved by release 49502
- * (r495.2) or later carries `script-info` on its scripts, a `models3d` folder
- * after `flowcharts`, `uidAllocationMode` right after `preloadSounds` and
- * `scriptsType` last in `properties`. The r495.2 editor applied exactly these
- * changes to a release-44903 fixture on save (W90 round trip).
- *
- * `zAxisScale` is a setting, not a shape, so it is changed only where the
- * editor was seen to change it: r495.2 shows and saves "regular" for a project
- * saved by release 44903 that holds "normalized" (the W90 round trip and the
- * C5 load check), while a project r495.2 itself saved keeps "normalized"
- * (the timeline-properties fixture). The editor's cut-off release lies
- * somewhere between; projects saved between 44903 and 49502 are left alone.
- * Releases before 44903 are inferred, not observed: an editor migration keyed
- * on the saved release applies to every older release too.
+ * The shape: script entries carry `script-info` instead of `file-info`, an empty `models3d`
+ * folder follows `flowcharts`, `uidAllocationMode` follows `preloadSounds`
+ * and `scriptsType` ends `properties`. The first two apply to a project of
+ * any release; for a file without `flowcharts` the folder goes before
+ * `properties`, a placement inferred, not recorded. Projects saved at
+ * release 49502 or later keep their editor's own property order.
  *
  * Deliberately not done:
- * - `usedAddons` pruning: it removes entries, and the owner ruled it out.
- * - Property order for projects saved at 49502 or later: the editor's order
- *   depends on its release (49700 puts `zAxisScale` after
+ * - `zAxisScale` and every other setting: left as saved. Construct 3 r506-2
+ *   updated a legacy "normalized" itself when it opened a release-44903
+ *   project in one recorded check; a tool that changed it while writing
+ *   something else would hide that.
+ * - `usedAddons` pruning: it removes entries a project may still use.
+ * - Property order for a project saved at 49502 or later: the order depends
+ *   on the editor's release (49700 puts `zAxisScale` after
  *   `uidAllocationMode`), so a newer project is left as its editor wrote it.
  */
 
 /** `savedWithRelease` of Construct r495.2, the recorded editor baseline. */
 export const SHAPE_BASELINE_RELEASE = 49502;
 
-/** Latest release at which r495.2 was seen to turn zAxisScale "normalized" into "regular". */
-export const Z_AXIS_SCALE_MIGRATED_RELEASE = 44903;
+import { parseJsonText } from './json-format.js';
 
 type Json = Record<string, unknown>;
 
@@ -52,6 +47,7 @@ function renameKey(target: Json, from: string, to: string): void {
   reorderKeys(target, order);
 }
 
+/** Rename `file-info` to `script-info` on every script entry of a folder and its subfolders. */
 function renameScriptInfo(folder: unknown, path: string, changes: string[]): void {
   if (!isObject(folder)) return;
   const items = Array.isArray(folder.items) ? folder.items : [];
@@ -70,7 +66,8 @@ function renameScriptInfo(folder: unknown, path: string, changes: string[]): voi
 /** Move `key` to sit right after `anchor` (or to the end when anchor is null). */
 function moveKey(target: Json, key: string, anchor: string | null): boolean {
   if (!(key in target)) return false;
-  const rest = Object.keys(target).filter(k => k !== key);
+  const current = Object.keys(target);
+  const rest = current.filter(k => k !== key);
   let order: string[];
   if (anchor === null) {
     order = [...rest, key];
@@ -79,24 +76,23 @@ function moveKey(target: Json, key: string, anchor: string | null): boolean {
     if (at < 0) return false;
     order = [...rest.slice(0, at + 1), key, ...rest.slice(at + 1)];
   }
-  const current = Object.keys(target);
   if (order.every((k, i) => k === current[i])) return false;
   reorderKeys(target, order);
   return true;
 }
 
 /**
- * Apply the r495.2 save shape to a parsed project.c3proj, in place. Returns one
+ * Apply the save shape to a parsed project.c3proj, in place. Returns one
  * line per change; an empty list means the file already had that shape.
  */
 export function upgradeProjectShape(project: Json): string[] {
   const changes: string[] = [];
 
-  // Scripts: the r495.2 editor stores script metadata under script-info.
+  // Scripts: the shape stores script metadata under script-info.
   const roots = project.rootFileFolders;
   if (isObject(roots)) renameScriptInfo(roots.script, 'scripts', changes);
 
-  // models3d: every r495.2 save has the folder, empty when there are no models.
+  // models3d: the shape has the folder, empty when there are no models.
   if (!('models3d' in project)) {
     const keys = Object.keys(project);
     const after = keys.includes('flowcharts') ? keys.indexOf('flowcharts') + 1
@@ -117,11 +113,27 @@ export function upgradeProjectShape(project: Json): string[] {
     if (moveKey(properties, 'scriptsType', null)) {
       changes.push('properties.scriptsType moved to the end');
     }
-    if (release <= Z_AXIS_SCALE_MIGRATED_RELEASE && properties.zAxisScale === 'normalized') {
-      properties.zAxisScale = 'regular';
-      changes.push('properties.zAxisScale "normalized" read as "regular", as r495.2 does for this release');
-    }
   }
 
   return changes;
+}
+
+/**
+ * The changes `upgradeProjectShape` would make to the project.c3proj
+ * `text`, worked out on a parsed copy; empty when the file already has the
+ * save shape.
+ */
+export function projectShapeChanges(text: string): string[] {
+  return upgradeProjectShape(parseJsonText(text) as Json);
+}
+
+/**
+ * The closing sentence of a message for a call that was undone by updating
+ * project.c3proj again: that update gives the file the save shape, so the
+ * shape changes stay even though everything else was put back.
+ */
+export function rollbackClosing(changes: string[]): string {
+  return changes.length === 0
+    ? 'Nothing was changed.'
+    : `project.c3proj keeps the editor's save shape (${changes.join('; ')}); nothing else was changed.`;
 }
